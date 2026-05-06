@@ -1,5 +1,19 @@
 # Facebook Group / Post Monitor Python 版重構計劃（給 Codex 的實作規格）
 
+> 文件狀態：  
+> 本文件是長期遷移設計與早期架構背景，不是目前進度來源。  
+> 目前實作狀態、下一步、風險與不做事項以 `docs/TASK_BREAKDOWN.md` 為準。  
+> 新對話或下一位 agent 交接以 `docs/HANDOFF.md` 為準。  
+> 若本文件與 `docs/TASK_BREAKDOWN.md` 衝突，以 `docs/TASK_BREAKDOWN.md` 為準。
+
+> 已演進差異：  
+> - async resident worker 是唯一正式產品主路徑。  
+> - one-shot mode 與 sync resident worker 只保留為 fallback / debug tooling，新功能預設不追求 fallback parity。  
+> - scheduler 已改為 queue-based continuous executor，scheduler tick 只 enqueue due targets，executor worker slots 負責實際掃描。  
+> - Web UI 的日常操作以每個 target 卡片的「開始 / 停止」為主，不再把全域 scheduler 啟停暴露成主要操作。  
+> - comments target 已依 `comments_phase_entry_checklist.md` 完成 D1-D4 程式接線；是否通過真實 Facebook DOM 驗收，以 `docs/TASK_BREAKDOWN.md` 最新狀態為準。  
+> - `phase_offset_sec`、planner API 拆分、one-shot queue 化、獨立 load-more reentry guard 等 deferred 項目的目前決策與不可半補邊界，請看 `docs/TASK_BREAKDOWN.md`。
+
 ## 0. 文件目的
 
 本文件定義一個**以 Python 為主、以 Playwright 為核心瀏覽器自動化層**的 Facebook 監視器重構計劃。
@@ -142,11 +156,13 @@
 - 支援 headless monitor
 - 支援儲存 / 重用登入狀態
 - 支援最基本 history
+- 支援每個 target 獨立啟動 / 停止，不因單一 target 設定變更而重啟全部 worker
 
 ### 非功能要求
 - 重啟後可恢復既有 target 與狀態
 - worker crash 不應讓整體資料毀損
 - target 管理與 worker 執行分離
+- target 啟停控制必須是 per-target 操作，A target 的 start/stop/config update 不應干擾 B target 的執行
 - 初期不追求漂亮 GUI
 
 ---
@@ -173,7 +189,7 @@
 
 ## 4.1 主語言與核心庫
 
-- Python 3.12+
+- Python 3.13
 - Playwright Python
 - SQLite（狀態與設定儲存）
 - Pydantic（設定／資料結構驗證）
@@ -396,13 +412,33 @@ Python 版應改成：
 初期可沒有，後續再做
 
 - local web UI
-- target 管理
-- 啟動 / 停止 worker
+- target 清單 / 詳細設定
+- 每個 target 獨立啟動 / 停止 / 暫停
 - recent matches
+
+管理介面建議採用「左側 target 清單 + 右側設定面板」或「target table + detail drawer」：
+
+- 清單顯示 group name、group id、啟停狀態、最近掃描時間、最近錯誤、命中數。
+- 詳細面板編輯 include/exclude keywords、通知設定、refresh policy、worker mode。
+- 每個 target 都有獨立 start / stop 控制；操作單一 target 不應觸發全域 worker 重啟。
+- 細分 script 與 console 只作為 Phase B 過渡入口，未來 UI 應呼叫 application service。
+- Phase B.5 可先用 FastAPI + Jinja2 + plain HTML form 建立薄本機 UI，不引入 SPA framework 或前端 build system。
+- Web UI route 只做 request parsing、呼叫 service、回傳 template；不可承擔 domain rule 或 worker orchestration。
+- Web UI 自動掃描模式應以 worker runner 抽象切換，例如 resident / one-shot；UI 只傳遞模式設定，不直接管理 Playwright page pool。
 
 ---
 
 ## 7.2 建議目錄結構
+
+目前 Python repo 已採用 `src/facebook_monitor/` package layout；下列原始 `app/`
+建議結構視為邏輯分層參考，不要求改名搬目錄。現行對應關係：
+
+- `app/core` -> `src/facebook_monitor/core`
+- `app/persistence` -> `src/facebook_monitor/persistence`
+- `app/facebook` / browser helpers -> `src/facebook_monitor/facebook`
+- `app/monitor` / worker loop -> `src/facebook_monitor/worker` 與 `src/facebook_monitor/scheduler`
+- `app/notifications` -> `src/facebook_monitor/notifications`
+- `app/webui` -> `src/facebook_monitor/webapp`
 
 ```text
 facebook_monitor_py/
@@ -547,6 +583,16 @@ facebook_monitor_py/
 - `last_error`
 - `last_notification_status`
 - `worker_mode`：`headless` / `headed_compat`
+- `desired_state`：`running` / `stopped`（或以 `enabled + paused` 表示）
+- `runtime_state`：`idle` / `running` / `error`
+- `last_heartbeat_at`
+
+### 操作介面語意
+
+- `Start target`：只讓該 target 進入可被 scheduler 執行的狀態，不影響其他 target。
+- `Stop target`：只暫停該 target 的後續掃描，保留設定、seen 與 history，不影響其他 target。
+- `Edit config`：更新該 target 所屬 group config；同一 group 下 posts/comments target 共用 keyword / refresh / notification 設定。scheduler 下一輪讀取新設定，或收到設定變更事件後套用，不應要求全域重啟。
+- `Delete target`：屬於高風險操作，需確認是否保留 history；第一階段可先不做。
 
 ---
 
@@ -574,6 +620,9 @@ worker 不負責：
 - 每輪從 DB 取所有 enabled targets
 - 依序掃描
 - 每個 target 建立/重用 context/page
+- 每個 target 的啟停狀態獨立判斷；A target 停止時不應中斷 B/C target。
+- config update 應在 target 下一輪掃描前生效，除非該設定需要重建 browser context。
+- 進入 resident worker 時，應保留 one-shot worker 作為 fallback；resident worker 只改變瀏覽器 / page 生命週期，不重寫抽取、去重、通知與 scan run 寫入流程。
 
 ### 不建議初期做
 - 每個 target 一個獨立 OS process
@@ -606,6 +655,8 @@ worker 不負責：
 - 每一步都要能 log
 - 每一步失敗時要留下明確 error reason
 - 不要把所有邏輯塞進單一大函式
+- 每輪開始前重新確認 target 是否仍 enabled 且未 paused。
+- target 被停止時，scheduler 應取消或跳過該 target 的下一輪掃描，不影響其他 target。
 
 ---
 
@@ -722,6 +773,7 @@ JS 版 heavily 依賴 observer 安裝與頁內 route 維護。
 - 不是逐行翻譯 DOM API
 - 要改成 Playwright locator / evaluate 風格
 - 將 DOM preparation 與 extraction 拆開
+- permalink 這類已成熟且會影響 item identity 的邏輯，應優先搬 userscript 既有語義，包括 canonical URL 正規化、候選來源排序與必要診斷，不應另寫一套臨時規則
 
 ### 難度
 **高**
@@ -769,9 +821,15 @@ created_at
 updated_at
 ```
 
-### `target_configs`
+`enabled` / `paused` 的初期語意：
+
+- `enabled = 1, paused = 0`：可被 scheduler 掃描。
+- `enabled = 1, paused = 1`：使用者暫停監視，保留設定與 history。
+- `enabled = 0`：停用或保留給後續刪除/封存語意。
+
+### `group_configs`
 ```text
-target_id (pk/fk)
+group_id (pk)
 include_keywords
 exclude_keywords
 min_refresh_sec
@@ -787,6 +845,8 @@ enable_discord
 ntfy_topic
 discord_webhook
 ```
+
+正式 Python 路徑已對齊 JS 成熟版：keyword / refresh / notification config 屬於 group-scoped config。舊版 `target_configs(target_id pk/fk)` 已降級為 migration-only fallback，不再是正式資料來源；新正式功能不得直接讀寫。
 
 ### `seen_items`
 ```text
@@ -846,6 +906,21 @@ status
 message
 created_at
 ```
+
+### `target_runtime_state`（進入 scheduler 前建議新增）
+```text
+target_id (pk/fk)
+desired_state              -- running / stopped
+runtime_state              -- idle / running / error
+last_started_at
+last_stopped_at
+last_heartbeat_at
+last_error
+active_worker_id
+updated_at
+```
+
+此表用於支援 UI 上的獨立 start / stop 顯示與未來 scheduler 控制。Phase A/B 可先用 `targets.enabled + targets.paused` 過渡，但進入長駐 scheduler 前應補 runtime state。
 
 ### `auth_profiles`
 ```text

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>設定 - Facebook Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>設定</h1>
+        <p>全域 automation profile 與帳號狀態</p>
+      </div>
+      <a class="button" href="/">返回</a>
+    </header>
+
+    {% if error %}
+      <div class="notice error">{{ error }}</div>
+    {% endif %}
+    {% if message %}
+      <div class="notice success">{{ message }}</div>
+    {% endif %}
+
+    <section class="target">
+      <div class="target-header">
+        <div>
+          <h2>Facebook automation profile</h2>
+          <p>{{ profile_dir }}</p>
+        </div>
+        <span class="status {% if profile_active %}enabled{% else %}muted{% endif %}">
+          {% if profile_active %}視窗開啟中{% else %}未開啟{% endif %}
+        </span>
+      </div>
+
+      <div class="actions">
+        <form method="post" action="/settings/facebook/open">
+          <button type="submit">開啟登入視窗</button>
+        </form>
+        <form method="post" action="/settings/facebook/close">
+          <button type="submit">關閉視窗</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="target">
+      <div class="target-header">
+        <div>
+          <h2>通知預設值</h2>
+          <p>未填寫也不影響功能；各 target 仍以自己的通知設定為準。此區塊只作為新增 target 預設值、測試通知與批次套用來源。</p>
+        </div>
+      </div>
+
+      <form class="config-form" method="post" action="/settings/notifications">
+        <div class="form-grid">
+          <label class="checkbox">
+            <input name="enable_desktop_notification" type="checkbox" {% if notification_settings.enable_desktop_notification %}checked{% endif %}>
+            啟用桌面通知
+          </label>
+          <label class="checkbox">
+            <input name="enable_ntfy" type="checkbox" {% if notification_settings.enable_ntfy %}checked{% endif %}>
+            啟用 ntfy 通知
+          </label>
+          <label>
+            ntfy topic
+            <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}">
+          </label>
+          <label class="checkbox">
+            <input name="enable_discord_notification" type="checkbox" {% if notification_settings.enable_discord_notification %}checked{% endif %}>
+            啟用 Discord 通知
+          </label>
+          <label>
+            Discord webhook URL
+            <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}">
+          </label>
+        </div>
+        <div class="actions">
+          <button type="submit">保存通知預設值</button>
+        </div>
+      </form>
+
+      <div class="actions">
+        <form method="post" action="/settings/notifications/test">
+          <button type="submit">發送測試通知</button>
+        </form>
+        <form method="post" action="/settings/notifications/apply-to-targets" onsubmit="return confirm('套用通知預設值到所有社團設定？');">
+          <button type="submit">套用到所有社團設定</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

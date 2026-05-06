@@ -1,0 +1,148 @@
+"""ntfy sender tests。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from facebook_monitor.notifications.desktop import build_desktop_notification_command
+from facebook_monitor.notifications.desktop import send_desktop_notification
+from facebook_monitor.notifications.discord import DiscordConfig
+from facebook_monitor.notifications.discord import send_discord_notification
+from facebook_monitor.notifications.discord import truncate_discord_content
+from facebook_monitor.notifications.ntfy import NtfyConfig
+from facebook_monitor.notifications.ntfy import send_ntfy_notification
+from facebook_monitor.notifications.ntfy import to_ascii_header_value
+
+
+def test_send_ntfy_notification_matches_userscript_encoding(monkeypatch: Any) -> None:
+    """ntfy topic 走 URL encode，中文內容放 UTF-8 body，不放進非 ASCII header。"""
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, *, content: bytes, headers: dict[str, str], timeout: int) -> httpx.Response:
+        """記錄送出參數，避免測試真的呼叫 ntfy。"""
+
+        calls.append(
+            {
+                "url": url,
+                "content": content,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = send_ntfy_notification(
+        NtfyConfig(
+            topic="中文 topic",
+            click_url="https://www.facebook.com/groups/1/posts/2",
+        ),
+        "Facebook 監視命中: 票券",
+        "社團: 測試社團\n內容: 中文內容",
+    )
+
+    assert result.ok
+    assert calls[0]["url"].endswith("/%E4%B8%AD%E6%96%87%20topic")
+    assert calls[0]["content"] == "社團: 測試社團\n內容: 中文內容".encode("utf-8")
+    assert calls[0]["headers"]["Content-Type"] == "text/plain; charset=utf-8"
+    assert calls[0]["headers"]["Title"] == "Facebook group match"
+    assert calls[0]["headers"]["Priority"] == "default"
+    assert calls[0]["headers"]["Tags"] == "bell"
+    assert calls[0]["headers"]["Click"] == "https://www.facebook.com/groups/1/posts/2"
+
+
+def test_to_ascii_header_value_keeps_ascii_and_falls_back_for_unicode() -> None:
+    """HTTP header 只保留 ASCII，避免 httpx 編碼中文 header 失敗。"""
+
+    assert to_ascii_header_value("Facebook group match", fallback="fallback") == (
+        "Facebook group match"
+    )
+    assert to_ascii_header_value("Facebook 監視命中", fallback="fallback") == "fallback"
+
+
+def test_send_desktop_notification_uses_powershell_balloon_tip(monkeypatch: Any) -> None:
+    """desktop sender 參考 hotel_price_watch 的 PowerShell balloon tip 作法。"""
+
+    calls: list[list[str]] = []
+
+    def fake_runner(command: list[str]) -> None:
+        """記錄命令，避免測試真的發桌面通知。"""
+
+        calls.append(command)
+
+    monkeypatch.setattr("sys.platform", "win32")
+    result = send_desktop_notification(
+        "Facebook group match",
+        "作者: O'Neil",
+        command_runner=fake_runner,
+    )
+
+    assert result.ok
+    assert result.message == "desktop_sent"
+    command = calls[0]
+    assert command[:3] == ["powershell", "-NoProfile", "-Command"]
+    assert "System.Windows.Forms.NotifyIcon" in command[3]
+    assert "O''Neil" in command[3]
+
+
+def test_build_desktop_notification_command_escapes_single_quotes() -> None:
+    """PowerShell single-quoted string 會轉義單引號。"""
+
+    command = build_desktop_notification_command(title="A'B", message="C'D")
+
+    assert "$notify.BalloonTipTitle = 'A''B';" in command[3]
+    assert "$notify.BalloonTipText = 'C''D';" in command[3]
+
+
+def test_send_discord_notification_matches_userscript_webhook_payload(
+    monkeypatch: Any,
+) -> None:
+    """Discord sender 送 JSON content，並保留 userscript 的長度上限。"""
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(
+        url: str,
+        *,
+        json: dict[str, str],
+        headers: dict[str, str],
+        timeout: int,
+    ) -> httpx.Response:
+        """記錄送出參數，避免測試真的呼叫 Discord。"""
+
+        calls.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return httpx.Response(204)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = send_discord_notification(
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        "Facebook group match",
+        "社團: 測試社團",
+    )
+
+    assert result.ok
+    assert result.status_code == 204
+    assert result.message == "discord_sent"
+    assert calls[0]["url"] == "https://discord.com/api/webhooks/example"
+    assert calls[0]["json"]["username"] == "facebook_monitor_py"
+    assert calls[0]["json"]["content"] == "Facebook group match\n社團: 測試社團"
+    assert calls[0]["headers"]["Accept"] == "*/*"
+
+
+def test_truncate_discord_content_uses_conservative_limit() -> None:
+    """Discord content 會限制長度，避免超過 webhook 上限。"""
+
+    content = truncate_discord_content("x" * 2000, limit=20)
+
+    assert content == "x" * 17 + "..."

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Facebook Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Facebook Monitor</h1>
+        <p>本機 target 管理與社團層級設定</p>
+      </div>
+      <nav class="top-actions">
+        <span class="scheduler-status {% if scheduler_state.running %}running{% else %}stopped{% endif %}">
+          背景掃描服務{% if scheduler_state.running %} · 執行中{% else %} · 已停止{% endif %} · {{ scheduler_state.mode_label }}
+        </span>
+        {% if scheduler_state.running %}
+          <span class="scheduler-diagnostics">
+            running={{ scheduler_state.current_running_count }} · queued={{ scheduler_state.current_queued_count }} · slots={{ scheduler_state.max_concurrent_scans }} · pages={{ scheduler_state.page_pool_size }} · opened={{ scheduler_state.last_opened_page_count }} · reused={{ scheduler_state.last_reused_page_count }} · closed={{ scheduler_state.last_closed_page_count }} · browser={% if scheduler_state.resident_browser_alive %}alive{% else %}down{% endif %}
+          </span>
+        {% endif %}
+        <a class="button" href="/settings">設定{% if profile_active %} · 開啟中{% endif %}</a>
+        <a class="button primary" href="/targets/new">新增</a>
+      </nav>
+    </header>
+
+    {% if message %}
+      <div class="notice success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="notice error">{{ error }}</div>
+    {% endif %}
+    {% if scheduler_state.last_error %}
+      <div class="notice error">自動掃描錯誤：{{ scheduler_state.last_error }}</div>
+    {% endif %}
+
+    {% if not rows %}
+      <section class="empty">
+        <h2>目前沒有 target</h2>
+        <p>請先使用 console 的「新增/保存社團 target」建立社團。</p>
+      </section>
+    {% endif %}
+
+    <section class="target-list">
+      {% for row in rows %}
+        <article class="target" id="target-{{ row.target.id }}">
+          <div class="target-header">
+            <div>
+              <h2>{{ row.display_name }}</h2>
+              <p>{{ row.kind_label }} · {{ row.target_identity_label }}</p>
+              <dl class="target-meta">
+                <div>
+                  <dt>最近掃描</dt>
+                  <dd>{{ row.latest_scan_label }} · {{ row.latest_scan_summary }}</dd>
+                </div>
+                {% if row.latest_error_label %}
+                  <div>
+                    <dt>最近錯誤</dt>
+                    <dd>{{ row.latest_failed_scan_summary }}</dd>
+                  </div>
+                {% endif %}
+                <div>
+                  <dt>最近通知</dt>
+                  <dd>{{ row.latest_notification_label }}</dd>
+                </div>
+              </dl>
+            </div>
+            <span class="status {{ row.status_class }}">{{ row.status_label }}</span>
+          </div>
+          {% if row.runtime_error %}
+            <div class="runtime-error">{{ row.runtime_error }}</div>
+          {% endif %}
+          {% if row.runtime_skip_reason %}
+            <div class="runtime-note">{{ row.runtime_skip_reason }}</div>
+          {% endif %}
+          {% if queued_positions.get(row.target.id) %}
+            <div class="runtime-note">queue_position={{ queued_positions.get(row.target.id) }}</div>
+          {% endif %}
+
+          <div class="target-body">
+            <div class="target-settings">
+              <form class="config-form" method="post" action="/targets/{{ row.target.id }}/config">
+                <input type="hidden" name="return_to" value="#target-{{ row.target.id }}">
+                <label>
+                  Include keywords
+                  <textarea name="include_keywords" rows="2">{{ row.include_text }}</textarea>
+                </label>
+                <label>
+                  Exclude keywords
+                  <textarea name="exclude_keywords" rows="2">{{ row.exclude_text }}</textarea>
+                </label>
+                <div class="form-grid">
+                  <label>
+                    Scan interval sec
+                    <input name="fixed_refresh_sec" type="number" min="1" value="{{ row.fixed_refresh_value }}">
+                  </label>
+                  <label>
+                    Max items
+                    <input name="max_items_per_scan" type="number" min="1" max="10" value="{{ row.config.max_items_per_scan }}">
+                  </label>
+                  <label class="checkbox">
+                    <input name="auto_load_more" type="checkbox" {% if row.config.auto_load_more %}checked{% endif %}>
+                    自動載入更多
+                  </label>
+                  <label class="checkbox">
+                    <input name="auto_adjust_sort" type="checkbox" {% if row.config.auto_adjust_sort %}checked{% endif %}>
+                    自動調整最新排序
+                  </label>
+                  <label class="checkbox">
+                    <input name="enable_desktop_notification" type="checkbox" {% if row.config.enable_desktop_notification %}checked{% endif %}>
+                    啟用桌面通知
+                  </label>
+                  <label class="checkbox">
+                    <input name="enable_ntfy" type="checkbox" {% if row.config.enable_ntfy %}checked{% endif %}>
+                    啟用 ntfy 通知
+                  </label>
+                  <label>
+                    ntfy topic
+                    <input name="ntfy_topic" type="text" value="{{ row.config.ntfy_topic }}">
+                  </label>
+                  <label class="checkbox">
+                    <input name="enable_discord_notification" type="checkbox" {% if row.config.enable_discord_notification %}checked{% endif %}>
+                    啟用 Discord 通知
+                  </label>
+                  <label>
+                    Discord webhook URL
+                    <input name="discord_webhook" type="text" value="{{ row.config.discord_webhook }}">
+                  </label>
+                </div>
+                <div class="actions">
+                  <button type="submit">保存設定</button>
+                </div>
+              </form>
+
+              <div class="actions">
+                {% if row.scanning_supported %}
+                  <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}">
+                    <input type="hidden" name="return_to" value="#target-{{ row.target.id }}">
+                    <button type="submit">{{ row.monitoring_button_label }}</button>
+                  </form>
+                {% else %}
+                  <span class="muted-text">尚未接上掃描流程</span>
+                {% endif %}
+                <form method="post" action="/targets/{{ row.target.id }}/delete" onsubmit="return confirm('刪除這個 target？');">
+                  <input type="hidden" name="return_to" value="#target-{{ row.target.id }}">
+                  <button class="danger" type="submit">刪除</button>
+                </form>
+              </div>
+
+              <details class="debug-details scan-debug-details">
+                <summary>掃描診斷</summary>
+                <div class="debug-summary">{{ row.latest_scan_diagnostics_summary }}</div>
+                <textarea class="debug-copy-source" readonly rows="10">{{ row.latest_scan_diagnostics_text }}</textarea>
+                <button class="debug-copy-button" type="button">複製掃描診斷</button>
+              </details>
+            </div>
+
+            <aside class="match-panel">
+              <div class="latest-items-panel">
+                <h3>{{ row.latest_items_heading }}</h3>
+                {% if row.latest_scan_items %}
+                  <ol class="match-list">
+                    {% for scan_item in row.latest_scan_items %}
+                      <li>
+                        <div class="match-meta">
+                          <span>{{ scan_item.author_label }}</span>
+                          <span>{{ scan_item.match_label }}</span>
+                        </div>
+                        {% if scan_item.preview_text %}
+                          <p>{{ scan_item.preview_text }}</p>
+                        {% endif %}
+                        {% if scan_item.item.permalink %}
+                          <a href="{{ scan_item.item.permalink }}" target="_blank" rel="noreferrer">{{ row.latest_item_link_label }}</a>
+                        {% else %}
+                          <span class="missing-link">未取得連結</span>
+                        {% endif %}
+                        <details class="debug-details">
+                          <summary>除錯</summary>
+                          <div class="debug-summary">{{ scan_item.debug_summary }}</div>
+                          <textarea class="debug-copy-source" readonly rows="8">{{ scan_item.debug_text }}</textarea>
+                          <button class="debug-copy-button" type="button">複製除錯資訊</button>
+                        </details>
+                      </li>
+                    {% endfor %}
+                  </ol>
+                {% else %}
+                  <p class="muted-text">尚無掃描紀錄</p>
+                {% endif %}
+              </div>
+            </aside>
+          </div>
+        </article>
+      {% endfor %}
+    </section>
+  </main>
+  <script id="dashboard-revision" type="application/json">{{ dashboard_revision.revision | tojson }}</script>
+  <script>
+    (() => {
+      let formDirty = false;
+      let pendingRefresh = false;
+      const scrollKey = "facebookMonitor.dashboard.scrollY";
+      const scrollSavedAtKey = "facebookMonitor.dashboard.scrollSavedAt";
+      const suppressUntilKey = "facebookMonitor.dashboard.suppressReloadUntil";
+      const revisionNode = document.getElementById("dashboard-revision");
+      let currentRevision = revisionNode ? JSON.parse(revisionNode.textContent || "\"\"") : "";
+      const editableSelector = "input, textarea, select";
+      const savedScrollY = Number(sessionStorage.getItem(scrollKey) || "");
+      const savedAt = Number(sessionStorage.getItem(scrollSavedAtKey) || "");
+      if (Number.isFinite(savedScrollY) && savedAt && Date.now() - savedAt < 10000) {
+        window.requestAnimationFrame(() => window.scrollTo(0, savedScrollY));
+      }
+      document.querySelectorAll(editableSelector).forEach((node) => {
+        node.addEventListener("input", () => {
+          formDirty = true;
+        });
+      });
+      document.querySelectorAll("form").forEach((form) => {
+        form.addEventListener("submit", () => {
+          sessionStorage.setItem(scrollKey, String(window.scrollY));
+          sessionStorage.setItem(scrollSavedAtKey, String(Date.now()));
+          sessionStorage.setItem(suppressUntilKey, String(Date.now() + 5000));
+        });
+      });
+      const shouldDelayRefresh = () => {
+        const active = document.activeElement;
+        const editing = active && active.matches && active.matches(editableSelector);
+        const suppressUntil = Number(sessionStorage.getItem(suppressUntilKey) || "0");
+        return formDirty || editing || Date.now() < suppressUntil;
+      };
+      const refreshWhenSafe = () => {
+        if (shouldDelayRefresh()) {
+          pendingRefresh = true;
+          return;
+        }
+        sessionStorage.setItem(scrollKey, String(window.scrollY));
+        sessionStorage.setItem(scrollSavedAtKey, String(Date.now()));
+        window.location.reload();
+      };
+      const pollRevision = async () => {
+        try {
+          const response = await fetch("/api/dashboard-revision", { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          if (payload.revision && payload.revision !== currentRevision) {
+            currentRevision = payload.revision;
+            refreshWhenSafe();
+          }
+        } catch (error) {
+          return;
+        }
+      };
+      window.setInterval(pollRevision, 3000);
+      window.setInterval(() => {
+        if (pendingRefresh && !shouldDelayRefresh()) {
+          pendingRefresh = false;
+          refreshWhenSafe();
+        }
+      }, 1000);
+      window.setInterval(() => {
+        const active = document.activeElement;
+        const editing = active && active.matches && active.matches(editableSelector);
+        if (!formDirty && !editing && !pendingRefresh) {
+          pollRevision();
+        }
+      }, 15000);
+      document.querySelectorAll(".debug-copy-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const defaultText = button.dataset.defaultText || button.textContent;
+          const source = button.parentElement.querySelector(".debug-copy-source");
+          const text = source ? source.value : "";
+          try {
+            await navigator.clipboard.writeText(text);
+            button.textContent = "已複製";
+          } catch (error) {
+            if (source) {
+              source.focus();
+              source.select();
+            }
+            button.textContent = "請手動複製";
+          }
+          window.setTimeout(() => {
+            if (document.body.contains(button)) {
+              button.textContent = defaultText;
+            }
+          }, 1500);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

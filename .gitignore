@@ -1,6 +1,8 @@
 # Local browser/session data
 /data/profiles/*
 !/data/profiles/.gitkeep
+/data/runtime/*
+!/data/runtime/.gitkeep
 
 # Runtime logs
 /logs/*
@@ -8,10 +10,14 @@
 
 # Python
 __pycache__/
+.codex/
+.pytest_tmp*/
+.pytest_run*/
 *.py[cod]
 *.pyo
 *.pyd
 .venv/
+venv/
 .env
 .env.*
 !.env.example
@@ -20,11 +26,22 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .coverage
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.local
 coverage.xml
 htmlcov/
 build/
 dist/
 *.egg-info/
+tmp/
+temp/
+debug/
+snapshots/
+output/
+review*
 
 # Playwright
 /playwright-report/

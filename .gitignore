@@ -1,0 +1,31 @@
+# Local browser/session data
+/data/profiles/*
+!/data/profiles/.gitkeep
+
+# Runtime logs
+/logs/*
+!/logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+.env
+.env.*
+!.env.example
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Playwright
+/playwright-report/
+/test-results/

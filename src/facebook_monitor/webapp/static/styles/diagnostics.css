@@ -1,0 +1,155 @@
+/* 08 diagnostics / debug */
+.debug-details {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+
+.scan-debug-details {
+  margin-top: 0;
+}
+
+.debug-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.debug-summary {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.debug-copy-source {
+  min-height: 150px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.debug-copy-button {
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.muted-text {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.runtime-error {
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.runtime-note {
+  border: 1px solid var(--border-soft);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+textarea,
+input[type="text"],
+input[type="number"],
+select {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+textarea:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  outline: 3px solid rgb(31 111 235 / 14%);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.settings-summary {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 12px 0 0;
+}
+
+.compact-config-form .settings-summary {
+  border-top: 1px solid var(--border-soft);
+  display: grid;
+  gap: 12px;
+  margin-top: 2px;
+  padding-top: 14px;
+}
+
+.settings-summary-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.settings-summary-icon {
+  align-items: center;
+  color: var(--text-soft);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.settings-summary-icon svg {
+  fill: none;
+  height: 100%;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 100%;
+}
+
+.settings-summary-copy {
+  color: var(--text);
+  min-width: 0;
+}
+
+.settings-summary-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.settings-summary-value {
+  color: var(--text);
+  font-weight: 400;
+  white-space: nowrap;
+}

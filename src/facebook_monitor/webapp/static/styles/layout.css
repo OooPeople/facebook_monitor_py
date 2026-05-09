@@ -1,0 +1,119 @@
+/* 02 layout shell / topbar */
+.shell {
+  min-height: 100vh;
+  padding: 24px 28px 56px;
+}
+
+.shell.has-sidebar {
+  margin-left: var(--sidebar-width);
+}
+
+.topbar {
+  width: min(100%, 1060px);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  margin: 0 auto 22px;
+}
+
+.top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.top-actions form {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+.topbar h1 {
+  font-size: 28px;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.page-title p,
+.target-header p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notice,
+.empty,
+.target {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.notice.success {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+  background: var(--success-bg);
+}
+
+.notice.error {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: var(--danger-bg);
+}
+
+.toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(31 41 51 / 14%);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  pointer-events: auto;
+}
+
+.toast.success {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+  background: var(--success-bg);
+}
+
+.toast.error {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: var(--danger-bg);
+}
+
+.target-list {
+  width: min(100%, 1060px);
+  display: grid;
+  gap: 16px;
+  margin-inline: auto;
+  min-width: 0;
+}
+
+.dashboard-layout {
+  display: block;
+}

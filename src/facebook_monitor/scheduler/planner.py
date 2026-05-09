@@ -1,6 +1,6 @@
 """Target-level independent schedule planner。
 
-職責：在 scheduler / resident worker 內維護每個 target 自己的下一次到期時間，
+職責：在 scheduler / resident main worker 內維護每個 target 自己的下一次到期時間，
 避免整輪序列化時用「上一輪最後完成時間」扭曲單一 target 的掃描週期語義。
 """
 

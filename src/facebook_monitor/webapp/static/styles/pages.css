@@ -1,0 +1,187 @@
+/* 03 page-specific forms */
+.new-target-shell .topbar,
+.new-target-card,
+.settings-shell .topbar,
+.settings-card {
+  width: min(100%, 920px);
+}
+
+.new-target-card {
+  margin-inline: auto;
+  overflow: hidden;
+  padding: 0;
+}
+
+.new-target-form {
+  display: grid;
+  gap: 0;
+}
+
+.new-target-section {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.new-target-section + .new-target-section,
+.new-target-actions {
+  border-top: 1px solid var(--border-soft);
+}
+
+.new-target-section h2 {
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.new-target-form label {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.new-target-form input[type="text"],
+.new-target-form input[type="number"] {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.new-target-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.new-target-two-column {
+  display: grid;
+  gap: 14px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-target-scan-row {
+  align-items: end;
+  display: grid;
+  gap: 14px 18px;
+  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr);
+}
+
+.new-target-full-row {
+  grid-column: 1 / -1;
+}
+
+.new-target-notification-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.new-target-notification-toggles {
+  display: grid;
+  gap: 12px 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.new-target-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 16px 20px;
+}
+
+.settings-card {
+  margin-inline: auto;
+}
+
+.settings-card + .settings-card {
+  margin-top: 16px;
+}
+
+.settings-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.settings-card-title {
+  min-width: 0;
+}
+
+.settings-card-title h2 {
+  font-size: 18px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.settings-card-title p {
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.settings-card-head .status {
+  align-self: flex-start;
+  display: inline-flex;
+  justify-self: start;
+  width: max-content;
+}
+
+.settings-action-row,
+.settings-notification-actions,
+.settings-action-cluster {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-notification-form {
+  gap: 14px;
+}
+
+.settings-notification-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-notification-actions {
+  border-top: 1px solid var(--border-soft);
+  justify-content: space-between;
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.settings-action-cluster {
+  justify-content: flex-end;
+}
+
+.settings-action-cluster .inline-feedback:not(.is-visible) {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .new-target-two-column,
+  .new-target-notification-toggles,
+  .new-target-scan-row {
+    grid-template-columns: 1fr;
+  }
+
+  .new-target-section {
+    padding: 16px;
+  }
+
+  .new-target-actions {
+    align-items: stretch;
+    display: grid;
+    padding: 14px 16px;
+  }
+
+  .settings-card-head,
+  .settings-action-row,
+  .settings-notification-actions,
+  .settings-action-cluster {
+    align-items: stretch;
+    display: grid;
+  }
+}

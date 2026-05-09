@@ -38,7 +38,7 @@ dist/
 *.egg-info/
 tmp/
 temp/
-debug/
+/debug/
 snapshots/
 output/
 review*

@@ -1,0 +1,25 @@
+<dialog class="hit-records-modal" data-hit-records-modal="{{ row.target.id }}" aria-labelledby="hit-records-title-{{ row.target.id }}">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3 id="hit-records-title-{{ row.target.id }}">查看紀錄</h3>
+        <p>{{ row.display_name }} · <span data-hit-records-total>命中紀錄 {{ row.hit_record_total_count }} 筆</span></p>
+      </div>
+      <div class="modal-header-actions">
+        <button class="danger" type="button" data-clear-hit-records data-target-id="{{ row.target.id }}">清空紀錄</button>
+        <button class="icon-button" type="button" data-close-hit-records aria-label="關閉紀錄">×</button>
+      </div>
+    </header>
+    <div class="modal-body">
+      <p class="hit-records-page-status muted-text" data-hit-records-page-status>顯示最近紀錄</p>
+      <div class="hit-records-list" data-hit-records-list>
+        <p class="muted-text">載入中</p>
+      </div>
+      <button class="button hit-records-load-more" type="button" data-hit-records-load-more data-target-id="{{ row.target.id }}" hidden>載入更多</button>
+    </div>
+    <footer class="modal-footer">
+      <p class="muted-text">清空紀錄不會刪除 target，也不會清除最近掃描結果或設定。</p>
+      <button type="button" data-close-hit-records>關閉</button>
+    </footer>
+  </div>
+</dialog>

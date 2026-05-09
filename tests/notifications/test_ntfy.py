@@ -140,6 +140,87 @@ def test_send_discord_notification_matches_userscript_webhook_payload(
     assert calls[0]["headers"]["Accept"] == "*/*"
 
 
+def test_send_discord_notification_retries_short_rate_limit(
+    monkeypatch: Any,
+) -> None:
+    """Discord 429 有短 Retry-After 時，sender 會等待後重送一次。"""
+
+    calls: list[int] = []
+    sleeps: list[float] = []
+
+    def fake_post(
+        url: str,
+        *,
+        json: dict[str, str],
+        headers: dict[str, str],
+        timeout: int,
+    ) -> httpx.Response:
+        """第一次回 rate limit，第二次成功。"""
+
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            return httpx.Response(
+                429,
+                json={"message": "You are being rate limited.", "retry_after": 0.25},
+            )
+        return httpx.Response(204)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("facebook_monitor.notifications.discord.time.sleep", sleeps.append)
+
+    result = send_discord_notification(
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        "Facebook group match",
+        "社團: 測試社團",
+    )
+
+    assert result.ok
+    assert result.status_code == 204
+    assert result.message == "discord_sent"
+    assert calls == [1, 2]
+    assert sleeps == [0.25]
+
+
+def test_send_discord_notification_reports_rate_limit_details(
+    monkeypatch: Any,
+) -> None:
+    """Discord 429 超過等待上限時，訊息保留 retry-after 與 Discord body 摘要。"""
+
+    def fake_post(
+        url: str,
+        *,
+        json: dict[str, str],
+        headers: dict[str, str],
+        timeout: int,
+    ) -> httpx.Response:
+        """回傳不可立即等待的 Discord rate limit。"""
+
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "30"},
+            json={
+                "message": "You are being rate limited.",
+                "retry_after": 30,
+                "global": False,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = send_discord_notification(
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        "Facebook group match",
+        "社團: 測試社團",
+    )
+
+    assert not result.ok
+    assert result.status_code == 429
+    assert result.message == (
+        "discord_failed:429 retry_after=30s global=false "
+        "message=You are being rate limited."
+    )
+
+
 def test_truncate_discord_content_uses_conservative_limit() -> None:
     """Discord content 會限制長度，避免超過 webhook 上限。"""
 

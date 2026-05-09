@@ -1,0 +1,278 @@
+/* 06 settings modal / 07 hit records modal */
+.settings-modal,
+.hit-records-modal {
+  border: 0;
+  border-radius: var(--radius-md);
+  box-shadow: 0 20px 60px rgb(31 41 51 / 22%);
+  color: inherit;
+  max-height: calc(100vh - 32px);
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 0;
+  width: min(640px, calc(100vw - 32px));
+}
+
+.hit-records-modal {
+  max-width: min(980px, calc(100vw - 32px));
+  width: min(980px, calc(100vw - 32px));
+}
+
+.settings-modal::backdrop,
+.hit-records-modal::backdrop {
+  background: rgb(31 41 51 / 34%);
+}
+
+.modal-shell {
+  background: var(--surface);
+  display: grid;
+  max-height: calc(100vh - 32px);
+  grid-template-rows: auto auto auto;
+}
+
+.modal-header,
+.modal-footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.modal-header {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.modal-header h3 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.modal-header p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.modal-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.modal-body {
+  display: grid;
+  gap: 10px;
+  overflow-y: visible;
+  padding: 18px;
+}
+
+.hit-records-modal .modal-shell {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.hit-records-modal .modal-body {
+  max-height: min(640px, calc(100vh - 170px));
+  overflow-y: auto;
+}
+
+.hit-records-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hit-records-page-status {
+  margin: 0;
+}
+
+.hit-records-load-more {
+  justify-self: center;
+  margin-top: 4px;
+}
+
+.hit-record-row {
+  align-items: stretch;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-subtle);
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 44px minmax(180px, 0.32fr) minmax(0, 1fr) max-content;
+  padding: 12px;
+}
+
+.hit-record-sequence {
+  align-items: center;
+  background: var(--surface-muted);
+  border-radius: 999px;
+  color: var(--text-soft);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  justify-content: center;
+  min-width: 34px;
+  padding: 3px 8px;
+  align-self: start;
+}
+
+.hit-record-fields {
+  align-content: start;
+  align-self: stretch;
+  border-right: 1px solid var(--border-soft);
+  padding-right: 18px;
+}
+
+.hit-record-content {
+  align-content: start;
+  align-self: start;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hit-record-content span {
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hit-record-row p {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.hit-record-actions {
+  align-self: center;
+  display: grid;
+  justify-items: end;
+}
+
+.hit-record-row a {
+  font-size: 13px;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.modal-section {
+  display: grid;
+  gap: 12px;
+}
+
+.modal-section-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.modal-section h4 {
+  font-size: 16px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.settings-modal label {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.settings-modal input[type="text"],
+.settings-modal input[type="number"] {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.setting-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.scan-toggle-grid {
+  display: grid;
+  gap: 12px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.scan-toggle-grid .checkbox {
+  align-items: center;
+  min-height: 38px;
+}
+
+.refresh-mode-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.option-card {
+  align-items: center;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  min-height: 66px;
+  padding: 12px;
+}
+
+.option-card strong,
+.option-card small {
+  display: block;
+}
+
+.option-card strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.option-card small {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.modal-footer {
+  border-top: 1px solid var(--border-soft);
+  justify-content: space-between;
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refresh-settings {
+  display: grid;
+  gap: 6px;
+  align-self: start;
+}
+
+.field-caption {
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: center;
+}
+

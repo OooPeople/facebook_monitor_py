@@ -1,0 +1,69 @@
+<dialog class="settings-modal" data-settings-modal aria-labelledby="settings-title-{{ row.target.id }}">
+  {% set config_form_id = "config-" ~ row.target.id %}
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3 id="settings-title-{{ row.target.id }}">設定</h3>
+        <p>{{ row.display_name }}</p>
+      </div>
+      <button class="icon-button" type="button" data-close-settings aria-label="關閉設定">×</button>
+    </header>
+    <div class="modal-body">
+      <section class="modal-section modal-section-card">
+        <h4>掃描設定</h4>
+        <div class="setting-stack">
+          <div class="scan-toggle-grid">
+            <label class="checkbox">
+              <input name="auto_load_more" type="checkbox" form="{{ config_form_id }}" {% if row.config.auto_load_more %}checked{% endif %}>
+              自動載入更多項目
+            </label>
+            <label class="checkbox">
+              <input name="auto_adjust_sort" type="checkbox" form="{{ config_form_id }}" {% if row.config.auto_adjust_sort %}checked{% endif %}>
+              開始後自動調整成最新排序
+            </label>
+          </div>
+          <label>
+            目標掃描項目數（最多 10 筆）
+            <input name="max_items_per_scan" type="number" min="1" max="10" value="{{ row.config.max_items_per_scan }}" form="{{ config_form_id }}">
+          </label>
+        </div>
+      </section>
+      <section class="modal-section modal-section-card">
+        <h4>刷新設定</h4>
+        {% include "_refresh_settings_fields.html" %}
+      </section>
+      <section class="modal-section modal-section-card">
+        <h4>通知設定</h4>
+        <div class="setting-stack">
+          <label class="checkbox">
+            <input name="enable_desktop_notification" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_desktop_notification %}checked{% endif %}>
+            桌面通知
+          </label>
+          <label class="checkbox">
+            <input name="enable_ntfy" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_ntfy %}checked{% endif %}>
+            ntfy
+          </label>
+          <label>
+            ntfy topic
+            <input name="ntfy_topic" type="text" value="{{ row.config.ntfy_topic }}" form="{{ config_form_id }}">
+          </label>
+          <label class="checkbox">
+            <input name="enable_discord_notification" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_discord_notification %}checked{% endif %}>
+            Discord webhook
+          </label>
+          <label>
+            Discord webhook URL
+            <input name="discord_webhook" type="text" value="{{ row.config.discord_webhook }}" form="{{ config_form_id }}">
+          </label>
+        </div>
+      </section>
+    </div>
+    <footer class="modal-footer">
+      <button type="submit" form="{{ config_form_id }}" formaction="/targets/{{ row.target.id }}/notifications/test" formmethod="post">測試通知</button>
+      <div class="modal-footer-actions">
+        <button type="button" data-close-settings>取消</button>
+        <button class="button primary" type="submit" form="{{ config_form_id }}">儲存設定</button>
+      </div>
+    </footer>
+  </div>
+</dialog>

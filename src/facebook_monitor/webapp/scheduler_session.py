@@ -12,42 +12,37 @@ from enum import StrEnum
 from pathlib import Path
 from time import monotonic
 from threading import Event
+from threading import RLock
 from threading import Thread
 from typing import Protocol
 
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.scheduler.loop import SchedulerOptions
-from facebook_monitor.scheduler.loop import run_scheduler_loop
-from facebook_monitor.worker.async_resident import run_async_resident_worker_loop_sync
-from facebook_monitor.worker.resident import ResidentCycleSummary
-from facebook_monitor.worker.resident import ResidentWorkerOptions
+from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
+from facebook_monitor.worker.resident_shared import ResidentCycleSummary
+from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 
-class AutoScanMode(StrEnum):
-    """Web UI 自動掃描執行模式。"""
+class SchedulerLifecycleState(StrEnum):
+    """Web UI 背景 scheduler 的 thread lifecycle。"""
 
-    ONE_SHOT = "one_shot"
-    RESIDENT = "resident"
-
-
-class SchedulerRunner(Protocol):
-    """定義背景 scheduler 可注入的單輪執行函式。"""
-
-    def __call__(self, options: SchedulerOptions) -> object:
-        """執行 scheduler 掃描。"""
+    STOPPED = "stopped"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    ERROR = "error"
 
 
-class ResidentRunner(Protocol):
-    """定義背景 resident worker 可注入的執行函式。"""
+class ResidentMainRunner(Protocol):
+    """定義背景 resident main worker 可注入的執行函式。"""
 
     def __call__(
         self,
-        options: ResidentWorkerOptions,
+        options: ResidentRuntimeOptions,
         stop_event: Event,
         on_cycle: Callable[[ResidentCycleSummary], None],
         sleep_fn: Callable[[float], object] | None = None,
     ) -> object:
-        """執行 resident worker。"""
+        """執行 resident main worker。"""
 
 
 @dataclass(frozen=True)
@@ -56,7 +51,6 @@ class SchedulerSessionOptions:
 
     db_path: Path
     profile_dir: Path
-    auto_scan_mode: AutoScanMode = AutoScanMode.RESIDENT
     interval_seconds: float = 60
     scheduler_tick_seconds: float = 2
     max_concurrent_scans: int = 2
@@ -72,7 +66,7 @@ class SchedulerSessionState:
 
     running: bool
     interval_seconds: float
-    auto_scan_mode: AutoScanMode = AutoScanMode.RESIDENT
+    lifecycle_state: SchedulerLifecycleState = SchedulerLifecycleState.STOPPED
     last_cycle_at: str = ""
     last_error: str = ""
     max_concurrent_scans: int = 0
@@ -91,9 +85,7 @@ class SchedulerSessionState:
     def mode_label(self) -> str:
         """回傳 UI 顯示的自動掃描模式名稱。"""
 
-        if self.auto_scan_mode == AutoScanMode.RESIDENT:
-            return "常駐"
-        return "一次性"
+        return "常駐"
 
 
 class BackgroundSchedulerManager:
@@ -102,17 +94,16 @@ class BackgroundSchedulerManager:
     def __init__(
         self,
         *,
-        runner: SchedulerRunner | None = None,
-        resident_runner: ResidentRunner | None = None,
+        resident_main_runner: ResidentMainRunner | None = None,
         wait_fn: Callable[[Event, float], bool] | None = None,
     ) -> None:
-        self.runner = runner or _run_one_scheduler_cycle
-        self.resident_runner = resident_runner or _run_resident_worker
+        self.resident_main_runner = resident_main_runner or _run_resident_main
         self.wait_fn = wait_fn or _wait_for_stop
         self.thread: Thread | None = None
         self.stop_event = Event()
         self.wake_event = Event()
         self.options: SchedulerSessionOptions | None = None
+        self.lifecycle_state = SchedulerLifecycleState.STOPPED
         self.last_cycle_at = ""
         self.last_error = ""
         self.current_running_count = 0
@@ -125,116 +116,121 @@ class BackgroundSchedulerManager:
         self.last_reused_page_count = 0
         self.last_closed_page_count = 0
         self.resident_browser_alive = False
+        self._lock = RLock()
 
     def is_running(self) -> bool:
         """回傳背景 scheduler thread 是否仍在運作。"""
 
-        return bool(self.thread and self.thread.is_alive())
+        with self._lock:
+            return self._is_thread_alive_locked()
 
     def state(self) -> SchedulerSessionState:
         """回傳 UI 可直接使用的背景 scheduler 狀態。"""
 
-        return SchedulerSessionState(
-            running=self.is_running(),
-            interval_seconds=self.options.interval_seconds if self.options else 0,
-            auto_scan_mode=self.options.auto_scan_mode if self.options else AutoScanMode.RESIDENT,
-            last_cycle_at=self.last_cycle_at,
-            last_error=self.last_error,
-            max_concurrent_scans=self.options.max_concurrent_scans if self.options else 0,
-            current_running_count=self.current_running_count,
-            current_queued_count=self.current_queued_count,
-            queue_length=self.queue_length,
-            queued_target_ids=self.queued_target_ids,
-            worker_ids=self.worker_ids,
-            page_pool_size=self.page_pool_size,
-            last_opened_page_count=self.last_opened_page_count,
-            last_reused_page_count=self.last_reused_page_count,
-            last_closed_page_count=self.last_closed_page_count,
-            resident_browser_alive=self.resident_browser_alive,
-        )
+        with self._lock:
+            running = self._is_thread_alive_locked() or (
+                self.lifecycle_state == SchedulerLifecycleState.STOPPING
+            )
+            return SchedulerSessionState(
+                running=running,
+                interval_seconds=self.options.interval_seconds if self.options else 0,
+                lifecycle_state=self.lifecycle_state,
+                last_cycle_at=self.last_cycle_at,
+                last_error=self.last_error,
+                max_concurrent_scans=self.options.max_concurrent_scans if self.options else 0,
+                current_running_count=self.current_running_count,
+                current_queued_count=self.current_queued_count,
+                queue_length=self.queue_length,
+                queued_target_ids=self.queued_target_ids,
+                worker_ids=self.worker_ids,
+                page_pool_size=self.page_pool_size,
+                last_opened_page_count=self.last_opened_page_count,
+                last_reused_page_count=self.last_reused_page_count,
+                last_closed_page_count=self.last_closed_page_count,
+                resident_browser_alive=self.resident_browser_alive,
+            )
 
     def start(self, options: SchedulerSessionOptions) -> None:
         """啟動背景自動掃描；模式或設定改變時會重啟背景 thread。"""
 
-        if self.is_running():
-            if self.options == options:
-                return
+        should_stop_existing = False
+        with self._lock:
+            if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
+                raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
+            if self._is_thread_alive_locked():
+                if self.options == options:
+                    return
+                should_stop_existing = True
+        if should_stop_existing:
             self.stop()
 
-        self.options = options
-        self.stop_event = Event()
-        self.wake_event = Event()
-        self.resident_browser_alive = False
-        self.thread = Thread(
-            target=self._run_loop,
-            name="facebook-monitor-scheduler",
-            daemon=True,
-        )
-        self.thread.start()
+        with self._lock:
+            if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
+                raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
+            self.options = options
+            self.stop_event = Event()
+            self.wake_event = Event()
+            self.resident_browser_alive = False
+            self.lifecycle_state = SchedulerLifecycleState.STARTING
+            self.thread = Thread(
+                target=self._run_loop,
+                name="facebook-monitor-scheduler",
+                daemon=True,
+            )
+            self.thread.start()
 
     def stop(self, timeout_seconds: float = 5) -> None:
         """停止背景自動掃描，不影響 target 設定與 seen/history。"""
 
-        self.stop_event.set()
-        self.wake_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=timeout_seconds)
-        if not self.is_running():
-            self.resident_browser_alive = False
+        with self._lock:
+            thread = self.thread
+            self.lifecycle_state = SchedulerLifecycleState.STOPPING
+            self.stop_event.set()
+            self.wake_event.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout_seconds)
+        with self._lock:
+            if not self._is_thread_alive_locked():
+                self.resident_browser_alive = False
+                self.lifecycle_state = SchedulerLifecycleState.STOPPED
 
     def wake(self) -> None:
         """喚醒背景 scheduler，供 manual-start 立即進入下一輪。"""
 
-        self.wake_event.set()
+        with self._lock:
+            self.wake_event.set()
 
     def _run_loop(self) -> None:
         """背景 thread 主迴圈，依自動掃描模式委派對應 worker。"""
 
-        while not self.stop_event.is_set():
-            options = self.options
-            if options is None:
-                return
-            if options.auto_scan_mode == AutoScanMode.RESIDENT:
+        with self._lock:
+            if self.lifecycle_state == SchedulerLifecycleState.STARTING:
+                self.lifecycle_state = SchedulerLifecycleState.RUNNING
+        try:
+            while not self.stop_event.is_set():
+                options = self.options
+                if options is None:
+                    return
                 self._run_resident_mode(options)
                 return
-
-            self._run_one_shot_mode(options)
-            return
-
-    def _run_one_shot_mode(self, options: SchedulerSessionOptions) -> None:
-        """執行 one-shot scheduler 模式，每個 tick 開關一次 worker context。"""
-
-        while not self.stop_event.is_set():
-            try:
-                self.runner(
-                    SchedulerOptions(
-                        db_path=options.db_path,
-                        profile_dir=options.profile_dir,
-                        interval_seconds=0,
-                        scheduler_tick_seconds=0,
-                        max_concurrent_scans=options.max_concurrent_scans,
-                        scroll_rounds=options.scroll_rounds,
-                        scroll_wait_ms=options.scroll_wait_ms,
-                        scan_timeout_seconds=options.scan_timeout_seconds,
-                        stale_running_after_seconds=options.stale_running_after_seconds,
-                        max_cycles=1,
+        finally:
+            with self._lock:
+                if self.lifecycle_state != SchedulerLifecycleState.STOPPING:
+                    self.lifecycle_state = (
+                        SchedulerLifecycleState.ERROR
+                        if self.last_error
+                        else SchedulerLifecycleState.STOPPED
                     )
-                )
-                self.last_cycle_at = utc_now().isoformat(timespec="seconds")
-                self.last_error = ""
-            except Exception as exc:
-                self.last_error = str(exc)
-
-            if self._wait_for_next_cycle(max(options.scheduler_tick_seconds, 1)):
-                return
+                if not self._is_thread_alive_locked() and self.stop_event.is_set():
+                    self.lifecycle_state = SchedulerLifecycleState.STOPPED
 
     def _run_resident_mode(self, options: SchedulerSessionOptions) -> None:
-        """執行 resident worker 模式，維持同一個 browser context。"""
+        """執行 resident main worker 模式，維持同一個 browser context。"""
 
         while not self.stop_event.is_set():
             try:
-                self.resident_runner(
-                    ResidentWorkerOptions(
+                self.resident_main_runner(
+                    ResidentRuntimeOptions(
                         db_path=options.db_path,
                         profile_dir=options.profile_dir,
                         interval_seconds=options.interval_seconds,
@@ -251,27 +247,30 @@ class BackgroundSchedulerManager:
                 )
                 return
             except Exception as exc:
-                self.last_error = str(exc)
-                self.resident_browser_alive = False
+                with self._lock:
+                    self.last_error = str(exc)
+                    self.resident_browser_alive = False
+                    self.lifecycle_state = SchedulerLifecycleState.ERROR
                 if self.wait_fn(self.stop_event, max(options.scheduler_tick_seconds, 1)):
                     self.wake_event.clear()
                     return
 
     def _record_resident_cycle(self, summary: ResidentCycleSummary) -> None:
-        """記錄 resident worker 已完成一輪掃描。"""
+        """記錄 resident main worker 已完成一輪掃描。"""
 
-        self.last_cycle_at = utc_now().isoformat(timespec="seconds")
-        self.last_error = ""
-        self.current_running_count = summary.running_count
-        self.current_queued_count = summary.queued_count
-        self.queue_length = summary.queue_length
-        self.queued_target_ids = summary.queued_target_ids
-        self.worker_ids = summary.worker_ids
-        self.page_pool_size = summary.page_pool_size
-        self.last_opened_page_count = summary.opened_page_count
-        self.last_reused_page_count = summary.reused_page_count
-        self.last_closed_page_count = summary.closed_page_count
-        self.resident_browser_alive = summary.resident_browser_alive
+        with self._lock:
+            self.last_cycle_at = utc_now().isoformat(timespec="seconds")
+            self.last_error = ""
+            self.current_running_count = summary.running_count
+            self.current_queued_count = summary.queued_count
+            self.queue_length = summary.queue_length
+            self.queued_target_ids = summary.queued_target_ids
+            self.worker_ids = summary.worker_ids
+            self.page_pool_size = summary.page_pool_size
+            self.last_opened_page_count = summary.opened_page_count
+            self.last_reused_page_count = summary.reused_page_count
+            self.last_closed_page_count = summary.closed_page_count
+            self.resident_browser_alive = summary.resident_browser_alive
 
     def _wait_for_next_cycle(self, seconds: float) -> bool:
         """等待下一輪；manual-start wake 可提前結束等待。"""
@@ -288,22 +287,21 @@ class BackgroundSchedulerManager:
                 return True
         return True
 
+    def _is_thread_alive_locked(self) -> bool:
+        """在已持有 lock 時檢查 thread 是否仍存活。"""
 
-def _run_one_scheduler_cycle(options: SchedulerOptions) -> object:
-    """執行一輪 scheduler，避免 manager 直接依賴 loop 細節。"""
-
-    return run_scheduler_loop(options, sleep_fn=lambda _seconds: None)
+        return bool(self.thread and self.thread.is_alive())
 
 
-def _run_resident_worker(
-    options: ResidentWorkerOptions,
+def _run_resident_main(
+    options: ResidentRuntimeOptions,
     stop_event: Event,
     on_cycle: Callable[[ResidentCycleSummary], None],
     sleep_fn: Callable[[float], object] | None = None,
 ) -> object:
-    """執行 resident worker，避免 manager 直接依賴 resident loop 細節。"""
+    """執行 resident main worker，避免 manager 直接依賴 resident loop 細節。"""
 
-    return run_async_resident_worker_loop_sync(
+    return run_resident_main_loop_sync(
         options,
         should_stop=stop_event.is_set,
         on_cycle=on_cycle,

@@ -1,11 +1,11 @@
-"""Phase B interactive target manager tests。"""
+"""Admin target manager tests。"""
 
 from __future__ import annotations
 
-from scripts.phase_b_manage_targets import format_keywords
-from scripts.phase_b_manage_targets import parse_keywords_text
-from scripts.phase_b_manage_targets import parse_yes_no
-from scripts.phase_b_manage_targets import choose_target_action
+from scripts.admin.manage_targets import format_keywords
+from scripts.admin.manage_targets import parse_keywords_text
+from scripts.admin.manage_targets import parse_yes_no
+from scripts.admin.manage_targets import choose_target_action
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:

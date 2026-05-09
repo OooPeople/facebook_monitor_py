@@ -14,9 +14,12 @@ class TargetConfigDefaults:
     """保存 target/group config 的 Python 版預設值。"""
 
     fixed_refresh_sec: int = 60
+    min_refresh_sec: int = 25
+    max_refresh_sec: int = 35
+    jitter_enabled: bool = True
     max_items_per_scan: int = 5
     auto_load_more: bool = True
-    auto_adjust_sort: bool = False
+    auto_adjust_sort: bool = True
     enable_desktop_notification: bool = False
     enable_ntfy: bool = False
     ntfy_topic: str = ""
@@ -25,4 +28,3 @@ class TargetConfigDefaults:
 
 
 PYTHON_TARGET_CONFIG_DEFAULTS = TargetConfigDefaults()
-

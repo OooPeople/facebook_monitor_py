@@ -1,4 +1,4 @@
-"""Phase A 核心 domain models。
+"""核心 domain models。
 
 職責：定義 target、config、seen item、scan result 與通知事件等資料結構。
 這些 model 不依賴 Playwright 或 SQLite，方便後續被 worker、repository 與測試共用。
@@ -59,6 +59,17 @@ class NotificationStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class NotificationOutboxStatus(StrEnum):
+    """通知 outbox 事件狀態。"""
+
+    PENDING = "pending"
+    PROCESSING_PENDING = "processing_pending"
+    SENT = "sent"
+    FAILED = "failed"
+    PROCESSING_FAILED = "processing_failed"
+    SKIPPED = "skipped"
+
+
 class TargetDesiredState(StrEnum):
     """target 在 scheduler 中期望維持的狀態。"""
 
@@ -73,7 +84,6 @@ class TargetRuntimeStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     ERROR = "error"
-    PAUSED = "paused"
 
 
 def utc_now() -> datetime:
@@ -196,16 +206,15 @@ class TargetDescriptor:
 class TargetConfig:
     """保存社團層級監視設定。
 
-    `target_id` 欄位目前保留既有命名，但正式語義是 config owner id：
-    新路徑使用 group_id，seen / baseline / latest scan 仍由 target scope 分流。
+    group config 以 group_id 作為 owner；seen / baseline / latest scan 仍由 target scope 分流。
     """
 
-    target_id: str
+    group_id: str
     include_keywords: tuple[str, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
-    min_refresh_sec: int = 300
-    max_refresh_sec: int = 600
-    jitter_enabled: bool = True
+    min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+    max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+    jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
     fixed_refresh_sec: int | None = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
     max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
     auto_load_more: bool = PYTHON_TARGET_CONFIG_DEFAULTS.auto_load_more
@@ -215,6 +224,48 @@ class TargetConfig:
     ntfy_topic: str = PYTHON_TARGET_CONFIG_DEFAULTS.ntfy_topic
     enable_discord_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification
     discord_webhook: str = PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook
+
+
+@dataclass(frozen=True)
+class LegacyTargetConfig:
+    """保存舊版 target-scoped config row，僅供 migration fallback 轉換使用。"""
+
+    target_id: str
+    include_keywords: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = ()
+    min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+    max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+    jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
+    fixed_refresh_sec: int | None = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
+    max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
+    auto_load_more: bool = PYTHON_TARGET_CONFIG_DEFAULTS.auto_load_more
+    auto_adjust_sort: bool = PYTHON_TARGET_CONFIG_DEFAULTS.auto_adjust_sort
+    enable_desktop_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_desktop_notification
+    enable_ntfy: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_ntfy
+    ntfy_topic: str = PYTHON_TARGET_CONFIG_DEFAULTS.ntfy_topic
+    enable_discord_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification
+    discord_webhook: str = PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook
+
+    def to_target_config(self, *, group_id: str) -> TargetConfig:
+        """將舊 target-scoped row 明確轉成正式 group-scoped config。"""
+
+        return TargetConfig(
+            group_id=group_id,
+            include_keywords=self.include_keywords,
+            exclude_keywords=self.exclude_keywords,
+            min_refresh_sec=self.min_refresh_sec,
+            max_refresh_sec=self.max_refresh_sec,
+            jitter_enabled=self.jitter_enabled,
+            fixed_refresh_sec=self.fixed_refresh_sec,
+            max_items_per_scan=self.max_items_per_scan,
+            auto_load_more=self.auto_load_more,
+            auto_adjust_sort=self.auto_adjust_sort,
+            enable_desktop_notification=self.enable_desktop_notification,
+            enable_ntfy=self.enable_ntfy,
+            ntfy_topic=self.ntfy_topic,
+            enable_discord_notification=self.enable_discord_notification,
+            discord_webhook=self.discord_webhook,
+        )
 
 
 @dataclass(frozen=True)
@@ -338,3 +389,25 @@ class NotificationEvent:
     status: NotificationStatus
     message: str = ""
     created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
+class NotificationOutboxEntry:
+    """保存 commit 後才可送出的通知 outbox 事件。"""
+
+    idempotency_key: str
+    target_id: str
+    item_key: str
+    item_kind: ItemKind
+    channel: NotificationChannel
+    title: str
+    message: str
+    endpoint: str = ""
+    permalink: str = ""
+    status: NotificationOutboxStatus = NotificationOutboxStatus.PENDING
+    attempts: int = 0
+    last_error: str = ""
+    notification_event_id: int | None = None
+    id: int | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)

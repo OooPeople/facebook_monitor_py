@@ -105,7 +105,7 @@ def ensure_preferred_comment_sort(page: Any, *, enabled: bool) -> SortAdjustResu
 
 
 async def ensure_preferred_feed_sort_async(page: Any, *, enabled: bool) -> SortAdjustResult:
-    """async resident worker 掃描前嘗試把 group feed 切到新貼文排序。"""
+    """resident main worker 掃描前嘗試把 group feed 切到新貼文排序。"""
 
     if not enabled:
         return build_disabled_sort_adjust_result(FEED_SORT_NEWEST_LABEL)
@@ -119,7 +119,7 @@ async def ensure_preferred_comment_sort_async(
     *,
     enabled: bool,
 ) -> SortAdjustResult:
-    """async resident worker 掃描前嘗試把留言切到由新到舊。"""
+    """resident main worker 掃描前嘗試把留言切到由新到舊。"""
 
     if not enabled:
         return build_disabled_sort_adjust_result(COMMENT_SORT_NEWEST_LABEL)

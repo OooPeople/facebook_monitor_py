@@ -1,0 +1,80 @@
+/* 04b target card collapse */
+.target-collapsible[data-collapse-animating],
+.target-collapsed-summary[data-collapse-animating] {
+  overflow: hidden;
+  transition: height 0.24s ease, opacity 0.18s ease;
+  will-change: height, opacity;
+}
+
+.target.is-collapsed .target-header {
+  margin-bottom: 12px;
+}
+
+.target-footer-controls {
+  align-items: flex-start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  margin-top: 14px;
+}
+
+.target-collapse-control {
+  display: inline-flex;
+  grid-column: 2;
+  justify-content: flex-end;
+  padding-top: 0;
+}
+
+.target.is-collapsed .scan-debug-details {
+  display: none;
+}
+
+.collapse-toggle {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  box-shadow: var(--shadow-subtle);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  width: 36px;
+}
+
+.collapse-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 3%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.collapse-toggle:focus-visible {
+  outline: 3px solid rgb(31 111 235 / 18%);
+  outline-offset: 2px;
+}
+
+.collapse-toggle-icon {
+  fill: none;
+  height: 22px;
+  pointer-events: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  transform: rotate(180deg);
+  transition: transform 0.15s ease;
+  width: 22px;
+}
+
+.target.is-collapsed .collapse-toggle-icon {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .target-collapsible[data-collapse-animating],
+  .target-collapsed-summary[data-collapse-animating] {
+    transition: none;
+  }
+}

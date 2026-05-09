@@ -1,0 +1,55 @@
+/* 01 tokens / base */
+:root {
+  color-scheme: light;
+  --page-bg: #f1f4f8;
+  --surface: #ffffff;
+  --surface-soft: #f7f9fc;
+  --surface-muted: #eef3f8;
+  --text: #1f2933;
+  --text-soft: #445061;
+  --muted: #667385;
+  --border: #d7dde5;
+  --border-soft: #e5eaf1;
+  --accent: #1f6feb;
+  --accent-strong: #1757bc;
+  --success: #176b35;
+  --success-bg: #e9f8ee;
+  --warn: #7a5600;
+  --warn-bg: #fff4d6;
+  --danger: #a32929;
+  --danger-bg: #fff1f1;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --sidebar-width: 336px;
+  --shadow-subtle: 0 1px 2px rgb(31 41 51 / 5%);
+  --shadow-card: 0 1px 2px rgb(31 41 51 / 7%), 0 12px 28px rgb(31 41 51 / 6%);
+  --shadow-raised: 0 2px 8px rgb(31 41 51 / 8%);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  background: var(--page-bg);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page-bg);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+[hidden] {
+  display: none !important;
+}
+

@@ -13,7 +13,7 @@ def test_resolve_refresh_interval_prefers_fixed_seconds() -> None:
     """Python 版目前固定秒數設定優先於 jitter 範圍。"""
 
     config = TargetConfig(
-        target_id="target-1",
+        group_id="target-1",
         fixed_refresh_sec=30,
         min_refresh_sec=300,
         max_refresh_sec=600,
@@ -32,7 +32,7 @@ def test_resolve_refresh_interval_uses_deterministic_jitter_range() -> None:
 
     latest_finished_at = utc_now()
     config = TargetConfig(
-        target_id="target-1",
+        group_id="target-1",
         fixed_refresh_sec=None,
         min_refresh_sec=25,
         max_refresh_sec=35,
@@ -60,7 +60,7 @@ def test_normalize_refresh_range_swaps_bounds_and_clamps_minimum() -> None:
     """jitter 範圍會自動校正大小順序與最低秒數。"""
 
     config = TargetConfig(
-        target_id="target-1",
+        group_id="target-1",
         fixed_refresh_sec=None,
         min_refresh_sec=2,
         max_refresh_sec=1,

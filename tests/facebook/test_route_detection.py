@@ -1,4 +1,4 @@
-"""Phase B Facebook route detection tests。"""
+"""Facebook route detection tests。"""
 
 from __future__ import annotations
 

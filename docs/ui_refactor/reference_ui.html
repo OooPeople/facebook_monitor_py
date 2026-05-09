@@ -1,0 +1,930 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Facebook Monitor Dashboard Revision</title>
+  <style>
+    :root {
+      --bg: oklch(95.6% 0.006 255);
+      --surface: oklch(99.5% 0.002 255);
+      --surface-soft: oklch(97.2% 0.004 255);
+      --surface-warm: oklch(98.8% 0.003 255);
+      --fg: oklch(22% 0.018 250);
+      --muted: oklch(48% 0.014 250);
+      --border: oklch(88.5% 0.006 250);
+      --border-soft: oklch(91.5% 0.005 250);
+      --accent: oklch(55% 0.18 255);
+      --success: oklch(55% 0.14 145);
+      --warn: oklch(70% 0.12 82);
+      --danger: oklch(56% 0.17 28);
+      --font-display: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --font-body: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+      --radius: 12px;
+      --soft-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 9%, transparent), 0 10px 26px color-mix(in oklch, var(--fg) 7%, transparent);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    textarea { font: inherit; }
+
+    button {
+      border: 1px solid var(--border-soft);
+      background: var(--surface);
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 9px 14px;
+      cursor: pointer;
+      box-shadow: 0 1px 1px color-mix(in oklch, var(--fg) 4%, transparent);
+      transition: border-color 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+    }
+
+    button:hover {
+      border-color: color-mix(in oklch, var(--accent) 30%, var(--border));
+      background: color-mix(in oklch, var(--accent) 3%, var(--surface));
+      box-shadow: 0 2px 5px color-mix(in oklch, var(--fg) 7%, transparent);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+      font-weight: 650;
+    }
+
+    .btn-danger {
+      border-color: color-mix(in oklch, var(--danger) 35%, var(--border));
+      color: var(--danger);
+      font-weight: 650;
+    }
+
+    .btn-success {
+      border-color: color-mix(in oklch, var(--success) 35%, var(--border));
+      color: var(--success);
+      font-weight: 650;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      background: color-mix(in oklch, var(--surface) 78%, var(--bg));
+      border-inline-end: 1px solid var(--border-soft);
+      padding: 24px 20px;
+    }
+
+    .brand,
+    .topbar,
+    .card-head,
+    .post-head,
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      justify-content: flex-start;
+      margin-bottom: 26px;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: color-mix(in oklch, var(--accent) 92%, var(--fg));
+      color: white;
+      font-size: 22px;
+      font-weight: 800;
+    }
+
+    h1,
+    h2,
+    h3,
+    p { margin-top: 0; }
+
+    .brand h1 {
+      margin: 0;
+      font-family: var(--font-display);
+      font-size: 24px;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+
+    .section-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: 0.01em;
+      margin-bottom: 10px;
+    }
+
+    .template-note {
+      display: inline-flex;
+      width: fit-content;
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: color-mix(in oklch, var(--surface) 60%, var(--surface-soft));
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      opacity: 0.62;
+    }
+
+    .search-box {
+      position: relative;
+      margin-bottom: 14px;
+    }
+
+    .search-box input {
+      width: 100%;
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      padding: 11px 38px 11px 14px;
+      background: var(--surface-soft);
+      color: var(--fg);
+    }
+
+    .search-box span {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+    }
+
+    .target-nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-item {
+      display: grid;
+      grid-template-columns: 48px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 10px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      transition: background 140ms ease, border-color 140ms ease;
+    }
+
+    .nav-item:hover {
+      background: var(--surface);
+      border-color: var(--border-soft);
+      box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 5%, transparent);
+    }
+
+    .nav-item.active {
+      background: var(--surface);
+      border-color: color-mix(in oklch, var(--accent) 18%, var(--border));
+      box-shadow: inset 3px 0 0 var(--accent), 0 1px 3px color-mix(in oklch, var(--fg) 8%, transparent);
+    }
+
+    .thumb {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: color-mix(in oklch, var(--accent) 10%, var(--surface-soft));
+      color: var(--fg);
+      font-weight: 800;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--fg) 5%, transparent);
+    }
+
+    .thumb.yellow { background: color-mix(in oklch, var(--warn) 18%, var(--surface)); color: oklch(35% 0.09 72); }
+    .thumb.red { background: color-mix(in oklch, var(--danger) 14%, var(--surface)); color: color-mix(in oklch, var(--danger) 78%, black); }
+    .thumb.navy { background: color-mix(in oklch, var(--accent) 12%, var(--surface)); color: color-mix(in oklch, var(--accent) 78%, black); }
+    .thumb.grey { background: var(--surface-soft); color: var(--muted); }
+
+    .nav-title {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+
+    .nav-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hit-count {
+      min-width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: color-mix(in oklch, var(--success) 12%, var(--surface));
+      color: color-mix(in oklch, var(--success) 80%, black);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .hint-card {
+      margin-top: 26px;
+      padding: 14px;
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 5%, transparent);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 24px 28px 56px;
+    }
+
+    .content-wrap {
+      width: min(100%, 1060px);
+      margin-inline: auto;
+    }
+
+    .topbar {
+      min-height: 56px;
+      margin-bottom: 22px;
+    }
+
+    .page-title h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .top-actions,
+    .card-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .card-head {
+      padding-bottom: 2px;
+    }
+
+    .health-pill,
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 13px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .health-pill {
+      border: 1px solid color-mix(in oklch, var(--success) 13%, var(--border-soft));
+      background: color-mix(in oklch, var(--success) 8%, var(--surface));
+      color: color-mix(in oklch, var(--success) 80%, black);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .dot.success { background: var(--success); }
+    .dot.warn { background: var(--warn); }
+    .dot.danger { background: var(--danger); }
+
+    .workspace {
+      display: grid;
+      gap: 14px;
+    }
+
+    .target-card {
+      background: var(--surface);
+      border: 1px solid var(--border-soft);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: var(--soft-shadow);
+    }
+
+    .target-card.featured {
+      border-color: color-mix(in oklch, var(--accent) 8%, var(--border-soft));
+    }
+
+    .target-title-row {
+      display: flex;
+      gap: 14px;
+      min-width: 0;
+      align-items: center;
+    }
+
+    .title-block { min-width: 0; }
+
+    .title-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .target-title {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+    }
+
+    .chip.running { background: color-mix(in oklch, var(--success) 10%, var(--surface)); color: color-mix(in oklch, var(--success) 76%, black); }
+    .chip.stopped { background: color-mix(in oklch, var(--warn) 13%, var(--surface)); color: oklch(42% 0.1 75); }
+    .chip.error { background: color-mix(in oklch, var(--danger) 9%, var(--surface)); color: var(--danger); }
+    .chip.neutral { background: var(--surface-soft); color: var(--muted); }
+    .chip.hit { background: color-mix(in oklch, var(--success) 12%, var(--surface)); color: color-mix(in oklch, var(--success) 78%, black); }
+
+    .expanded-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.618fr) minmax(0, 1fr);
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--border-soft);
+      border-radius: 14px;
+      padding: 16px;
+      background: var(--surface);
+      box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 4%, transparent);
+    }
+
+    .expanded-grid > .panel:first-child {
+      background: color-mix(in oklch, var(--surface) 76%, var(--surface-soft));
+    }
+
+    .expanded-grid > .panel:last-child {
+      padding: 18px;
+      border-color: var(--border-soft);
+      background: var(--surface);
+    }
+
+    .panel h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .expanded-grid > .panel:first-child h3 {
+      color: color-mix(in oklch, var(--fg) 68%, var(--muted));
+      font-size: 15px;
+    }
+
+    .section-title {
+      align-items: baseline;
+      margin-bottom: 12px;
+    }
+
+    .keyword-grid {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .field textarea {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 10px 11px;
+      background: var(--surface-soft);
+      color: var(--fg);
+      line-height: 1.5;
+    }
+
+    .field textarea:focus {
+      outline: 2px solid color-mix(in oklch, var(--accent) 18%, transparent);
+      border-color: color-mix(in oklch, var(--accent) 36%, var(--border));
+      background: var(--surface);
+    }
+
+    .settings-summary {
+      display: grid;
+      gap: 9px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border-soft);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .settings-row b {
+      color: var(--fg);
+      text-align: right;
+    }
+
+    .diagnostic {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: color-mix(in oklch, var(--surface-soft) 82%, var(--surface));
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 18px;
+      border-bottom: 1px solid var(--border-soft);
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      border: 0;
+      border-radius: 0;
+      padding: 0 0 11px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .tab.active {
+      color: var(--accent);
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
+
+    .post-list {
+      display: grid;
+      gap: 11px;
+    }
+
+    .post-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+      align-items: start;
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      padding: 13px 14px;
+      background: var(--surface);
+      box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 5%, transparent);
+      transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+    }
+
+    .post-card:hover {
+      border-color: color-mix(in oklch, var(--accent) 16%, var(--border));
+      background: var(--surface);
+      box-shadow: 0 2px 8px color-mix(in oklch, var(--fg) 8%, transparent);
+    }
+
+    .post-main { min-width: 0; }
+
+    .post-head {
+      justify-content: flex-start;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .author {
+      font-weight: 700;
+      line-height: 1.3;
+      color: color-mix(in oklch, var(--fg) 88%, black);
+    }
+
+    .post-text {
+      margin: 0;
+      color: var(--fg);
+      line-height: 1.55;
+    }
+
+    .post-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 650;
+      white-space: nowrap;
+      align-self: center;
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: color-mix(in oklch, var(--accent) 5%, var(--surface-soft));
+    }
+
+    .collapsed-summary {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr 1fr 1fr;
+      margin-top: 16px;
+      border: 1px solid var(--border-soft);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 4%, transparent);
+    }
+
+    .metric {
+      min-height: 78px;
+      padding: 14px 16px;
+      border-inline-start: 1px solid var(--border-soft);
+    }
+
+    .metric:first-child { border-inline-start: 0; }
+
+    .metric label {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .metric b {
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .error-note {
+      margin-top: 12px;
+      border: 1px solid color-mix(in oklch, var(--danger) 16%, var(--border-soft));
+      border-radius: 12px;
+      padding: 12px;
+      background: color-mix(in oklch, var(--danger) 4%, var(--surface));
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 1180px) {
+      .app-shell { grid-template-columns: 300px minmax(0, 1fr); }
+      .expanded-grid { grid-template-columns: 1fr; }
+      .content-wrap { max-width: 880px; }
+    }
+
+    @media (max-width: 920px) {
+      .app-shell { grid-template-columns: 1fr; }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-inline-end: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .target-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .main,
+      .sidebar { padding: 16px; }
+
+      .topbar,
+      .card-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .top-actions,
+      .card-actions,
+      .top-actions button,
+      .card-actions button { width: 100%; }
+
+      .target-nav,
+      .collapsed-summary { grid-template-columns: 1fr; }
+
+      .metric,
+      .metric:first-child {
+        border-inline-start: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .metric:first-child { border-top: 0; }
+
+      .post-card { grid-template-columns: 1fr; }
+      .post-link { justify-self: start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" data-template="Jinja: partials/target_sidebar.html">
+      <div class="brand">
+        <div class="brand-mark">f</div>
+        <h1>Facebook Monitor</h1>
+      </div>
+
+      <div class="section-label">監看清單</div>
+      <div class="search-box" data-static="Static CSS/JS: filter target list">
+        <input type="search" placeholder="搜尋社團">
+        <span>⌕</span>
+      </div>
+
+      <nav class="target-nav" aria-label="Target navigator">
+        <div class="nav-item active">
+          <div class="thumb">冠</div>
+          <div>
+            <div class="nav-title">兄弟猛象金冠軍票券與棒球商品交流平台</div>
+            <div class="nav-meta"><i class="dot success"></i>執行中 · 今日命中 3 筆</div>
+          </div>
+          <div class="hit-count">3</div>
+        </div>
+        <div class="nav-item">
+          <div class="thumb yellow">B</div>
+          <div>
+            <div class="nav-title">中信兄弟商品買賣交流平台</div>
+            <div class="nav-meta"><i class="dot warn"></i>已停止 · 尚未掃描</div>
+          </div>
+          <div class="hit-count">0</div>
+        </div>
+        <div class="nav-item">
+          <div class="thumb red">龍</div>
+          <div>
+            <div class="nav-title">味全龍主客場票券、周邊商品交流會</div>
+            <div class="nav-meta"><i class="dot danger"></i>被限制 · 需重新登入</div>
+          </div>
+          <div class="hit-count">!</div>
+        </div>
+        <div class="nav-item">
+          <div class="thumb navy">Fans</div>
+          <div>
+            <div class="nav-title">中信兄弟 Fans Club</div>
+            <div class="nav-meta"><i class="dot success"></i>執行中 · 今日命中 0 筆</div>
+          </div>
+          <div class="hit-count">0</div>
+        </div>
+        <div class="nav-item">
+          <div class="thumb grey">＋</div>
+          <div>
+            <div class="nav-title">新增 Facebook 社團 target</div>
+            <div class="nav-meta">貼上社團連結後開始監控</div>
+          </div>
+          <div></div>
+        </div>
+      </nav>
+
+      <div class="hint-card">
+        <b>監控節奏</b><br>
+        命中數會隨掃描更新；點選 target 可快速切換目前關注的社團。
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="content-wrap">
+        <header class="topbar" data-template="Jinja: layout/header.html">
+          <div class="page-title">
+            <h2>監控中心</h2>
+            <p class="subtitle">管理 target 清單、關鍵字與最近掃描結果。</p>
+          </div>
+          <div class="top-actions">
+            <div class="health-pill"><i class="dot success"></i>背景掃描服務：執行中</div>
+            <button>設定</button>
+            <button class="btn-primary">新增 target</button>
+          </div>
+        </header>
+
+        <section class="workspace" data-template="Jinja: targets/index.html">
+          <article class="target-card featured" data-card="expanded">
+            <div class="card-head">
+              <div class="target-title-row">
+                <div class="thumb">冠</div>
+                <div class="title-block">
+                  <div class="title-line">
+                    <h2 class="target-title">兄弟猛象金冠軍票券與棒球商品交流平台</h2>
+                    <span class="chip running">執行中</span>
+                    <span class="chip hit">今日命中 3</span>
+                  </div>
+                  <p class="subtitle">社團貼文 · 最近掃描 2026-05-09 04:26:57 · 最近通知 Discord</p>
+                </div>
+              </div>
+              <div class="card-actions" data-static="Static JS: target actions">
+                <button class="btn-danger">停止</button>
+                <button>儲存</button>
+                <button>查看紀錄</button>
+                <button>設定</button>
+                <button data-toggle-card>收合</button>
+              </div>
+            </div>
+
+            <div class="expanded-grid">
+              <aside class="panel" data-template="Jinja: partials/target_keywords.html">
+                <div class="section-title">
+                  <h3>關鍵字與設定</h3>
+                </div>
+                <div class="keyword-grid">
+                  <div class="field">
+                    <label for="include-a">包含關鍵字</label>
+                    <textarea id="include-a">洲際
+5/23</textarea>
+                  </div>
+                  <div class="field">
+                    <label for="exclude-a">排除關鍵字</label>
+                    <textarea id="exclude-a">徵
+收
+已售</textarea>
+                  </div>
+                </div>
+                <div class="settings-summary">
+                  <div class="settings-row"><span>刷新</span><b>固定 60 秒</b></div>
+                  <div class="settings-row"><span>目標掃描</span><b>10 筆</b></div>
+                  <div class="settings-row"><span>載入更多</span><b>開啟</b></div>
+                  <div class="settings-row"><span>排序</span><b>開啟</b></div>
+                  <div class="settings-row"><span>通知</span><b>ntfy / Discord</b></div>
+                </div>
+                <div class="diagnostic"><span>▸</span>掃描診斷：回應 200，解析 10 筆，命中 3 筆</div>
+              </aside>
+
+              <section class="panel" data-template="Jinja: partials/recent_activity.html">
+                <div class="tabs" data-static="Static JS: tabs only">
+                  <button class="tab active">最近掃描</button>
+                  <button class="tab">命中紀錄 23</button>
+                </div>
+
+                <div class="post-list">
+                  <article class="post-card">
+                    <div class="post-main">
+                      <div class="post-head">
+                        <span class="author">黃彥博</span>
+                        <span class="chip hit">命中：洲際</span>
+                      </div>
+                      <p class="post-text">K歌主題日 #售票文 中信兄弟K歌 主題日 5.24(日) Icyball 冰球樂團、Ailee、RIIZE 開球嘉賓，洲際棒球場 B1 內野 118 區 23 排 4 號。</p>
+                    </div>
+                    <a class="post-link" href="#">開啟連結</a>
+                  </article>
+
+                  <article class="post-card">
+                    <div class="post-main">
+                      <div class="post-head">
+                        <span class="author">陳鴻</span>
+                        <span class="chip hit">命中：洲際</span>
+                      </div>
+                      <p class="post-text">明後天 洲際可面交，黃昏便取付。可協助 app 轉票，意者私訊。</p>
+                    </div>
+                    <a class="post-link" href="#">開啟連結</a>
+                  </article>
+
+                  <article class="post-card">
+                    <div class="post-main">
+                      <div class="post-head">
+                        <span class="author">黃瑞文</span>
+                        <span class="chip neutral">未命中</span>
+                      </div>
+                      <p class="post-text">#售票文 5/10 啦啦隊熱區 西 C13 排 25 號，很靠近 D 區，原價 $800 / 張。</p>
+                    </div>
+                    <a class="post-link" href="#">開啟連結</a>
+                  </article>
+
+                  <article class="post-card">
+                    <div class="post-main">
+                      <div class="post-head">
+                        <span class="author">Rui Zu</span>
+                        <span class="chip neutral">未命中</span>
+                      </div>
+                      <p class="post-text">徵收許庭綸 13 的 CD 扭蛋！可多帶，僅限賣貨便貨到付款。</p>
+                    </div>
+                    <a class="post-link" href="#">未取得連結</a>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </article>
+
+          <article class="target-card" data-card="collapsed">
+            <div class="card-head">
+              <div class="target-title-row">
+                <div class="thumb yellow">B</div>
+                <div class="title-block">
+                  <div class="title-line">
+                    <h2 class="target-title">中信兄弟商品買賣交流平台</h2>
+                    <span class="chip stopped">已停止</span>
+                  </div>
+                  <p class="subtitle">社團貼文 · 最近掃描 尚無掃描 · 尚無通知</p>
+                </div>
+              </div>
+              <div class="card-actions">
+                <button class="btn-success">開始</button>
+                <button>儲存</button>
+                <button>查看紀錄</button>
+                <button>設定</button>
+                <button data-toggle-card>展開</button>
+              </div>
+            </div>
+
+            <div class="collapsed-summary" data-template="Jinja: partials/target_card_collapsed.html">
+              <div class="metric"><label>包含關鍵字</label><b>5/23</b></div>
+              <div class="metric"><label>排除關鍵字</label><b>徵、收</b></div>
+              <div class="metric"><label>最近掃描</label><b>尚無掃描</b></div>
+              <div class="metric"><label>命中紀錄</label><b>0 筆</b></div>
+            </div>
+          </article>
+
+          <article class="target-card" data-card="collapsed-error">
+            <div class="card-head">
+              <div class="target-title-row">
+                <div class="thumb red">龍</div>
+                <div class="title-block">
+                  <div class="title-line">
+                    <h2 class="target-title">味全龍主客場票券、周邊商品交流會</h2>
+                    <span class="chip error">被限制</span>
+                    <span class="chip neutral">今日命中 0</span>
+                  </div>
+                  <p class="subtitle">社團貼文 · 最近掃描失敗 04:19:08 · 通知暫停</p>
+                </div>
+              </div>
+              <div class="card-actions">
+                <button class="btn-success">重新登入</button>
+                <button>查看診斷</button>
+                <button>設定</button>
+              </div>
+            </div>
+            <div class="error-note">
+              掃描失敗：Facebook 要求重新登入。此 target 暫停掃描，通知未送出。
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    document.querySelectorAll('[data-toggle-card]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const card = button.closest('.target-card');
+        const expanded = card.querySelector('.expanded-grid');
+        const summary = card.querySelector('.collapsed-summary');
+        if (!expanded) return;
+        const shouldCollapse = expanded.style.display !== 'none';
+        expanded.style.display = shouldCollapse ? 'none' : 'grid';
+        if (!summary && shouldCollapse) {
+          const block = document.createElement('div');
+          block.className = 'collapsed-summary';
+          block.innerHTML = '<div class="metric"><label>包含關鍵字</label><b>洲際、5/23</b></div><div class="metric"><label>排除關鍵字</label><b>徵、收、已售</b></div><div class="metric"><label>最近掃描</label><b>04:26:57</b></div><div class="metric"><label>命中紀錄</label><b>23 筆</b></div>';
+          card.appendChild(block);
+        }
+        if (summary) summary.style.display = shouldCollapse ? 'grid' : 'none';
+        button.textContent = shouldCollapse ? '展開' : '收合';
+      });
+    });
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tab.parentElement.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
+        tab.classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

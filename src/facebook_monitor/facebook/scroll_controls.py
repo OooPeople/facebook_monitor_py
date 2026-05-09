@@ -17,7 +17,7 @@ def get_scroll_position(page: Any) -> dict[str, Any]:
 
 
 async def get_scroll_position_async(page: Any) -> dict[str, Any]:
-    """async resident worker 取得目前文件捲動位置與尺寸。"""
+    """resident main worker 取得目前文件捲動位置與尺寸。"""
 
     result = await page.evaluate(SCROLL_POSITION_SCRIPT)
     return result if isinstance(result, dict) else {}
@@ -31,7 +31,7 @@ def capture_load_more_scroll_snapshot(page: Any) -> dict[str, Any]:
 
 
 async def capture_load_more_scroll_snapshot_async(page: Any) -> dict[str, Any]:
-    """async resident worker 在深度掃描前保存 scroll 位置。"""
+    """resident main worker 在深度掃描前保存 scroll 位置。"""
 
     result = await page.evaluate(CAPTURE_LOAD_MORE_SCROLL_SNAPSHOT_SCRIPT)
     return result if isinstance(result, dict) else {}
@@ -45,7 +45,7 @@ def restore_load_more_scroll_snapshot(page: Any) -> dict[str, Any]:
 
 
 async def restore_load_more_scroll_snapshot_async(page: Any) -> dict[str, Any]:
-    """async resident worker 深度掃描結束後復原 scroll 位置。"""
+    """resident main worker 深度掃描結束後復原 scroll 位置。"""
 
     result = await page.evaluate(RESTORE_LOAD_MORE_SCROLL_SNAPSHOT_SCRIPT)
     return result if isinstance(result, dict) else {}
@@ -94,7 +94,7 @@ def scroll_comment_load_more(page: Any) -> dict[str, Any]:
 
 
 async def scroll_load_more_async(page: Any) -> dict[str, Any]:
-    """async resident worker 執行一次 posts load-more 捲動。"""
+    """resident main worker 執行一次 posts load-more 捲動。"""
 
     result = await page.evaluate(SCROLL_LOAD_MORE_SCRIPT)
     return result if isinstance(result, dict) else {}

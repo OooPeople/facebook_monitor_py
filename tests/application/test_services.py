@@ -1,4 +1,4 @@
-"""Phase A application service tests。"""
+"""Application service tests。"""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import CreateCommentsTargetRequest
-from facebook_monitor.application.services import CreateGroupPostsTargetRequest
-from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.application.services import UpsertCommentsTargetRequest
+from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
@@ -28,7 +27,7 @@ def test_create_target_and_record_scan_through_application_context(tmp_path: Pat
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="test group",
@@ -47,6 +46,7 @@ def test_create_target_and_record_scan_through_application_context(tmp_path: Pat
         assert loaded_target == target
         assert loaded_config is not None
         assert loaded_config.include_keywords == ("票",)
+        assert loaded_config.auto_adjust_sort
         assert loaded_config.enable_discord_notification
         assert loaded_config.discord_webhook == "https://discord.com/api/webhooks/example"
         assert loaded_config.ntfy_topic == "phase0test"
@@ -65,15 +65,15 @@ def test_create_target_and_record_scan_through_application_context(tmp_path: Pat
         assert scan_id > 0
 
 
-def test_target_create_helpers_are_internal_only(tmp_path: Path) -> None:
-    """正式 target 建立 API 只暴露 upsert，避免 create/upsert 雙軌。"""
+def test_target_registry_exposes_upsert_without_create_api(tmp_path: Path) -> None:
+    """正式 target 建立 API 只暴露 upsert，不鎖定 private helper。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         assert not hasattr(app.services.targets, "create_group_posts_target")
         assert not hasattr(app.services.targets, "create_comments_target")
-        assert hasattr(app.services.targets, "_create_group_posts_target")
-        assert hasattr(app.services.targets, "_create_comments_target")
+        assert hasattr(app.services.targets, "upsert_group_posts_target")
+        assert hasattr(app.services.targets, "upsert_comments_target")
 
 
 def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> None:
@@ -82,7 +82,7 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         first = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="old name",
@@ -90,7 +90,7 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
             )
         )
         second = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="new name",
@@ -119,7 +119,7 @@ def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 include_keywords=("票",),
@@ -137,7 +137,7 @@ def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> 
         )
 
         app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 include_keywords=(),
@@ -175,7 +175,7 @@ def test_upsert_comments_target_can_clear_existing_group_config(tmp_path: Path) 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_comments_target(
-            CreateCommentsTargetRequest(
+            UpsertCommentsTargetRequest(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
@@ -193,7 +193,7 @@ def test_upsert_comments_target_can_clear_existing_group_config(tmp_path: Path) 
         )
 
         app.services.targets.upsert_comments_target(
-            CreateCommentsTargetRequest(
+            UpsertCommentsTargetRequest(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
@@ -227,7 +227,7 @@ def test_upsert_comments_target_sets_parent_post_and_scope(tmp_path: Path) -> No
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_comments_target(
-            CreateCommentsTargetRequest(
+            UpsertCommentsTargetRequest(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
@@ -263,7 +263,7 @@ def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) ->
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         posts_target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 include_keywords=("票",),
@@ -272,7 +272,7 @@ def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) ->
             )
         )
         comments_target = app.services.targets.upsert_comments_target(
-            CreateCommentsTargetRequest(
+            UpsertCommentsTargetRequest(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
@@ -288,7 +288,7 @@ def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) ->
         assert posts_config is not None
         assert comments_config is not None
         assert posts_config == comments_config
-        assert posts_config.target_id == "222518561920110"
+        assert posts_config.group_id == "222518561920110"
         assert comments_config.include_keywords == ("票",)
         assert comments_config.enable_ntfy
 
@@ -324,13 +324,13 @@ def test_upsert_group_posts_target_replaces_generated_name_when_group_name_resol
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         first = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
         )
         second = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="測試社團",
@@ -350,7 +350,7 @@ def test_group_posts_target_names_are_cleaned_before_persistence(
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="(2) (3) 自訂社團 | Facebook",
@@ -372,7 +372,7 @@ def test_restart_target_monitoring_cleans_existing_dirty_target_name(
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="測試社團",
@@ -400,7 +400,7 @@ def test_update_target_config(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
@@ -446,7 +446,7 @@ def test_update_target_config_preserves_reserved_notification_channels(
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 enable_desktop_notification=True,
@@ -480,13 +480,13 @@ def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> Non
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         first = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
         second = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222",
                 canonical_url="https://www.facebook.com/groups/222",
             )
@@ -523,13 +523,13 @@ def test_restart_monitoring_clears_only_target_seen_scope(tmp_path: Path) -> Non
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         first = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
         second = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222",
                 canonical_url="https://www.facebook.com/groups/222",
             )
@@ -553,14 +553,14 @@ def test_restart_comments_monitoring_clears_comments_seen_scope(tmp_path: Path) 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_comments_target(
-            CreateCommentsTargetRequest(
+            UpsertCommentsTargetRequest(
                 group_id="111",
                 parent_post_id="999",
                 canonical_url="https://www.facebook.com/groups/111/posts/999",
             )
         )
         other = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222",
                 canonical_url="https://www.facebook.com/groups/222",
             )
@@ -594,7 +594,7 @@ def test_pause_monitoring_preserves_seen_scope(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
@@ -608,18 +608,21 @@ def test_pause_monitoring_preserves_seen_scope(tmp_path: Path) -> None:
         assert app.repositories.seen_items.has_seen(target.scope_id, "item-1")
 
 
-def test_webui_startup_pause_all_targets_and_normalizes_fixed_interval(
+def test_webui_startup_pause_all_targets_without_overwriting_floating_interval(
     tmp_path: Path,
 ) -> None:
-    """Web UI 啟動整理會停止所有 target 並補固定掃描間隔。"""
+    """Web UI 啟動整理會停止所有 target，但不把浮動刷新改回固定。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
                 fixed_refresh_sec=None,
+                min_refresh_sec=25,
+                max_refresh_sec=35,
+                jitter_enabled=True,
             )
         )
 
@@ -634,7 +637,10 @@ def test_webui_startup_pause_all_targets_and_normalizes_fixed_interval(
     assert state is not None
     assert state.desired_state == TargetDesiredState.STOPPED
     assert config is not None
-    assert config.fixed_refresh_sec == DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+    assert config.fixed_refresh_sec is None
+    assert config.jitter_enabled
+    assert config.min_refresh_sec == 25
+    assert config.max_refresh_sec == 35
 
 
 def test_update_target_status_request(tmp_path: Path) -> None:
@@ -643,7 +649,7 @@ def test_update_target_status_request(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
@@ -668,13 +674,13 @@ def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Pa
     now = utc_now()
     with SqliteApplicationContext(db_path) as app:
         stale_target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
         fresh_target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222",
                 canonical_url="https://www.facebook.com/groups/222",
             )
@@ -718,18 +724,18 @@ def test_delete_target_does_not_touch_other_targets(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         first = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
         second = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="222",
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
-        app.services.targets.stop_target(second.id)
+        app.services.targets.pause_target_monitoring(second.id)
 
         app.services.targets.delete_target(first.id)
 

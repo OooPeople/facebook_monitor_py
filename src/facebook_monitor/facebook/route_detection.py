@@ -39,7 +39,7 @@ RESERVED_GROUP_PATH_SEGMENTS = {
 
 
 class RouteDetectionError(ValueError):
-    """表示目前 URL 不是 Phase B 可保存的 group posts target。"""
+    """表示目前 URL 不是可保存的 Facebook target route。"""
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ def detect_group_posts_route(
         )
 
     if len(path_parts) > 2 and path_parts[2] in POST_ROUTE_MARKERS:
-        raise RouteDetectionError("目前頁面是單篇貼文 URL，Phase B 目前只保存 group feed target")
+        raise RouteDetectionError("目前頁面是單篇貼文 URL，不是 group feed target")
 
     if len(path_parts) > 2:
         raise RouteDetectionError("目前 group URL 路徑尚未支援，請切回社團首頁後再 capture")

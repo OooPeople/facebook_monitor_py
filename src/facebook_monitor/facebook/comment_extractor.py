@@ -16,8 +16,8 @@ from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
 )
 from facebook_monitor.facebook.collection_policy import get_dynamic_max_windows
-from facebook_monitor.facebook.feed_extractor import ExtractedItem
-from facebook_monitor.facebook.feed_extractor import make_item_key_aliases
+from facebook_monitor.facebook.extracted_item import ExtractedItem
+from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.scroll_controls import begin_comment_load_more_guard
 from facebook_monitor.facebook.scroll_controls import begin_comment_load_more_guard_async
 from facebook_monitor.facebook.scroll_controls import capture_comment_scroll_snapshot
@@ -43,6 +43,10 @@ class CommentCollectionMeta:
     filtered_non_post_count: int = 0
     article_element_count: int = 0
     comments_with_comment_id_count: int = 0
+    filtered_out_of_scope_count: int = 0
+    comment_search_root_strategy: str = ""
+    current_route_post_id: str = ""
+    current_route_matches_target: bool = False
     mode: str = "comments_visible_window"
     attempted: bool = False
     attempts: int = 0
@@ -77,6 +81,10 @@ class CommentCollectionMeta:
             "filteredNonPostCount": self.filtered_non_post_count,
             "articleElementCount": self.article_element_count,
             "commentsWithCommentIdCount": self.comments_with_comment_id_count,
+            "filteredOutOfScopeCount": self.filtered_out_of_scope_count,
+            "commentSearchRootStrategy": self.comment_search_root_strategy,
+            "currentRoutePostId": self.current_route_post_id,
+            "currentRouteMatchesTarget": self.current_route_matches_target,
             "stopReason": self.stop_reason,
         }
 
@@ -95,6 +103,7 @@ class CommentExtractRoundStats:
     filtered_non_post_count: int = 0
     article_element_count: int = 0
     comments_with_comment_id_count: int = 0
+    filtered_out_of_scope_count: int = 0
     scroll_moved: bool | None = None
     scroll_target_label: str = ""
     scroll_before_top: int | None = None
@@ -231,7 +240,7 @@ async def collect_comment_items_with_diagnostics_async(
     scroll_wait_ms: int,
     auto_load_more: bool,
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
-    """async resident 版本：跨可見視窗累積留言。"""
+    """resident main 版本：跨可見視窗累積留言。"""
 
     rounds = max(int(scroll_rounds), 0) if auto_load_more else 0
     wait_ms = max(int(scroll_wait_ms), 0)
@@ -345,6 +354,10 @@ def normalize_comment_extraction_payload(
         filtered_non_post_count=int(raw_meta.get("filteredNonPostCount") or 0),
         article_element_count=int(raw_meta.get("articleElementCount") or 0),
         comments_with_comment_id_count=int(raw_meta.get("commentsWithCommentIdCount") or 0),
+        filtered_out_of_scope_count=int(raw_meta.get("filteredOutOfScopeCount") or 0),
+        comment_search_root_strategy=str(raw_meta.get("commentSearchRootStrategy") or ""),
+        current_route_post_id=str(raw_meta.get("currentRoutePostId") or ""),
+        current_route_matches_target=bool(raw_meta.get("currentRouteMatchesTarget")),
         stop_reason=str(raw_meta.get("stopReason") or "visible_window_completed"),
     )
     return items, meta
@@ -374,6 +387,7 @@ def build_comment_round_stats(
         filtered_non_post_count=meta.filtered_non_post_count,
         article_element_count=meta.article_element_count,
         comments_with_comment_id_count=meta.comments_with_comment_id_count,
+        filtered_out_of_scope_count=meta.filtered_out_of_scope_count,
         scroll_moved=bool(action.get("moved")) if action else None,
         scroll_target_label=str(action.get("targetLabel") or "") if action else "",
         scroll_before_top=int(action.get("beforeTop") or 0) if action else None,
@@ -409,6 +423,7 @@ def build_comment_collection_meta(
         comments_with_comment_id_count=sum(
             stat.comments_with_comment_id_count for stat in round_stats
         ),
+        filtered_out_of_scope_count=sum(stat.filtered_out_of_scope_count for stat in round_stats),
         mode="comments_nested_scroll" if auto_load_more else "comments_visible_window",
         attempted=any(stat.scroll_moved is not None for stat in round_stats),
         attempts=sum(1 for stat in round_stats if stat.scroll_moved is not None),
@@ -632,12 +647,22 @@ def normalize_comment_debug_metadata(item: Mapping[str, Any]) -> dict[str, Any]:
         "source",
         "containerRole",
         "textSource",
+        "textDiagnostics",
         "textLength",
         "rawTextLength",
         "permalinkSource",
         "canonicalPermalinkCandidateCount",
         "parentPostId",
         "commentId",
+        "commentAnchorHref",
+        "routePostId",
+        "routePostIdMatchesTarget",
+        "routePostIdSource",
+        "commentScopeReason",
+        "commentSearchRoot",
+        "commentSearchRootStrategy",
+        "currentRoutePostId",
+        "currentRouteMatchesTarget",
         "linkCount",
         "author",
         "groupId",

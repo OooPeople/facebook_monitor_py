@@ -1,0 +1,37 @@
+{% macro preview_rows(rows, empty_text) %}
+  {% if rows %}
+    <ol class="preview-list">
+      {% for preview in rows %}
+        <li class="preview-row">
+          <div class="preview-row-main">
+            <div class="preview-row-copy">
+              <div class="preview-row-header">
+                <span class="preview-author">{{ preview.author_name }}</span>
+                <span class="preview-badge {{ preview.badge_kind }}">{{ preview.badge_text }}</span>
+              </div>
+              {% if preview.content_preview %}
+                <p>{{ preview.content_preview }}</p>
+              {% endif %}
+            </div>
+            <div class="preview-row-link">
+              {% if preview.permalink %}
+                <a href="{{ preview.permalink }}" target="_blank" rel="noreferrer">{{ preview.link_label }}</a>
+              {% else %}
+                <span class="missing-link">未取得連結</span>
+              {% endif %}
+            </div>
+          </div>
+        </li>
+      {% endfor %}
+    </ol>
+  {% else %}
+    <div class="preview-empty">
+      <p>{{ empty_text }}</p>
+      {% if empty_text == "尚無掃描紀錄" %}
+        <span>啟動 target 後，最近掃描到的內容會顯示在這裡。</span>
+      {% elif empty_text == "尚無命中紀錄" %}
+        <span>符合關鍵字的貼文或留言會保存於此。</span>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endmacro %}

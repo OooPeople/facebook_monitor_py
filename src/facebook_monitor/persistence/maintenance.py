@@ -17,6 +17,7 @@ class RuntimeDataCleanupResult:
     latest_scan_items: int = 0
     match_history: int = 0
     notification_events: int = 0
+    notification_outbox: int = 0
     seen_items: int = 0
 
     @property
@@ -28,6 +29,7 @@ class RuntimeDataCleanupResult:
             + self.latest_scan_items
             + self.match_history
             + self.notification_events
+            + self.notification_outbox
             + self.seen_items
         )
 
@@ -39,18 +41,19 @@ class RuntimeDataMaintenanceRepository:
         self.connection = connection
 
     def clear_runtime_data(self, *, include_seen_items: bool = True) -> RuntimeDataCleanupResult:
-        """清除本次執行前可重建資料，保留 target、config、global settings 與 profile。"""
+        """清除可重建資料，保留 target、config、profile 與持久查看紀錄。"""
 
         latest_scan_items = self._delete_all("latest_scan_items")
+        notification_outbox = self._delete_all("notification_outbox")
         notification_events = self._delete_all("notification_events")
-        match_history = self._delete_all("match_history")
         scan_runs = self._delete_all("scan_runs")
         seen_items = self._delete_all("seen_items") if include_seen_items else 0
         return RuntimeDataCleanupResult(
             scan_runs=scan_runs,
             latest_scan_items=latest_scan_items,
-            match_history=match_history,
+            match_history=0,
             notification_events=notification_events,
+            notification_outbox=notification_outbox,
             seen_items=seen_items,
         )
 

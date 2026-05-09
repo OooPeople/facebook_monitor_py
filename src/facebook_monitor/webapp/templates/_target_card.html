@@ -1,0 +1,164 @@
+{% from "_preview_rows.html" import preview_rows %}
+<article class="target target-card" id="{{ row.anchor_id }}" tabindex="-1" data-target-card data-target-id="{{ row.target.id }}">
+  <div class="target-header">
+    <div class="target-title-block">
+      <div class="target-avatar thumb" aria-hidden="true">{{ row.display_name[:1] or "?" }}</div>
+      <div>
+        <div class="target-title-line">
+          <h2>{{ row.display_name }}</h2>
+          <span class="status {{ row.status_class }}" data-card-status>{{ row.status_label }}</span>
+        </div>
+        <p class="target-subtitle" data-header-summary>{{ row.header_summary_label }}</p>
+      </div>
+    </div>
+    <div class="target-actions">
+      <span class="inline-feedback action-status" data-action-status aria-live="polite">已更新</span>
+      {% if row.scanning_supported %}
+        <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}">
+          <input type="hidden" name="return_to" value="">
+          <button type="submit">{{ row.monitoring_button_label }}</button>
+        </form>
+      {% else %}
+        <span class="muted-text">尚未接上掃描流程</span>
+      {% endif %}
+      <button type="submit" form="config-{{ row.target.id }}">儲存</button>
+      <button class="button" type="button" data-view-records-button data-target-id="{{ row.target.id }}">查看紀錄</button>
+      <button class="button" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">設定</button>
+      <details class="more-menu">
+        <summary aria-label="更多操作">⋯</summary>
+        <div class="more-menu-panel">
+          <form method="post" action="/targets/{{ row.target.id }}/delete" onsubmit="return confirm('刪除這個 target？');">
+            <input type="hidden" name="return_to" value="">
+            <button class="danger" type="submit">刪除</button>
+          </form>
+        </div>
+      </details>
+    </div>
+  </div>
+  {% if row.runtime_error %}
+    <div class="runtime-error">{{ row.runtime_error }}</div>
+  {% endif %}
+  {% if row.runtime_skip_reason %}
+    <div class="runtime-note">{{ row.runtime_skip_reason }}</div>
+  {% endif %}
+
+  <dl class="target-collapsed-summary field-grid field-grid--summary" data-collapsed-summary hidden>
+    {% for summary_section in row.card_summary.sections %}
+      <div class="target-collapsed-summary-field field-grid-cell">
+        <dt>{{ summary_section.label }}</dt>
+        <dd>
+          {% for summary_line in summary_section.lines %}
+            <span>{{ summary_line }}</span>
+          {% endfor %}
+        </dd>
+      </div>
+    {% endfor %}
+  </dl>
+
+  <div class="target-collapsible" id="target-collapsible-{{ row.target.id }}" data-target-collapsible>
+    <div class="target-body">
+      <aside class="target-settings panel">
+        <form class="config-form compact-config-form" id="config-{{ row.target.id }}" method="post" action="/targets/{{ row.target.id }}/config" data-target-id="{{ row.target.id }}" data-target-anchor="{{ row.anchor_id }}">
+          <input type="hidden" name="return_to" value="">
+          <div class="section-title">
+            <h3>關鍵字與設定</h3>
+          </div>
+          <label>
+            包含關鍵字
+            <textarea name="include_keywords" rows="2">{{ row.include_text }}</textarea>
+          </label>
+          <label>
+            排除關鍵字
+            <textarea name="exclude_keywords" rows="2">{{ row.exclude_text }}</textarea>
+          </label>
+          <div class="settings-summary" aria-label="設定摘要">
+            {% for summary_line in row.settings_summary.lines %}
+              {% set summary_parts = summary_line.split("：", 1) %}
+              <div class="settings-summary-row">
+                <span class="settings-summary-icon" aria-hidden="true">
+                  {% if loop.index == 1 %}
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M18.5 12a6.5 6.5 0 1 1-2-4.68"/>
+                      <path d="M18.1 5.1l-.35 4.35-4.35-.35"/>
+                    </svg>
+                  {% elif loop.index == 2 %}
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <circle cx="12" cy="12" r="7"/>
+                      <circle cx="12" cy="12" r="2"/>
+                      <path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>
+                    </svg>
+                  {% elif loop.index == 3 %}
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M7 8h10M7 12h10M7 16h6"/>
+                      <path d="m16 14 3 3 3-3"/>
+                    </svg>
+                  {% elif loop.index == 4 %}
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M7 4v16M7 20l-3-3M7 20l3-3"/>
+                      <path d="M17 20V4M17 4l-3 3M17 4l3 3"/>
+                    </svg>
+                  {% else %}
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+                      <path d="M10 21h4"/>
+                    </svg>
+                  {% endif %}
+                </span>
+                <span class="settings-summary-copy">
+                  <span class="settings-summary-label">{{ summary_parts[0] }}：</span>
+                  <span class="settings-summary-value">{{ summary_parts[1] if summary_parts|length > 1 else "" }}</span>
+                </span>
+              </div>
+            {% endfor %}
+          </div>
+          <button class="settings-summary-button" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">
+            <span>查看全部設定</span>
+            <span aria-hidden="true">›</span>
+          </button>
+          <span class="inline-feedback form-status" data-dirty-status aria-live="polite">尚未儲存</span>
+        </form>
+      </aside>
+
+      <aside class="match-panel panel" data-preview-tabs data-target-id="{{ row.target.id }}">
+        <div class="preview-tab-list" role="tablist" aria-label="Target 結果預覽">
+          <button class="preview-tab active" type="button" role="tab" aria-selected="true" data-preview-tab="latest">最近掃描</button>
+          <button class="preview-tab" type="button" role="tab" aria-selected="false" data-preview-tab="hits">命中紀錄 <span data-hit-count="{{ row.target.id }}">{{ row.hit_record_total_count }}</span></button>
+        </div>
+        <div class="preview-tab-panel" data-preview-panel="latest">
+          {{ preview_rows(row.latest_scan_preview_rows, "尚無掃描紀錄") }}
+        </div>
+        <div class="preview-tab-panel" data-preview-panel="hits" hidden>
+          {{ preview_rows(row.hit_record_preview_rows, "尚無命中紀錄") }}
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="target-footer-controls">
+    <details class="debug-details scan-debug-details">
+      <summary>掃描診斷</summary>
+      <div class="debug-summary">{{ row.latest_scan_diagnostics_summary }}</div>
+      <textarea class="debug-copy-source" readonly rows="10">{{ row.latest_scan_diagnostics_text }}</textarea>
+      <button class="debug-copy-button" type="button">複製掃描診斷</button>
+    </details>
+    <div class="target-collapse-control">
+      <button
+        class="collapse-toggle"
+        type="button"
+        data-collapse-toggle
+        data-target-id="{{ row.target.id }}"
+        aria-label="收合 target"
+        title="收合 target"
+        aria-expanded="true"
+        aria-controls="target-collapsible-{{ row.target.id }}"
+      >
+        <svg class="collapse-toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  {% include "_target_settings_modal.html" %}
+  {% include "_hit_records_modal.html" %}
+</article>

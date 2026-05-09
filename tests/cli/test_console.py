@@ -1,9 +1,9 @@
-"""Phase B console tests。"""
+"""Admin console tests。"""
 
 from __future__ import annotations
 
-from scripts.phase_b_console import print_menu
-from scripts.phase_b_console import prompt_scan_group_id
+from scripts.admin.console import print_menu
+from scripts.admin.console import prompt_scan_group_id
 
 
 def test_print_menu_contains_core_actions(capsys) -> None:

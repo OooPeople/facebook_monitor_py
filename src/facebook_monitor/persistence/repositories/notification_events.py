@@ -1,0 +1,123 @@
+"""SQLite repository implementation。"""
+
+from __future__ import annotations
+
+import sqlite3
+
+from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.persistence.row_mappers import notification_event_from_row
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
+
+
+class NotificationEventRepository:
+    """保存通知事件。"""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def add(self, event: NotificationEvent) -> int:
+        """新增通知事件並回傳 row id。"""
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO notification_events (
+                target_id, item_key, channel, status, message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.target_id,
+                event.item_key,
+                event.channel.value,
+                event.status.value,
+                event.message,
+                encode_datetime(event.created_at),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def list_by_target(self, target_id: str, limit: int = 50) -> list[NotificationEvent]:
+        """依 target id 查詢最近 notification events。"""
+
+        rows = self.connection.execute(
+            """
+            SELECT * FROM notification_events
+            WHERE target_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (target_id, limit),
+        ).fetchall()
+        return [notification_event_from_row(row) for row in rows]
+
+    def latest_by_target(self, target_id: str) -> NotificationEvent | None:
+        """查詢單一 target 最近一筆通知事件。"""
+
+        row = self.connection.execute(
+            """
+            SELECT * FROM notification_events
+            WHERE target_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (target_id,),
+        ).fetchone()
+        return notification_event_from_row(row) if row else None
+
+    def latest_by_targets(self, target_ids: list[str]) -> dict[str, NotificationEvent]:
+        """一次查詢多個 target 的最近通知事件。"""
+
+        unique_target_ids = list(dict.fromkeys(target_id for target_id in target_ids if target_id))
+        if not unique_target_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_target_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM (
+                SELECT notification_events.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY target_id
+                           ORDER BY id DESC
+                       ) AS row_number
+                FROM notification_events
+                WHERE target_id IN ({placeholders})
+            )
+            WHERE row_number = 1
+            """,
+            tuple(unique_target_ids),
+        ).fetchall()
+        events: dict[str, NotificationEvent] = {}
+        for row in rows:
+            event = notification_event_from_row(row)
+            events[event.target_id] = event
+        return events
+
+    def latest_sent_by_target_item_keys(
+        self,
+        target_id: str,
+        item_keys: list[str],
+    ) -> dict[str, NotificationEvent]:
+        """依 target 與 item keys 查詢每個 item 最近成功通知事件。"""
+
+        unique_keys = list(dict.fromkeys(key for key in item_keys if key))
+        if not unique_keys:
+            return {}
+        placeholders = ",".join("?" for _ in unique_keys)
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM notification_events
+            WHERE target_id = ?
+              AND status = ?
+              AND item_key IN ({placeholders})
+            ORDER BY id DESC
+            """,
+            (target_id, NotificationStatus.SENT.value, *unique_keys),
+        ).fetchall()
+        events: dict[str, NotificationEvent] = {}
+        for row in rows:
+            event = notification_event_from_row(row)
+            events.setdefault(event.item_key, event)
+        return events
+

@@ -1,8 +1,9 @@
-"""Phase B feed extractor tests。"""
+"""Feed extractor tests。"""
 
 from __future__ import annotations
 
 from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_extractor import normalize_debug_metadata
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
 from facebook_monitor.facebook.permalink import is_comment_permalink_href
@@ -165,6 +166,60 @@ def test_feed_dom_script_contains_permalink_warmup_and_text_cleanup() -> None:
     assert "collapseRepeatedAdjacentText" in POST_LIKE_ITEMS_SCRIPT
     assert "expandCollapsedPostText" in POST_LIKE_ITEMS_SCRIPT
     assert "expandCount" in POST_LIKE_ITEMS_SCRIPT
+    assert "collectLinkDiagnostics" in POST_LIKE_ITEMS_SCRIPT
+    assert "linkDiagnostics" in POST_LIKE_ITEMS_SCRIPT
+    assert "collectPermalinkWarmupDiagnostics" in POST_LIKE_ITEMS_SCRIPT
+    assert "warmupDiagnostics" in POST_LIKE_ITEMS_SCRIPT
+    assert "collectWarmupAnchorDetails" in POST_LIKE_ITEMS_SCRIPT
+    assert "anchorDetails" in POST_LIKE_ITEMS_SCRIPT
+    assert "isFacebookHomeHref" in POST_LIKE_ITEMS_SCRIPT
+    assert "isLikelyHeaderTimestampWarmupAnchor" in POST_LIKE_ITEMS_SCRIPT
+    assert "isLikelyObfuscatedTimestampAnchorText" in POST_LIKE_ITEMS_SCRIPT
+    assert "likelyHeaderTimestamp" in POST_LIKE_ITEMS_SCRIPT
+    assert "const nodes = sortElementsByViewportTop(candidateNodes)" in POST_LIKE_ITEMS_SCRIPT
+    assert "domPosition" in POST_LIKE_ITEMS_SCRIPT
+    assert "domIndex" in POST_LIKE_ITEMS_SCRIPT
+    assert "addTextSnippetWithOverlap" in POST_LIKE_ITEMS_SCRIPT
+
+
+def test_normalize_debug_metadata_preserves_link_diagnostics() -> None:
+    """posts debug metadata 會保留連結分類診斷，但不改抽取語義。"""
+
+    metadata = normalize_debug_metadata(
+        {
+            "linkCount": 2,
+            "linkDiagnostics": {
+                "total": 2,
+                "kindCounts": {"profile": 1, "hashtag": 1},
+                "samples": [{"kind": "profile", "href": "https://www.facebook.com/x"}],
+            },
+            "warmupDiagnostics": {
+                "total": 1,
+                "acceptedCount": 0,
+                "rejectedReasonCounts": {"user_profile": 1},
+                "samples": [
+                    {
+                        "reason": "user_profile",
+                        "anchorDetails": {"rawHref": "/groups/1/user/2/"},
+                    }
+                ],
+            },
+            "firstSeenRound": 2,
+            "roundItemIndex": 1,
+            "collectionIndex": 3,
+            "domIndex": 4,
+            "domPosition": {"viewportTop": 20, "documentTop": 120, "height": 48},
+        }
+    )
+
+    assert metadata["linkCount"] == 2
+    assert metadata["linkDiagnostics"]["kindCounts"] == {"profile": 1, "hashtag": 1}
+    assert metadata["warmupDiagnostics"]["rejectedReasonCounts"] == {"user_profile": 1}
+    assert metadata["warmupDiagnostics"]["samples"][0]["anchorDetails"]["rawHref"]
+    assert metadata["firstSeenRound"] == 2
+    assert metadata["roundItemIndex"] == 1
+    assert metadata["collectionIndex"] == 3
+    assert metadata["domPosition"]["documentTop"] == 120
 
 
 def test_feed_dom_script_filters_empty_permalink_only_candidates() -> None:

@@ -52,7 +52,7 @@ def build_stable_text_signature(value: object) -> str:
 
 
 def build_legacy_text_fingerprint(raw_text: str) -> str:
-    """保留 Phase 0 舊版文字 fingerprint，讓舊 seen row 仍可擋重複通知。"""
+    """保留早期 probe 舊版文字 fingerprint，讓舊 seen row 仍可擋重複通知。"""
 
     text = " ".join(raw_text.split()).lower()
     text = re.sub(r"\b\d+\s*(分鐘|小時|天|週|月|年|m|h|d|w|mo|y)\b", "", text)
@@ -104,7 +104,7 @@ def build_fallback_id(item: ScanItemIdentity) -> str:
 
 
 def build_legacy_item_key(item: ScanItemIdentity) -> str:
-    """建立 Phase 0 舊版 sha256 key，避免既有 seen 資料失效。"""
+    """建立早期 probe 舊版 sha256 key，避免既有 seen 資料失效。"""
 
     normalized_permalink = normalize_permalink(item.permalink)
     normalized = normalized_permalink or build_legacy_text_fingerprint(item.text)

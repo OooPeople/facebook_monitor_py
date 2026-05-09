@@ -8,20 +8,27 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 
 from facebook_monitor.application.services import ScanApplicationService
 from facebook_monitor.application.services import TargetApplicationService
-from facebook_monitor.persistence.sqlite import LatestScanItemRepository
-from facebook_monitor.persistence.sqlite import GlobalNotificationSettingsRepository
-from facebook_monitor.persistence.sqlite import MatchHistoryRepository
-from facebook_monitor.persistence.sqlite import NotificationEventRepository
-from facebook_monitor.persistence.sqlite import ScanRunRepository
-from facebook_monitor.persistence.sqlite import SeenItemRepository
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import TargetConfigRepository
-from facebook_monitor.persistence.sqlite import TargetRepository
-from facebook_monitor.persistence.sqlite import TargetRuntimeStateRepository
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
+from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
+from facebook_monitor.persistence.repositories.global_notification_settings import (
+    GlobalNotificationSettingsRepository,
+)
+from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
+from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
+from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
+from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
+from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
+from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.repositories.target_runtime_state import (
+    TargetRuntimeStateRepository,
+)
+from facebook_monitor.persistence.schema import initialize_schema
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 
 
@@ -37,8 +44,10 @@ class RepositoryBundle:
     latest_scan_items: LatestScanItemRepository
     scan_runs: ScanRunRepository
     notification_events: NotificationEventRepository
+    notification_outbox: NotificationOutboxRepository
     global_notification_settings: GlobalNotificationSettingsRepository
     maintenance: RuntimeDataMaintenanceRepository
+    dashboard_revision: DashboardRevisionRepository
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,24 @@ class ApplicationContext:
 
     repositories: RepositoryBundle
     services: ServiceBundle
+    after_commit_hooks: list[Callable[[], None]]
+    after_commit_hook_keys: set[str]
+
+    def run_after_commit(self, hook: Callable[[], None]) -> None:
+        """註冊 DB commit 成功後才執行的副作用。"""
+
+        self.after_commit_hooks.append(hook)
+
+    def run_after_commit_once(self, key: str, hook: Callable[[], None]) -> None:
+        """同一 application context 內以 key 去重註冊 after-commit hook。"""
+
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise ValueError("after-commit hook key is required")
+        if normalized_key in self.after_commit_hook_keys:
+            return
+        self.after_commit_hook_keys.add(normalized_key)
+        self.after_commit_hooks.append(hook)
 
 
 def build_repositories(connection: sqlite3.Connection) -> RepositoryBundle:
@@ -69,8 +96,10 @@ def build_repositories(connection: sqlite3.Connection) -> RepositoryBundle:
         latest_scan_items=LatestScanItemRepository(connection),
         scan_runs=ScanRunRepository(connection),
         notification_events=NotificationEventRepository(connection),
+        notification_outbox=NotificationOutboxRepository(connection),
         global_notification_settings=GlobalNotificationSettingsRepository(connection),
         maintenance=RuntimeDataMaintenanceRepository(connection),
+        dashboard_revision=DashboardRevisionRepository(connection),
     )
 
 
@@ -95,24 +124,43 @@ def build_application_context(connection: sqlite3.Connection) -> ApplicationCont
     return ApplicationContext(
         repositories=repositories,
         services=build_services(repositories),
+        after_commit_hooks=[],
+        after_commit_hook_keys=set(),
     )
 
 
 class SqliteApplicationContext:
     """以 context manager 管理 SQLite application context。"""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, initialize_schema_on_enter: bool = True) -> None:
         self.db_path = db_path
+        self.initialize_schema_on_enter = initialize_schema_on_enter
         self.sqlite = SqliteConnection(db_path)
         self.context: ApplicationContext | None = None
 
     def __enter__(self) -> ApplicationContext:
         sqlite_context = self.sqlite.__enter__()
         connection = sqlite_context.require_connection()
-        initialize_schema(connection)
+        if self.initialize_schema_on_enter:
+            initialize_schema(connection)
         self.context = build_application_context(connection)
         return self.context
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        self.sqlite.__exit__(exc_type, exc, traceback)
-        self.context = None
+        connection = self.sqlite.connection
+        try:
+            if connection is None:
+                return
+            if exc_type is None:
+                connection.commit()
+                if self.context is not None:
+                    for hook in tuple(self.context.after_commit_hooks):
+                        hook()
+                connection.commit()
+            else:
+                connection.rollback()
+        finally:
+            if connection is not None:
+                connection.close()
+            self.sqlite.connection = None
+            self.context = None

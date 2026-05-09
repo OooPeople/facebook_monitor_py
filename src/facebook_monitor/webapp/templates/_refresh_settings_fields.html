@@ -1,0 +1,40 @@
+{% set has_row = row is defined %}
+{% set fixed_checked = (has_row and row.refresh_mode == "fixed") or not has_row %}
+{% set floating_checked = has_row and row.refresh_mode == "floating" %}
+{% set fixed_value = row.fixed_refresh_value if has_row else target_defaults.fixed_refresh_sec %}
+{% set min_value = row.min_refresh_value if has_row else target_defaults.min_refresh_sec %}
+{% set max_value = row.max_refresh_value if has_row else target_defaults.max_refresh_sec %}
+{% set config_form_id = "config-" ~ row.target.id if has_row else "" %}
+<div class="refresh-settings" data-refresh-form>
+  <div class="field-caption">刷新模式</div>
+  <div class="refresh-mode-grid">
+    <label class="radio option-card">
+      <input name="refresh_mode" type="radio" value="fixed" {% if config_form_id %}form="{{ config_form_id }}"{% endif %} {% if fixed_checked %}checked{% endif %}>
+      <span>
+        <strong>固定刷新</strong>
+        <small>每固定秒數執行一次掃描</small>
+      </span>
+    </label>
+    <label class="radio option-card">
+      <input name="refresh_mode" type="radio" value="floating" {% if config_form_id %}form="{{ config_form_id }}"{% endif %} {% if floating_checked %}checked{% endif %}>
+      <span>
+        <strong>浮動刷新</strong>
+        <small>在最小與最大秒數之間隨機刷新</small>
+      </span>
+    </label>
+  </div>
+</div>
+<div class="form-grid">
+  <label data-refresh-fixed>
+    刷新秒數
+    <input name="fixed_refresh_sec" type="number" min="5" value="{{ fixed_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+  </label>
+  <label data-refresh-floating>
+    最小刷新秒數
+    <input name="min_refresh_sec" type="number" min="5" value="{{ min_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+  </label>
+  <label data-refresh-floating>
+    最大刷新秒數
+    <input name="max_refresh_sec" type="number" min="5" value="{{ max_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+  </label>
+</div>

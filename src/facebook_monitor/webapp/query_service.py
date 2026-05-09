@@ -6,15 +6,25 @@ route 直接散讀 repository，讓 UI route 專注處理 HTTP 流程。
 
 from __future__ import annotations
 
-import hashlib
-import json
+import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.models import LatestScanItem
+from facebook_monitor.core.models import MatchHistoryEntry
+from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import ScanStatus
-from facebook_monitor.webapp.schemas import LatestScanItemRow
-from facebook_monitor.webapp.schemas import TargetRow
+from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
+from facebook_monitor.webapp.dashboard_models import TargetRow
+from facebook_monitor.webapp.hit_record_models import FullHitRecordRow
+from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
+from facebook_monitor.webapp.preview_models import LatestScanItemRow
 
 
 @dataclass(frozen=True)
@@ -25,110 +35,379 @@ class DashboardRevision:
     last_changed_at: str = ""
 
 
-def list_target_rows(db_path: Path) -> list[TargetRow]:
+class DashboardRevisionUnavailable(RuntimeError):
+    """表示 dashboard revision 暫時被 SQLite write lock 擋住。"""
+
+
+class DashboardReadUnavailable(RuntimeError):
+    """表示 dashboard read model 暫時被 SQLite write lock 擋住。"""
+
+
+@dataclass(frozen=True)
+class DashboardViewModel:
+    """保存 dashboard template 所需 read model。"""
+
+    rows: tuple[TargetRow, ...]
+
+    @property
+    def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
+        """回傳 Phase 5 sidebar 使用的 target 摘要。"""
+
+        return tuple(row.sidebar_item for row in self.rows)
+
+
+def list_target_rows(
+    db_path: Path,
+    *,
+    session_started_at: datetime | None = None,
+) -> list[TargetRow]:
     """讀取所有 target 與 config，整理為首頁 target row。"""
 
-    with SqliteApplicationContext(db_path) as app_context:
-        rows: list[TargetRow] = []
-        for target in app_context.repositories.targets.list_all():
-            config = app_context.services.targets.get_config_for_target(target)
-            runtime_state = app_context.services.targets.ensure_runtime_state(target.id)
-            latest_scan_items = tuple(
-                LatestScanItemRow(item=item)
-                for item in app_context.repositories.latest_scan_items.list_by_target(
+    return _list_target_rows(
+        db_path,
+        initialize_schema_on_enter=False,
+        session_started_at=session_started_at,
+    )
+
+
+def _list_target_rows(
+    db_path: Path,
+    *,
+    initialize_schema_on_enter: bool,
+    session_started_at: datetime | None,
+) -> list[TargetRow]:
+    """執行 target row read；必要時供空 DB 首次讀取補 schema 後重試。"""
+
+    try:
+        with SqliteApplicationContext(
+            db_path,
+            initialize_schema_on_enter=initialize_schema_on_enter,
+        ) as app_context:
+            targets = app_context.repositories.targets.list_all()
+            target_ids = [target.id for target in targets]
+            configs_by_target = _configs_by_target(app_context, targets)
+            runtime_by_target = app_context.repositories.runtime_states.list_by_targets(target_ids)
+            latest_scan_runs = app_context.repositories.scan_runs.latest_by_targets(target_ids)
+            latest_failed_scan_runs = app_context.repositories.scan_runs.latest_by_targets(
+                target_ids,
+                status=ScanStatus.FAILED,
+            )
+            latest_notification_events = (
+                app_context.repositories.notification_events.latest_by_targets(target_ids)
+            )
+            max_items_limit = max(
+                (config.max_items_per_scan for config in configs_by_target.values()),
+                default=1,
+            )
+            latest_scan_items = app_context.repositories.latest_scan_items.list_by_targets(
+                target_ids,
+                limit_per_target=max_items_limit,
+            )
+            hit_record_preview_items = app_context.repositories.match_history.list_by_targets(
+                target_ids,
+                limit_per_target=5,
+                notified_since=session_started_at,
+            )
+            hit_record_counts = app_context.repositories.match_history.count_by_targets(
+                target_ids,
+                notified_since=session_started_at,
+            )
+            return [
+                _build_target_row(
+                    target=target,
+                    config=configs_by_target[target.id],
+                    runtime_state=runtime_by_target.get(
+                        target.id,
+                        TargetRuntimeState(target_id=target.id),
+                    ),
+                    latest_scan_items=latest_scan_items.get(target.id, ())[
+                        : configs_by_target[target.id].max_items_per_scan
+                    ],
+                    hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
+                    latest_scan_run=latest_scan_runs.get(target.id),
+                    latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
+                    latest_notification_event=latest_notification_events.get(target.id),
+                    hit_record_total_count=hit_record_counts.get(target.id, 0),
+                )
+                for target in targets
+            ]
+    except sqlite3.OperationalError as exc:
+        if (
+            not initialize_schema_on_enter
+            and _is_missing_schema_error(exc)
+        ):
+            return _list_target_rows(
+                db_path,
+                initialize_schema_on_enter=True,
+                session_started_at=session_started_at,
+            )
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+
+
+def get_dashboard_view(
+    db_path: Path,
+    *,
+    session_started_at: datetime | None = None,
+) -> DashboardViewModel:
+    """讀取 dashboard read model。"""
+
+    return DashboardViewModel(
+        rows=tuple(list_target_rows(db_path, session_started_at=session_started_at))
+    )
+
+
+def list_sidebar_items(
+    db_path: Path,
+    *,
+    session_started_at: datetime | None = None,
+) -> tuple[SidebarTargetItem, ...]:
+    """讀取 sidebar partial update 所需的 target 摘要。"""
+
+    return get_dashboard_view(db_path, session_started_at=session_started_at).sidebar_items
+
+
+def get_target_card(
+    db_path: Path,
+    target_id: str,
+    *,
+    session_started_at: datetime | None = None,
+) -> TargetRow | None:
+    """讀取單一 target card read model，供 Phase 10 partial update 使用。"""
+
+    try:
+        with _read_application_context(db_path) as app_context:
+            target = app_context.repositories.targets.get(target_id)
+            if target is None:
+                return None
+            config = _configs_by_target(app_context, [target])[target.id]
+            runtime_state = app_context.repositories.runtime_states.get(
+                target.id
+            ) or TargetRuntimeState(target_id=target.id)
+            return _build_target_row(
+                target=target,
+                config=config,
+                runtime_state=runtime_state,
+                latest_scan_items=app_context.repositories.latest_scan_items.list_by_target(
                     target.id,
                     limit=config.max_items_per_scan,
+                ),
+                hit_record_preview_items=app_context.repositories.match_history.list_by_target(
+                    target.id,
+                    limit=5,
+                    notified_since=session_started_at,
+                ),
+                latest_scan_run=app_context.repositories.scan_runs.latest_by_target(target.id),
+                latest_failed_scan_run=app_context.repositories.scan_runs.latest_by_target(
+                    target.id,
+                    status=ScanStatus.FAILED,
+                ),
+                latest_notification_event=(
+                    app_context.repositories.notification_events.latest_by_target(target.id)
+                ),
+                hit_record_total_count=app_context.repositories.match_history.count_by_target(
+                    target.id,
+                    notified_since=session_started_at,
+                ),
+            )
+    except sqlite3.OperationalError as exc:
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+
+
+def _configs_by_target(
+    app_context: SqliteApplicationContext,
+    targets: list[TargetDescriptor],
+) -> dict[str, TargetConfig]:
+    """批次讀取 target 所屬 group config，舊資料才走 migration fallback。"""
+
+    group_configs = app_context.repositories.configs.list_for_groups(
+        [target.group_id for target in targets]
+    )
+    configs: dict[str, TargetConfig] = {}
+    for target in targets:
+        config = group_configs.get(target.group_id)
+        if config is None:
+            config = app_context.services.targets.get_config_for_target(target)
+        configs[target.id] = config
+    return configs
+
+
+def _build_target_row(
+    *,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    runtime_state: TargetRuntimeState,
+    latest_scan_items: list[LatestScanItem] | tuple[LatestScanItem, ...],
+    hit_record_preview_items: list[MatchHistoryEntry] | tuple[MatchHistoryEntry, ...],
+    latest_scan_run: ScanRun | None,
+    latest_failed_scan_run: ScanRun | None,
+    latest_notification_event: NotificationEvent | None,
+    hit_record_total_count: int,
+) -> TargetRow:
+    """將 repository raw models 組成 dashboard target row。"""
+
+    return TargetRow(
+        target=target,
+        config=config,
+        runtime_state=runtime_state,
+        latest_scan_run=latest_scan_run,
+        latest_failed_scan_run=latest_failed_scan_run,
+        latest_notification_event=latest_notification_event,
+        latest_scan_items=tuple(LatestScanItemRow(item=item) for item in latest_scan_items),
+        hit_record_preview_items=tuple(
+            HitRecordPreviewRow(entry=entry) for entry in hit_record_preview_items
+        ),
+        hit_record_total_count=hit_record_total_count,
+    )
+
+
+def _read_application_context(db_path: Path) -> SqliteApplicationContext:
+    """建立 Web UI read model 用 context，避免每輪 partial update 跑 schema init。"""
+
+    return SqliteApplicationContext(db_path, initialize_schema_on_enter=False)
+
+
+def _raise_dashboard_read_unavailable_if_locked(exc: sqlite3.OperationalError) -> None:
+    """將 SQLite lock 轉成 route 可處理的 read model 暫不可用錯誤。"""
+
+    if "locked" in str(exc).lower():
+        raise DashboardReadUnavailable(str(exc)) from exc
+
+
+def _is_missing_schema_error(exc: sqlite3.OperationalError) -> bool:
+    """判斷 read path 是否遇到尚未初始化的空資料庫。"""
+
+    return "no such table" in str(exc).lower()
+
+
+def target_exists(db_path: Path, target_id: str) -> bool:
+    """檢查 target 是否存在，供 API route 回傳明確 404。"""
+
+    try:
+        with _read_application_context(db_path) as app_context:
+            return app_context.repositories.targets.get(target_id) is not None
+    except sqlite3.OperationalError as exc:
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+
+
+def list_hit_record_preview_rows(
+    db_path: Path,
+    target_id: str,
+    *,
+    limit: int = 5,
+    session_started_at: datetime | None = None,
+) -> tuple[HitRecordPreviewRow, ...]:
+    """讀取單一 target 的命中紀錄 preview rows。"""
+
+    try:
+        with _read_application_context(db_path) as app_context:
+            return tuple(
+                HitRecordPreviewRow(entry=entry)
+                for entry in app_context.repositories.match_history.list_by_target(
+                    target_id,
+                    limit=limit,
+                    notified_since=session_started_at,
                 )
             )
-            rows.append(
-                TargetRow(
-                    target=target,
-                    config=config,
-                    runtime_state=runtime_state,
-                    latest_scan_run=app_context.repositories.scan_runs.latest_by_target(target.id),
-                    latest_failed_scan_run=app_context.repositories.scan_runs.latest_by_target(
-                        target.id,
-                        status=ScanStatus.FAILED,
-                    ),
-                    latest_notification_event=(
-                        app_context.repositories.notification_events.latest_by_target(target.id)
-                    ),
-                    latest_scan_items=latest_scan_items,
+    except sqlite3.OperationalError as exc:
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+
+
+def list_full_hit_record_rows(
+    db_path: Path,
+    target_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[FullHitRecordRow, ...]:
+    """讀取單一 target 的完整命中紀錄 rows。"""
+
+    bounded_offset = max(int(offset), 0)
+    try:
+        with _read_application_context(db_path) as app_context:
+            entries = app_context.repositories.match_history.list_by_target(
+                target_id,
+                limit=limit,
+                offset=bounded_offset,
+            )
+            notification_events = (
+                app_context.repositories.notification_events.latest_sent_by_target_item_keys(
+                    target_id,
+                    [entry.item_key for entry in entries],
                 )
             )
-        return rows
+    except sqlite3.OperationalError as exc:
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+    return tuple(
+        FullHitRecordRow(
+            entry=entry,
+            sequence_number=bounded_offset + index + 1,
+            notification_event=notification_events.get(entry.item_key),
+        )
+        for index, entry in enumerate(entries)
+    )
+
+
+def count_hit_records(
+    db_path: Path,
+    target_id: str,
+    *,
+    session_started_at: datetime | None = None,
+) -> int:
+    """計算單一 target 的命中紀錄筆數。"""
+
+    try:
+        with _read_application_context(db_path) as app_context:
+            return app_context.repositories.match_history.count_by_target(
+                target_id,
+                notified_since=session_started_at,
+            )
+    except sqlite3.OperationalError as exc:
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
+
+
+def clear_hit_records(db_path: Path, target_id: str) -> int:
+    """清空單一 target 的命中紀錄。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        return app_context.repositories.match_history.clear_by_target(target_id)
 
 
 def get_dashboard_revision(db_path: Path) -> DashboardRevision:
-    """產生首頁資料 revision，供前端條件式刷新使用。"""
+    """用 read-only connection 讀取首頁 revision，避免 SSE 觸發 schema init。"""
 
-    rows = list_target_rows(db_path)
-    payload: list[dict[str, object]] = []
-    changed_values: list[str] = []
-    for row in rows:
-        latest_scan = row.latest_scan_run
-        latest_notification = row.latest_notification_event
-        values = {
-            "target_id": row.target.id,
-            "target_kind": row.target.target_kind.value,
-            "group_id": row.target.group_id,
-            "parent_post_id": row.target.parent_post_id,
-            "scope_id": row.target.scope_id,
-            "target_updated_at": row.target.updated_at.isoformat(),
-            "config": {
-                "include_keywords": row.config.include_keywords,
-                "exclude_keywords": row.config.exclude_keywords,
-                "fixed_refresh_sec": row.config.fixed_refresh_sec,
-                "max_items_per_scan": row.config.max_items_per_scan,
-                "auto_load_more": row.config.auto_load_more,
-                "auto_adjust_sort": row.config.auto_adjust_sort,
-                "enable_desktop_notification": row.config.enable_desktop_notification,
-                "enable_ntfy": row.config.enable_ntfy,
-                "ntfy_topic": row.config.ntfy_topic,
-                "enable_discord_notification": row.config.enable_discord_notification,
-                "discord_webhook": row.config.discord_webhook,
-            },
-            "runtime_status": row.runtime_state.runtime_status.value,
-            "runtime_updated_at": row.runtime_state.updated_at.isoformat(),
-            "runtime_last_error": row.runtime_state.last_error,
-            "runtime_last_skip_reason": row.runtime_state.last_skip_reason,
-            "runtime_active_worker_id": row.runtime_state.active_worker_id,
-            "runtime_active_page_id": row.runtime_state.active_page_id,
-            "runtime_last_page_reloaded_at": row.runtime_state.last_page_reloaded_at.isoformat()
-            if row.runtime_state.last_page_reloaded_at
-            else "",
-            "runtime_enqueue_reason": row.runtime_state.enqueue_reason,
-            "runtime_last_enqueued_at": row.runtime_state.last_enqueued_at.isoformat()
-            if row.runtime_state.last_enqueued_at
-            else "",
-            "runtime_last_started_at": row.runtime_state.last_started_at.isoformat()
-            if row.runtime_state.last_started_at
-            else "",
-            "runtime_last_finished_at": row.runtime_state.last_finished_at.isoformat()
-            if row.runtime_state.last_finished_at
-            else "",
-            "runtime_scan_guard_count": row.runtime_state.scan_guard_count,
-            "latest_scan_finished_at": latest_scan.finished_at.isoformat()
-            if latest_scan
-            else "",
-            "latest_notification_created_at": latest_notification.created_at.isoformat()
-            if latest_notification
-            else "",
-            "latest_item_keys": [item.item.item_key for item in row.latest_scan_items],
-        }
-        payload.append(values)
-        changed_values.extend(
-            value
-            for value in (
-                values["target_updated_at"],
-                values["runtime_updated_at"],
-                values["latest_scan_finished_at"],
-                values["latest_notification_created_at"],
-            )
-            if isinstance(value, str) and value
-        )
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    if not db_path.exists():
+        return DashboardRevision(revision="0", last_changed_at="")
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower():
+            raise DashboardRevisionUnavailable(str(exc)) from exc
+        return DashboardRevision(revision="0", last_changed_at="")
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
+        row = connection.execute(
+            "SELECT revision, updated_at FROM dashboard_revision WHERE id = 1"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if "locked" in message:
+            raise DashboardRevisionUnavailable(str(exc)) from exc
+        if "no such table" not in message:
+            raise
+        return DashboardRevision(revision="0", last_changed_at="")
+    finally:
+        connection.close()
+    if row is None:
+        return DashboardRevision(revision="0", last_changed_at="")
     return DashboardRevision(
-        revision=hashlib.sha256(encoded).hexdigest(),
-        last_changed_at=max(changed_values, default=""),
+        revision=str(row["revision"]),
+        last_changed_at=row["updated_at"],
     )

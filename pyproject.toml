@@ -1,7 +1,7 @@
 [project]
 name = "facebook-monitor-py"
 version = "0.0.0"
-description = "Phase 0 spike for a Python + Playwright Facebook group monitor."
+description = "Python + Playwright Facebook posts and comments monitor."
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "playwright>=1.44",

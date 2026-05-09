@@ -1,27 +1,26 @@
 """Facebook feed extractor helpers。
 
-職責：提供 group feed 貼文候選抽取、匿名診斷與 dedupe key。
-此模組仍使用 Phase 0 驗證過的 heuristic，後續可在這裡集中調整。
+職責：提供 group feed 貼文候選抽取與匿名診斷。
+此模組保留早期可行性驗證過的 heuristic，後續可在這裡集中調整。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
-from facebook_monitor.core.dedupe import ScanItemIdentity
 from facebook_monitor.core.dedupe import aliases_overlap
 from facebook_monitor.core.dedupe import build_legacy_text_fingerprint
-from facebook_monitor.core.dedupe import get_item_key_aliases
-from facebook_monitor.core.dedupe import get_primary_item_key
-from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
 from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
 )
 from facebook_monitor.facebook.collection_policy import get_candidate_collection_limit
 from facebook_monitor.facebook.collection_policy import get_dynamic_max_windows
 from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.extracted_item import ExtractedItem
+from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.scroll_controls import capture_load_more_scroll_snapshot
 from facebook_monitor.facebook.scroll_controls import capture_load_more_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_controls import get_scroll_position as get_scroll_metrics
@@ -30,21 +29,6 @@ from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_s
 from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_controls import scroll_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_load_more_async
-
-
-@dataclass(frozen=True)
-class ExtractedItem:
-    """保存單筆貼文候選的最小資料，不負責保存原文到 log。"""
-
-    text: str
-    text_length: int
-    permalink: str
-    link_count: int
-    author: str = ""
-    debug_metadata: dict[str, Any] | None = None
-    item_kind: str = "post"
-    parent_post_id: str = ""
-    comment_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,31 +113,6 @@ class ExtractCollectionMeta:
         }
 
 
-def make_item_key(item: ExtractedItem) -> str:
-    """依 post key aliases 產生主要 dedupe key。"""
-
-    return get_primary_item_key(build_scan_item_identity(item))
-
-
-def make_item_key_aliases(item: ExtractedItem) -> tuple[str, ...]:
-    """回傳同一貼文可接受的多組 dedupe aliases。"""
-
-    return get_item_key_aliases(build_scan_item_identity(item))
-
-
-def build_scan_item_identity(item: ExtractedItem) -> ScanItemIdentity:
-    """將 extractor item 轉成核心 dedupe identity。"""
-
-    return ScanItemIdentity(
-        text=item.text,
-        permalink=item.permalink,
-        author=item.author,
-        item_kind=item.item_kind,
-        parent_post_id=item.parent_post_id,
-        comment_id=item.comment_id,
-    )
-
-
 def normalize_text_fingerprint(raw_text: str) -> str:
     """產生不含原文保存的 fallback 文字 fingerprint。"""
 
@@ -198,7 +157,7 @@ async def extract_post_like_items_with_meta_async(
     page: Any,
     candidate_limit: int,
 ) -> tuple[list[ExtractedItem], dict[str, Any]]:
-    """async resident worker 從目前頁面抽取候選貼文與 DOM 過濾統計。"""
+    """resident main worker 從目前頁面抽取候選貼文與 DOM 過濾統計。"""
 
     raw_items = await page.evaluate(
         POST_LIKE_ITEMS_SCRIPT,
@@ -229,6 +188,11 @@ def normalize_debug_metadata(item: Any) -> dict[str, Any]:
     keys = (
         "source",
         "containerRole",
+        "firstSeenRound",
+        "roundItemIndex",
+        "collectionIndex",
+        "domIndex",
+        "domPosition",
         "textSource",
         "textLength",
         "rawTextLength",
@@ -239,12 +203,14 @@ def normalize_debug_metadata(item: Any) -> dict[str, Any]:
         "parentPostId",
         "commentId",
         "linkCount",
+        "linkDiagnostics",
         "author",
         "hasStoryMessage",
         "hasCommentPermalink",
         "warmupAttempted",
         "warmupResolved",
         "warmupCandidateCount",
+        "warmupDiagnostics",
         "expandAttempted",
         "expandCount",
     )
@@ -285,13 +251,23 @@ def collect_items_with_diagnostics(
                 page,
                 candidate_limit,
             )
-            for item in round_items:
+            for round_item_index, item in enumerate(round_items):
                 item_aliases = make_item_key_aliases(item)
                 if not item_aliases:
                     continue
                 if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
                     continue
-                collected.append((item_aliases, item))
+                collected.append(
+                    (
+                        item_aliases,
+                        with_collection_debug_metadata(
+                            item,
+                            first_seen_round=round_index,
+                            round_item_index=round_item_index,
+                            collection_index=len(collected),
+                        ),
+                    )
+                )
             added_count = len(collected) - previous_count
             if added_count == 0:
                 stagnant_windows += 1
@@ -374,7 +350,7 @@ async def collect_items_with_diagnostics_async(
     scroll_rounds: int,
     scroll_wait_ms: int,
 ) -> tuple[list[ExtractedItem], list[ExtractRoundStats], ExtractCollectionMeta]:
-    """async resident worker 多輪捲動 feed，並回傳匿名診斷統計。"""
+    """resident main worker 多輪捲動 feed，並回傳匿名診斷統計。"""
 
     collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
     round_stats: list[ExtractRoundStats] = []
@@ -395,13 +371,23 @@ async def collect_items_with_diagnostics_async(
                 page,
                 candidate_limit,
             )
-            for item in round_items:
+            for round_item_index, item in enumerate(round_items):
                 item_aliases = make_item_key_aliases(item)
                 if not item_aliases:
                     continue
                 if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
                     continue
-                collected.append((item_aliases, item))
+                collected.append(
+                    (
+                        item_aliases,
+                        with_collection_debug_metadata(
+                            item,
+                            first_seen_round=round_index,
+                            round_item_index=round_item_index,
+                            collection_index=len(collected),
+                        ),
+                    )
+                )
             added_count = len(collected) - previous_count
             if added_count == 0:
                 stagnant_windows += 1
@@ -523,25 +509,19 @@ def build_collection_meta(
     )
 
 
-def count_matches(items: list[ExtractedItem], include_keywords: list[str]) -> int:
-    """Phase 0 相容入口：計算符合 include keyword 規則的 item 數量。"""
-
-    return sum(
-        1
-        for item in items
-        if evaluate_keyword_rules(item.text, include_keywords).eligible
-    )
-
-
-def find_first_matching_keyword(
+def with_collection_debug_metadata(
     item: ExtractedItem,
-    include_keywords: tuple[str, ...] | list[str],
-    exclude_keywords: tuple[str, ...] | list[str] = (),
-) -> str:
-    """Phase 0 相容入口：回傳符合監視條件時的顯示規則。"""
+    *,
+    first_seen_round: int,
+    round_item_index: int,
+    collection_index: int,
+) -> ExtractedItem:
+    """補上跨視窗收集順序診斷，不改變 item identity。"""
 
-    return evaluate_keyword_rules(
-        item.text,
-        include_keywords=include_keywords,
-        exclude_keywords=exclude_keywords,
-    ).display_rule
+    metadata = dict(item.debug_metadata or {})
+    metadata["firstSeenRound"] = first_seen_round
+    metadata["roundItemIndex"] = round_item_index
+    metadata["collectionIndex"] = collection_index
+    return replace(item, debug_metadata=metadata)
+
+

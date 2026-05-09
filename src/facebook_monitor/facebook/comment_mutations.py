@@ -1,7 +1,7 @@
 """Facebook comments mutation relevance helpers。
 
 職責：保存 JS userscript 中 comments target 專用 mutation relevance 語義。
-Python resident worker 目前以固定週期 polling 掃描，沒有啟用 DOM MutationObserver；
+Python resident main worker 目前以固定週期 polling 掃描，沒有啟用 DOM MutationObserver；
 本模組先提供可測的 DOM-side 判斷腳本，供 D4/後續即時觸發接線時直接使用。
 """
 

@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import CreateGroupPostsTargetRequest
+from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.models import ScanStatus
-from facebook_monitor.worker.group_posts import WorkerFailure
-from facebook_monitor.worker.runner import WorkerOnceOptions
-from facebook_monitor.worker.runner import run_worker_once
+from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
+from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 
 
 def test_profile_lease_blocks_same_process_reentry(tmp_path: Path) -> None:
@@ -61,7 +61,7 @@ def test_one_shot_worker_reports_profile_locked_before_playwright(
     profile_dir.mkdir()
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
-            CreateGroupPostsTargetRequest(
+            UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             )
@@ -69,8 +69,8 @@ def test_one_shot_worker_reports_profile_locked_before_playwright(
 
     with acquire_profile_lease(profile_dir, "test holder"):
         with pytest.raises(WorkerFailure) as exc_info:
-            run_worker_once(
-                WorkerOnceOptions(
+            run_one_shot_scan(
+                OneShotScanOptions(
                     db_path=db_path,
                     profile_dir=profile_dir,
                     target_id=target.id,

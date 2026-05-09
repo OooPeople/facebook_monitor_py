@@ -1,0 +1,679 @@
+"""Shared scan finalize tests。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import NotificationOutboxStatus
+from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import TargetKind
+from facebook_monitor.notifications.desktop import DesktopNotificationResult
+from facebook_monitor.notifications.discord import DiscordConfig
+from facebook_monitor.notifications.discord import DiscordResult
+from facebook_monitor.notifications.ntfy import NtfyConfig
+from facebook_monitor.notifications.ntfy import NtfyResult
+from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
+from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
+from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
+from facebook_monitor.worker.scan_finalize import NormalizedScanItem
+from facebook_monitor.worker.scan_finalize import finalize_scan_items
+
+
+def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) -> None:
+    """shared finalize 會集中寫入 seen/history/latest scan 與通知事件。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄 ntfy payload，避免測試送出真實通知。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    def fake_desktop_sender(title: str, message: str) -> DesktopNotificationResult:
+        """記錄桌面通知成功結果。"""
+
+        return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
+
+    def fake_discord_sender(
+        config: DiscordConfig,
+        title: str,
+        message: str,
+    ) -> DiscordResult:
+        """記錄 Discord 通知成功結果。"""
+
+        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+                enable_desktop_notification=True,
+                enable_discord_notification=True,
+                discord_webhook="https://discord.example/webhook",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:1",
+                    alias_keys=("post:1", "legacy:1"),
+                    group_id="123",
+                    author="作者",
+                    text="這是一篇票券貼文",
+                    permalink="https://www.facebook.com/groups/123/posts/1",
+                    raw_target_kind="posts",
+                    metadata={"source": "test"},
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+            desktop_notification_sender=fake_desktop_sender,
+            discord_notification_sender=fake_discord_sender,
+        )
+
+        assert result.new_count == 1
+        assert result.matched_count == 1
+        assert result.scan_run_id > 0
+        assert result.latest_items[0].matched_keyword == "票券"
+        assert result.latest_items[0].debug_metadata == {"source": "test"}
+        history = app.repositories.match_history.list_by_target(target.id)
+        assert len(history) == 1
+        assert history[0].include_rule == "票券"
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        assert len(latest_items) == 1
+        outbox_entries = app.repositories.notification_outbox.list_pending()
+        assert {entry.channel for entry in outbox_entries} == {
+            NotificationChannel.DESKTOP,
+            NotificationChannel.NTFY,
+            NotificationChannel.DISCORD,
+        }
+        assert app.repositories.notification_events.list_by_target(target.id) == []
+
+        second_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:1",
+                    alias_keys=("post:1", "legacy:1"),
+                    group_id="123",
+                    author="作者",
+                    text="這是一篇票券貼文",
+                    permalink="https://www.facebook.com/groups/123/posts/1",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+            desktop_notification_sender=fake_desktop_sender,
+            discord_notification_sender=fake_discord_sender,
+        )
+
+        assert second_result.new_count == 0
+        assert second_result.matched_count == 1
+        assert len(app.repositories.match_history.list_by_target(target.id)) == 1
+
+    assert sent_ntfy
+    with SqliteApplicationContext(db_path) as app:
+        events = app.repositories.notification_events.list_by_target(target.id)
+        assert {event.channel for event in events} == {
+            NotificationChannel.DESKTOP,
+            NotificationChannel.NTFY,
+            NotificationChannel.DISCORD,
+        }
+        assert all(event.status == NotificationStatus.SENT for event in events)
+        assert app.repositories.notification_outbox.list_pending() == []
+
+
+def test_finalize_does_not_send_notification_when_transaction_rolls_back(
+    tmp_path: Path,
+) -> None:
+    """scan finalize 失敗 rollback 時，不得送出外部通知。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄是否真的送出通知。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    db_path = tmp_path / "app.db"
+    try:
+        with SqliteApplicationContext(db_path) as app:
+            target = app.services.targets.upsert_group_posts_target(
+                UpsertGroupPostsTargetRequest(
+                    group_id="123",
+                    canonical_url="https://www.facebook.com/groups/123",
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                )
+            )
+            config = app.services.targets.get_config_for_target(target)
+
+            def fail_replace_for_target(_target_id: str, _items: object) -> None:
+                """模擬 latest scan 寫入失敗。"""
+
+                raise RuntimeError("latest_write_failed")
+
+            app.repositories.latest_scan_items.replace_for_target = fail_replace_for_target  # type: ignore[method-assign]
+            finalize_scan_items(
+                app=app,
+                target=target,
+                config=config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:rollback",
+                        alias_keys=("post:rollback",),
+                        group_id="123",
+                        text="票券",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+                notification_sender=fake_ntfy_sender,
+            )
+    except RuntimeError as exc:
+        assert str(exc) == "latest_write_failed"
+
+    assert sent_ntfy == []
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is None
+
+
+def test_outbox_keeps_retryable_failed_notification_after_commit(
+    tmp_path: Path,
+) -> None:
+    """DB commit 成功但通知 dispatch 失敗時，outbox 保留 failed 狀態供重試。"""
+
+    def failing_ntfy_sender(_config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        """模擬外部通知 I/O 失敗。"""
+
+        raise RuntimeError("ntfy_down")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:failed",
+                    alias_keys=("post:failed",),
+                    group_id="123",
+                    text="票券",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=failing_ntfy_sender,
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        outbox_entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:failed",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+        assert outbox_entry is not None
+        assert outbox_entry.status.value == "failed"
+        assert outbox_entry.attempts == 1
+        assert outbox_entry.last_error == "ntfy_down"
+        events = app.repositories.notification_events.list_by_target(target.id)
+        assert len(events) == 1
+        assert events[0].status == NotificationStatus.FAILED
+        assert events[0].message == "ntfy_down"
+
+
+def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
+    tmp_path: Path,
+) -> None:
+    """同一輪多筆 match 只註冊一次 dispatch，不因 match 數倍增 attempts。"""
+
+    calls: list[str] = []
+
+    def failing_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        """記錄 sender 被呼叫次數並模擬外部 I/O 失敗。"""
+
+        calls.append(config.topic)
+        raise RuntimeError("down")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:a",
+                    alias_keys=("post:a",),
+                    group_id="123",
+                    text="票券 A",
+                ),
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:b",
+                    alias_keys=("post:b",),
+                    group_id="123",
+                    text="票券 B",
+                ),
+            ],
+            item_count=2,
+            metadata={"worker": "test_worker"},
+            notification_sender=failing_ntfy_sender,
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        entries = [
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                build_notification_idempotency_key(
+                    target_id=target.id,
+                    item_key=item_key,
+                    channel=NotificationChannel.NTFY,
+                )
+            )
+            for item_key in ("post:a", "post:b")
+        ]
+        events = app.repositories.notification_events.list_by_target(target.id)
+
+    assert len(calls) == 2
+    assert all(entry is not None for entry in entries)
+    assert [entry.attempts for entry in entries if entry is not None] == [1, 1]
+    assert [entry.status.value for entry in entries if entry is not None] == [
+        "failed",
+        "failed",
+    ]
+    assert len(events) == 2
+    assert all(event.status == NotificationStatus.FAILED for event in events)
+
+
+def test_outbox_failed_result_records_one_event_per_entry(
+    tmp_path: Path,
+) -> None:
+    """sender 回傳 failed result 時，每筆 outbox 只產生一筆 failed event。"""
+
+    calls: list[str] = []
+
+    def failed_result_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        calls.append(config.topic)
+        return NtfyResult(ok=False, status_code=500, message="failed_result")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:failed-a",
+                    alias_keys=("post:failed-a",),
+                    group_id="123",
+                    text="票券 A",
+                ),
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:failed-b",
+                    alias_keys=("post:failed-b",),
+                    group_id="123",
+                    text="票券 B",
+                ),
+            ],
+            item_count=2,
+            metadata={"worker": "test_worker"},
+            notification_sender=failed_result_sender,
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        events = app.repositories.notification_events.list_by_target(target.id)
+
+    assert len(calls) == 2
+    assert len(events) == 2
+    assert all(event.status == NotificationStatus.FAILED for event in events)
+    assert all(event.message == "failed_result" for event in events)
+
+
+def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> None:
+    """新 match commit 只送 pending，不會順手重試舊 failed outbox。"""
+
+    calls: list[str] = []
+    fail_first = True
+
+    def sometimes_failing_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        """第一輪失敗，第二輪成功，用來驗證 failed 不會被自動重試。"""
+
+        calls.append(config.topic)
+        if fail_first:
+            raise RuntimeError("first_down")
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:failed-before",
+                    alias_keys=("post:failed-before",),
+                    group_id="123",
+                    text="票券",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=sometimes_failing_sender,
+        )
+
+    fail_first = False
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:new",
+                    alias_keys=("post:new",),
+                    group_id="123",
+                    text="票券",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=sometimes_failing_sender,
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        failed_entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:failed-before",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+        new_entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:new",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+
+    assert len(calls) == 2
+    assert failed_entry is not None
+    assert failed_entry.status.value == "failed"
+    assert failed_entry.attempts == 1
+    assert new_entry is not None
+    assert new_entry.status.value == "sent"
+    assert new_entry.attempts == 1
+
+
+def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None:
+    """failed outbox 只有明確呼叫 retry API 才會重試。"""
+
+    calls: list[str] = []
+    fail_first = True
+
+    def sometimes_failing_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        calls.append(config.topic)
+        if fail_first:
+            raise RuntimeError("first_down")
+        return NtfyResult(ok=True, status_code=200, message="retry_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:retry",
+                    alias_keys=("post:retry",),
+                    group_id="123",
+                    text="票券",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=sometimes_failing_sender,
+        )
+
+    fail_first = False
+    with SqliteApplicationContext(db_path) as app:
+        retry_failed_notification_outbox(app=app, ntfy_sender=sometimes_failing_sender)
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:retry",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+
+    assert len(calls) == 2
+    assert entry is not None
+    assert entry.status.value == "sent"
+    assert entry.attempts == 2
+
+
+def test_stale_failed_retry_processing_does_not_become_pending_dispatch(
+    tmp_path: Path,
+) -> None:
+    """failed retry claim 崩潰後只回到 failed，不會被一般 pending dispatch 重送。"""
+
+    calls: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        calls.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=build_notification_idempotency_key(
+                    target_id=target.id,
+                    item_key="post:failed-retry",
+                    channel=NotificationChannel.NTFY,
+                ),
+                target_id=target.id,
+                item_key="post:failed-retry",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+                endpoint="phase0test",
+                status=NotificationOutboxStatus.FAILED,
+                attempts=1,
+                last_error="previous_down",
+            )
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        claimed = app.repositories.notification_outbox.claim_failed()
+        assert len(claimed) == 1
+        assert claimed[0].status == NotificationOutboxStatus.PROCESSING_FAILED
+        app.repositories.notification_outbox.connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = '2000-01-01T00:00:00+00:00'
+            WHERE id = ?
+            """,
+            (claimed[0].id,),
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        recovered_count = app.repositories.notification_outbox.recover_stale_processing(
+            older_than_seconds=60
+        )
+        dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
+        target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert target is not None
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:failed-retry",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+
+    assert recovered_count == 1
+    assert calls == []
+    assert entry is not None
+    assert entry.status == NotificationOutboxStatus.FAILED
+    assert entry.attempts == 1
+
+
+def test_outbox_dispatch_is_idempotent_for_sent_event(tmp_path: Path) -> None:
+    """同一 outbox event 已 sent 後，重跑 dispatcher 不會重複送通知。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄通知發送次數。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                include_keywords=("票券",),
+                enable_ntfy=True,
+                ntfy_topic="phase0test",
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:idempotent",
+                    alias_keys=("post:idempotent",),
+                    group_id="123",
+                    text="票券",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
+
+    assert len(sent_ntfy) == 1

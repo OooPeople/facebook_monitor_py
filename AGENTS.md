@@ -28,7 +28,7 @@
 - 不可使用使用者日常 Chrome profile。
 - 不可把 profile 放到 `data/profiles/` 以外的位置；此路徑除了 `.gitkeep` 以外應維持 git ignored。
 - 不可把 runtime logs 放到 `logs/` 以外的位置；此路徑除了 `.gitkeep` 以外應維持 git ignored。
-- Phase 0 最小依賴以外的新第三方套件，新增前必須先詢問。
+- 既有最小依賴以外的新第三方套件，新增前必須先詢問。
 - 不要機械式逐行翻譯 userscript；只能把它當作行為參考。
 - 不可直接改寫 JS 版成熟常數、字串 label、判斷條件，只因為 Python 版「目前看起來也能動」。
 - 不可在未對照 JS 成熟行為前，自行發明替代邏輯來填空。
@@ -40,8 +40,11 @@
 
 ## 工作規則
 
-- Phase 0 通過前，優先寫小而可測的 scripts。
+- 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
+- scripts 已依角色分層：正式入口在 `scripts/start/`，低頻管理在 `scripts/admin/`，除錯工具在 `scripts/debug/`，內部工具在 `scripts/internal/`。
+- 不得新增新的 `phase_*` script；檔名必須反映角色與用途。
+- 不得把 debug / internal 工具描述成正式日常入口；新功能預設先接 Web UI + async resident 正式主路徑。
 - 每次 probe 失敗都要留下清楚分類：login/session、headless DOM、page load、selector/extractor、notification 或 unknown。
 - headless 失敗時，先測 persistent-context 行為，再評估 headed compatibility mode。
 - 不要提前建立正式 DB / repository / UI 架構。
@@ -53,6 +56,7 @@
 - `target_configs` 只允許作為舊資料 migration fallback；新正式功能不得直接讀寫，正式 config store 一律是 `group_configs`。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。
 - Python 版刻意偏離 JS 的預設值必須集中於 `src/facebook_monitor/core/defaults.py`，不得在 Web UI、service 或 worker 另寫一套常數。
+- UI 重構時不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
 
 ---
 
@@ -60,8 +64,9 @@
 
 - `.python-version`：固定 uv / Python 工具優先使用 Python 3.13。
 - `scripts/uv.ps1`：專案限定 uv wrapper。
-- `scripts/phase0_setup_login.py`：headed login / setup probe。
-- `scripts/phase0_worker_probe.py`：headless worker probe。
+- `scripts/start/webui.py`：正式日常入口，啟動 Web UI 與背景掃描服務。
+- `scripts/start/setup_login.py`：正式維運入口，開啟專用 profile 供登入與檢查。
+- `docs/tooling.md`：scripts / CLI 工具角色索引。
 
 ---
 
@@ -197,12 +202,58 @@ async resident worker 是唯一正式產品主路徑。one-shot mode 與 sync re
 - 不得為了「看起來支援」而在 fallback/debug path 補半套 parity。
 - 若使用者或 review 明確要求 fallback/debug path parity，必須作為獨立完整任務處理並寫明範圍。
 
-### 3. 若 UI 暫時與 JS 版不同
+### 4. 若 UI 暫時與 JS 版不同
 若因為過渡期需要保留不同 UX，必須在 review / handoff 中明講：
 
 - 差異點
 - 暫時原因
 - 最終要回到哪個語義
+
+### 5. UI 重構邊界
+進入 UI 重構時，改動範圍應限制在：
+
+- `src/facebook_monitor/webapp/routes/*`
+- `src/facebook_monitor/webapp/templates/*`
+- `src/facebook_monitor/webapp/static/*`
+- `src/facebook_monitor/webapp/query_service.py`
+- `src/facebook_monitor/webapp/*_presenter.py`
+- 必要的 `form_models` / `schemas`
+- 必要的 application command DTO
+
+UI 重構不得順手重寫下列核心線：
+
+- `src/facebook_monitor/worker/scan_finalize.py`
+- `src/facebook_monitor/worker/posts_pipeline.py`
+- `src/facebook_monitor/worker/comments_pipeline.py`
+- `src/facebook_monitor/worker/resident_main*`
+- `src/facebook_monitor/notifications/outbox_service.py`
+- `src/facebook_monitor/persistence/repositories/notification_outbox.py`
+- `src/facebook_monitor/facebook/feed_dom.py`
+- `src/facebook_monitor/facebook/comment_dom.py`
+- scheduler runtime / queue / recovery
+
+若 UI 需求看似需要修改上述核心線，必須先把原因、風險與替代方案講清楚，再取得使用者確認。
+
+UI 重構不得讓已封口的架構邊界回歸：
+
+- Web UI 不得重新暴露 one-shot mode。
+- 不得新增全域 scheduler 日常主開關。
+- 不得新增 direct notification dispatch path。
+- 不得把 failed outbox retry 接回一般 scan commit。
+- 不得把 `target_configs` 重新變成正式設定來源。
+
+### 6. UI 設計參考檔使用規則
+`docs/ui_refactor/reference_ui.html` 是 dashboard 視覺與版面語義參考，不是可直接覆蓋目前專案的實作來源。
+
+使用這份 HTML 調整 UI 時必須遵守：
+
+- 每次修改 dashboard UI 前，先對照 `docs/ui_refactor/reference_ui.html` 的版面、比例、色彩、陰影與資訊層級。
+- 不得直接整份複製 reference HTML / CSS 覆蓋現有 FastAPI + Jinja template + vanilla CSS/JS 架構。
+- 必須保留既有 endpoint、Jinja partial、partial update、card collapse、hit records modal、sidebar state 與 `data-*` 互動契約。
+- 優先修改 `src/facebook_monitor/webapp/templates/*` 與 `src/facebook_monitor/webapp/static/styles/*`；只有互動契約真的需要時，才小幅修改 `src/facebook_monitor/webapp/static/dashboard/*.js`。
+- reference UI 的主內容中央卡片感、淡冷灰頁面、乾淨白卡、輕陰影、sidebar item 陰影與貼文項目陰影可作為視覺方向。
+- 展開 target 卡片內左右區塊應維持接近黃金比例：左側「關鍵字與設定」約 38%，右側「最近掃描 / 命中紀錄」約 62%。
+- 若刻意偏離 reference UI，handoff 中需說明偏離點與原因。
 
 ---
 
@@ -248,7 +299,7 @@ Python 版優先維持這種方向：
 1. 先讓 posts target 的語義完整
 2. 再補 auto_adjust_sort / auto_load_more 這種目前已露出的半移植功能
 3. 再補 notification 多通道完整化
-4. 再補 comments target end-to-end
+4. 維持 comments target end-to-end 行為，不因後續修改退化
 5. 最後才補 polish / UI 美化 / 次要便利功能
 
 ---

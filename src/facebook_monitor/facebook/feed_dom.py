@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from facebook_monitor.facebook.text_snippet_dom import TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
 
 POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
             const feedRoots = [
@@ -58,6 +59,7 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                 .replace(/[\\u200B-\\u200D\\uFEFF]/g, "")
                 .replace(/\\s+/g, " ")
                 .trim();
+""" + TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT + """
             const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
             const isVisible = (element) => {
                 if (!(element instanceof HTMLElement)) return false;
@@ -154,9 +156,9 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                             if (relativeTop > upperLimit) continue;
                         }
                         const text = cleanExtractedText(node.innerText || node.textContent || "");
-                        if (text.length < minLength || seen.has(text)) continue;
-                        seen.add(text);
-                        snippets.push(text);
+                        if (text.length < minLength) continue;
+                        const addResult = addTextSnippetWithOverlap(snippets, seen, text);
+                        if (!addResult.included) continue;
                         if (snippets.length >= maxItems) return snippets;
                     }
                 }
@@ -411,6 +413,53 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                     /^(?:\\d{4}年)?\\d{1,2}月\\d{1,2}日(?:\\s*[\\d:APMapm]+)?$/u.test(text)
                 );
             };
+            const isExpectedGroupHomeHref = (value, expectedGroupId = "") => {
+                const url = normalizeFacebookUrl(value);
+                if (!url) return false;
+                const pathname = url.pathname.replace(/\\/+$/, "");
+                const match = pathname.match(/^\\/groups\\/([^/?#]+)$/i);
+                if (!match) return false;
+                return !expectedGroupId || match[1] === expectedGroupId;
+            };
+            const isFacebookHomeHref = (value) => {
+                const url = normalizeFacebookUrl(value);
+                if (!url) return false;
+                const pathname = url.pathname.replace(/\\/+$/, "");
+                return pathname === "";
+            };
+            const isLikelyObfuscatedTimestampAnchorText = (value) => {
+                const compact = normalizeText(value).replace(/\\s+/g, "");
+                if (!compact) return false;
+                return (
+                    /(?:剛剛|昨天|今天|Now)/iu.test(compact) ||
+                    /\\d{1,4}.*(?:分鐘|小時|天|週|個月|月|年|分|時)/u.test(compact) ||
+                    /\\d{1,4}.*(?:m|min|h|hr|hrs|d|w|mo|y)/i.test(compact)
+                );
+            };
+            const isLikelyHeaderTimestampWarmupAnchor = (
+                anchor,
+                href,
+                text,
+                relativeTop,
+                expectedGroupId = ""
+            ) => {
+                if (!(anchor instanceof HTMLAnchorElement)) return false;
+                if (anchor.getAttribute("aria-hidden") === "true") return false;
+                if (anchor.getAttribute("role") !== "link") return false;
+                if (relativeTop < -16 || relativeTop > 140) return false;
+                if (!isExpectedGroupHomeHref(href, expectedGroupId)) return false;
+                const rawHref = anchor.getAttribute("href") || "";
+                if (
+                    rawHref &&
+                    !isFacebookHomeHref(rawHref) &&
+                    !isExpectedGroupHomeHref(rawHref, expectedGroupId)
+                ) {
+                    return false;
+                }
+                const rect = anchor.getBoundingClientRect();
+                if (rect.height > 32 || rect.width > 96) return false;
+                return isLikelyObfuscatedTimestampAnchorText(text);
+            };
             const isLikelyWarmupUtilityHref = (value, expectedGroupId = "") => {
                 const url = normalizeFacebookUrl(value);
                 if (!url) return true;
@@ -430,6 +479,142 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                     if (match && match[1] !== expectedGroupId) return true;
                 }
                 return false;
+            };
+            const buildDiagnosticHref = (value) => {
+                const url = normalizeFacebookUrl(value);
+                if (!url) return String(value || "").slice(0, 180);
+                const diagnosticUrl = new URL(`${url.origin}${url.pathname}`);
+                const keepParams = [
+                    "story_fbid",
+                    "multi_permalinks",
+                    "set",
+                    "id",
+                    "group_id",
+                    "group",
+                    "idorvanity",
+                    "comment_id",
+                    "reply_comment_id",
+                ];
+                for (const key of keepParams) {
+                    const values = url.searchParams.getAll(key);
+                    for (const item of values) {
+                        diagnosticUrl.searchParams.append(key, item);
+                    }
+                }
+                return diagnosticUrl.toString();
+            };
+            const collectDiagnosticAttributeNames = (element) => {
+                if (!(element instanceof HTMLElement)) return [];
+                return Array.from(element.attributes)
+                    .map((attribute) => attribute.name)
+                    .filter((name) => (
+                        name === "role" ||
+                        name === "tabindex" ||
+                        name === "aria-label" ||
+                        name === "aria-hidden" ||
+                        name === "attributionsrc" ||
+                        name.startsWith("data-")
+                    ))
+                    .slice(0, 16);
+            };
+            const buildDiagnosticDomPath = (element, root) => {
+                if (!(element instanceof HTMLElement)) return "";
+                const parts = [];
+                let current = element;
+                while (current instanceof HTMLElement && current !== root && parts.length < 5) {
+                    const tag = current.tagName.toLowerCase();
+                    const role = current.getAttribute("role");
+                    const attrs = [];
+                    if (role) attrs.push(`role=${role}`);
+                    if (current.hasAttribute("aria-label")) attrs.push("aria-label");
+                    const dataKeys = collectDiagnosticAttributeNames(current)
+                        .filter((name) => name.startsWith("data-"))
+                        .slice(0, 2);
+                    attrs.push(...dataKeys);
+                    parts.unshift(attrs.length ? `${tag}[${attrs.join(",")}]` : tag);
+                    current = current.parentElement;
+                }
+                if (current === root) parts.unshift("container");
+                return parts.join(" > ");
+            };
+            const collectWarmupAnchorDetails = (anchor, container, href, relativeTop) => {
+                const rect = anchor.getBoundingClientRect();
+                const rawHref = anchor.getAttribute("href") || "";
+                const innerText = normalizeText(anchor.innerText || "");
+                const textContent = normalizeText(anchor.textContent || "");
+                const ariaLabel = normalizeText(anchor.getAttribute("aria-label") || "");
+                const parentText = normalizeText(
+                    anchor.parentElement?.innerText ||
+                    anchor.parentElement?.textContent ||
+                    ""
+                );
+                return {
+                    rawHref: buildDiagnosticHref(rawHref || href),
+                    resolvedHref: buildDiagnosticHref(href),
+                    role: anchor.getAttribute("role") || "",
+                    tabIndex: anchor.getAttribute("tabindex") || "",
+                    ariaHidden: anchor.getAttribute("aria-hidden") || "",
+                    ariaLabel: ariaLabel.slice(0, 120),
+                    innerText: innerText.slice(0, 120),
+                    textContent: textContent.slice(0, 120),
+                    parentText: parentText.slice(0, 160),
+                    attributeNames: collectDiagnosticAttributeNames(anchor),
+                    domPath: buildDiagnosticDomPath(anchor, container),
+                    rect: {
+                        relativeTop: Math.round(relativeTop),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                    },
+                };
+            };
+            const classifyDiagnosticHref = (href, expectedGroupId = "") => {
+                const url = normalizeFacebookUrl(href);
+                if (!url) return "non_facebook";
+                const details = extractCanonicalPermalinkFromHref(href, expectedGroupId);
+                if (details.permalink) return `canonical:${details.source || "unknown"}`;
+                const pathname = url.pathname.replace(/\\/+$/, "");
+                if (isCommentPermalinkHref(href)) return "comment_permalink";
+                if (isLikelyUserProfileHref(href)) return "profile";
+                if (/^\\/hashtag\\//i.test(pathname)) return "hashtag";
+                if (/^\\/photo(?:\\.php)?$/i.test(pathname)) return "photo_without_post_id";
+                if (/^\\/groups\\/[^/?#]+$/i.test(pathname)) return "group_home";
+                if (/^\\/l\\.php$/i.test(pathname)) return "external_redirect";
+                if (/^\\/groups\\/[^/?#]+(?:\\/.*)?$/i.test(pathname)) return "group_other";
+                return "facebook_other";
+            };
+            const collectLinkDiagnostics = (container, expectedGroupId = "") => {
+                if (!(container instanceof HTMLElement)) {
+                    return { total: 0, kindCounts: {}, samples: [] };
+                }
+                const kindCounts = {};
+                const samples = [];
+                const seen = new Set();
+                const anchors = Array.from(container.querySelectorAll('a[href]'))
+                    .filter((anchor) => anchor instanceof HTMLAnchorElement);
+                for (const anchor of anchors) {
+                    const href = String(anchor.href || anchor.getAttribute("href") || "").trim();
+                    if (!href) continue;
+                    const kind = classifyDiagnosticHref(href, expectedGroupId);
+                    kindCounts[kind] = (kindCounts[kind] || 0) + 1;
+                    const diagnosticHref = buildDiagnosticHref(href);
+                    const signature = `${kind}||${diagnosticHref}`;
+                    if (samples.length >= 8 || seen.has(signature)) continue;
+                    seen.add(signature);
+                    const canonicalDetails = extractCanonicalPermalinkFromHref(href, expectedGroupId);
+                    samples.push({
+                        kind,
+                        href: diagnosticHref,
+                        text: normalizeText(
+                            anchor.innerText ||
+                            anchor.textContent ||
+                            anchor.getAttribute("aria-label") ||
+                            ""
+                        ).slice(0, 80),
+                        hasAttributionSrc: anchor.hasAttribute("attributionsrc"),
+                        canonicalSource: canonicalDetails.source || "",
+                    });
+                }
+                return { total: anchors.length, kindCounts, samples };
             };
             const isElementInContainerUpperRegion = (element, container) => {
                 if (!(element instanceof HTMLElement) || !(container instanceof HTMLElement)) return false;
@@ -509,6 +694,13 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                     const relativeTop = anchor.getBoundingClientRect().top - containerRect.top;
                     const canonicalDetails = extractCanonicalPermalinkFromHref(href, expectedGroupId);
                     const likelyTimestamp = isLikelyTimestampAnchorText(text);
+                    const likelyHeaderTimestamp = isLikelyHeaderTimestampWarmupAnchor(
+                        anchor,
+                        href,
+                        text,
+                        relativeTop,
+                        expectedGroupId
+                    );
                     const hasAttributionSrc = anchor.hasAttribute("attributionsrc");
                     if (relativeTop < -16 || relativeTop > upperRegionThreshold) continue;
                     if (isLikelyUserProfileHref(href)) continue;
@@ -516,6 +708,7 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                         !canonicalDetails.permalink &&
                         isLikelyWarmupUtilityHref(href, expectedGroupId) &&
                         !likelyTimestamp &&
+                        !likelyHeaderTimestamp &&
                         !hasAttributionSrc
                     ) {
                         continue;
@@ -530,6 +723,7 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                         relativeTop,
                         canonicalDetails,
                         likelyTimestamp,
+                        likelyHeaderTimestamp,
                         hasAttributionSrc,
                     });
                 }
@@ -540,12 +734,104 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                     if (a.likelyTimestamp !== b.likelyTimestamp) {
                         return a.likelyTimestamp ? -1 : 1;
                     }
+                    if (a.likelyHeaderTimestamp !== b.likelyHeaderTimestamp) {
+                        return a.likelyHeaderTimestamp ? -1 : 1;
+                    }
                     if (a.hasAttributionSrc !== b.hasAttributionSrc) {
                         return a.hasAttributionSrc ? -1 : 1;
                     }
                     return Math.round(a.relativeTop) - Math.round(b.relativeTop);
                 });
                 return anchors.slice(0, limit);
+            };
+            const collectPermalinkWarmupDiagnostics = (container, expectedGroupId = getCurrentGroupId(), limit = 8) => {
+                if (!(container instanceof HTMLElement)) {
+                    return { total: 0, acceptedCount: 0, rejectedReasonCounts: {}, samples: [] };
+                }
+                const containerRect = container.getBoundingClientRect();
+                const upperRegionThreshold = Math.max(180, Math.round(containerRect.height * 0.38));
+                const reasonCounts = {};
+                const samples = [];
+                let total = 0;
+                let acceptedCount = 0;
+                const pushReason = (reason) => {
+                    reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+                };
+                for (const anchor of collectAnchorsFromScope(container, 'a[role="link"], a[href]', { maxItems: 24 })) {
+                    if (!(anchor instanceof HTMLAnchorElement)) continue;
+                    total += 1;
+                    const href = String(anchor.href || anchor.getAttribute("href") || "").trim();
+                    const text = normalizeText(
+                        anchor.innerText ||
+                        anchor.textContent ||
+                        anchor.getAttribute("aria-label") ||
+                        ""
+                    );
+                    const relativeTop = Math.round(anchor.getBoundingClientRect().top - containerRect.top);
+                    const canonicalDetails = extractCanonicalPermalinkFromHref(href, expectedGroupId);
+                    const likelyTimestamp = isLikelyTimestampAnchorText(text);
+                    const likelyHeaderTimestamp = isLikelyHeaderTimestampWarmupAnchor(
+                        anchor,
+                        href,
+                        text,
+                        relativeTop,
+                        expectedGroupId
+                    );
+                    const hasAttributionSrc = anchor.hasAttribute("attributionsrc");
+                    const isVisibleAnchor = isVisible(anchor);
+                    const isUserProfile = isLikelyUserProfileHref(href);
+                    const isUtilityHref = isLikelyWarmupUtilityHref(href, expectedGroupId);
+                    let reason = "accepted";
+                    if (!isVisibleAnchor) {
+                        reason = "not_visible";
+                    } else if (relativeTop < -16) {
+                        reason = "above_upper_region";
+                    } else if (relativeTop > upperRegionThreshold) {
+                        reason = "below_upper_region";
+                    } else if (isUserProfile) {
+                        reason = "user_profile";
+                    } else if (
+                        !canonicalDetails.permalink &&
+                        isUtilityHref &&
+                        !likelyTimestamp &&
+                        !likelyHeaderTimestamp &&
+                        !hasAttributionSrc
+                    ) {
+                        reason = "utility_href_without_timestamp_or_attribution";
+                    }
+                    if (reason === "accepted") {
+                        acceptedCount += 1;
+                    } else {
+                        pushReason(reason);
+                    }
+                    if (samples.length < limit) {
+                        samples.push({
+                            reason,
+                            href: buildDiagnosticHref(href),
+                            kind: classifyDiagnosticHref(href, expectedGroupId),
+                            text: text.slice(0, 120),
+                            relativeTop,
+                            upperRegionThreshold,
+                            likelyTimestamp,
+                            likelyHeaderTimestamp,
+                            hasAttributionSrc,
+                            canonicalSource: canonicalDetails.source || "unavailable",
+                            hasCanonicalPermalink: Boolean(canonicalDetails.permalink),
+                            anchorDetails: collectWarmupAnchorDetails(
+                                anchor,
+                                container,
+                                href,
+                                relativeTop
+                            ),
+                        });
+                    }
+                }
+                return {
+                    total,
+                    acceptedCount,
+                    rejectedReasonCounts: reasonCounts,
+                    samples,
+                };
             };
             const dispatchPermalinkWarmupEvents = (anchor) => {
                 if (!(anchor instanceof HTMLElement)) return;
@@ -764,7 +1050,7 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
             }
             const searchRoots = roots.length ? roots : [document];
 
-            const nodes = [];
+            const candidateNodes = [];
             const seenNodes = new Set();
             for (const root of searchRoots) {
                 for (const selector of postContainerCandidates) {
@@ -776,10 +1062,11 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                         const candidateText = normalizeText(canonical.innerText || canonical.textContent || "");
                         if (candidateText.length < minCandidateTextLength) continue;
                         seenNodes.add(canonical);
-                        nodes.push(canonical);
+                        candidateNodes.push(canonical);
                     }
                 }
             }
+            const nodes = sortElementsByViewportTop(candidateNodes);
 
             const meta = {
                 candidateLimit: Number(maxItems) || 0,
@@ -794,7 +1081,9 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                 postsWithPostIdCount: 0,
             };
             const results = [];
-            for (const node of nodes) {
+            for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
+                const node = nodes[nodeIndex];
+                const nodeRect = node.getBoundingClientRect();
                 const expandState = await expandCollapsedPostText(node);
                 const textDetails = extractPostTextDetails(node);
                 const text = normalizeText(textDetails.text);
@@ -811,12 +1100,16 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                 }
                 const permalink = permalinkDetails.permalink || "";
                 const postId = extractPostIdFromPermalink(permalink);
+                const warmupDiagnostics = permalink
+                    ? null
+                    : collectPermalinkWarmupDiagnostics(node, getCurrentGroupId());
                 const hasStoryMessage = node.querySelector(postStoryMessage) instanceof HTMLElement;
                 const hasCommentPermalink = node.querySelector(commentPermalinkAnchors) instanceof HTMLAnchorElement;
                 const containerRole = getContainerRole(node);
                 const links = Array.from(node.querySelectorAll('a[href]'))
                     .map((anchor) => anchor.href || anchor.getAttribute('href') || "")
                     .filter(Boolean);
+                const linkDiagnostics = collectLinkDiagnostics(node, getCurrentGroupId());
 
                 meta.freshExtractCount += 1;
                 if (containerRole === "article") {
@@ -858,17 +1151,25 @@ POST_LIKE_ITEMS_SCRIPT = """async (maxItems) => {
                     author: extractAuthor(node),
                     source: "feed_dom",
                     containerRole,
+                    domIndex: nodeIndex,
+                    domPosition: {
+                        viewportTop: Math.round(nodeRect.top),
+                        documentTop: Math.round(nodeRect.top + window.scrollY),
+                        height: Math.round(nodeRect.height),
+                    },
                     textSource: textDetails.source,
                     rawTextLength: rawText.length,
                     permalinkSource: permalinkDetails.source || "unavailable",
                     canonicalPermalinkCandidateCount: Number(permalinkDetails.canonicalCandidateCount) || 0,
                     postId,
                     postIdSource: postId ? "permalink" : "none",
+                    linkDiagnostics,
                     hasStoryMessage,
                     hasCommentPermalink,
                     warmupAttempted: Boolean(warmupState.warmupAttempted),
                     warmupResolved: Boolean(warmupState.warmupResolved),
                     warmupCandidateCount: Number(warmupState.warmupCandidateCount) || 0,
+                    warmupDiagnostics,
                     expandAttempted: Boolean(expandState.expandAttempted),
                     expandCount: Number(expandState.expandCount) || 0,
                 });

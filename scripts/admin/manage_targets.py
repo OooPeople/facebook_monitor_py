@@ -1,5 +1,7 @@
 """Admin tool：用互動式選單編輯 target 設定與啟停狀態。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -13,31 +15,21 @@ if str(SRC) not in sys.path:
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpdateTargetConfigRequest
+from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-
-
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 
 
 def parse_args() -> argparse.Namespace:
     """解析互動式設定管理入口的最小參數。"""
 
     parser = argparse.ArgumentParser(description="Open the interactive target settings manager.")
-    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    add_runtime_path_arguments(parser)
     return parser.parse_args()
-
-
-def parse_keywords_text(text: str) -> tuple[str, ...]:
-    """將逗號或換行分隔的文字轉成去重 keyword tuple。"""
-
-    keywords: list[str] = []
-    for raw_line in text.replace("\n", ",").split(","):
-        keyword = raw_line.strip()
-        if keyword:
-            keywords.append(keyword)
-    return tuple(dict.fromkeys(keywords))
 
 
 def format_keywords(keywords: tuple[str, ...]) -> str:
@@ -105,6 +97,17 @@ def prompt_text(label: str, current: str) -> str:
     return raw_value or current
 
 
+def redact_secret(value: str) -> str:
+    """CLI 預設不完整印出 webhook 這類 token-like 設定。"""
+
+    text = value.strip()
+    if not text:
+        return "(未設定)"
+    if len(text) <= 12:
+        return "***"
+    return f"{text[:6]}...{text[-4:]}"
+
+
 def print_targets(targets: list[TargetDescriptor], app: ApplicationContext) -> None:
     """列出目前所有 target 與摘要設定。"""
 
@@ -112,7 +115,7 @@ def print_targets(targets: list[TargetDescriptor], app: ApplicationContext) -> N
     print("=======")
     for index, target in enumerate(targets, start=1):
         config = app.repositories.configs.get_for_target(target) or TargetConfig(
-            group_id=target.group_id
+            target_id=target.id
         )
         status = "paused" if target.paused else "enabled" if target.enabled else "disabled"
         print(f"{index}. {target.group_name or target.name}")
@@ -132,8 +135,8 @@ def print_targets(targets: list[TargetDescriptor], app: ApplicationContext) -> N
         )
         print(
             "   "
-            f"ntfy_topic={config.ntfy_topic or '(未設定)'} "
-            f"discord_webhook={config.discord_webhook or '(未設定)'}"
+            f"ntfy_topic={redact_secret(config.ntfy_topic)} "
+            f"discord_webhook={redact_secret(config.discord_webhook)}"
         )
 
 
@@ -183,7 +186,7 @@ def edit_target_config(app: ApplicationContext, target: TargetDescriptor) -> Tar
     """互動式編輯單一 target config。"""
 
     current = app.repositories.configs.get_for_target(target) or TargetConfig(
-        group_id=target.group_id
+        target_id=target.id
     )
     print(f"\n正在編輯: {target.group_name or target.name}")
     include_keywords = prompt_keywords("include keywords", current.include_keywords)
@@ -213,17 +216,19 @@ def edit_target_config(app: ApplicationContext, target: TargetDescriptor) -> Tar
     config = app.services.targets.update_target_config(
         UpdateTargetConfigRequest(
             target_id=target.id,
-            include_keywords=include_keywords,
-            exclude_keywords=exclude_keywords,
-            fixed_refresh_sec=fixed_refresh_sec,
-            max_items_per_scan=max_items_per_scan,
-            auto_load_more=auto_load_more,
-            auto_adjust_sort=auto_adjust_sort,
-            enable_desktop_notification=enable_desktop_notification,
-            enable_ntfy=enable_ntfy,
-            ntfy_topic=ntfy_topic,
-            enable_discord_notification=enable_discord_notification,
-            discord_webhook=discord_webhook,
+            config=TargetConfigPatch(
+                include_keywords=include_keywords,
+                exclude_keywords=exclude_keywords,
+                fixed_refresh_sec=fixed_refresh_sec,
+                max_items_per_scan=max_items_per_scan,
+                auto_load_more=auto_load_more,
+                auto_adjust_sort=auto_adjust_sort,
+                enable_desktop_notification=enable_desktop_notification,
+                enable_ntfy=enable_ntfy,
+                ntfy_topic=ntfy_topic,
+                enable_discord_notification=enable_discord_notification,
+                discord_webhook=discord_webhook,
+            ),
         )
     )
     print("設定已保存。")
@@ -253,7 +258,8 @@ def main() -> int:
     """CLI entrypoint：開啟互動式設定管理。"""
 
     args = parse_args()
-    return run_manager(args.db_path)
+    paths = resolve_runtime_paths_from_args(args)
+    return run_manager(paths.db_path)
 
 
 if __name__ == "__main__":

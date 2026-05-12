@@ -51,7 +51,7 @@
 }
 
 .collapse-toggle:focus-visible {
-  outline: 3px solid rgb(31 111 235 / 18%);
+  outline: 3px solid var(--accent-ring);
   outline-offset: 2px;
 }
 

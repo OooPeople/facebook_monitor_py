@@ -1,5 +1,7 @@
 """Debug tool：開啟瀏覽器並擷取目前社團頁作為 posts target。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -15,20 +17,27 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import UNSET_CONFIG_VALUE
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.facebook.browser_capture import BrowserPageSnapshot
-from facebook_monitor.facebook.browser_capture import CaptureSelection
+from facebook_monitor.facebook.browser_capture import BrowserPageSnapshot as BrowserPageSnapshot
+from facebook_monitor.facebook.browser_capture import CaptureSelection as CaptureSelection
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.facebook.browser_capture import select_capture_route
 from facebook_monitor.facebook.browser_capture import snapshot_browser_pages
 from facebook_monitor.facebook.route_detection import RouteDetectionError
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 
 
-DEFAULT_PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 DEFAULT_START_URL = "https://www.facebook.com/groups/"
 
 
@@ -68,18 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Capture the current Facebook group feed as a persisted target.",
     )
-    parser.add_argument(
-        "--profile-dir",
-        type=Path,
-        default=DEFAULT_PROFILE_DIR,
-        help="Playwright persistent profile directory.",
-    )
-    parser.add_argument(
-        "--db-path",
-        type=Path,
-        default=DEFAULT_DB_PATH,
-        help="SQLite app database path.",
-    )
+    add_runtime_path_arguments(parser)
     parser.add_argument(
         "--start-url",
         default=DEFAULT_START_URL,
@@ -160,10 +158,12 @@ def run_capture(options: CaptureOptions) -> int:
     try:
         with acquire_profile_lease(options.profile_dir, "capture group posts"):
             with sync_playwright() as playwright:
-                context = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(options.profile_dir),
-                    headless=False,
-                    viewport={"width": 1366, "height": 900},
+                context = launch_persistent_context_sync(
+                    playwright,
+                    BrowserRuntimeOptions(
+                        profile_dir=options.profile_dir,
+                        headless=False,
+                    ),
                 )
                 page = get_start_page(context)
                 page.goto(options.start_url, wait_until="domcontentloaded")
@@ -193,39 +193,41 @@ def run_capture(options: CaptureOptions) -> int:
                 group_id=route.group_id,
                 canonical_url=route.canonical_url,
                 group_name=route.group_name,
-                include_keywords=(
-                    options.include_keywords
-                    if options.include_keywords
-                    else UNSET_CONFIG_VALUE
+                config=TargetConfigPatch(
+                    include_keywords=(
+                        options.include_keywords
+                        if options.include_keywords
+                        else UNSET_CONFIG_VALUE
+                    ),
+                    exclude_keywords=(
+                        options.exclude_keywords
+                        if options.exclude_keywords
+                        else UNSET_CONFIG_VALUE
+                    ),
+                    fixed_refresh_sec=(
+                        options.fixed_refresh_sec
+                        if options.fixed_refresh_sec is not None
+                        else UNSET_CONFIG_VALUE
+                    ),
+                    max_items_per_scan=(
+                        options.max_items_per_scan
+                        if options.max_items_per_scan is not None
+                        else UNSET_CONFIG_VALUE
+                    ),
+                    enable_desktop_notification=(
+                        True if options.enable_desktop_notification else UNSET_CONFIG_VALUE
+                    ),
+                    enable_ntfy=True if options.enable_ntfy else UNSET_CONFIG_VALUE,
+                    ntfy_topic=options.ntfy_topic.strip()
+                    if options.ntfy_topic.strip()
+                    else UNSET_CONFIG_VALUE,
+                    enable_discord_notification=(
+                        True if options.enable_discord_notification else UNSET_CONFIG_VALUE
+                    ),
+                    discord_webhook=options.discord_webhook.strip()
+                    if options.discord_webhook.strip()
+                    else UNSET_CONFIG_VALUE,
                 ),
-                exclude_keywords=(
-                    options.exclude_keywords
-                    if options.exclude_keywords
-                    else UNSET_CONFIG_VALUE
-                ),
-                fixed_refresh_sec=(
-                    options.fixed_refresh_sec
-                    if options.fixed_refresh_sec is not None
-                    else UNSET_CONFIG_VALUE
-                ),
-                max_items_per_scan=(
-                    options.max_items_per_scan
-                    if options.max_items_per_scan is not None
-                    else UNSET_CONFIG_VALUE
-                ),
-                enable_desktop_notification=(
-                    True if options.enable_desktop_notification else UNSET_CONFIG_VALUE
-                ),
-                enable_ntfy=True if options.enable_ntfy else UNSET_CONFIG_VALUE,
-                ntfy_topic=options.ntfy_topic.strip()
-                if options.ntfy_topic.strip()
-                else UNSET_CONFIG_VALUE,
-                enable_discord_notification=(
-                    True if options.enable_discord_notification else UNSET_CONFIG_VALUE
-                ),
-                discord_webhook=options.discord_webhook.strip()
-                if options.discord_webhook.strip()
-                else UNSET_CONFIG_VALUE,
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -252,10 +254,11 @@ def main() -> int:
     """CLI entrypoint：解析參數後執行 headed capture。"""
 
     args = parse_args()
+    paths = resolve_runtime_paths_from_args(args)
     return run_capture(
         CaptureOptions(
-            profile_dir=args.profile_dir,
-            db_path=args.db_path,
+            profile_dir=paths.profile_dir,
+            db_path=paths.db_path,
             start_url=args.start_url,
             include_keywords=parse_keyword_args(args.include),
             exclude_keywords=parse_keyword_args(args.exclude),

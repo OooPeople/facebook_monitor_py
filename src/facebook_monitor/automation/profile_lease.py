@@ -16,8 +16,11 @@ from typing import BinaryIO
 
 if os.name == "nt":
     import msvcrt
+    _fcntl: object | None = None
 else:
-    import fcntl
+    import fcntl as _fcntl_module
+
+    _fcntl = _fcntl_module
 
 
 LOCK_FILE_NAME = ".facebook_monitor_profile.lock"
@@ -96,7 +99,7 @@ def _lock_file(lock_file: BinaryIO, lock_path: Path, owner: str) -> None:
         if os.name == "nt":
             msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, LOCK_BYTE_COUNT)
         else:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _posix_flock(lock_file.fileno(), _posix_lock_exclusive_nonblocking_flags())
     except OSError as exc:
         existing_owner = _read_owner(lock_path)
         owner_hint = f"；目前持有者: {existing_owner}" if existing_owner else ""
@@ -113,7 +116,7 @@ def _unlock_file(lock_file: BinaryIO) -> None:
     if os.name == "nt":
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, LOCK_BYTE_COUNT)
     else:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        _posix_flock(lock_file.fileno(), _posix_unlock_flags())
 
 
 def _write_owner(lock_file: BinaryIO, owner: str) -> None:
@@ -133,3 +136,28 @@ def _read_owner(lock_path: Path) -> str:
         return lock_path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def _posix_flock(file_descriptor: int, flags: int) -> None:
+    """呼叫 POSIX flock；Windows 分支不應進入此函式。"""
+
+    if _fcntl is None:
+        raise RuntimeError("fcntl is not available on this platform")
+    flock = getattr(_fcntl, "flock")
+    flock(file_descriptor, flags)
+
+
+def _posix_lock_exclusive_nonblocking_flags() -> int:
+    """回傳 POSIX exclusive non-blocking lock flags。"""
+
+    if _fcntl is None:
+        raise RuntimeError("fcntl is not available on this platform")
+    return int(getattr(_fcntl, "LOCK_EX")) | int(getattr(_fcntl, "LOCK_NB"))
+
+
+def _posix_unlock_flags() -> int:
+    """回傳 POSIX unlock flags。"""
+
+    if _fcntl is None:
+        raise RuntimeError("fcntl is not available on this platform")
+    return int(getattr(_fcntl, "LOCK_UN"))

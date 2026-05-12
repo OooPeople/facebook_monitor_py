@@ -4,18 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Facebook Monitor</title>
-  <link rel="stylesheet" href="/static/style.css?v=ui-refactor-phase18-form-sidebar-status">
+  {% include "_theme_bootstrap.html" %}
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
-  <main class="shell{% if rows %} has-sidebar{% endif %}">
+  <main class="shell has-sidebar">
     <header class="topbar">
       <div class="page-title">
         <h1>監控中心</h1>
         <p>管理 target 清單、關鍵字與最近掃描結果。</p>
       </div>
       <nav class="top-actions">
+        {% include "_theme_toggle.html" %}
         <a class="button" href="/settings">設定{% if profile_active %} · 開啟中{% endif %}</a>
-        <a class="button primary" href="/targets/new">新增</a>
+        <a class="button button--primary" href="/targets/new">新增</a>
       </nav>
     </header>
 
@@ -28,13 +30,6 @@
       {% endif %}
     </div>
 
-    {% if not rows %}
-      <section class="empty">
-        <h2>目前沒有 target</h2>
-        <p>點選右上角「新增」，貼上 Facebook 社團或貼文網址後即可開始監看。</p>
-      </section>
-    {% endif %}
-
     <div class="dashboard-layout">
       {% include "_target_sidebar.html" %}
 
@@ -42,11 +37,18 @@
         {% for row in rows %}
           {% include "_target_card.html" %}
         {% endfor %}
+        {% if not rows %}
+          <section class="empty">
+            <h2>目前沒有 target</h2>
+            <p>點選右上角「新增」，貼上 Facebook 社團或貼文網址後即可建立 target。建立後按「開始」才會掃描。</p>
+          </section>
+        {% endif %}
       </section>
     </div>
   </main>
   <script id="page-feedback" type="application/json">{{ {"message": message, "error": error} | tojson }}</script>
   <script id="dashboard-revision" type="application/json">{{ dashboard_revision.revision | tojson }}</script>
-  <script type="module" src="/static/dashboard/main.js?v=ui-refactor-phase18-form-sidebar-status"></script>
+  {% include "_dashboard_importmap.html" %}
+  <script type="module" src="/static/dashboard/main.js?v={{ asset_version }}"></script>
 </body>
 </html>

@@ -1,5 +1,7 @@
 """Debug tool：對已保存 target 執行一次 one-shot 掃描。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -14,18 +16,21 @@ if str(SRC) not in sys.path:
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 
 
-DEFAULT_PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 
 
 def parse_args() -> argparse.Namespace:
     """解析 one-shot worker CLI 參數。"""
 
     parser = argparse.ArgumentParser(description="Run one persisted group posts target scan.")
-    parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
-    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    add_runtime_path_arguments(parser)
     parser.add_argument(
         "--target-id",
         default="",
@@ -66,10 +71,11 @@ def main() -> int:
     """CLI entrypoint：解析參數後執行一次已保存 target 掃描。"""
 
     args = parse_args()
+    paths = resolve_runtime_paths_from_args(args)
     return run_one_shot_scan_cli(
         OneShotScanOptions(
-            profile_dir=args.profile_dir,
-            db_path=args.db_path,
+            profile_dir=paths.profile_dir,
+            db_path=paths.db_path,
             target_id=args.target_id,
             group_id=args.group_id,
             scroll_rounds=args.scroll_rounds,

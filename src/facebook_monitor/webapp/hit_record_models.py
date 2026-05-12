@@ -11,6 +11,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.highlight import build_highlight_segment_dicts
 from facebook_monitor.webapp.preview_models import trim_preview_text
 
 
@@ -35,23 +36,22 @@ class FullHitRecordRow:
         return format_datetime_for_ui(self.entry.created_at)
 
     @property
-    def notified_at(self) -> str:
-        """回傳通知時間。"""
+    def recorded_at(self) -> str:
+        """回傳命中紀錄寫入時間。"""
 
-        notified_at = self.entry.notified_at
-        if notified_at is None and self.notification_event is not None:
-            notified_at = self.notification_event.created_at
-        if notified_at is None:
-            return ""
-        return format_datetime_for_ui(notified_at)
+        recorded_at = self.entry.notified_at or self.entry.created_at
+        return format_datetime_for_ui(recorded_at)
 
     @property
     def notification_summary(self) -> str:
         """回傳完整紀錄使用的通知摘要。"""
 
-        if self.notified_at:
-            return f"已記錄 {self.notified_at}"
-        return "未記錄通知時間"
+        if self.notification_event is None:
+            return "尚無通知事件"
+        event = self.notification_event
+        event_time = format_datetime_for_ui(event.created_at)
+        message = f" · {event.message}" if event.message else ""
+        return f"{event.channel.value}: {event.status.value} · {event_time}{message}"
 
     def to_dict(self) -> dict[str, object]:
         """轉成 API response 使用的純 dict。"""
@@ -64,9 +64,14 @@ class FullHitRecordRow:
             "author_name": self.entry.author or "(unknown)",
             "matched_keyword": self.entry.include_rule,
             "matched_at": self.matched_at,
-            "notified_at": self.notified_at,
+            "recorded_at": self.recorded_at,
+            "notified_at": self.recorded_at,
             "notification_summary": self.notification_summary,
             "content": self.entry.text,
+            "content_segments": build_highlight_segment_dicts(
+                self.entry.text,
+                self.entry.include_rule,
+            ),
             "content_preview": trim_preview_text(self.entry.text, max_length=220),
             "permalink": self.entry.permalink,
         }

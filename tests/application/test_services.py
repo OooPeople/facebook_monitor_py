@@ -7,11 +7,13 @@ from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
+from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import ScanStatus
@@ -31,11 +33,13 @@ def test_create_target_and_record_scan_through_application_context(tmp_path: Pat
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="test group",
-                include_keywords=("票",),
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票",),
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
 
@@ -51,7 +55,8 @@ def test_create_target_and_record_scan_through_application_context(tmp_path: Pat
         assert loaded_config.discord_webhook == "https://discord.com/api/webhooks/example"
         assert loaded_config.ntfy_topic == "phase0test"
         assert loaded_runtime_state is not None
-        assert loaded_runtime_state.desired_state == TargetDesiredState.ACTIVE
+        assert loaded_target.paused
+        assert loaded_runtime_state.desired_state == TargetDesiredState.STOPPED
 
         scan_id = app.services.scans.record_scan(
             RecordScanRequest(
@@ -86,7 +91,7 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="old name",
-                include_keywords=("票",),
+                config=TargetConfigPatch(include_keywords=("票",)),
             )
         )
         second = app.services.targets.upsert_group_posts_target(
@@ -94,10 +99,12 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="new name",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
 
@@ -114,7 +121,7 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
 
 
 def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> None:
-    """upsert 明確收到 false/空值時會覆寫既有 group config。"""
+    """upsert 明確收到 false/空值時會覆寫既有 target config。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -122,17 +129,19 @@ def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> 
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票",),
-                exclude_keywords=("售完",),
-                fixed_refresh_sec=90,
-                max_items_per_scan=10,
-                auto_load_more=True,
-                auto_adjust_sort=True,
-                enable_desktop_notification=True,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
+                config=TargetConfigPatch(
+                    include_keywords=("票",),
+                    exclude_keywords=("售完",),
+                    fixed_refresh_sec=90,
+                    max_items_per_scan=10,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                    enable_desktop_notification=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                ),
             )
         )
 
@@ -140,17 +149,19 @@ def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> 
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=(),
-                exclude_keywords=(),
-                fixed_refresh_sec=None,
-                max_items_per_scan=3,
-                auto_load_more=False,
-                auto_adjust_sort=False,
-                enable_desktop_notification=False,
-                enable_ntfy=False,
-                ntfy_topic="",
-                enable_discord_notification=False,
-                discord_webhook="",
+                config=TargetConfigPatch(
+                    include_keywords=(),
+                    exclude_keywords=(),
+                    fixed_refresh_sec=None,
+                    max_items_per_scan=3,
+                    auto_load_more=False,
+                    auto_adjust_sort=False,
+                    enable_desktop_notification=False,
+                    enable_ntfy=False,
+                    ntfy_topic="",
+                    enable_discord_notification=False,
+                    discord_webhook="",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -182,13 +193,15 @@ def test_upsert_comments_target_can_clear_existing_group_config(tmp_path: Path) 
                     "https://www.facebook.com/groups/222518561920110/posts/"
                     "2187454285426518"
                 ),
-                include_keywords=("留言",),
-                exclude_keywords=("售完",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
-                enable_desktop_notification=True,
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
+                config=TargetConfigPatch(
+                    include_keywords=("留言",),
+                    exclude_keywords=("售完",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                    enable_desktop_notification=True,
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                ),
             )
         )
 
@@ -200,13 +213,15 @@ def test_upsert_comments_target_can_clear_existing_group_config(tmp_path: Path) 
                     "https://www.facebook.com/groups/222518561920110/posts/"
                     "2187454285426518"
                 ),
-                include_keywords=(),
-                exclude_keywords=(),
-                enable_ntfy=False,
-                ntfy_topic="",
-                enable_desktop_notification=False,
-                enable_discord_notification=False,
-                discord_webhook="",
+                config=TargetConfigPatch(
+                    include_keywords=(),
+                    exclude_keywords=(),
+                    enable_ntfy=False,
+                    ntfy_topic="",
+                    enable_desktop_notification=False,
+                    enable_discord_notification=False,
+                    discord_webhook="",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -235,7 +250,7 @@ def test_upsert_comments_target_sets_parent_post_and_scope(tmp_path: Path) -> No
                     "2187454285426518"
                 ),
                 name="留言監視",
-                include_keywords=("票",),
+                config=TargetConfigPatch(include_keywords=("票",)),
             )
         )
         loaded = app.repositories.targets.find_by_kind_scope(
@@ -257,8 +272,8 @@ def test_upsert_comments_target_sets_parent_post_and_scope(tmp_path: Path) -> No
     assert state is not None
 
 
-def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) -> None:
-    """同一社團的 posts/comments target 共用 group-scoped config。"""
+def test_posts_and_comments_targets_keep_independent_config(tmp_path: Path) -> None:
+    """同一社團的 posts/comments target 不共用 target-scoped config。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -266,9 +281,11 @@ def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) ->
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         comments_target = app.services.targets.upsert_comments_target(
@@ -287,33 +304,81 @@ def test_posts_and_comments_targets_share_group_scoped_config(tmp_path: Path) ->
 
         assert posts_config is not None
         assert comments_config is not None
-        assert posts_config == comments_config
-        assert posts_config.group_id == "222518561920110"
-        assert comments_config.include_keywords == ("票",)
-        assert comments_config.enable_ntfy
+        assert posts_config.target_id == posts_target.id
+        assert comments_config.target_id == comments_target.id
+        assert posts_config.include_keywords == ("票",)
+        assert posts_config.enable_ntfy
+        assert comments_config.include_keywords == ()
+        assert not comments_config.enable_ntfy
 
         updated = app.services.targets.update_target_config(
             UpdateTargetConfigRequest(
                 target_id=comments_target.id,
-                include_keywords=("留言",),
-                exclude_keywords=("售完",),
-                fixed_refresh_sec=45,
-                max_items_per_scan=7,
-                auto_load_more=True,
-                auto_adjust_sort=True,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("留言",),
+                    exclude_keywords=("售完",),
+                    fixed_refresh_sec=45,
+                    max_items_per_scan=7,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         loaded_from_posts = app.repositories.configs.get_for_target(posts_target)
+        loaded_from_comments = app.repositories.configs.get_for_target(comments_target)
 
-    assert loaded_from_posts == updated
     assert loaded_from_posts is not None
-    assert loaded_from_posts.include_keywords == ("留言",)
-    assert loaded_from_posts.exclude_keywords == ("售完",)
-    assert loaded_from_posts.fixed_refresh_sec == 45
-    assert loaded_from_posts.max_items_per_scan == 7
-    assert loaded_from_posts.auto_adjust_sort
+    assert loaded_from_posts.include_keywords == ("票",)
+    assert loaded_from_posts.exclude_keywords == ()
+    assert loaded_from_posts.ntfy_topic == "phase0test"
+    assert loaded_from_comments == updated
+    assert loaded_from_comments is not None
+    assert loaded_from_comments.include_keywords == ("留言",)
+    assert loaded_from_comments.exclude_keywords == ("售完",)
+    assert loaded_from_comments.fixed_refresh_sec == 45
+    assert loaded_from_comments.max_items_per_scan == 7
+    assert loaded_from_comments.auto_adjust_sort
+
+
+def test_same_group_comments_targets_keep_independent_config(tmp_path: Path) -> None:
+    """同一社團不同貼文的 comments target 不共用設定。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="111",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/111",
+                config=TargetConfigPatch(include_keywords=("第一篇",)),
+            )
+        )
+        second = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="222",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/222",
+                config=TargetConfigPatch(include_keywords=("第二篇",)),
+            )
+        )
+
+        app.services.targets.update_target_config(
+            UpdateTargetConfigRequest(
+                target_id=second.id,
+                config=TargetConfigPatch(include_keywords=("只改第二篇",)),
+            )
+        )
+        first_config = app.repositories.configs.get_for_target(first)
+        second_config = app.repositories.configs.get_for_target(second)
+
+    assert first_config is not None
+    assert second_config is not None
+    assert first_config.target_id == first.id
+    assert second_config.target_id == second.id
+    assert first_config.include_keywords == ("第一篇",)
+    assert second_config.include_keywords == ("只改第二篇",)
 
 
 def test_upsert_group_posts_target_replaces_generated_name_when_group_name_resolved(
@@ -364,6 +429,33 @@ def test_group_posts_target_names_are_cleaned_before_persistence(
         assert loaded.group_name == "測試社團"
 
 
+def test_update_target_name_preserves_group_metadata(tmp_path: Path) -> None:
+    """更改卡片名稱只更新使用者顯示名稱，不覆蓋 Facebook group metadata。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="原本名稱",
+                group_name="測試社團",
+            )
+        )
+
+        updated = app.services.targets.update_target_name(
+            target.id,
+            "(1) 新卡片名稱 | Facebook",
+        )
+        loaded = app.repositories.targets.get(target.id)
+
+        assert updated.name == "新卡片名稱"
+        assert updated.group_name == "測試社團"
+        assert loaded is not None
+        assert loaded.name == "新卡片名稱"
+        assert loaded.group_name == "測試社團"
+
+
 def test_restart_target_monitoring_cleans_existing_dirty_target_name(
     tmp_path: Path,
 ) -> None:
@@ -405,21 +497,28 @@ def test_update_target_config(tmp_path: Path) -> None:
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
         )
+        initial_config = app.repositories.configs.get_for_target(target)
+
+        assert initial_config is not None
+        assert initial_config.exclude_ignore_phrases == ("全收;回收",)
 
         config = app.services.targets.update_target_config(
             UpdateTargetConfigRequest(
                 target_id=target.id,
-                include_keywords=("票", "交換"),
-                exclude_keywords=("售完",),
-                fixed_refresh_sec=90,
-                max_items_per_scan=30,
-                auto_load_more=False,
-                auto_adjust_sort=True,
-                enable_desktop_notification=True,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
+                config=TargetConfigPatch(
+                    include_keywords=("票", "交換"),
+                    exclude_keywords=("售完",),
+                    exclude_ignore_phrases=("全收;回收",),
+                    fixed_refresh_sec=90,
+                    max_items_per_scan=30,
+                    auto_load_more=False,
+                    auto_adjust_sort=True,
+                    enable_desktop_notification=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                ),
             )
         )
         loaded_config = app.repositories.configs.get_for_target(target)
@@ -427,6 +526,7 @@ def test_update_target_config(tmp_path: Path) -> None:
         assert loaded_config == config
         assert config.include_keywords == ("票", "交換")
         assert config.exclude_keywords == ("售完",)
+        assert config.exclude_ignore_phrases == ("全收;回收",)
         assert config.fixed_refresh_sec == 90
         assert config.max_items_per_scan == 10
         assert not config.auto_load_more
@@ -438,10 +538,10 @@ def test_update_target_config(tmp_path: Path) -> None:
         assert config.discord_webhook == "https://discord.com/api/webhooks/example"
 
 
-def test_update_target_config_preserves_reserved_notification_channels(
+def test_update_target_config_preserves_omitted_notification_channels(
     tmp_path: Path,
 ) -> None:
-    """未顯示在目前 UI 的通知欄位，更新一般設定時會保留。"""
+    """patch 未提供的通知欄位，更新一般設定時會保留原值。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -449,29 +549,83 @@ def test_update_target_config_preserves_reserved_notification_channels(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                enable_desktop_notification=True,
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
+                config=TargetConfigPatch(
+                    enable_desktop_notification=True,
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                ),
             )
         )
 
         config = app.services.targets.update_target_config(
             UpdateTargetConfigRequest(
                 target_id=target.id,
-                include_keywords=("票",),
-                exclude_keywords=(),
-                fixed_refresh_sec=60,
-                max_items_per_scan=5,
-                auto_load_more=True,
-                auto_adjust_sort=False,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票",),
+                    exclude_keywords=(),
+                    fixed_refresh_sec=60,
+                    max_items_per_scan=5,
+                    auto_load_more=True,
+                    auto_adjust_sort=False,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
 
         assert config.enable_desktop_notification
         assert config.enable_discord_notification
         assert config.discord_webhook == "https://discord.com/api/webhooks/example"
+
+
+def test_apply_global_notification_settings_updates_each_target_config(tmp_path: Path) -> None:
+    """同 group 多個 target 套用通知預設值時不得被 group_id 去重跳過。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        posts_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        first_comments_target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="111",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/111",
+            )
+        )
+        second_comments_target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="222",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/222",
+            )
+        )
+
+        count = app.services.targets.apply_global_notification_settings(
+            GlobalNotificationSettings(
+                enable_desktop_notification=True,
+                enable_ntfy=True,
+                ntfy_topic="global-topic",
+                enable_discord_notification=True,
+                discord_webhook="https://discord.com/api/webhooks/global",
+            )
+        )
+        configs = [
+            app.repositories.configs.get_for_target(target)
+            for target in (posts_target, first_comments_target, second_comments_target)
+        ]
+
+    assert count == 3
+    for config in configs:
+        assert config is not None
+        assert config.enable_desktop_notification
+        assert config.enable_ntfy
+        assert config.ntfy_topic == "global-topic"
+        assert config.enable_discord_notification
+        assert config.discord_webhook == "https://discord.com/api/webhooks/global"
 
 
 def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> None:
@@ -491,6 +645,7 @@ def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> Non
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(second.id)
 
         stopped_first = app.services.targets.pause_target_monitoring(first.id)
         loaded_second = app.repositories.targets.get(second.id)
@@ -619,10 +774,12 @@ def test_webui_startup_pause_all_targets_without_overwriting_floating_interval(
             UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
-                fixed_refresh_sec=None,
-                min_refresh_sec=25,
-                max_refresh_sec=35,
-                jitter_enabled=True,
+                config=TargetConfigPatch(
+                    fixed_refresh_sec=None,
+                    min_refresh_sec=25,
+                    max_refresh_sec=35,
+                    jitter_enabled=True,
+                ),
             )
         )
 
@@ -716,6 +873,41 @@ def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Pa
     assert loaded_stale.active_worker_id == ""
     assert "stale_running" in loaded_stale.last_error
     assert loaded_fresh.runtime_status == TargetRuntimeStatus.RUNNING
+
+
+def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) -> None:
+    """排隊過久的 target 會回到 idle 並保留立即掃描請求。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.request_target_scan(target.id)
+        queued_state = app.services.targets.mark_target_queued(target.id, "manual_request")
+        app.repositories.runtime_states.save(
+            replace(
+                queued_state,
+                last_enqueued_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+
+        recovered = app.services.targets.recover_stale_queued_targets(
+            stale_after_seconds=180,
+            now=now,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert len(recovered) == 1
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded.scan_requested_at is not None
+    assert "stale_queued_recovered" in loaded.last_skip_reason
 
 
 def test_delete_target_does_not_touch_other_targets(tmp_path: Path) -> None:

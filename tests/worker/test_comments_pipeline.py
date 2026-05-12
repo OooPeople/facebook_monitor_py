@@ -6,6 +6,7 @@ from typing import Any
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
@@ -215,10 +216,12 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
                     "https://www.facebook.com/groups/222518561920110/posts/"
                     "2187454285426518"
                 ),
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
-                auto_adjust_sort=True,
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                    auto_adjust_sort=True,
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -282,9 +285,11 @@ def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notificat
                     "2187454285426518"
                 ),
                 group_name="測試社團",
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -319,9 +324,11 @@ def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) 
                     "https://www.facebook.com/groups/222518561920110/posts/"
                     "2187454285426518"
                 ),
-                include_keywords=("票券",),
-                max_items_per_scan=2,
-                auto_load_more=True,
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=2,
+                    auto_load_more=True,
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)

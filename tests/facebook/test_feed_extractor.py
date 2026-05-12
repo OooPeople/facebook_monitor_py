@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.feed_extractor import normalize_debug_metadata
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
@@ -89,6 +92,18 @@ def test_extract_canonical_permalink_from_photo_gm_href() -> None:
         "https://www.facebook.com/groups/222518561920110/posts/1234567890123456"
     )
     assert details.source == "photo_gm_anchor"
+
+
+def test_permalink_canonicalization_matches_golden_fixture() -> None:
+    """permalink canonicalization golden fixture 鎖住 JS parity 來源語義。"""
+
+    fixture_path = Path("tests/fixtures/facebook/permalink_golden.json")
+    cases = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    for case in cases:
+        details = extract_canonical_permalink_from_href(case["href"])
+        assert details.permalink == case["expected_permalink"], case["name"]
+        assert details.source == case["expected_source"], case["name"]
 
 
 def test_extract_canonical_permalink_rejects_other_group_when_expected_group_is_set() -> None:

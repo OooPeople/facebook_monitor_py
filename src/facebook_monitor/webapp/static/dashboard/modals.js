@@ -1,6 +1,21 @@
-import { closeDialog, openDialog } from "./utils.js";
+import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
 
 export const setupSettingsModals = () => {
+  document.querySelectorAll("[data-rename-target-button]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = button.closest("[data-target-card]");
+      const modal = card?.querySelector("[data-rename-target-modal]");
+      button.closest(".more-menu")?.removeAttribute("open");
+      openDialog(modal);
+      modal?.querySelector('input[name="display_name"]')?.select();
+    });
+  });
+
+  bindDialogDismiss({
+    modalSelector: "[data-rename-target-modal]",
+    closeSelector: "[data-close-rename-target]",
+  });
+
   document.querySelectorAll("[data-settings-button]").forEach((button) => {
     button.addEventListener("click", () => {
       const target = document.getElementById(button.dataset.targetAnchor || "");
@@ -9,17 +24,20 @@ export const setupSettingsModals = () => {
     });
   });
 
-  document.querySelectorAll("[data-close-settings]").forEach((button) => {
+  bindDialogDismiss({
+    modalSelector: "[data-settings-modal]",
+    closeSelector: "[data-close-settings]",
+  });
+
+  document.querySelectorAll("[data-keyword-help-button]").forEach((button) => {
     button.addEventListener("click", () => {
-      closeDialog(button.closest("[data-settings-modal]"));
+      const modal = button.closest("[data-target-card]")?.querySelector("[data-keyword-help-modal]");
+      openDialog(modal);
     });
   });
 
-  document.querySelectorAll("[data-settings-modal]").forEach((modal) => {
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) {
-        closeDialog(modal);
-      }
-    });
+  bindDialogDismiss({
+    modalSelector: "[data-keyword-help-modal]",
+    closeSelector: "[data-close-keyword-help]",
   });
 };

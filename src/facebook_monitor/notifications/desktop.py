@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import subprocess
 import sys
 
+from facebook_monitor.notifications.safe_messages import safe_exception_message
+
 
 CommandRunner = Callable[[list[str]], None]
 
@@ -45,7 +47,7 @@ def send_desktop_notification(
         return DesktopNotificationResult(
             ok=False,
             status_code=None,
-            message=f"desktop_failed: {exc}",
+            message=safe_exception_message("desktop_failed", exc),
         )
     return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
 

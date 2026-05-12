@@ -6,6 +6,7 @@ notification event 記錄。outbox claim/retry 流程由 `outbox_service` 管理
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -27,21 +28,21 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 class NtfySender(Protocol):
     """定義可注入的 ntfy sender 介面。"""
 
-    def __call__(self, config: NtfyConfig, title: str, message: str) -> NtfyResult:
+    def __call__(self, config: NtfyConfig, title: str, message: str, /) -> NtfyResult:
         """送出 ntfy 通知並回傳結果。"""
 
 
 class DesktopSender(Protocol):
     """定義可注入的桌面通知 sender 介面。"""
 
-    def __call__(self, title: str, message: str) -> DesktopNotificationResult:
+    def __call__(self, title: str, message: str, /) -> DesktopNotificationResult:
         """送出桌面通知並回傳結果。"""
 
 
 class DiscordSender(Protocol):
     """定義可注入的 Discord sender 介面。"""
 
-    def __call__(self, config: DiscordConfig, title: str, message: str) -> DiscordResult:
+    def __call__(self, config: DiscordConfig, title: str, message: str, /) -> DiscordResult:
         """送出 Discord webhook 通知並回傳結果。"""
 
 
@@ -76,6 +77,21 @@ NOTIFICATION_CHANNEL_DEFINITIONS: tuple[NotificationChannelDefinition, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class NotificationSenders:
+    """集中保存外部通知 sender，供 channel handler registry 使用。"""
+
+    ntfy: NtfySender
+    desktop: DesktopSender
+    discord: DiscordSender
+
+
+NotificationChannelHandler = Callable[
+    [ApplicationContext, TargetDescriptor, NotificationOutboxEntry, NotificationSenders],
+    tuple[int, NotificationOutboxStatus],
+]
+
+
 def is_channel_enabled(
     config: TargetConfig,
     definition: NotificationChannelDefinition,
@@ -83,6 +99,143 @@ def is_channel_enabled(
     """判斷指定通知通道是否已由使用者啟用。"""
 
     return bool(getattr(config, definition.enabled_field))
+
+
+def get_channel_definition(channel: NotificationChannel) -> NotificationChannelDefinition:
+    """依 channel 取得定義，集中 skipped/error 訊息來源。"""
+
+    for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
+        if definition.channel == channel:
+            return definition
+    raise ValueError(f"Unsupported notification channel: {channel}")
+
+
+def _result_to_status(ok: bool) -> tuple[NotificationStatus, NotificationOutboxStatus]:
+    """將 sender result 轉成 notification event / outbox status。"""
+
+    return (
+        NotificationStatus.SENT if ok else NotificationStatus.FAILED,
+        NotificationOutboxStatus.SENT if ok else NotificationOutboxStatus.FAILED,
+    )
+
+
+def _record_send_result(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+    ok: bool,
+    message: str,
+) -> tuple[int, NotificationOutboxStatus]:
+    """寫入 sender result 並回傳 outbox status。"""
+
+    event_status, outbox_status = _result_to_status(ok)
+    event_id = record_notification_event(
+        app=app,
+        target=target,
+        item_key=entry.item_key,
+        channel=entry.channel,
+        status=event_status,
+        message=message,
+    )
+    return event_id, outbox_status
+
+
+def _record_skipped_channel(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+    message: str,
+) -> tuple[int, NotificationOutboxStatus]:
+    """寫入缺少 endpoint 等 skipped channel result。"""
+
+    event_id = record_notification_event(
+        app=app,
+        target=target,
+        item_key=entry.item_key,
+        channel=entry.channel,
+        status=NotificationStatus.SKIPPED,
+        message=message,
+    )
+    return event_id, NotificationOutboxStatus.SKIPPED
+
+
+def _dispatch_desktop_channel(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+    senders: NotificationSenders,
+) -> tuple[int, NotificationOutboxStatus]:
+    result = senders.desktop(entry.title, entry.message)
+    return _record_send_result(
+        app=app,
+        target=target,
+        entry=entry,
+        ok=result.ok,
+        message=result.message,
+    )
+
+
+def _dispatch_ntfy_channel(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+    senders: NotificationSenders,
+) -> tuple[int, NotificationOutboxStatus]:
+    if not entry.endpoint.strip():
+        return _record_skipped_channel(
+            app=app,
+            target=target,
+            entry=entry,
+            message=get_channel_definition(entry.channel).skipped_message,
+        )
+    result = senders.ntfy(
+        NtfyConfig(topic=entry.endpoint, click_url=entry.permalink),
+        entry.title,
+        entry.message,
+    )
+    return _record_send_result(
+        app=app,
+        target=target,
+        entry=entry,
+        ok=result.ok,
+        message=result.message,
+    )
+
+
+def _dispatch_discord_channel(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+    senders: NotificationSenders,
+) -> tuple[int, NotificationOutboxStatus]:
+    if not entry.endpoint.strip():
+        return _record_skipped_channel(
+            app=app,
+            target=target,
+            entry=entry,
+            message=get_channel_definition(entry.channel).skipped_message,
+        )
+    result = senders.discord(
+        DiscordConfig(webhook_url=entry.endpoint),
+        entry.title,
+        entry.message,
+    )
+    return _record_send_result(
+        app=app,
+        target=target,
+        entry=entry,
+        ok=result.ok,
+        message=result.message,
+    )
+
+
+NOTIFICATION_CHANNEL_HANDLERS: dict[NotificationChannel, NotificationChannelHandler] = {
+    NotificationChannel.DESKTOP: _dispatch_desktop_channel,
+    NotificationChannel.NTFY: _dispatch_ntfy_channel,
+    NotificationChannel.DISCORD: _dispatch_discord_channel,
+}
 
 
 def dispatch_notification_outbox_entry(
@@ -96,74 +249,20 @@ def dispatch_notification_outbox_entry(
 ) -> tuple[int, NotificationOutboxStatus]:
     """發送單筆 outbox event，回傳 notification event id 與 outbox 狀態。"""
 
-    if entry.channel == NotificationChannel.DESKTOP:
-        result = desktop_sender(entry.title, entry.message)
-        event_id = record_notification_event(
-            app=app,
-            target=target,
-            item_key=entry.item_key,
-            channel=entry.channel,
-            status=NotificationStatus.SENT if result.ok else NotificationStatus.FAILED,
-            message=result.message,
-        )
-        return event_id, (
-            NotificationOutboxStatus.SENT if result.ok else NotificationOutboxStatus.FAILED
-        )
-    if entry.channel == NotificationChannel.NTFY:
-        if not entry.endpoint.strip():
-            event_id = record_notification_event(
-                app=app,
-                target=target,
-                item_key=entry.item_key,
-                channel=entry.channel,
-                status=NotificationStatus.SKIPPED,
-                message="ntfy_skipped",
-            )
-            return event_id, NotificationOutboxStatus.SKIPPED
-        result = ntfy_sender(
-            NtfyConfig(topic=entry.endpoint, click_url=entry.permalink),
-            entry.title,
-            entry.message,
-        )
-        event_id = record_notification_event(
-            app=app,
-            target=target,
-            item_key=entry.item_key,
-            channel=entry.channel,
-            status=NotificationStatus.SENT if result.ok else NotificationStatus.FAILED,
-            message=result.message,
-        )
-        return event_id, (
-            NotificationOutboxStatus.SENT if result.ok else NotificationOutboxStatus.FAILED
-        )
-    if entry.channel == NotificationChannel.DISCORD:
-        if not entry.endpoint.strip():
-            event_id = record_notification_event(
-                app=app,
-                target=target,
-                item_key=entry.item_key,
-                channel=entry.channel,
-                status=NotificationStatus.SKIPPED,
-                message="discord_skipped",
-            )
-            return event_id, NotificationOutboxStatus.SKIPPED
-        result = discord_sender(
-            DiscordConfig(webhook_url=entry.endpoint),
-            entry.title,
-            entry.message,
-        )
-        event_id = record_notification_event(
-            app=app,
-            target=target,
-            item_key=entry.item_key,
-            channel=entry.channel,
-            status=NotificationStatus.SENT if result.ok else NotificationStatus.FAILED,
-            message=result.message,
-        )
-        return event_id, (
-            NotificationOutboxStatus.SENT if result.ok else NotificationOutboxStatus.FAILED
-        )
-    raise ValueError(f"Unsupported notification channel: {entry.channel}")
+    get_channel_definition(entry.channel)
+    handler = NOTIFICATION_CHANNEL_HANDLERS.get(entry.channel)
+    if handler is None:
+        raise ValueError(f"Unsupported notification channel: {entry.channel}")
+    return handler(
+        app,
+        target,
+        entry,
+        NotificationSenders(
+            ntfy=ntfy_sender,
+            desktop=desktop_sender,
+            discord=discord_sender,
+        ),
+    )
 
 
 def record_notification_event(

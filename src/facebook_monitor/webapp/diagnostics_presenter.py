@@ -250,6 +250,9 @@ def _append_sort_block(lines: list[str], label: str, value: object) -> None:
             f"mutation_suppression_reason={value.get('mutation_suppression_reason', '')}",
         ]
     )
+    menu_candidate_texts = value.get("menu_candidate_texts")
+    if menu_candidate_texts:
+        lines.append(f"menu_candidate_texts={_format_debug_value(menu_candidate_texts)}")
 
 
 def _append_comments_meta(lines: list[str], value: object) -> None:

@@ -8,27 +8,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
-from facebook_monitor.facebook.collection_policy import clamp_target_post_count
+from facebook_monitor.core.scan_limits import clamp_target_post_count
+from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.models import TargetConfig
 
 
 FIXED_REFRESH_MODE = "fixed"
 FLOATING_REFRESH_MODE = "floating"
-
-
-def parse_keywords_text(text: str) -> tuple[str, ...]:
-    """將表單 keyword 文字轉成去重 tuple。"""
-
-    keywords: list[str] = []
-    for raw_item in text.replace("\n", ",").split(","):
-        keyword = raw_item.strip()
-        if keyword:
-            keywords.append(keyword)
-    return tuple(dict.fromkeys(keywords))
 
 
 def checkbox_checked(value: str | None) -> bool:
@@ -48,16 +41,69 @@ def normalize_refresh_seconds(value: int, fallback: int) -> int:
 
 
 @dataclass(frozen=True)
+class NotificationConfigForm:
+    """保存通知表單欄位，集中轉換成設定或測試通知 config。"""
+
+    enable_desktop_notification: str | None = None
+    enable_ntfy: str | None = None
+    ntfy_topic: str = ""
+    enable_discord_notification: str | None = None
+    discord_webhook: str = ""
+
+    @property
+    def desktop_enabled(self) -> bool:
+        """回傳桌面通知 checkbox 狀態。"""
+
+        return checkbox_checked(self.enable_desktop_notification)
+
+    @property
+    def ntfy_enabled(self) -> bool:
+        """回傳 ntfy checkbox 狀態。"""
+
+        return checkbox_checked(self.enable_ntfy)
+
+    @property
+    def discord_enabled(self) -> bool:
+        """回傳 Discord checkbox 狀態。"""
+
+        return checkbox_checked(self.enable_discord_notification)
+
+    def to_global_settings(self) -> GlobalNotificationSettings:
+        """轉成全域通知預設值。"""
+
+        return GlobalNotificationSettings(
+            enable_desktop_notification=self.desktop_enabled,
+            enable_ntfy=self.ntfy_enabled,
+            ntfy_topic=self.ntfy_topic.strip(),
+            enable_discord_notification=self.discord_enabled,
+            discord_webhook=self.discord_webhook.strip(),
+        )
+
+    def to_target_config(self, *, target_id: str) -> TargetConfig:
+        """轉成 manual notification test 使用的 target config。"""
+
+        return TargetConfig(
+            target_id=target_id,
+            enable_desktop_notification=self.desktop_enabled,
+            enable_ntfy=self.ntfy_enabled,
+            ntfy_topic=self.ntfy_topic.strip(),
+            enable_discord_notification=self.discord_enabled,
+            discord_webhook=self.discord_webhook.strip(),
+        )
+
+
+@dataclass(frozen=True)
 class TargetConfigForm:
     """保存 target create/update 共用設定欄位。"""
 
     include_keywords: str = ""
     exclude_keywords: str = ""
+    exclude_ignore_phrases: str = ""
     refresh_mode: str = FIXED_REFRESH_MODE
     fixed_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
     max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
-    max_items_per_scan: int = 3
+    max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
     auto_load_more: str | None = None
     auto_adjust_sort: str | None = None
     enable_desktop_notification: str | None = None
@@ -77,6 +123,12 @@ class TargetConfigForm:
         """回傳已解析 exclude keywords。"""
 
         return parse_keywords_text(self.exclude_keywords)
+
+    @property
+    def exclude_ignore_phrase_tuple(self) -> tuple[str, ...]:
+        """回傳已解析排除字忽略片語。"""
+
+        return parse_keywords_text(self.exclude_ignore_phrases)
 
     @property
     def normalized_refresh_mode(self) -> str:
@@ -142,14 +194,14 @@ class TargetConfigForm:
 
         return clamp_target_post_count(self.max_items_per_scan)
 
-    def to_update_request(self, *, target_id: str) -> UpdateTargetConfigRequest:
-        """轉成更新 target group config 的 application request。"""
+    def to_config_patch(self) -> TargetConfigPatch:
+        """轉成 target config patch，供 create/update request 共用。"""
 
         self.validate_refresh_range()
-        return UpdateTargetConfigRequest(
-            target_id=target_id,
+        return TargetConfigPatch(
             include_keywords=self.include_keyword_tuple,
             exclude_keywords=self.exclude_keyword_tuple,
+            exclude_ignore_phrases=self.exclude_ignore_phrase_tuple,
             fixed_refresh_sec=self.refresh_fixed_value,
             min_refresh_sec=self.normalized_min_refresh_sec,
             max_refresh_sec=self.normalized_max_refresh_sec,
@@ -164,6 +216,14 @@ class TargetConfigForm:
             discord_webhook=self.discord_webhook.strip(),
         )
 
+    def to_update_request(self, *, target_id: str) -> UpdateTargetConfigRequest:
+        """轉成更新 target-scoped config 的 application request。"""
+
+        return UpdateTargetConfigRequest(
+            target_id=target_id,
+            config=self.to_config_patch(),
+        )
+
     def to_group_posts_upsert_request(
         self,
         *,
@@ -174,26 +234,12 @@ class TargetConfigForm:
     ) -> UpsertGroupPostsTargetRequest:
         """轉成 posts target upsert request。"""
 
-        self.validate_refresh_range()
         return UpsertGroupPostsTargetRequest(
             group_id=group_id,
             canonical_url=canonical_url,
             name=name,
             group_name=group_name,
-            include_keywords=self.include_keyword_tuple,
-            exclude_keywords=self.exclude_keyword_tuple,
-            fixed_refresh_sec=self.refresh_fixed_value,
-            min_refresh_sec=self.normalized_min_refresh_sec,
-            max_refresh_sec=self.normalized_max_refresh_sec,
-            jitter_enabled=self.refresh_jitter_enabled,
-            max_items_per_scan=self.normalized_max_items_per_scan,
-            auto_load_more=checkbox_checked(self.auto_load_more),
-            auto_adjust_sort=checkbox_checked(self.auto_adjust_sort),
-            enable_desktop_notification=checkbox_checked(self.enable_desktop_notification),
-            enable_ntfy=checkbox_checked(self.enable_ntfy),
-            ntfy_topic=self.ntfy_topic.strip(),
-            enable_discord_notification=checkbox_checked(self.enable_discord_notification),
-            discord_webhook=self.discord_webhook.strip(),
+            config=self.to_config_patch(),
         )
 
     def to_comments_upsert_request(
@@ -207,25 +253,11 @@ class TargetConfigForm:
     ) -> UpsertCommentsTargetRequest:
         """轉成 comments target upsert request。"""
 
-        self.validate_refresh_range()
         return UpsertCommentsTargetRequest(
             group_id=group_id,
             parent_post_id=parent_post_id,
             canonical_url=canonical_url,
             name=name,
             group_name=group_name,
-            include_keywords=self.include_keyword_tuple,
-            exclude_keywords=self.exclude_keyword_tuple,
-            fixed_refresh_sec=self.refresh_fixed_value,
-            min_refresh_sec=self.normalized_min_refresh_sec,
-            max_refresh_sec=self.normalized_max_refresh_sec,
-            jitter_enabled=self.refresh_jitter_enabled,
-            max_items_per_scan=self.normalized_max_items_per_scan,
-            auto_load_more=checkbox_checked(self.auto_load_more),
-            auto_adjust_sort=checkbox_checked(self.auto_adjust_sort),
-            enable_desktop_notification=checkbox_checked(self.enable_desktop_notification),
-            enable_ntfy=checkbox_checked(self.enable_ntfy),
-            ntfy_topic=self.ntfy_topic.strip(),
-            enable_discord_notification=checkbox_checked(self.enable_discord_notification),
-            discord_webhook=self.discord_webhook.strip(),
+            config=self.to_config_patch(),
         )

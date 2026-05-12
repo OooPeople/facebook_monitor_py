@@ -64,6 +64,33 @@ def test_to_ascii_header_value_keeps_ascii_and_falls_back_for_unicode() -> None:
     assert to_ascii_header_value("Facebook 監視命中", fallback="fallback") == "fallback"
 
 
+def test_send_ntfy_notification_sanitizes_http_exception_message(monkeypatch: Any) -> None:
+    """ntfy HTTP 例外訊息不得把 topic / URL 寫進診斷。"""
+
+    def fake_post(
+        url: str,
+        *,
+        content: bytes,
+        headers: dict[str, str],
+        timeout: int,
+    ) -> httpx.Response:
+        """模擬 httpx 例外內含完整 endpoint。"""
+
+        raise httpx.ConnectError(f"failed to connect {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = send_ntfy_notification(
+        NtfyConfig(topic="private-topic"),
+        "Facebook group match",
+        "message",
+    )
+
+    assert not result.ok
+    assert result.message == "ntfy_failed:ConnectError"
+    assert "private-topic" not in result.message
+
+
 def test_send_desktop_notification_uses_powershell_balloon_tip(monkeypatch: Any) -> None:
     """desktop sender 參考 hotel_price_watch 的 PowerShell balloon tip 作法。"""
 
@@ -96,6 +123,27 @@ def test_build_desktop_notification_command_escapes_single_quotes() -> None:
 
     assert "$notify.BalloonTipTitle = 'A''B';" in command[3]
     assert "$notify.BalloonTipText = 'C''D';" in command[3]
+
+
+def test_send_desktop_notification_sanitizes_runner_exception(monkeypatch: Any) -> None:
+    """desktop 例外訊息不得把通知內容或 command 寫進診斷。"""
+
+    def failing_runner(_command: list[str]) -> None:
+        """模擬 runner 例外內含通知內容。"""
+
+        raise RuntimeError("failed to show private notification body")
+
+    monkeypatch.setattr("sys.platform", "win32")
+
+    result = send_desktop_notification(
+        "Facebook group match",
+        "private notification body",
+        command_runner=failing_runner,
+    )
+
+    assert not result.ok
+    assert result.message == "desktop_failed:RuntimeError"
+    assert "private notification body" not in result.message
 
 
 def test_send_discord_notification_matches_userscript_webhook_payload(
@@ -219,6 +267,35 @@ def test_send_discord_notification_reports_rate_limit_details(
         "discord_failed:429 retry_after=30s global=false "
         "message=You are being rate limited."
     )
+
+
+def test_send_discord_notification_sanitizes_http_exception_message(
+    monkeypatch: Any,
+) -> None:
+    """Discord HTTP 例外訊息不得把 webhook URL 寫進診斷。"""
+
+    def fake_post(
+        url: str,
+        *,
+        json: dict[str, str],
+        headers: dict[str, str],
+        timeout: int,
+    ) -> httpx.Response:
+        """模擬 httpx 例外內含完整 webhook。"""
+
+        raise httpx.ConnectError(f"failed to connect {url}")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = send_discord_notification(
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/private-token"),
+        "Facebook group match",
+        "message",
+    )
+
+    assert not result.ok
+    assert result.message == "discord_failed:ConnectError"
+    assert "private-token" not in result.message
 
 
 def test_truncate_discord_content_uses_conservative_limit() -> None:

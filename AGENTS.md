@@ -26,8 +26,8 @@
 
 - 不可 commit 真實 browser profile、cookies、tokens、session dumps，或包含私人資料的 logs。
 - 不可使用使用者日常 Chrome profile。
-- 不可把 profile 放到 `data/profiles/` 以外的位置；此路徑除了 `.gitkeep` 以外應維持 git ignored。
-- 不可把 runtime logs 放到 `logs/` 以外的位置；此路徑除了 `.gitkeep` 以外應維持 git ignored。
+- 不可把 profile 放到 runtime path resolver 管理的 `<data-dir>/profiles/` 以外。
+- 不可把 runtime logs 放到 runtime path resolver 管理的 `<logs-dir>` 以外。
 - 既有最小依賴以外的新第三方套件，新增前必須先詢問。
 - 不要機械式逐行翻譯 userscript；只能把它當作行為參考。
 - 不可直接改寫 JS 版成熟常數、字串 label、判斷條件，只因為 Python 版「目前看起來也能動」。
@@ -42,7 +42,8 @@
 
 - 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
-- scripts 已依角色分層：正式入口在 `scripts/start/`，低頻管理在 `scripts/admin/`，除錯工具在 `scripts/debug/`，內部工具在 `scripts/internal/`。
+- 正式日常入口是 package entrypoint：`facebook-monitor`；profile 登入 / 檢查入口是 `facebook-monitor-login`。
+- scripts 已依角色分層：低頻管理在 `scripts/admin/`，除錯工具在 `scripts/debug/`，內部工具在 `scripts/internal/`。
 - 不得新增新的 `phase_*` script；檔名必須反映角色與用途。
 - 不得把 debug / internal 工具描述成正式日常入口；新功能預設先接 Web UI + async resident 正式主路徑。
 - 每次 probe 失敗都要留下清楚分類：login/session、headless DOM、page load、selector/extractor、notification 或 unknown。
@@ -51,9 +52,7 @@
 - 新增或修改模組、類別、函式時，補繁體中文 docstring 或必要註解，說明職責即可，避免逐行解說。
 - 讀取或修改 `.md` 時使用 UTF-8。
 - 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
-- 更新進度時，同步維護 `docs/TASK_BREAKDOWN.md`。
-- 使用者要求 commit message 時，先遵守 `GIT_COMMIT_RULES.md`。
-- `target_configs` 只允許作為舊資料 migration fallback；新正式功能不得直接讀寫，正式 config store 一律是 `group_configs`。
+- 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源，不得作為正式 read/write path。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。
 - Python 版刻意偏離 JS 的預設值必須集中於 `src/facebook_monitor/core/defaults.py`，不得在 Web UI、service 或 worker 另寫一套常數。
 - UI 重構時不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
@@ -64,8 +63,9 @@
 
 - `.python-version`：固定 uv / Python 工具優先使用 Python 3.13。
 - `scripts/uv.ps1`：專案限定 uv wrapper。
-- `scripts/start/webui.py`：正式日常入口，啟動 Web UI 與背景掃描服務。
-- `scripts/start/setup_login.py`：正式維運入口，開啟專用 profile 供登入與檢查。
+- `pyproject.toml`：定義 `facebook-monitor` 與 `facebook-monitor-login` package entrypoints。
+- `src/facebook_monitor/launcher.py`：正式 Web UI launcher。
+- `src/facebook_monitor/profile_setup.py`：正式 profile 登入 / 檢查入口。
 - `docs/tooling.md`：scripts / CLI 工具角色索引。
 
 ---
@@ -74,6 +74,7 @@
 
 - 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
 - 更新進度時，同步維護 `docs/TASK_BREAKDOWN.md`。
+- `docs/TASK_BREAKDOWN.md` 只保留活狀態、下一步、風險與最近驗證摘要；不要累積逐次 focused command 或歷史 passed 數。
 - 使用者要求 commit message 時，先遵守 `GIT_COMMIT_RULES.md`。
 - 若本次實作只完成部分語義，commit / handoff / review 中必須清楚寫「已完成」與「未完成」邊界，不得混寫。
 
@@ -84,7 +85,7 @@
 ### 1. JS 版是唯一功能語義基準
 遇到以下任何功能，**一律先對照 JS 版成熟實作**，再決定 Python 寫法：
 
-- group-scoped config
+- target-scoped config
 - target-scoped baseline / seen
 - posts/comments scan target
 - include/exclude matcher
@@ -240,7 +241,7 @@ UI 重構不得讓已封口的架構邊界回歸：
 - 不得新增全域 scheduler 日常主開關。
 - 不得新增 direct notification dispatch path。
 - 不得把 failed outbox retry 接回一般 scan commit。
-- 不得把 `target_configs` 重新變成正式設定來源。
+- 不得把 `group_configs` 重新變成正式設定來源。
 
 ### 6. UI 設計參考檔使用規則
 `docs/ui_refactor/reference_ui.html` 是 dashboard 視覺與版面語義參考，不是可直接覆蓋目前專案的實作來源。

@@ -8,7 +8,9 @@ import sqlite3
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.persistence.row_mappers import scan_run_from_row
+from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+
 
 class ScanRunRepository:
     """保存 scan run 結果。"""
@@ -39,7 +41,7 @@ class ScanRunRepository:
                 json.dumps(run.metadata, ensure_ascii=False),
             ),
         )
-        return int(cursor.lastrowid)
+        return require_lastrowid(cursor.lastrowid, table_name="scan_runs")
 
     def latest_by_target(
         self,

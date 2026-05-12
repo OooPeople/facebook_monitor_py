@@ -2,10 +2,10 @@
 <article class="target target-card" id="{{ row.anchor_id }}" tabindex="-1" data-target-card data-target-id="{{ row.target.id }}">
   <div class="target-header">
     <div class="target-title-block">
-      <div class="target-avatar thumb" aria-hidden="true">{{ row.display_name[:1] or "?" }}</div>
+      <div class="target-avatar thumb" aria-hidden="true" data-target-avatar>{{ row.display_name[:1] or "?" }}</div>
       <div>
         <div class="target-title-line">
-          <h2>{{ row.display_name }}</h2>
+          <h2 data-target-title>{{ row.display_name }}</h2>
           <span class="status {{ row.status_class }}" data-card-status>{{ row.status_label }}</span>
         </div>
         <p class="target-subtitle" data-header-summary>{{ row.header_summary_label }}</p>
@@ -15,21 +15,24 @@
       <span class="inline-feedback action-status" data-action-status aria-live="polite">已更新</span>
       {% if row.scanning_supported %}
         <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="return_to" value="">
           <button type="submit">{{ row.monitoring_button_label }}</button>
         </form>
       {% else %}
         <span class="muted-text">尚未接上掃描流程</span>
       {% endif %}
-      <button type="submit" form="config-{{ row.target.id }}">儲存</button>
+      <button type="submit" form="config-{{ row.target.id }}" data-dirty-submit>儲存</button>
       <button class="button" type="button" data-view-records-button data-target-id="{{ row.target.id }}">查看紀錄</button>
       <button class="button" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">設定</button>
       <details class="more-menu">
-        <summary aria-label="更多操作">⋯</summary>
+        <summary class="button more-menu-trigger" aria-label="更多操作">⋯</summary>
         <div class="more-menu-panel">
+          <button class="more-menu-action" type="button" data-rename-target-button>更改名稱</button>
           <form method="post" action="/targets/{{ row.target.id }}/delete" onsubmit="return confirm('刪除這個 target？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="return_to" value="">
-            <button class="danger" type="submit">刪除</button>
+            <button class="more-menu-action button--danger" type="submit">刪除</button>
           </form>
         </div>
       </details>
@@ -43,56 +46,66 @@
   {% endif %}
 
   <dl class="target-collapsed-summary field-grid field-grid--summary" data-collapsed-summary hidden>
-    {% for summary_section in row.card_summary.sections %}
-      <div class="target-collapsed-summary-field field-grid-cell">
-        <dt>{{ summary_section.label }}</dt>
-        <dd>
-          {% for summary_line in summary_section.lines %}
-            <span>{{ summary_line }}</span>
-          {% endfor %}
-        </dd>
-      </div>
-    {% endfor %}
+    {% set summary_sections = row.card_summary.sections %}
+    {% include "_collapsed_summary_fields.html" %}
   </dl>
 
   <div class="target-collapsible" id="target-collapsible-{{ row.target.id }}" data-target-collapsible>
     <div class="target-body">
       <aside class="target-settings panel">
         <form class="config-form compact-config-form" id="config-{{ row.target.id }}" method="post" action="/targets/{{ row.target.id }}/config" data-target-id="{{ row.target.id }}" data-target-anchor="{{ row.anchor_id }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="return_to" value="">
           <div class="section-title">
             <h3>關鍵字與設定</h3>
+            <span class="inline-feedback form-status" data-dirty-status aria-live="polite">尚未儲存</span>
           </div>
           <label>
             包含關鍵字
             <textarea name="include_keywords" rows="2">{{ row.include_text }}</textarea>
           </label>
-          <label>
-            排除關鍵字
-            <textarea name="exclude_keywords" rows="2">{{ row.exclude_text }}</textarea>
-          </label>
+          <div class="keyword-rule-tabs" data-keyword-tabs>
+            <div class="keyword-rule-tab-row">
+              <div class="preview-tab-list keyword-rule-tab-list" role="tablist" aria-label="排除規則">
+                <button class="preview-tab keyword-rule-tab active" type="button" role="tab" aria-selected="true" aria-controls="exclude-keywords-panel-{{ row.target.id }}" data-keyword-tab="exclude">排除關鍵字</button>
+                <button class="preview-tab keyword-rule-tab" type="button" role="tab" aria-selected="false" aria-controls="exclude-ignore-panel-{{ row.target.id }}" data-keyword-tab="ignore">排除字忽略片語</button>
+                <button class="keyword-help-button" type="button" aria-label="查看排除字忽略片語說明" aria-controls="keyword-help-{{ row.target.id }}" data-keyword-help-button>?</button>
+              </div>
+            </div>
+            <div class="keyword-rule-panel" id="exclude-keywords-panel-{{ row.target.id }}" role="tabpanel" data-keyword-panel="exclude">
+              <label class="keyword-rule-field">
+                <span class="keyword-rule-field-label">排除關鍵字</span>
+                <textarea name="exclude_keywords" rows="2">{{ row.exclude_text }}</textarea>
+              </label>
+            </div>
+            <div class="keyword-rule-panel" id="exclude-ignore-panel-{{ row.target.id }}" role="tabpanel" data-keyword-panel="ignore" hidden>
+              <label class="keyword-rule-field">
+                <span class="keyword-rule-field-label">排除字忽略片語</span>
+                <textarea name="exclude_ignore_phrases" rows="2" placeholder="例如：全收, 回收">{{ row.exclude_ignore_phrases_text }}</textarea>
+              </label>
+            </div>
+          </div>
           <div class="settings-summary" aria-label="設定摘要">
             {% for summary_line in row.settings_summary.lines %}
-              {% set summary_parts = summary_line.split("：", 1) %}
               <div class="settings-summary-row">
                 <span class="settings-summary-icon" aria-hidden="true">
-                  {% if loop.index == 1 %}
+                  {% if summary_line.icon_key == "refresh" %}
                     <svg viewBox="0 0 24 24" focusable="false">
                       <path d="M18.5 12a6.5 6.5 0 1 1-2-4.68"/>
                       <path d="M18.1 5.1l-.35 4.35-4.35-.35"/>
                     </svg>
-                  {% elif loop.index == 2 %}
+                  {% elif summary_line.icon_key == "target" %}
                     <svg viewBox="0 0 24 24" focusable="false">
                       <circle cx="12" cy="12" r="7"/>
                       <circle cx="12" cy="12" r="2"/>
                       <path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>
                     </svg>
-                  {% elif loop.index == 3 %}
+                  {% elif summary_line.icon_key == "load_more" %}
                     <svg viewBox="0 0 24 24" focusable="false">
                       <path d="M7 8h10M7 12h10M7 16h6"/>
                       <path d="m16 14 3 3 3-3"/>
                     </svg>
-                  {% elif loop.index == 4 %}
+                  {% elif summary_line.icon_key == "sort" %}
                     <svg viewBox="0 0 24 24" focusable="false">
                       <path d="M7 4v16M7 20l-3-3M7 20l3-3"/>
                       <path d="M17 20V4M17 4l-3 3M17 4l3 3"/>
@@ -105,8 +118,8 @@
                   {% endif %}
                 </span>
                 <span class="settings-summary-copy">
-                  <span class="settings-summary-label">{{ summary_parts[0] }}：</span>
-                  <span class="settings-summary-value">{{ summary_parts[1] if summary_parts|length > 1 else "" }}</span>
+                  <span class="settings-summary-label">{{ summary_line.label }}：</span>
+                  <span class="settings-summary-value">{{ summary_line.value }}</span>
                 </span>
               </div>
             {% endfor %}
@@ -115,7 +128,6 @@
             <span>查看全部設定</span>
             <span aria-hidden="true">›</span>
           </button>
-          <span class="inline-feedback form-status" data-dirty-status aria-live="polite">尚未儲存</span>
         </form>
       </aside>
 
@@ -161,4 +173,53 @@
 
   {% include "_target_settings_modal.html" %}
   {% include "_hit_records_modal.html" %}
+  <dialog class="settings-modal rename-target-modal" data-rename-target-modal aria-labelledby="rename-target-title-{{ row.target.id }}">
+    <form class="modal-shell" method="post" action="/targets/{{ row.target.id }}/name" data-action-anchor="{{ row.anchor_id }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="return_to" value="">
+      <header class="modal-header">
+        <div>
+          <h3 id="rename-target-title-{{ row.target.id }}">更改 target 名稱</h3>
+          <p>只會更新卡片與側邊欄顯示名稱。</p>
+        </div>
+        <button class="button--icon" type="button" data-close-rename-target aria-label="關閉更改名稱視窗">×</button>
+      </header>
+      <div class="modal-body rename-target-body">
+        <label>
+          名稱
+          <input name="display_name" type="text" value="{{ row.display_name }}" autocomplete="off" required>
+        </label>
+      </div>
+      <footer class="modal-footer">
+        <span class="field-caption">Facebook URL、掃描範圍與設定不會變更。</span>
+        <div class="modal-footer-actions">
+          <button type="button" data-close-rename-target>取消</button>
+          <button type="submit">確認</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+  <dialog class="settings-modal keyword-help-modal" id="keyword-help-{{ row.target.id }}" data-keyword-help-modal aria-labelledby="keyword-help-title-{{ row.target.id }}">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h3 id="keyword-help-title-{{ row.target.id }}">排除字忽略片語</h3>
+          <p>用來避免排除字誤傷特定常見片語。</p>
+        </div>
+        <button class="button--icon" type="button" data-close-keyword-help aria-label="關閉說明">×</button>
+      </header>
+      <div class="modal-body keyword-help-body">
+        <section class="modal-section-card">
+          <p>忽略片語只會在排除判斷前遮罩該片語本身，不會讓整篇內容直接通過。</p>
+          <p>例如排除關鍵字是 <code>收</code>，忽略片語是 <code>全收;回收</code> 時，<code>全收</code> 裡的 <code>收</code> 不會觸發排除。</p>
+          <p>如果同一段文字其他位置仍出現 <code>收</code>，仍會照常被排除。</p>
+          <p>包含關鍵字先用原文判斷；排除關鍵字會在遮罩忽略片語後判斷。通知與紀錄仍保存原始文字。</p>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <span class="field-caption">預設忽略片語：全收;回收</span>
+        <button type="button" data-close-keyword-help>關閉</button>
+      </footer>
+    </div>
+  </dialog>
 </article>

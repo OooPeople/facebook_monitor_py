@@ -1,5 +1,5 @@
-import { applyDashboardPartialUpdate } from "./partial_updates.js?v=ui-refactor-phase18-form-sidebar-status";
-import { saveScrollPosition, shouldDelayRefresh } from "./state.js";
+import { applyDashboardPartialUpdate } from "/static/dashboard/partial_updates.js";
+import { saveScrollPosition, shouldDelayRefresh } from "/static/dashboard/state.js";
 
 const pollingIntervalMs = 3000;
 const pendingRefreshCheckMs = 1000;

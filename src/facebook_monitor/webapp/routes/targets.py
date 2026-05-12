@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import FastAPI
@@ -16,12 +17,13 @@ from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SE
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
+from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_desktop_sender
 from facebook_monitor.webapp.dependencies import get_discord_sender
 from facebook_monitor.webapp.dependencies import get_global_notification_settings
@@ -29,13 +31,83 @@ from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import get_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
+from facebook_monitor.webapp.dependencies import get_target_keyword_defaults
 from facebook_monitor.webapp.dependencies import redirect_new_target_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
 from facebook_monitor.webapp.dependencies import start_resident_scheduler_if_needed
+from facebook_monitor.webapp.form_models import NotificationConfigForm
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.profile_session import ProfileSessionError
+
+
+logger = logging.getLogger(__name__)
+
+
+def _build_target_config_form(
+    *,
+    include_keywords: str,
+    exclude_keywords: str,
+    exclude_ignore_phrases: str,
+    refresh_mode: str,
+    fixed_refresh_sec: int,
+    min_refresh_sec: int,
+    max_refresh_sec: int,
+    max_items_per_scan: int,
+    auto_load_more: str | None,
+    auto_adjust_sort: str | None,
+    enable_desktop_notification: str | None,
+    enable_ntfy: str | None,
+    ntfy_topic: str,
+    enable_discord_notification: str | None,
+    discord_webhook: str,
+) -> TargetConfigForm:
+    """集中建立 target config form，避免 create/update route 重複欄位映射。"""
+
+    return TargetConfigForm(
+        include_keywords=include_keywords,
+        exclude_keywords=exclude_keywords,
+        exclude_ignore_phrases=exclude_ignore_phrases,
+        refresh_mode=refresh_mode,
+        fixed_refresh_sec=fixed_refresh_sec,
+        min_refresh_sec=min_refresh_sec,
+        max_refresh_sec=max_refresh_sec,
+        max_items_per_scan=max_items_per_scan,
+        auto_load_more=auto_load_more,
+        auto_adjust_sort=auto_adjust_sort,
+        enable_desktop_notification=enable_desktop_notification,
+        enable_ntfy=enable_ntfy,
+        ntfy_topic=ntfy_topic,
+        enable_discord_notification=enable_discord_notification,
+        discord_webhook=discord_webhook,
+    )
+
+
+async def _resolve_group_name_if_needed(
+    request: Request,
+    *,
+    custom_name: str,
+    canonical_url: str,
+) -> str:
+    """未提供自訂名稱時，視 profile 可用狀態嘗試解析 Facebook group name。"""
+
+    if custom_name:
+        return ""
+    scheduler_state = get_scheduler_manager(request).state()
+    if scheduler_state.running:
+        logger.info(
+            "skip group name resolver because scheduler lifecycle is %s",
+            scheduler_state.lifecycle_state,
+        )
+        return ""
+    return await run_with_temporary_profile_access(
+        request,
+        lambda: get_group_name_resolver(request)(
+            get_profile_dir(request),
+            canonical_url,
+        ),
+    )
 
 
 def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -55,6 +127,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "error": error,
                 "notification_settings": get_global_notification_settings(request),
                 "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,
+                "target_keyword_defaults": get_target_keyword_defaults(request),
+                "initial_theme": get_app_theme(request),
             },
         )
 
@@ -64,7 +138,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         group_url: Annotated[str, Form()],
         display_name: Annotated[str, Form()] = "",
         include_keywords: Annotated[str, Form()] = "",
-        exclude_keywords: Annotated[str, Form()] = "",
+        exclude_keywords: Annotated[str | None, Form()] = None,
+        exclude_ignore_phrases: Annotated[str | None, Form()] = None,
         refresh_mode: Annotated[str, Form()] = "fixed",
         fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
         min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
@@ -84,9 +159,19 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """從表單 URL 建立或更新 posts/comments target。"""
 
         try:
-            config_form = TargetConfigForm(
+            keyword_defaults = get_target_keyword_defaults(request)
+            config_form = _build_target_config_form(
                 include_keywords=include_keywords,
-                exclude_keywords=exclude_keywords,
+                exclude_keywords=(
+                    keyword_defaults.exclude_keywords_text
+                    if exclude_keywords is None
+                    else exclude_keywords
+                ),
+                exclude_ignore_phrases=(
+                    keyword_defaults.exclude_ignore_phrases_text
+                    if exclude_ignore_phrases is None
+                    else exclude_ignore_phrases
+                ),
                 refresh_mode=refresh_mode,
                 fixed_refresh_sec=fixed_refresh_sec,
                 min_refresh_sec=min_refresh_sec,
@@ -101,19 +186,16 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 discord_webhook=discord_webhook,
             )
             custom_name = clean_facebook_page_title(display_name)
+            scheduler_running = get_scheduler_manager(request).state().running
             route = detect_target_route_from_url(group_url.strip())
             if isinstance(route, DetectedCommentsTargetRoute):
-                resolved_group_name = ""
-                if not custom_name:
-                    resolved_group_name = await run_with_temporary_profile_access(
-                        request,
-                        lambda: get_group_name_resolver(request)(
-                            get_profile_dir(request),
-                            route.group_canonical_url,
-                        ),
-                    )
+                resolved_group_name = await _resolve_group_name_if_needed(
+                    request,
+                    custom_name=custom_name,
+                    canonical_url=route.group_canonical_url,
+                )
                 with SqliteApplicationContext(get_db_path(request)) as app_context:
-                    app_context.services.targets.upsert_comments_target(
+                    target = app_context.services.targets.upsert_comments_target(
                         config_form.to_comments_upsert_request(
                             group_id=route.group_id,
                             parent_post_id=route.parent_post_id,
@@ -122,18 +204,16 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             group_name=resolved_group_name,
                         )
                     )
+                if scheduler_running and not custom_name:
+                    get_scheduler_manager(request).request_metadata_refresh(target.id)
             else:
-                resolved_group_name = ""
-                if not custom_name:
-                    resolved_group_name = await run_with_temporary_profile_access(
-                        request,
-                        lambda: get_group_name_resolver(request)(
-                            get_profile_dir(request),
-                            route.canonical_url,
-                        ),
-                    )
+                resolved_group_name = await _resolve_group_name_if_needed(
+                    request,
+                    custom_name=custom_name,
+                    canonical_url=route.canonical_url,
+                )
                 with SqliteApplicationContext(get_db_path(request)) as app_context:
-                    app_context.services.targets.upsert_group_posts_target(
+                    target = app_context.services.targets.upsert_group_posts_target(
                         config_form.to_group_posts_upsert_request(
                             group_id=route.group_id,
                             canonical_url=route.canonical_url,
@@ -141,6 +221,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             group_name=resolved_group_name,
                         )
                     )
+                if scheduler_running and not custom_name:
+                    get_scheduler_manager(request).request_metadata_refresh(target.id)
         except RouteDetectionError as exc:
             return redirect_new_target_with_error(str(exc))
         except GroupMetadataError as exc:
@@ -158,6 +240,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return_to: Annotated[str, Form()] = "",
         include_keywords: Annotated[str, Form()] = "",
         exclude_keywords: Annotated[str, Form()] = "",
+        exclude_ignore_phrases: Annotated[str, Form()] = "",
         refresh_mode: Annotated[str, Form()] = "fixed",
         fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
         min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
@@ -174,12 +257,13 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         enable_discord_notification: Annotated[str | None, Form()] = None,
         discord_webhook: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
-        """更新 target 所屬社團設定。"""
+        """更新單一 target 設定。"""
 
         try:
-            config_form = TargetConfigForm(
+            config_form = _build_target_config_form(
                 include_keywords=include_keywords,
                 exclude_keywords=exclude_keywords,
+                exclude_ignore_phrases=exclude_ignore_phrases,
                 refresh_mode=refresh_mode,
                 fixed_refresh_sec=fixed_refresh_sec,
                 min_refresh_sec=min_refresh_sec,
@@ -201,6 +285,22 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_with_error(f"設定更新失敗: {exc}", return_to=return_to)
         return redirect_with_message("設定已更新", return_to=return_to)
 
+    @app.post("/targets/{target_id}/name")
+    async def update_target_name(
+        request: Request,
+        target_id: str,
+        display_name: Annotated[str, Form()] = "",
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """更新 target card 顯示名稱。"""
+
+        try:
+            with SqliteApplicationContext(get_db_path(request)) as app_context:
+                app_context.services.targets.update_target_name(target_id, display_name)
+        except Exception as exc:
+            return redirect_with_error(f"名稱更新失敗: {exc}", return_to=return_to)
+        return redirect_with_message("名稱已更新", return_to=return_to)
+
     @app.post("/targets/{target_id}/notifications/test")
     async def test_target_notifications(
         request: Request,
@@ -218,15 +318,14 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 target = app_context.repositories.targets.get(target_id)
                 if target is None:
-                    raise ValueError("target 不存在")
-            config = TargetConfig(
-                group_id=target.group_id,
-                enable_desktop_notification=enable_desktop_notification == "on",
-                enable_ntfy=enable_ntfy == "on",
-                ntfy_topic=ntfy_topic.strip(),
-                enable_discord_notification=enable_discord_notification == "on",
-                discord_webhook=discord_webhook.strip(),
-            )
+                    return redirect_with_error("測試通知失敗: target 不存在", return_to=return_to)
+            config = NotificationConfigForm(
+                enable_desktop_notification=enable_desktop_notification,
+                enable_ntfy=enable_ntfy,
+                ntfy_topic=ntfy_topic,
+                enable_discord_notification=enable_discord_notification,
+                discord_webhook=discord_webhook,
+            ).to_target_config(target_id=target.id)
             results = await run_in_threadpool(
                 send_manual_test_notification,
                 config=config,
@@ -235,7 +334,11 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 discord_sender=get_discord_sender(request),
             )
         except Exception as exc:
-            return redirect_with_error(f"測試通知失敗: {exc}", return_to=return_to)
+            return redirect_with_error(
+                "測試通知失敗: "
+                + safe_exception_message("notification_test_failed", exc),
+                return_to=return_to,
+            )
         return redirect_with_message("測試通知結果：" + " / ".join(results), return_to=return_to)
 
     @app.post("/targets/{target_id}/start")
@@ -298,6 +401,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                     return redirect_with_error("掃描失敗：請先開始 target")
                 app_context.services.targets.request_target_scan(target_id)
             start_resident_scheduler_if_needed(request)
-        except Exception:
-            return redirect_with_error("掃描失敗，請查看 terminal 或 scan_runs")
+        except Exception as exc:
+            logger.exception("scan once failed", extra={"target_id": target_id})
+            return redirect_with_error(f"掃描失敗：{exc}")
         return redirect_with_message("已排入掃描")

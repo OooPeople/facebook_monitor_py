@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
@@ -15,37 +14,17 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import is_generated_group_comments_name
-from facebook_monitor.core.models import is_generated_group_posts_name
-from facebook_monitor.facebook.route_detection import clean_facebook_page_title
+from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
+from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
+from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresenter
+from facebook_monitor.webapp.dashboard_presenters import TargetIdentityPresenter
+from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
+from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
-
-
-@dataclass(frozen=True)
-class SettingsSummary:
-    """保存 target card 設定摘要。"""
-
-    refresh_label: str
-    max_items_label: str
-    auto_load_more_label: str
-    auto_sort_label: str
-    notification_label: str
-
-    @property
-    def lines(self) -> tuple[str, ...]:
-        """回傳可直接顯示的摘要列。"""
-
-        return (
-            f"刷新：{self.refresh_label}",
-            f"目標掃描：{self.max_items_label}",
-            f"載入更多：{self.auto_load_more_label}",
-            f"排序：{self.auto_sort_label}",
-            f"通知：{self.notification_label}",
-        )
 
 
 @dataclass(frozen=True)
@@ -63,66 +42,6 @@ class SidebarTargetItem:
     latest_error_summary: str = ""
     thumbnail_url: str = ""
     active: bool = False
-
-
-@dataclass(frozen=True)
-class TargetCardSummarySection:
-    """保存收合卡片摘要單一欄位的標題與內容。"""
-
-    label: str
-    lines: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class TargetCardSummary:
-    """保存 Phase 9 收合卡片摘要需要的穩定欄位。"""
-
-    target_type_label: str
-    status_label: str
-    include_keywords_summary: str
-    exclude_keywords_summary: str
-    latest_scan_label: str
-    hit_record_total_count: int
-    refresh_label: str
-    max_items_label: str
-    notification_summary: str
-    latest_error_summary: str = ""
-
-    @property
-    def sections(self) -> tuple[TargetCardSummarySection, ...]:
-        """回傳收合卡片使用的欄位式摘要。"""
-
-        return (
-            TargetCardSummarySection(
-                label="包含關鍵字",
-                lines=(self.include_keywords_summary,),
-            ),
-            TargetCardSummarySection(
-                label="排除關鍵字",
-                lines=(self.exclude_keywords_summary,),
-            ),
-            TargetCardSummarySection(
-                label="設定摘要",
-                lines=(f"刷新 {self.refresh_label}", f"目標掃描 {self.max_items_label}"),
-            ),
-            TargetCardSummarySection(
-                label="最近掃描",
-                lines=(self.latest_scan_label,),
-            ),
-            TargetCardSummarySection(
-                label="命中紀錄",
-                lines=(f"{self.hit_record_total_count} 筆",),
-            ),
-        )
-
-    @property
-    def lines(self) -> tuple[str, ...]:
-        """回傳舊版 partial update 相容用短句。"""
-
-        return tuple(
-            f"{section.label}：{' / '.join(section.lines)}"
-            for section in self.sections
-        )
 
 
 @dataclass(frozen=True)
@@ -189,39 +108,55 @@ class TargetRow:
     def display_name(self) -> str:
         """回傳 UI 顯示名稱。"""
 
-        if self.target.target_kind == TargetKind.COMMENTS:
-            if self.target.name and not is_generated_group_comments_name(
-                self.target.name,
-                self.target.group_id,
-                self.target.parent_post_id,
-            ):
-                return clean_facebook_page_title(self.target.name)
-            base_name = self.target.group_name or self.target.name
-            return clean_facebook_page_title(base_name)
-        if self.target.name and not is_generated_group_posts_name(
-            self.target.name,
-            self.target.group_id,
-        ):
-            return clean_facebook_page_title(self.target.name)
-        return clean_facebook_page_title(self.target.group_name or self.target.name)
+        return TargetIdentityPresenter(self.target).display_name
 
     @property
     def kind_label(self) -> str:
         """回傳 target 類型顯示文字。"""
 
-        return "comments" if self.target.target_kind == TargetKind.COMMENTS else "posts"
+        return TargetIdentityPresenter(self.target).kind_label
 
     @property
     def target_type_label(self) -> str:
         """回傳主畫面使用的 target 類型文字。"""
 
-        return "社團留言" if self.target.target_kind == TargetKind.COMMENTS else "社團貼文"
+        return TargetIdentityPresenter(self.target).target_type_label
 
     @property
     def scanning_supported(self) -> bool:
         """回傳目前 target 是否已接上 worker 掃描流程。"""
 
         return self.target.target_kind in {TargetKind.POSTS, TargetKind.COMMENTS}
+
+    @property
+    def status_presenter(self) -> TargetStatusPresenter:
+        """回傳 target 狀態 presenter。"""
+
+        return TargetStatusPresenter(
+            target=self.target,
+            runtime_state=self.runtime_state,
+            scanning_supported=self.scanning_supported,
+        )
+
+    @property
+    def settings_presenter(self) -> TargetSettingsPresenter:
+        """回傳 target 設定 presenter。"""
+
+        return TargetSettingsPresenter(config=self.config)
+
+    @property
+    def card_summary_presenter(self) -> TargetCardSummaryPresenter:
+        """回傳收合卡片摘要 presenter。"""
+
+        return TargetCardSummaryPresenter(
+            target_type_label=self.target_type_label,
+            status_label=self.status_label,
+            settings=self.settings_presenter,
+            latest_scan_run=self.latest_scan_run,
+            latest_failed_scan_run=self.latest_failed_scan_run,
+            latest_notification_event=self.latest_notification_event,
+            hit_record_total_count=self.hit_record_total_count,
+        )
 
     @property
     def target_identity_label(self) -> str:
@@ -252,35 +187,13 @@ class TargetRow:
     def status_label(self) -> str:
         """回傳 target 啟停狀態文字。"""
 
-        if not self.target.enabled:
-            return "停用"
-        if self.target.paused:
-            return "已停止"
-        if not self.scanning_supported:
-            return "尚未接上掃描"
-        labels = {
-            TargetRuntimeStatus.IDLE: "閒置",
-            TargetRuntimeStatus.QUEUED: "排隊中",
-            TargetRuntimeStatus.RUNNING: "執行中",
-            TargetRuntimeStatus.ERROR: "錯誤",
-        }
-        return labels.get(self.runtime_state.runtime_status, "已啟用")
+        return self.status_presenter.label
 
     @property
     def status_class(self) -> str:
         """回傳 target 狀態對應 CSS class。"""
 
-        if not self.target.enabled:
-            return "muted"
-        if self.target.paused:
-            return "stopped"
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
-            return "queued"
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.RUNNING:
-            return "running"
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
-            return "error"
-        return "enabled"
+        return self.status_presenter.css_class
 
     @property
     def runtime_error(self) -> str:
@@ -341,10 +254,7 @@ class TargetRow:
     def latest_failed_scan_summary(self) -> str:
         """回傳最近失敗掃描摘要。"""
 
-        if not self.latest_failed_scan_run:
-            return ""
-        failed = self.latest_failed_scan_run
-        return f"{format_datetime_for_ui(failed.finished_at)} · {failed.error_message}"
+        return self.card_summary_presenter.latest_failed_scan_summary
 
     @property
     def latest_notification_label(self) -> str:
@@ -363,79 +273,55 @@ class TargetRow:
     def notification_summary_label(self) -> str:
         """回傳設定摘要用的通知通道列表。"""
 
-        channels: list[str] = []
-        if self.config.enable_desktop_notification:
-            channels.append("桌面")
-        if self.config.enable_ntfy:
-            channels.append("ntfy")
-        if self.config.enable_discord_notification:
-            channels.append("Discord")
-        return " / ".join(channels) if channels else "關閉"
+        return self.settings_presenter.notification_summary_label
 
     @property
     def include_text(self) -> str:
         """回傳 include keywords 表單文字。"""
 
-        return ", ".join(self.config.include_keywords)
+        return self.settings_presenter.include_text
 
     @property
     def exclude_text(self) -> str:
         """回傳 exclude keywords 表單文字。"""
 
-        return ", ".join(self.config.exclude_keywords)
+        return self.settings_presenter.exclude_text
+
+    @property
+    def exclude_ignore_phrases_text(self) -> str:
+        """回傳排除字忽略片語表單文字。"""
+
+        return self.settings_presenter.exclude_ignore_phrases_text
 
     @property
     def fixed_refresh_value(self) -> int:
         """回傳表單使用的固定掃描間隔秒數。"""
 
-        return self.config.fixed_refresh_sec or PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
+        return self.settings_presenter.fixed_refresh_value
 
     @property
     def refresh_mode(self) -> str:
         """回傳目前 refresh mode。"""
 
-        if self.config.fixed_refresh_sec is None and self.config.jitter_enabled:
-            return "floating"
-        return "fixed"
+        return self.settings_presenter.refresh_mode
 
     @property
     def refresh_mode_label(self) -> str:
         """回傳 refresh mode 摘要。"""
 
-        if self.refresh_mode == "floating":
-            min_seconds = min(self.config.min_refresh_sec, self.config.max_refresh_sec)
-            max_seconds = max(self.config.min_refresh_sec, self.config.max_refresh_sec)
-            return f"浮動 {min_seconds}-{max_seconds} 秒"
-        return f"固定 {self.fixed_refresh_value} 秒"
+        return self.settings_presenter.refresh_mode_label
 
     @property
     def settings_summary(self) -> SettingsSummary:
         """回傳 target card 設定摘要 view model。"""
 
-        return SettingsSummary(
-            refresh_label=self.refresh_mode_label,
-            max_items_label=f"{self.config.max_items_per_scan} 筆",
-            auto_load_more_label="開啟" if self.config.auto_load_more else "關閉",
-            auto_sort_label="開啟" if self.config.auto_adjust_sort else "關閉",
-            notification_label=self.notification_summary_label,
-        )
+        return self.settings_presenter.settings_summary
 
     @property
     def card_summary(self) -> TargetCardSummary:
         """回傳 Phase 9 收合卡片可共用的摘要 view model。"""
 
-        return TargetCardSummary(
-            target_type_label=self.target_type_label,
-            status_label=self.status_label,
-            include_keywords_summary=self.include_text or "未設定",
-            exclude_keywords_summary=self.exclude_text or "未設定",
-            latest_scan_label=self.latest_scan_label,
-            hit_record_total_count=self.hit_record_total_count,
-            refresh_label=self.refresh_mode_label,
-            max_items_label=self.settings_summary.max_items_label,
-            notification_summary=self.notification_summary_label,
-            latest_error_summary=self.latest_failed_scan_summary,
-        )
+        return self.card_summary_presenter.summary
 
     @property
     def sidebar_item(self) -> SidebarTargetItem:
@@ -470,13 +356,13 @@ class TargetRow:
     def min_refresh_value(self) -> int:
         """回傳表單使用的浮動最小掃描間隔秒數。"""
 
-        return self.config.min_refresh_sec or PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+        return self.settings_presenter.min_refresh_value
 
     @property
     def max_refresh_value(self) -> int:
         """回傳表單使用的浮動最大掃描間隔秒數。"""
 
-        return self.config.max_refresh_sec or PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+        return self.settings_presenter.max_refresh_value
 
     @property
     def monitoring_action(self) -> str:

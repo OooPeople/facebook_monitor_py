@@ -1,10 +1,10 @@
-import { setupCardCollapse } from "./card_collapse.js";
-import { setupDebugCopyButtons } from "./debug_tools.js";
-import { setupConfigForms, setupFormSubmitTracking, setupRefreshFields } from "./forms.js";
-import { setupHitRecords } from "./hit_records.js?v=ui-refactor-phase18-form-sidebar-status";
-import { setupSettingsModals } from "./modals.js";
-import { setupRevisionClient } from "./revision_client.js?v=ui-refactor-phase18-form-sidebar-status";
-import { setupSidebar } from "./sidebar.js?v=ui-refactor-phase18-form-sidebar-status";
+import { setupCardCollapse } from "/static/dashboard/card_collapse.js";
+import { setupDebugCopyButtons } from "/static/dashboard/debug_tools.js";
+import { setupConfigForms, setupFormSubmitTracking, setupRefreshFields } from "/static/dashboard/forms.js";
+import { setupHitRecords } from "/static/dashboard/hit_records.js";
+import { setupSettingsModals } from "/static/dashboard/modals.js";
+import { setupRevisionClient } from "/static/dashboard/revision_client.js";
+import { setupSidebar } from "/static/dashboard/sidebar.js";
 import {
   clearSubmittedActionAnchor,
   clearSubmittedConfigAnchor,
@@ -12,9 +12,10 @@ import {
   getSubmittedActionAnchor,
   getSubmittedConfigAnchor,
   restoreScrollPosition,
-} from "./state.js";
-import { setupPreviewTabs } from "./tabs.js";
-import { clearFeedbackParams, readJsonScript, showInlineStatus, showToast } from "./utils.js";
+} from "/static/dashboard/state.js";
+import { setupKeywordTabs, setupPreviewTabs } from "/static/dashboard/tabs.js";
+import { setupThemeToggle } from "/static/dashboard/theme.js";
+import { clearFeedbackParams, readJsonScript, showInlineStatus, showToast } from "/static/dashboard/utils.js";
 
 const pageFeedback = readJsonScript("page-feedback", {});
 const currentRevision = readJsonScript("dashboard-revision", "");
@@ -65,11 +66,13 @@ const dispatchPageFeedback = () => {
 };
 
 restoreScrollPosition();
+setupThemeToggle();
 setupConfigForms(state);
 setupCardCollapse(state);
 setupRefreshFields();
 setupSidebar();
 setupPreviewTabs();
+setupKeywordTabs();
 setupHitRecords({ showToast });
 setupSettingsModals();
 setupFormSubmitTracking();

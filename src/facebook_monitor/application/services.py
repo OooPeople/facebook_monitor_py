@@ -15,6 +15,7 @@ from facebook_monitor.application.target_monitoring_commands import TargetMonito
 from facebook_monitor.application.target_registry_service import TargetRegistryService
 from facebook_monitor.application.target_registry_service import clean_facebook_group_name
 from facebook_monitor.application.target_requests import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UNSET_CONFIG_VALUE
 from facebook_monitor.application.target_requests import UnsetConfigValue
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
@@ -73,9 +74,19 @@ class TargetApplicationService:
         return self.registry_service.normalize_target_names(target)
 
     def delete_target(self, target_id: str) -> None:
-        """刪除單一 target 與其關聯設定，不影響其他 target。"""
+        """刪除單一 target；target-scoped config 由 SQLite FK 一併清除。"""
 
         return self.registry_service.delete_target(target_id)
+
+    def refresh_target_group_name(self, target_id: str, group_name: str) -> TargetDescriptor:
+        """以 scheduler metadata refresh 結果補齊 target 顯示名稱。"""
+
+        return self.registry_service.refresh_target_group_name(target_id, group_name)
+
+    def update_target_name(self, target_id: str, name: str) -> TargetDescriptor:
+        """更新使用者自訂 target 顯示名稱。"""
+
+        return self.registry_service.update_target_name(target_id, name)
 
     def upsert_group_posts_target(
         self,
@@ -94,7 +105,7 @@ class TargetApplicationService:
         return self.registry_service.upsert_comments_target(request)
 
     def get_config_for_target(self, target: TargetDescriptor) -> TargetConfig:
-        """讀取 target 所屬社團的 group-scoped config。"""
+        """讀取單一 target 的 config。"""
 
         return self.config_service.get_config_for_target(target)
 
@@ -103,12 +114,12 @@ class TargetApplicationService:
         target: TargetDescriptor,
         config: TargetConfig,
     ) -> TargetConfig:
-        """保存 target 所屬社團的 group-scoped config。"""
+        """保存單一 target 的 config。"""
 
         return self.config_service.save_config_for_target(target, config)
 
     def update_target_config(self, request: UpdateTargetConfigRequest) -> TargetConfig:
-        """更新 target 所屬社團監視設定。"""
+        """更新單一 target 監視設定。"""
 
         return self.config_service.update_target_config(request)
 
@@ -116,7 +127,7 @@ class TargetApplicationService:
         self,
         settings: GlobalNotificationSettings,
     ) -> int:
-        """將通知預設值套用到所有既有 group config。"""
+        """將通知預設值套用到所有既有 target config。"""
 
         return self.config_service.apply_global_notification_settings(settings)
 
@@ -199,6 +210,19 @@ class TargetApplicationService:
             now=now,
         )
 
+    def recover_stale_queued_targets(
+        self,
+        *,
+        stale_after_seconds: float,
+        now: datetime | None = None,
+    ) -> tuple[TargetRuntimeState, ...]:
+        """將排隊過久的 target 回復 idle。"""
+
+        return self.runtime_service.recover_stale_queued_targets(
+            stale_after_seconds=stale_after_seconds,
+            now=now,
+        )
+
     def request_target_scan(self, target_id: str) -> TargetRuntimeState:
         """要求 scheduler 下一輪立即掃描 target，不修改 seen 狀態。"""
 
@@ -241,6 +265,7 @@ __all__ = [
     "RecordScanRequest",
     "ScanApplicationService",
     "TargetApplicationService",
+    "TargetConfigPatch",
     "UNSET_CONFIG_VALUE",
     "UnsetConfigValue",
     "UpdateTargetConfigRequest",

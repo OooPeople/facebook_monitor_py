@@ -10,6 +10,8 @@ from urllib.parse import quote
 
 import httpx
 
+from facebook_monitor.notifications.safe_messages import safe_exception_message
+
 
 @dataclass(frozen=True)
 class NtfyConfig:
@@ -57,9 +59,17 @@ def send_ntfy_notification(config: NtfyConfig, title: str, message: str) -> Ntfy
             message=f"unexpected status code: {response.status_code}",
         )
     except httpx.HTTPError as error:
-        return NtfyResult(ok=False, status_code=None, message=str(error))
+        return NtfyResult(
+            ok=False,
+            status_code=None,
+            message=safe_exception_message("ntfy_failed", error),
+        )
     except Exception as error:
-        return NtfyResult(ok=False, status_code=None, message=str(error))
+        return NtfyResult(
+            ok=False,
+            status_code=None,
+            message=safe_exception_message("ntfy_failed", error),
+        )
 
 
 def to_ascii_header_value(value: str, *, fallback: str) -> str:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from facebook_monitor.core.keyword_rules import INCLUDE_ALL_LABEL
 from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import build_compact_notification_body
 from facebook_monitor.notifications.payload import build_match_notification_payload
@@ -50,7 +49,7 @@ def test_build_match_notification_payload_uses_fallbacks() -> None:
     assert "社團: (未知)" in message
     assert "類型: 留言" in message
     assert "作者: (作者未知)" in message
-    assert f"關鍵字: {INCLUDE_ALL_LABEL}" in message
+    assert "關鍵字: (未指定)" in message
     assert "內容: (空白)" in message
 
 

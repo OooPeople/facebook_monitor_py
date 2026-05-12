@@ -7,6 +7,7 @@ target loading、route 判斷與失敗狀態寫回 helper。sync fallback worker
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -39,6 +40,7 @@ class ResidentRuntimeOptions:
     stale_running_after_seconds: float = 180
     headed_compat: bool = False
     max_cycles: int | None = None
+    metadata_refresh_provider: Callable[[], tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)

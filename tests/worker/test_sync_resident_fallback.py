@@ -1,4 +1,4 @@
-"""Resident worker tests。"""
+"""Sync resident fallback worker tests。"""
 
 from __future__ import annotations
 
@@ -140,6 +140,7 @@ def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> 
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
 
     def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
         """記錄掃描呼叫但不寫入 scan run，讓第二輪仍維持 due。"""
@@ -209,6 +210,7 @@ def test_resident_main_fallback_records_extractor_empty_but_returns_target_to_id
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
 
     def failing_scan_page(**kwargs: Any) -> PostsScanSummary:
         """模擬 extractor 沒抽到貼文。"""
@@ -252,6 +254,7 @@ def test_resident_fallback_closes_page_after_target_stop(tmp_path: Path) -> None
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
 
     def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
         """回傳假掃描摘要。"""

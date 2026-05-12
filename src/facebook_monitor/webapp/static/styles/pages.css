@@ -136,34 +136,131 @@
   gap: 10px;
 }
 
+.settings-keyword-form,
 .settings-notification-form {
   gap: 14px;
 }
 
+.settings-keyword-stack,
 .settings-notification-stack {
   display: grid;
   gap: 14px;
 }
 
+.settings-keyword-stack {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-keyword-actions,
 .settings-notification-actions {
   border-top: 1px solid var(--border-soft);
-  justify-content: space-between;
   margin-top: 18px;
   padding-top: 16px;
+}
+
+.settings-keyword-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.settings-notification-actions {
+  justify-content: space-between;
 }
 
 .settings-action-cluster {
   justify-content: flex-end;
 }
 
+.settings-keyword-actions .inline-feedback:not(.is-visible),
 .settings-action-cluster .inline-feedback:not(.is-visible) {
   display: none;
+}
+
+.runtime-diagnostics-card {
+  overflow: hidden;
+  padding: 0;
+}
+
+.runtime-diagnostics-summary {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  list-style: none;
+  padding: 20px;
+}
+
+.runtime-diagnostics-summary::-webkit-details-marker {
+  display: none;
+}
+
+.runtime-diagnostics-heading {
+  color: var(--text);
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.runtime-diagnostics-description {
+  color: var(--muted);
+  display: block;
+  font-size: 14px;
+  line-height: 1.45;
+  margin-top: 6px;
+}
+
+.runtime-diagnostics-toggle {
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--text-soft);
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 650;
+  padding: 5px 10px;
+}
+
+.runtime-diagnostics-card[open] .runtime-diagnostics-toggle {
+  color: var(--accent);
+}
+
+.runtime-diagnostics-card[open] .runtime-diagnostics-toggle::before {
+  content: "收合";
+}
+
+.runtime-diagnostics-card[open] .runtime-diagnostics-toggle {
+  font-size: 0;
+}
+
+.runtime-diagnostics-card[open] .runtime-diagnostics-toggle::before {
+  font-size: 13px;
+}
+
+.runtime-diagnostics-body {
+  border-top: 1px solid var(--border-soft);
+  padding: 18px 20px 20px;
+}
+
+.runtime-diagnostics-grid {
+  margin-bottom: 14px;
+}
+
+.runtime-diagnostics-grid .field-grid-cell dd {
+  overflow-wrap: anywhere;
+}
+
+#runtime-diagnostics-copy-source {
+  margin-bottom: 12px;
 }
 
 @media (max-width: 720px) {
   .new-target-two-column,
   .new-target-notification-toggles,
-  .new-target-scan-row {
+  .new-target-scan-row,
+  .settings-keyword-stack {
     grid-template-columns: 1fr;
   }
 
@@ -178,7 +275,9 @@
   }
 
   .settings-card-head,
+  .runtime-diagnostics-summary,
   .settings-action-row,
+  .settings-keyword-actions,
   .settings-notification-actions,
   .settings-action-cluster {
     align-items: stretch;

@@ -6,21 +6,11 @@ Web UI 與 extractor 各自推估掃描上限。
 
 from __future__ import annotations
 
-MIN_TARGET_POSTS = 1
-MAX_TARGET_POSTS = 10
+from facebook_monitor.core.scan_limits import clamp_target_post_count
+
 CANDIDATE_MULTIPLIER = 6
 MAX_WINDOW_MULTIPLIER = 2
 CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT = 3
-
-
-def clamp_target_post_count(value: int | float | str | None, default: int = 5) -> int:
-    """對齊 userscript，限制單輪目標貼文數在安全範圍內。"""
-
-    try:
-        numeric_value = int(float(value)) if value is not None else int(default)
-    except (TypeError, ValueError):
-        numeric_value = int(default)
-    return min(MAX_TARGET_POSTS, max(MIN_TARGET_POSTS, numeric_value))
 
 
 def get_candidate_collection_limit(target_count: int) -> int:

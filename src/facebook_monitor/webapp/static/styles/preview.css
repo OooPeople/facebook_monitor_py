@@ -1,5 +1,6 @@
 /* 05 preview tabs / preview rows */
 .preview-tab-list {
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   gap: 18px;
@@ -46,6 +47,7 @@
   height: 100%;
   min-height: 260px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .latest-items-panel h3 {
@@ -103,8 +105,16 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   line-height: 1.45;
-  margin-top: 6px;
+  margin: 6px 0 0;
   overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.keyword-highlight {
+  background: var(--keyword-highlight-bg);
+  border-radius: 4px;
+  color: var(--keyword-highlight-text);
+  padding: 0 2px;
 }
 
 .preview-row a,

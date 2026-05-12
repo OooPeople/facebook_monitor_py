@@ -18,12 +18,15 @@ from playwright.sync_api import sync_playwright
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
+from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
@@ -142,11 +145,13 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
 
             with acquire_profile_lease(options.profile_dir, "one-shot worker"):
                 with sync_playwright() as playwright:
-                    context = playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(options.profile_dir),
-                        headless=not options.headed_compat,
-                        viewport={"width": 1366, "height": 900},
-                        timeout=remaining_timeout_ms(),
+                    context = launch_persistent_context_sync(
+                        playwright,
+                        BrowserRuntimeOptions(
+                            profile_dir=options.profile_dir,
+                            headless=not options.headed_compat,
+                            timeout_seconds=remaining_timeout_ms() / 1000,
+                        ),
                     )
                     try:
                         context.set_default_timeout(remaining_timeout_ms())
@@ -158,7 +163,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                             timeout=remaining_timeout_ms(),
                         )
                         context.set_default_timeout(remaining_timeout_ms())
-                        page.wait_for_timeout(5000)
+                        page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
                         context.set_default_timeout(remaining_timeout_ms())
                         return scan_posts_page(
                             page=page,

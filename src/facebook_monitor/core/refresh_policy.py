@@ -15,14 +15,21 @@ from facebook_monitor.core.models import TargetConfig
 MIN_REFRESH_SECONDS = 5
 
 
+def _to_float(value: object, fallback: float) -> float:
+    """安全轉換 refresh 秒數，無法轉換時回到 fallback。"""
+
+    if not isinstance(value, str | bytes | bytearray | int | float):
+        return float(fallback)
+    try:
+        return float(value)
+    except ValueError:
+        return float(fallback)
+
+
 def clamp_refresh_seconds(value: object, fallback: float) -> float:
     """將 refresh 秒數限制在最低安全值以上。"""
 
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        seconds = float(fallback)
-    return max(seconds, MIN_REFRESH_SECONDS)
+    return max(_to_float(value, fallback), MIN_REFRESH_SECONDS)
 
 
 def normalize_refresh_range(config: TargetConfig, default_interval_seconds: float) -> tuple[int, int]:

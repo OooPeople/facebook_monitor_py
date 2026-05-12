@@ -1,5 +1,7 @@
 """Internal tool：直接啟動 resident main worker，不作為日常入口。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -14,18 +16,21 @@ if str(SRC) not in sys.path:
 from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 
 
-DEFAULT_PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 
 
 def parse_args() -> argparse.Namespace:
     """解析 internal resident main worker CLI 參數。"""
 
     parser = argparse.ArgumentParser(description="Run the resident main worker.")
-    parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
-    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    add_runtime_path_arguments(parser)
     parser.add_argument("--interval-seconds", type=float, default=60)
     parser.add_argument("--scheduler-tick-seconds", type=float, default=2)
     parser.add_argument("--max-concurrent-scans", type=int, default=2)
@@ -68,10 +73,11 @@ def main() -> int:
     """CLI entrypoint：啟動常駐瀏覽器 worker。"""
 
     args = parse_args()
+    paths = resolve_runtime_paths_from_args(args)
     run_resident_main_loop_sync(
         ResidentRuntimeOptions(
-            profile_dir=args.profile_dir,
-            db_path=args.db_path,
+            profile_dir=paths.profile_dir,
+            db_path=paths.db_path,
             interval_seconds=args.interval_seconds,
             scheduler_tick_seconds=args.scheduler_tick_seconds,
             max_concurrent_scans=args.max_concurrent_scans,

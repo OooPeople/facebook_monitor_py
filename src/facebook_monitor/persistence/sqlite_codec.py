@@ -56,7 +56,11 @@ def read_schema_version(connection: sqlite3.Connection) -> int:
     if row is None:
         return 0
     try:
-        return int(row["value"])
+        raw_value = row["value"]
+    except (TypeError, IndexError):
+        raw_value = row[0]
+    try:
+        return int(raw_value)
     except (TypeError, ValueError):
         return 0
 

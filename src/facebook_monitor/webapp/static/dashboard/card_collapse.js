@@ -1,5 +1,5 @@
-import { isTargetCollapsed, isTargetDirty, setTargetCollapsed } from "./state.js";
-import { showInlineStatus } from "./utils.js";
+import { isTargetCollapsed, isTargetDirty, setTargetCollapsed } from "/static/dashboard/state.js";
+import { showInlineStatus } from "/static/dashboard/utils.js";
 
 const collapseAnimationMs = 240;
 

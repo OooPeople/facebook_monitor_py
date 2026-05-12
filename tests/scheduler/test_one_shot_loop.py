@@ -1,4 +1,4 @@
-"""Scheduler tests。"""
+"""One-shot fallback scheduler tests。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.core.models import ScanStatus
@@ -17,6 +18,7 @@ from facebook_monitor.scheduler.one_shot_loop import SchedulerOptions
 from facebook_monitor.scheduler.one_shot_loop import list_schedulable_target_ids
 from facebook_monitor.scheduler.one_shot_loop import run_one_shot_scheduler_loop
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_running_targets
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
@@ -39,6 +41,7 @@ def test_list_schedulable_target_ids_respects_target_stop(tmp_path: Path) -> Non
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(first.id)
         app.services.targets.pause_target_monitoring(second.id)
 
     assert list_schedulable_target_ids(db_path) == (first.id,)
@@ -61,6 +64,8 @@ def test_list_schedulable_target_ids_skips_currently_running_target(tmp_path: Pa
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(running_target.id)
+        app.services.targets.restart_target_monitoring(idle_target.id)
         app.services.targets.mark_target_running(running_target.id, "worker-1")
 
     assert list_schedulable_target_ids(db_path) == (idle_target.id,)
@@ -76,15 +81,17 @@ def test_list_schedulable_target_ids_respects_per_target_interval(tmp_path: Path
             UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
-                fixed_refresh_sec=300,
+                config=TargetConfigPatch(fixed_refresh_sec=300),
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         app.services.scans.record_scan(
             RecordScanRequest(
                 target_id=target.id,
                 status=ScanStatus.SUCCESS,
             )
         )
+        app.services.targets.clear_target_scan_request(target.id)
 
     assert (
         list_schedulable_target_ids(
@@ -111,15 +118,17 @@ def test_list_schedulable_target_ids_honors_manual_scan_request(tmp_path: Path) 
             UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
-                fixed_refresh_sec=300,
+                config=TargetConfigPatch(fixed_refresh_sec=300),
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         app.services.scans.record_scan(
             RecordScanRequest(
                 target_id=target.id,
                 status=ScanStatus.SUCCESS,
             )
         )
+        app.services.targets.clear_target_scan_request(target.id)
         app.services.targets.request_target_scan(target.id)
 
     assert list_schedulable_target_ids(
@@ -143,10 +152,11 @@ def test_list_schedulable_target_ids_uses_jitter_range_when_fixed_is_empty(
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         app.repositories.configs.save_for_target(
             target,
             TargetConfig(
-                group_id=target.group_id,
+                target_id=target.id,
                 fixed_refresh_sec=None,
                 min_refresh_sec=25,
                 max_refresh_sec=35,
@@ -159,6 +169,7 @@ def test_list_schedulable_target_ids_uses_jitter_range_when_fixed_is_empty(
                 status=ScanStatus.SUCCESS,
             )
         )
+        app.services.targets.clear_target_scan_request(target.id)
 
     assert (
         list_schedulable_target_ids(
@@ -187,6 +198,7 @@ def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) 
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         state = app.services.targets.mark_target_running(target.id, "dead-worker")
         app.repositories.runtime_states.save(
             replace(
@@ -204,6 +216,46 @@ def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) 
     assert loaded is not None
     assert loaded.runtime_status == TargetRuntimeStatus.ERROR
     assert "stale_running" in loaded.last_error
+
+
+def test_recover_stale_runtime_targets_requeues_stale_queued_target(tmp_path: Path) -> None:
+    """scheduler recovery 會讓卡在 queued 的手動掃描重新變成可排程。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        queued_state = app.services.targets.mark_target_queued(target.id, "manual_request")
+        app.repositories.runtime_states.save(
+            replace(
+                queued_state,
+                last_enqueued_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+
+    assert (
+        list_schedulable_target_ids(
+            db_path,
+            default_interval_seconds=60,
+            now=now,
+        )
+        == ()
+    )
+    recovered_count = recover_stale_runtime_targets(db_path, stale_after_seconds=180)
+
+    assert recovered_count == 1
+    assert list_schedulable_target_ids(
+        db_path,
+        default_interval_seconds=60,
+        now=now,
+    ) == (target.id,)
 
 
 def test_scheduler_loop_scans_targets_sequentially_and_updates_runtime_state(
@@ -225,6 +277,8 @@ def test_scheduler_loop_scans_targets_sequentially_and_updates_runtime_state(
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(first.id)
+        app.services.targets.restart_target_monitoring(second.id)
 
     scanned_target_ids: list[str] = []
 
@@ -285,12 +339,15 @@ def test_scheduler_loop_uses_bounded_selection_without_losing_due_targets(
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
-        app.services.targets.upsert_group_posts_target(
+        third = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="333",
                 canonical_url="https://www.facebook.com/groups/333",
             )
         )
+        app.services.targets.restart_target_monitoring(first.id)
+        app.services.targets.restart_target_monitoring(second.id)
+        app.services.targets.restart_target_monitoring(third.id)
 
     scanned_target_ids: list[str] = []
 
@@ -335,6 +392,7 @@ def test_target_scan_guard_records_skip_reason(tmp_path: Path) -> None:
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         app.services.targets.mark_target_running(target.id, "worker-a")
         locked_state = app.services.targets.try_mark_target_running(target.id, "worker-b")
         state = app.repositories.runtime_states.get(target.id)
@@ -359,6 +417,7 @@ def test_scheduler_loop_marks_extractor_empty_as_idle_after_failed_scan(
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
 
     def fake_scan_once(_options: OneShotScanOptions) -> PostsScanSummary:
         """模擬 extractor 空結果。"""

@@ -1,0 +1,42 @@
+/* 03 shared form controls */
+label {
+  color: var(--muted);
+  display: grid;
+  font-size: 13px;
+  font-weight: 650;
+  gap: 6px;
+}
+
+textarea,
+input[type="text"],
+input[type="number"],
+select {
+  background: var(--surface-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  box-sizing: border-box;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 10px;
+  width: 100%;
+}
+
+textarea {
+  resize: none;
+}
+
+textarea:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  outline: 3px solid var(--accent-ring);
+}
+
+.form-grid {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}

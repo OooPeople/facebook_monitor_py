@@ -13,6 +13,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.core.models import utc_now
@@ -51,11 +52,67 @@ class TargetRegistryService:
         return updated_target
 
     def delete_target(self, target_id: str) -> None:
-        """刪除單一 target 與其關聯設定，不影響其他 target。"""
+        """刪除單一 target；target-scoped config 由 SQLite FK 一併清除。"""
 
         deleted = self.targets.delete(target_id)
         if not deleted:
             raise ValueError(f"Target not found: {target_id}")
+
+    def refresh_target_group_name(self, target_id: str, group_name: str) -> TargetDescriptor:
+        """以 metadata refresh 結果補齊 target group name。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        request_group_name = clean_facebook_group_name(group_name)
+        if not request_group_name:
+            return target
+
+        next_name = target.name
+        if (
+            target.target_kind == TargetKind.POSTS
+            and is_generated_group_posts_name(target.name, target.group_id)
+        ) or (
+            target.target_kind == TargetKind.COMMENTS
+            and is_generated_group_comments_name(
+                target.name,
+                target.group_id,
+                target.parent_post_id,
+            )
+        ):
+            next_name = (
+                generated_group_comments_display_name(
+                    request_group_name,
+                    target.parent_post_id,
+                )
+                if target.target_kind == TargetKind.COMMENTS
+                else request_group_name
+            )
+        updated_target = replace(
+            target,
+            name=next_name,
+            group_name=request_group_name,
+            updated_at=utc_now(),
+        )
+        self.targets.save(updated_target)
+        return updated_target
+
+    def update_target_name(self, target_id: str, name: str) -> TargetDescriptor:
+        """更新使用者自訂 target 顯示名稱，保留 Facebook metadata group name。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        request_name = clean_facebook_group_name(name)
+        if not request_name:
+            raise ValueError("target name must not be empty")
+        updated_target = replace(
+            target,
+            name=request_name,
+            updated_at=utc_now(),
+        )
+        self.targets.save(updated_target)
+        return updated_target
 
     def upsert_group_posts_target(
         self,
@@ -92,11 +149,7 @@ class TargetRegistryService:
                 group_name=request_group_name,
             )
 
-        existing_config = self.configs.configs.get_for_target(target)
-        if existing_config:
-            config = self.configs.merge_config_request(existing_config, request)
-        else:
-            config = self.configs.build_config_from_request(target.group_id, request)
+        config = self.configs.build_or_merge_config_for_target(target, request.config)
 
         self.targets.save(target)
         self.configs.save_config_for_target(target, config)
@@ -131,7 +184,10 @@ class TargetRegistryService:
                     existing.parent_post_id,
                 )
             ):
-                next_name = request_group_name
+                next_name = generated_group_comments_display_name(
+                    request_group_name,
+                    existing.parent_post_id,
+                )
             target = replace(
                 existing,
                 name=next_name,
@@ -148,11 +204,7 @@ class TargetRegistryService:
                 group_name=request_group_name,
             )
 
-        existing_config = self.configs.configs.get_for_target(target)
-        if existing_config:
-            config = self.configs.merge_config_request(existing_config, request)
-        else:
-            config = self.configs.build_config_from_request(target.group_id, request)
+        config = self.configs.build_or_merge_config_for_target(target, request.config)
 
         self.targets.save(target)
         self.configs.save_config_for_target(target, config)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from contextlib import contextmanager
 from time import sleep
@@ -19,6 +20,8 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.models import TargetConfig
@@ -26,11 +29,12 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_running_targets
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
+from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -120,7 +124,7 @@ def prepare_sync_resident_page(
         page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
     else:
         page.goto(target.canonical_url, wait_until="domcontentloaded", timeout=timeout_ms)
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
 
 
 def select_sync_resident_scan_page(target: TargetDescriptor) -> ResidentScanCallable:
@@ -189,7 +193,7 @@ def run_sync_resident_fallback_cycle(
     """執行 sync fallback 單輪掃描。"""
 
     planner = schedule_planner or TargetSchedulePlanner()
-    recover_stale_running_targets(options.db_path, options.stale_running_after_seconds)
+    recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
     active_target_ids = list_active_resident_target_ids(options.db_path)
     closed_page_count = page_pool.close_inactive(active_target_ids)
     due_targets = planner.list_due_targets(
@@ -281,17 +285,19 @@ def run_sync_resident_fallback_cycle(
 @contextmanager
 def _open_sync_fallback_browser_context(
     options: ResidentRuntimeOptions,
-) -> AbstractContextManager[Any]:
+) -> Iterator[Any]:
     """開啟 sync fallback worker 共用的 Playwright persistent context。"""
 
     try:
         with acquire_profile_lease(options.profile_dir, "sync resident fallback worker"):
             with sync_playwright() as playwright:
-                context = playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(options.profile_dir),
-                    headless=not options.headed_compat,
-                    viewport={"width": 1366, "height": 900},
-                    timeout=max(options.scan_timeout_seconds, 10) * 1000,
+                context = launch_persistent_context_sync(
+                    playwright,
+                    BrowserRuntimeOptions(
+                        profile_dir=options.profile_dir,
+                        headless=not options.headed_compat,
+                        timeout_seconds=max(options.scan_timeout_seconds, 10),
+                    ),
                 )
                 try:
                     context.set_default_timeout(max(options.scan_timeout_seconds, 10) * 1000)

@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 
 from facebook_monitor.application.services import ScanApplicationService
 from facebook_monitor.application.services import TargetApplicationService
-from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
+from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
+from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
 from facebook_monitor.persistence.repositories.global_notification_settings import (
     GlobalNotificationSettingsRepository,
 )
+from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
 from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
@@ -28,8 +31,13 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.schema import initialize_schema
+from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
+from facebook_monitor.persistence.secret_storage import SecretCodec
+from facebook_monitor.persistence.secret_storage import load_or_create_secret_codec
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
-from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,7 @@ class RepositoryBundle:
     notification_events: NotificationEventRepository
     notification_outbox: NotificationOutboxRepository
     global_notification_settings: GlobalNotificationSettingsRepository
+    app_settings: AppSettingsRepository
     maintenance: RuntimeDataMaintenanceRepository
     dashboard_revision: DashboardRevisionRepository
 
@@ -66,6 +75,7 @@ class ApplicationContext:
     services: ServiceBundle
     after_commit_hooks: list[Callable[[], None]]
     after_commit_hook_keys: set[str]
+    db_path: Path | None = None
 
     def run_after_commit(self, hook: Callable[[], None]) -> None:
         """註冊 DB commit 成功後才執行的副作用。"""
@@ -84,20 +94,31 @@ class ApplicationContext:
         self.after_commit_hooks.append(hook)
 
 
-def build_repositories(connection: sqlite3.Connection) -> RepositoryBundle:
+def build_repositories(
+    connection: sqlite3.Connection,
+    *,
+    secret_codec: SecretCodec | PlaintextSecretCodec,
+) -> RepositoryBundle:
     """用同一連線建立 repository bundle。"""
 
     return RepositoryBundle(
         targets=TargetRepository(connection),
-        configs=TargetConfigRepository(connection),
+        configs=TargetConfigRepository(connection, secret_codec=secret_codec),
         runtime_states=TargetRuntimeStateRepository(connection),
         seen_items=SeenItemRepository(connection),
         match_history=MatchHistoryRepository(connection),
         latest_scan_items=LatestScanItemRepository(connection),
         scan_runs=ScanRunRepository(connection),
         notification_events=NotificationEventRepository(connection),
-        notification_outbox=NotificationOutboxRepository(connection),
-        global_notification_settings=GlobalNotificationSettingsRepository(connection),
+        notification_outbox=NotificationOutboxRepository(
+            connection,
+            secret_codec=secret_codec,
+        ),
+        global_notification_settings=GlobalNotificationSettingsRepository(
+            connection,
+            secret_codec=secret_codec,
+        ),
+        app_settings=AppSettingsRepository(connection),
         maintenance=RuntimeDataMaintenanceRepository(connection),
         dashboard_revision=DashboardRevisionRepository(connection),
     )
@@ -117,15 +138,21 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
     )
 
 
-def build_application_context(connection: sqlite3.Connection) -> ApplicationContext:
+def build_application_context(
+    connection: sqlite3.Connection,
+    *,
+    secret_codec: SecretCodec | PlaintextSecretCodec,
+    db_path: Path | None = None,
+) -> ApplicationContext:
     """建立 application context，供 CLI 或 worker 使用。"""
 
-    repositories = build_repositories(connection)
+    repositories = build_repositories(connection, secret_codec=secret_codec)
     return ApplicationContext(
         repositories=repositories,
         services=build_services(repositories),
         after_commit_hooks=[],
         after_commit_hook_keys=set(),
+        db_path=db_path,
     )
 
 
@@ -143,7 +170,12 @@ class SqliteApplicationContext:
         connection = sqlite_context.require_connection()
         if self.initialize_schema_on_enter:
             initialize_schema(connection)
-        self.context = build_application_context(connection)
+            connection.commit()
+        self.context = build_application_context(
+            connection,
+            secret_codec=load_or_create_secret_codec(self.db_path),
+            db_path=self.db_path,
+        )
         return self.context
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -155,7 +187,10 @@ class SqliteApplicationContext:
                 connection.commit()
                 if self.context is not None:
                     for hook in tuple(self.context.after_commit_hooks):
-                        hook()
+                        try:
+                            hook()
+                        except Exception:
+                            logger.exception("after_commit_hook_failed")
                 connection.commit()
             else:
                 connection.rollback()

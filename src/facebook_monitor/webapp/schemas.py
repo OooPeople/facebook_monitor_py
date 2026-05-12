@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-from facebook_monitor.webapp.dashboard_models import SettingsSummary
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
-from facebook_monitor.webapp.dashboard_models import TargetCardSummary
 from facebook_monitor.webapp.dashboard_models import TargetRow
+from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
+from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
 from facebook_monitor.webapp.hit_record_models import FullHitRecordRow
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow

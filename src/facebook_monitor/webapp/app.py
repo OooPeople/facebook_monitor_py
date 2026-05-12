@@ -6,13 +6,20 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from secrets import compare_digest
+from secrets import token_urlsafe
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
+from starlette.types import Scope
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
@@ -23,6 +30,11 @@ from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
+from facebook_monitor.runtime.build_metadata import collect_build_metadata
+from facebook_monitor.version import APP_NAME
+from facebook_monitor.version import APP_VERSION
+from facebook_monitor.webapp.assets import ASSET_VERSION
+from facebook_monitor.webapp.assets import build_dashboard_module_imports
 from facebook_monitor.webapp.dependencies import DEFAULT_DB_PATH
 from facebook_monitor.webapp.dependencies import DEFAULT_PROFILE_DIR
 from facebook_monitor.webapp.dependencies import STATIC_DIR
@@ -32,6 +44,7 @@ from facebook_monitor.webapp.dependencies import default_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_desktop_sender
 from facebook_monitor.webapp.dependencies import get_discord_sender
+from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_global_notification_settings
 from facebook_monitor.webapp.dependencies import get_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_ntfy_sender
@@ -49,26 +62,50 @@ from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
 from facebook_monitor.webapp.form_models import parse_keywords_text
+from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionManager
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
 from facebook_monitor.webapp.routes.hit_records import register_hit_record_routes
-from facebook_monitor.webapp.routes.scheduler import register_scheduler_routes
 from facebook_monitor.webapp.routes.settings import register_settings_routes
 from facebook_monitor.webapp.routes.targets import register_target_routes
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
+from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 
 
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = _default_templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+_default_templates.env.globals["asset_version"] = ASSET_VERSION
+_default_templates.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
+_default_templates.env.globals["csrf_token"] = ""
+
+
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+CSRF_FORM_FIELD = "csrf_token"
+CSRF_HEADER = "x-csrf-token"
+
+
+class LocalStaticFiles(StaticFiles):
+    """本機 Web UI 靜態檔，每次瀏覽器重整都應重新驗證。"""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """回傳 static response，避免 ES module 長時間沿用舊版。"""
+
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 def create_app(
     *,
     db_path: Path = DEFAULT_DB_PATH,
     profile_dir: Path = DEFAULT_PROFILE_DIR,
-    profile_manager: ProfileSessionManager | None = None,
+    templates_dir: Path = TEMPLATES_DIR,
+    static_dir: Path = STATIC_DIR,
+    profile_manager: ProfileManagerLike | None = None,
     group_name_resolver: Callable[[Path, str], str] | None = None,
-    scheduler_manager: BackgroundSchedulerManager | None = None,
+    scheduler_manager: SchedulerManagerLike | None = None,
     auto_start_scheduler: bool = False,
     scheduler_interval_seconds: float = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
     scheduler_tick_seconds: float = 2,
@@ -78,11 +115,16 @@ def create_app(
     ntfy_sender: NtfySender = send_ntfy_notification,
     desktop_sender: DesktopSender = send_desktop_notification,
     discord_sender: DiscordSender = send_discord_notification,
+    csrf_token: str | None = None,
+    enforce_csrf: bool = True,
 ) -> FastAPI:
     """建立 FastAPI app，供 uvicorn 或測試使用。"""
 
+    csrf_token_value = csrf_token or token_urlsafe(32)
+    route_templates = _build_templates(templates_dir, csrf_token=csrf_token_value)
+
     @asynccontextmanager
-    async def lifespan(app_instance: FastAPI) -> object:
+    async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         """管理 Web UI 啟動與關閉時的背景 scheduler 生命週期。"""
 
         with SqliteApplicationContext(app_instance.state.db_path) as app_context:
@@ -113,6 +155,8 @@ def create_app(
     app = FastAPI(title="Facebook Monitor Local UI", lifespan=lifespan)
     app.state.db_path = db_path
     app.state.profile_dir = profile_dir
+    app.state.templates_dir = templates_dir
+    app.state.static_dir = static_dir
     app.state.profile_manager = profile_manager or ProfileSessionManager()
     app.state.group_name_resolver = group_name_resolver or default_group_name_resolver
     app.state.scheduler_manager = scheduler_manager or BackgroundSchedulerManager()
@@ -122,20 +166,87 @@ def create_app(
     app.state.max_concurrent_scans = max_concurrent_scans
     app.state.session_started_at = utc_now()
     app.state.reset_targets_on_startup = reset_targets_on_startup
+    app.state.resume_active_targets_on_startup = False
     app.state.reset_runtime_data_on_startup = reset_runtime_data_on_startup
     app.state.scheduler_paused_for_profile = False
     app.state.scheduler_resume_options = None
     app.state.ntfy_sender = ntfy_sender
     app.state.desktop_sender = desktop_sender
     app.state.discord_sender = discord_sender
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.state.csrf_token = csrf_token_value
+    app.state.enforce_csrf = enforce_csrf
+    app.mount("/static", LocalStaticFiles(directory=str(static_dir)), name="static")
 
-    register_dashboard_routes(app, templates)
+    @app.middleware("http")
+    async def csrf_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """保護本機管理 UI 的 mutating routes，避免跨站表單直接操作 localhost。"""
+
+        if _should_validate_csrf(request):
+            submitted_token = await _submitted_csrf_token(request)
+            expected_token = str(getattr(request.app.state, "csrf_token", ""))
+            if not submitted_token or not compare_digest(submitted_token, expected_token):
+                return Response("CSRF validation failed", status_code=403)
+        return await call_next(request)
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        """回傳 launcher single-instance 檢查用 health payload。"""
+
+        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
+        return {
+            "status": "ok",
+            "app": APP_NAME,
+            "version": APP_VERSION,
+            "asset_version": metadata.asset_version,
+            "python_version": metadata.python_version,
+            "packaging_mode": metadata.packaging_mode,
+        }
+
+    register_dashboard_routes(app, route_templates)
     register_hit_record_routes(app)
-    register_target_routes(app, templates)
-    register_settings_routes(app, templates)
-    register_scheduler_routes(app)
+    register_target_routes(app, route_templates)
+    register_settings_routes(app, route_templates)
     return app
+
+
+def _build_templates(templates_dir: Path, *, csrf_token: str = "") -> Jinja2Templates:
+    """建立 Jinja template environment，讓 launcher 可傳入已解析 resource path。"""
+
+    template_environment = Jinja2Templates(directory=str(templates_dir))
+    template_environment.env.globals["asset_version"] = ASSET_VERSION
+    template_environment.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
+    template_environment.env.globals["csrf_token"] = csrf_token
+    return template_environment
+
+
+def _should_validate_csrf(request: Request) -> bool:
+    """判斷目前 request 是否需要 CSRF token。"""
+
+    if request.method.upper() not in UNSAFE_METHODS:
+        return False
+    if not bool(getattr(request.app.state, "enforce_csrf", True)):
+        return False
+    return True
+
+
+async def _submitted_csrf_token(request: Request) -> str:
+    """從 header 或 form body 讀取 CSRF token。"""
+
+    header_token = request.headers.get(CSRF_HEADER, "").strip()
+    if header_token:
+        return header_token
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+        except Exception:
+            return ""
+        value = form.get(CSRF_FORM_FIELD, "")
+        return str(value).strip()
+    return ""
 
 
 app = create_app(
@@ -146,6 +257,7 @@ app = create_app(
 
 
 __all__ = [
+    "ASSET_VERSION",
     "DEFAULT_DB_PATH",
     "DEFAULT_PROFILE_DIR",
     "build_scheduler_options",
@@ -153,6 +265,7 @@ __all__ = [
     "get_db_path",
     "get_desktop_sender",
     "get_discord_sender",
+    "get_app_theme",
     "get_global_notification_settings",
     "get_group_name_resolver",
     "get_ntfy_sender",

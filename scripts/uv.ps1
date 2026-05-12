@@ -7,8 +7,8 @@ $env:UV_CACHE_DIR = Join-Path $ProjectRoot ".uv-cache"
 if ($args.Count -eq 0) {
     Write-Host "Usage: .\scripts\uv.ps1 sync"
     Write-Host "Usage: .\scripts\uv.ps1 run playwright install chromium"
-    Write-Host "Usage: .\scripts\uv.ps1 run python .\scripts\start\webui.py"
-    Write-Host "Usage: .\scripts\uv.ps1 run python .\scripts\start\setup_login.py"
+    Write-Host "Usage: .\scripts\uv.ps1 run facebook-monitor"
+    Write-Host "Usage: .\scripts\uv.ps1 run facebook-monitor-login"
     exit 2
 }
 

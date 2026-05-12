@@ -7,7 +7,10 @@ connection 並發 commit 重複發送同一筆通知。
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
@@ -29,6 +32,7 @@ from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import build_compact_notification_body
 from facebook_monitor.notifications.payload import build_match_notification_payload
+from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
 DEFAULT_STALE_PROCESSING_SECONDS = 300
@@ -87,14 +91,19 @@ def queue_match_notifications_after_commit(
         item_kind=item_kind,
     )
     if entries:
-        app.run_after_commit_once(
-            "notification_outbox_dispatch",
-            lambda: dispatch_new_pending_notification_outbox(
-                app=app,
+        def dispatch_after_commit() -> None:
+            if app.db_path is None:
+                raise RuntimeError("notification outbox dispatch requires application db_path")
+            dispatch_new_pending_notification_outbox_for_db(
+                db_path=app.db_path,
                 ntfy_sender=ntfy_sender,
                 desktop_sender=desktop_sender,
                 discord_sender=discord_sender,
-            ),
+            )
+
+        app.run_after_commit_once(
+            "notification_outbox_dispatch",
+            dispatch_after_commit,
         )
 
 
@@ -198,6 +207,26 @@ def dispatch_new_pending_notification_outbox(
     )
 
 
+def dispatch_new_pending_notification_outbox_for_db(
+    *,
+    db_path: Path,
+    ntfy_sender: NtfySender = send_ntfy_notification,
+    desktop_sender: DesktopSender = send_desktop_notification,
+    discord_sender: DiscordSender = send_discord_notification,
+    stale_processing_seconds: float = DEFAULT_STALE_PROCESSING_SECONDS,
+) -> int:
+    """用新的 application context 發送 pending outbox，隔離 scan commit lifecycle。"""
+
+    with SqliteApplicationContext(db_path) as dispatch_app:
+        return dispatch_new_pending_notification_outbox(
+            app=dispatch_app,
+            ntfy_sender=ntfy_sender,
+            desktop_sender=desktop_sender,
+            discord_sender=discord_sender,
+            stale_processing_seconds=stale_processing_seconds,
+        )
+
+
 def retry_failed_notification_outbox(
     *,
     app: ApplicationContext,
@@ -261,22 +290,28 @@ def dispatch_notification_outbox_entries(
                 attempts=attempts,
                 notification_event_id=event_id,
             )
+            app.repositories.notification_outbox.connection.commit()
             dispatched_count += 1
         except Exception as exc:
+            error_message = safe_exception_message(
+                f"{entry.channel.value}_dispatch_failed",
+                exc,
+            )
             app.repositories.notification_outbox.mark_result(
                 entry_id=entry.id,
                 status=NotificationOutboxStatus.FAILED,
                 attempts=attempts,
-                message=str(exc),
+                message=error_message,
                 notification_event_id=record_failed_notification_event_for_outbox_error(
                     app=app,
                     target=target,
                     entry=entry,
-                    message=str(exc),
+                    message=error_message,
                 )
                 if target is not None
                 else None,
             )
+            app.repositories.notification_outbox.connection.commit()
     return dispatched_count
 
 

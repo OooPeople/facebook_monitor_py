@@ -77,6 +77,60 @@ class FakeAsyncBrowserContext:
         return page
 
 
+class FakeMetadataLocator:
+    """metadata refresh 測試用 locator。"""
+
+    async def inner_text(self, timeout: int) -> str:
+        """回傳已登入狀態的 body text。"""
+
+        return "Facebook group page"
+
+
+class FakeMetadataPage:
+    """metadata refresh 測試用 page。"""
+
+    def __init__(self) -> None:
+        self.url = "about:blank"
+        self.closed = False
+
+    async def goto(self, url: str, wait_until: str) -> None:
+        """記錄 metadata refresh 導航 URL。"""
+
+        self.url = url
+
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        """模擬等待頁面 title 更新。"""
+
+    def locator(self, selector: str) -> FakeMetadataLocator:
+        """回傳 body locator。"""
+
+        return FakeMetadataLocator()
+
+    async def title(self) -> str:
+        """回傳可清理的 Facebook title。"""
+
+        return "(2) 測試社團 | Facebook"
+
+    async def close(self) -> None:
+        """標記 metadata page 已關閉。"""
+
+        self.closed = True
+
+
+class FakeMetadataBrowserContext:
+    """metadata refresh 測試用 browser context。"""
+
+    def __init__(self) -> None:
+        self.pages: list[FakeMetadataPage] = []
+
+    async def new_page(self) -> FakeMetadataPage:
+        """建立 metadata page。"""
+
+        page = FakeMetadataPage()
+        self.pages.append(page)
+        return page
+
+
 def test_playwright_driver_shutdown_exception_is_classified() -> None:
     """只把 Playwright driver 關閉期間的已知背景 future 例外視為可消化噪音。"""
 
@@ -84,6 +138,68 @@ def test_playwright_driver_shutdown_exception_is_classified() -> None:
         Exception("Connection closed while reading from the driver")
     )
     assert not _is_playwright_driver_shutdown_exception(Exception("other error"))
+
+
+def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: Path) -> None:
+    """resident scheduler 會用既有 browser context 補齊 fallback target name。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("metadata refresh should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                metadata_refresh_provider=lambda: (target.id,),
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 1
+        assert len(metadata_context.pages) == 1
+        assert metadata_context.pages[0].url == "https://www.facebook.com/groups/222518561920110"
+        assert metadata_context.pages[0].closed
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+    assert updated is not None
+    assert updated.name == "測試社團"
+    assert updated.group_name == "測試社團"
 
 
 def test_target_queue_snapshot_keeps_enqueue_order() -> None:
@@ -128,7 +244,7 @@ def test_resident_main_page_reload_keeps_same_group_feed_sorting_url() -> None:
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
             ),
-            config=TargetConfig(group_id="target-1"),
+            config=TargetConfig(target_id="target-1"),
         )
 
         await prepare_resident_main_page(
@@ -157,7 +273,7 @@ def test_resident_main_page_reload_keeps_same_comment_post_url() -> None:
                 parent_post_id="99999999",
                 canonical_url="https://www.facebook.com/groups/11111111/posts/99999999",
             ),
-            config=TargetConfig(group_id="target-1"),
+            config=TargetConfig(target_id="target-1"),
         )
 
         await prepare_resident_main_page(
@@ -189,6 +305,8 @@ def test_resident_main_cycle_runs_due_targets_concurrently(tmp_path: Path) -> No
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(first.id)
+        app.services.targets.restart_target_monitoring(second.id)
 
     active_count = 0
     max_active_count = 0
@@ -323,6 +441,7 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
 
     scan_calls = 0
 
@@ -408,6 +527,8 @@ def test_resident_main_executor_keeps_third_target_queued(
             )
             for index in (111, 222, 333)
         ]
+        for target in targets:
+            app.services.targets.restart_target_monitoring(target.id)
 
     started = asyncio.Event()
     release = asyncio.Event()

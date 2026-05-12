@@ -1,22 +1,21 @@
-import { editableSelector, showInlineStatus } from "./utils.js";
+import { setupDirtyFormStatus, showInlineStatus } from "/static/dashboard/utils.js";
 import {
   markSubmittedActionAnchor,
   markSubmittedConfigAnchor,
   saveScrollPosition,
   setFormDirty,
   suppressRefreshFor,
-} from "./state.js";
+} from "/static/dashboard/state.js";
 
 export const setupConfigForms = (state) => {
   document.querySelectorAll(".config-form").forEach((form) => {
     const status = form.querySelector("[data-dirty-status]");
-    const markDirty = () => {
-      setFormDirty(state, form.dataset.targetId || form.id || "", true);
-      showInlineStatus(status, "尚未儲存", "dirty");
-    };
-    form.querySelectorAll(editableSelector).forEach((node) => {
-      node.addEventListener("input", markDirty);
-      node.addEventListener("change", markDirty);
+    setupDirtyFormStatus({
+      form,
+      statusElement: status,
+      onDirtyChange: (dirty) => (
+        setFormDirty(state, form.dataset.targetId || form.id || "", dirty)
+      ),
     });
   });
 };

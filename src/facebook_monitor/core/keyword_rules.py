@@ -1,17 +1,16 @@
 """Facebook 監視關鍵字規則。
 
-職責：集中保存從 userscript 遷移而來的 include / exclude 比對語義。
-分號代表 OR，空白代表 AND；未設定 include 規則時代表全部通過。
+職責：集中保存 include / exclude 比對語義。
+分號代表 OR，空白代表 AND；未設定 include 規則時不命中。
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-
-INCLUDE_ALL_LABEL = "(include-all)"
 
 ZERO_WIDTH_PATTERN = re.compile(r"[\u200b-\u200d\ufeff]")
 WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -47,7 +46,7 @@ class KeywordEvaluation:
 
         if not self.eligible:
             return ""
-        return self.include_rule or INCLUDE_ALL_LABEL
+        return self.include_rule
 
 
 def normalize_text(value: object) -> str:
@@ -58,9 +57,10 @@ def normalize_text(value: object) -> str:
 
 
 def normalize_for_match(value: object) -> str:
-    """轉成小寫的 keyword 比對文字。"""
+    """轉成 NFKC 與小寫後的 keyword 比對文字。"""
 
-    return normalize_text(value).lower()
+    normalized = unicodedata.normalize("NFKC", normalize_text(value))
+    return normalize_text(normalized).lower()
 
 
 def build_keyword_rule(rule: object) -> KeywordRule | None:
@@ -109,7 +109,7 @@ def match_rules(rules: Iterable[KeywordRule], normalized_text: str) -> KeywordMa
 
     rule_tuple = tuple(rules)
     if not rule_tuple:
-        return KeywordMatchResult(matched=True, rule="")
+        return KeywordMatchResult(matched=False, rule="")
 
     for rule in rule_tuple:
         if matches_keyword_rule(rule, normalized_text):
@@ -117,18 +117,55 @@ def match_rules(rules: Iterable[KeywordRule], normalized_text: str) -> KeywordMa
     return KeywordMatchResult(matched=False, rule="")
 
 
+def mask_exclude_ignore_phrases(
+    normalized_text: str,
+    exclude_ignore_phrases: Iterable[object],
+) -> str:
+    """在 normalized text 上遮罩排除字忽略片語的命中範圍。"""
+
+    ranges: list[tuple[int, int]] = []
+    for rule in parse_keyword_values(exclude_ignore_phrases):
+        phrase = normalize_for_match(rule.raw)
+        if not phrase:
+            continue
+        start = 0
+        while True:
+            index = normalized_text.find(phrase, start)
+            if index < 0:
+                break
+            ranges.append((index, index + len(phrase)))
+            start = index + 1
+    if not ranges:
+        return normalized_text
+
+    merged_ranges: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if not merged_ranges or start > merged_ranges[-1][1]:
+            merged_ranges.append((start, end))
+            continue
+        previous_start, previous_end = merged_ranges[-1]
+        merged_ranges[-1] = (previous_start, max(previous_end, end))
+
+    chars = list(normalized_text)
+    for start, end in merged_ranges:
+        chars[start:end] = " " * (end - start)
+    return "".join(chars)
+
+
 def evaluate_keyword_rules(
     text: object,
     include_keywords: Iterable[object],
     exclude_keywords: Iterable[object] = (),
+    exclude_ignore_phrases: Iterable[object] = (),
 ) -> KeywordEvaluation:
     """依 include / exclude 規則判斷單段文字是否符合監視條件。"""
 
     normalized_text = normalize_for_match(text)
     include_result = match_rules(parse_keyword_values(include_keywords), normalized_text)
     exclude_rules = parse_keyword_values(exclude_keywords)
+    exclude_text = mask_exclude_ignore_phrases(normalized_text, exclude_ignore_phrases)
     exclude_result = (
-        match_rules(exclude_rules, normalized_text)
+        match_rules(exclude_rules, exclude_text)
         if exclude_rules
         else KeywordMatchResult(matched=False, rule="")
     )

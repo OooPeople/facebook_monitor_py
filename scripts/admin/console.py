@@ -1,5 +1,7 @@
 """Admin tool：提供低頻互動式 target 管理與一次性掃描選單。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
@@ -19,18 +21,21 @@ from scripts.debug.capture_posts_target import run_capture
 from scripts.admin.manage_targets import run_manager
 from scripts.debug.one_shot_scan import run_one_shot_scan_cli
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 
 
-DEFAULT_PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 
 
 def parse_args() -> argparse.Namespace:
     """解析單一 console 入口的共用參數。"""
 
     parser = argparse.ArgumentParser(description="Open the Facebook monitor admin console.")
-    parser.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
-    parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
+    add_runtime_path_arguments(parser)
     parser.add_argument("--start-url", default=DEFAULT_START_URL)
     return parser.parse_args()
 
@@ -89,7 +94,8 @@ def main() -> int:
     """CLI entrypoint：開啟低頻管理用互動入口。"""
 
     args = parse_args()
-    return run_console(args.profile_dir, args.db_path, args.start_url)
+    paths = resolve_runtime_paths_from_args(args)
+    return run_console(paths.profile_dir, paths.db_path, args.start_url)
 
 
 if __name__ == "__main__":

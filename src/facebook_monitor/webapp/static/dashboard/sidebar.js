@@ -1,6 +1,56 @@
 const getSidebarLinks = () => Array.from(document.querySelectorAll("[data-sidebar-target]"));
 let activeSidebarAnchorId = "";
 let sidebarJumpLock = null;
+let sidebarIntersectionObserver = null;
+
+const getTargetCards = () => Array.from(document.querySelectorAll("[data-target-card][id]"));
+
+const sidebarModuleVersion = (() => {
+  try {
+    return new URL(import.meta.url).searchParams.get("v") || "unversioned";
+  } catch (error) {
+    return "unknown";
+  }
+})();
+
+const isScrollable = (element) => {
+  if (!element || element === document || element === window) return false;
+  const style = window.getComputedStyle(element);
+  return (
+    /(auto|scroll|overlay)/.test(style.overflowY)
+    && element.scrollHeight > element.clientHeight
+  );
+};
+
+const getScrollableAncestors = (node) => {
+  const ancestors = [];
+  let current = node?.parentElement;
+  while (current && current !== document.body) {
+    if (isScrollable(current)) {
+      ancestors.push(current);
+    }
+    current = current.parentElement;
+  }
+  return ancestors;
+};
+
+const getScrollEventTargets = () => {
+  const targets = new Set([
+    window,
+    document,
+    document.scrollingElement,
+    document.documentElement,
+    document.body,
+  ]);
+  const targetList = document.querySelector(".target-list");
+  [targetList, ...getTargetCards()].filter(Boolean).forEach((node) => {
+    if (isScrollable(node)) {
+      targets.add(node);
+    }
+    getScrollableAncestors(node).forEach((ancestor) => targets.add(ancestor));
+  });
+  return Array.from(targets).filter(Boolean);
+};
 
 const getTargetDistanceFromViewportCenter = (target) => {
   const rect = target.getBoundingClientRect();
@@ -9,7 +59,7 @@ const getTargetDistanceFromViewportCenter = (target) => {
 };
 
 const findTargetCardNearViewportCenter = () => {
-  const cards = Array.from(document.querySelectorAll("[data-target-card][id]"));
+  const cards = getTargetCards();
   if (!cards.length) return null;
 
   const focusY = window.innerHeight / 2;
@@ -78,8 +128,31 @@ const setupSidebarScrollSync = () => {
     frameId = window.requestAnimationFrame(syncActiveTarget);
   };
 
-  window.addEventListener("scroll", scheduleSync, { passive: true });
+  getScrollEventTargets().forEach((target) => {
+    target.addEventListener("scroll", scheduleSync, { passive: true });
+  });
+  window.addEventListener("wheel", scheduleSync, { passive: true });
+  window.addEventListener("touchmove", scheduleSync, { passive: true });
+  window.addEventListener("keyup", scheduleSync);
   window.addEventListener("resize", scheduleSync);
+  if ("IntersectionObserver" in window) {
+    if (sidebarIntersectionObserver) {
+      sidebarIntersectionObserver.disconnect();
+    }
+    sidebarIntersectionObserver = new IntersectionObserver(scheduleSync, {
+      root: null,
+      threshold: [0, 0.2, 0.5, 0.8, 1],
+    });
+    getTargetCards().forEach((card) => sidebarIntersectionObserver.observe(card));
+  }
+  window.__facebookMonitorDebug = window.__facebookMonitorDebug || {};
+  window.__facebookMonitorDebug.sidebarSync = {
+    forceSync: scheduleSync,
+    getActiveAnchor: () => activeSidebarAnchorId,
+    getCards: getTargetCards,
+    getModuleVersion: () => sidebarModuleVersion,
+    getScrollEventTargets,
+  };
   scheduleSync();
 };
 

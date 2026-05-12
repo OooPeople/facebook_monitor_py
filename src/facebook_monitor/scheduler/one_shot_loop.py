@@ -21,7 +21,7 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_running_targets
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
@@ -129,7 +129,7 @@ def run_one_shot_scheduler_loop(
     schedule_planner = TargetSchedulePlanner(scannable_target_kinds=frozenset({TargetKind.POSTS}))
     while options.max_cycles is None or cycle_index < options.max_cycles:
         cycle_index += 1
-        recover_stale_running_targets(options.db_path, options.stale_running_after_seconds)
+        recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
         due_targets = schedule_planner.list_due_targets(
             options.db_path,
             default_interval_seconds=options.interval_seconds,

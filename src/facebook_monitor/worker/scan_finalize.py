@@ -170,6 +170,7 @@ def finalize_scan_items(
             item.text,
             include_keywords=config.include_keywords,
             exclude_keywords=config.exclude_keywords,
+            exclude_ignore_phrases=config.exclude_ignore_phrases,
         )
         result = build_scan_match_result(
             item=item,

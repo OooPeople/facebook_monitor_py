@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -216,17 +217,15 @@ def get_target_card(
 
 
 def _configs_by_target(
-    app_context: SqliteApplicationContext,
+    app_context: ApplicationContext,
     targets: list[TargetDescriptor],
 ) -> dict[str, TargetConfig]:
-    """批次讀取 target 所屬 group config，舊資料才走 migration fallback。"""
+    """批次讀取 target-scoped config。"""
 
-    group_configs = app_context.repositories.configs.list_for_groups(
-        [target.group_id for target in targets]
-    )
+    target_configs = app_context.repositories.configs.list_for_targets([target.id for target in targets])
     configs: dict[str, TargetConfig] = {}
     for target in targets:
-        config = group_configs.get(target.group_id)
+        config = target_configs.get(target.id)
         if config is None:
             config = app_context.services.targets.get_config_for_target(target)
         configs[target.id] = config

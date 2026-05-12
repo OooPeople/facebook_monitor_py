@@ -1,0 +1,38 @@
+[
+  {
+    "name": "group_posts",
+    "href": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456/",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "groups_post_anchor"
+  },
+  {
+    "name": "group_permalink",
+    "href": "https://www.facebook.com/groups/222518561920110/permalink/1234567890123456",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "group_permalink_anchor"
+  },
+  {
+    "name": "permalink_php",
+    "href": "https://www.facebook.com/permalink.php?story_fbid=1234567890123456&id=222518561920110",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "permalink_php_anchor"
+  },
+  {
+    "name": "group_query",
+    "href": "https://www.facebook.com/groups/222518561920110?multi_permalinks=1234567890123456",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "group_query_anchor"
+  },
+  {
+    "name": "pcb",
+    "href": "https://www.facebook.com/groups/222518561920110/posts/pcb.1234567890123456",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "pcb_anchor"
+  },
+  {
+    "name": "photo_gm",
+    "href": "https://www.facebook.com/photo.php?fbid=999&set=gm.1234567890123456&idorvanity=222518561920110",
+    "expected_permalink": "https://www.facebook.com/groups/222518561920110/posts/1234567890123456",
+    "expected_source": "photo_gm_anchor"
+  }
+]

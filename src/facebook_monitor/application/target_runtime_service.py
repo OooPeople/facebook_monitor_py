@@ -10,6 +10,7 @@ from datetime import datetime
 from datetime import timedelta
 
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.repositories.target_runtime_state import (
@@ -35,7 +36,13 @@ class TargetRuntimeService:
         existing_state = self.runtime_states.get(target_id)
         if existing_state:
             return existing_state
-        state = TargetRuntimeState(target_id=target_id)
+        target = self.targets.get(target_id)
+        desired_state = (
+            TargetDesiredState.ACTIVE
+            if target is not None and target.enabled and not target.paused
+            else TargetDesiredState.STOPPED
+        )
+        state = TargetRuntimeState(target_id=target_id, desired_state=desired_state)
         self.runtime_states.save(state)
         return state
 
@@ -213,6 +220,40 @@ class TargetRuntimeService:
                     f"after {int(stale_after)} seconds"
                 ),
                 last_skip_reason="",
+                enqueue_reason="",
+                active_worker_id="",
+                active_page_id="",
+                updated_at=current_time,
+            )
+            self.runtime_states.save(recovered_state)
+            recovered.append(recovered_state)
+        return tuple(recovered)
+
+    def recover_stale_queued_targets(
+        self,
+        *,
+        stale_after_seconds: float,
+        now: datetime | None = None,
+    ) -> tuple[TargetRuntimeState, ...]:
+        """將排隊過久的 target 回復 idle，避免 scheduler 永久跳過。"""
+
+        current_time = now or utc_now()
+        stale_after = max(stale_after_seconds, 1)
+        recovered: list[TargetRuntimeState] = []
+        for state in self.runtime_states.list_all():
+            if state.runtime_status != TargetRuntimeStatus.QUEUED:
+                continue
+            enqueued_at = state.last_enqueued_at or state.updated_at
+            if current_time - enqueued_at <= timedelta(seconds=stale_after):
+                continue
+            recovered_state = replace(
+                state,
+                runtime_status=TargetRuntimeStatus.IDLE,
+                last_error="",
+                last_skip_reason=(
+                    "stale_queued_recovered: executor queue wait expired "
+                    f"after {int(stale_after)} seconds"
+                ),
                 enqueue_reason="",
                 active_worker_id="",
                 active_page_id="",

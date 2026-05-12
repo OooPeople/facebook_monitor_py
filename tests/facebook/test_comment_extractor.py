@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -159,7 +160,7 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
     assert meta.accumulated_count == 1
 
 
-def _run_text_snippet_helper(values: list[str]) -> dict[str, object]:
+def _run_text_snippet_helper(values: list[str]) -> dict[str, Any]:
     """用 Node 驗證 shared JS snippet helper 的包含關係語義。"""
 
     node = shutil.which("node")

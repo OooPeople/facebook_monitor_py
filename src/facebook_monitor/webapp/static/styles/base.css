@@ -10,14 +10,22 @@
   --muted: #667385;
   --border: #d7dde5;
   --border-soft: #e5eaf1;
-  --accent: #1f6feb;
-  --accent-strong: #1757bc;
+  --accent: #1877f2;
+  --accent-strong: #166fe5;
+  --accent-button: #166fe5;
+  --accent-button-hover: #0b5ed7;
+  --accent-ring: rgb(24 119 242 / 16%);
   --success: #176b35;
   --success-bg: #e9f8ee;
+  --info: #125a9c;
+  --info-bg: #d9ecff;
   --warn: #7a5600;
   --warn-bg: #fff4d6;
+  --keyword-highlight-bg: #fff1b8;
+  --keyword-highlight-text: #5f4300;
   --danger: #a32929;
   --danger-bg: #fff1f1;
+  --modal-backdrop: rgb(31 41 51 / 34%);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -25,9 +33,51 @@
   --shadow-subtle: 0 1px 2px rgb(31 41 51 / 5%);
   --shadow-card: 0 1px 2px rgb(31 41 51 / 7%), 0 12px 28px rgb(31 41 51 / 6%);
   --shadow-raised: 0 2px 8px rgb(31 41 51 / 8%);
+  --shadow-floating: 0 8px 24px rgb(31 41 51 / 14%);
+  --shadow-modal: 0 20px 60px rgb(31 41 51 / 22%);
+  --shadow-sidebar: 8px 0 24px rgb(31 41 51 / 4%);
+  --shadow-active-item: 0 1px 3px rgb(31 41 51 / 8%);
+  --shadow-inset-subtle: inset 0 0 0 1px rgb(31 41 51 / 5%);
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   background: var(--page-bg);
   color: var(--text);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --page-bg: #18191a;
+  --surface: #242526;
+  --surface-soft: #2f3033;
+  --surface-muted: #3a3b3c;
+  --text: #e4e6eb;
+  --text-soft: #cbd2dc;
+  --muted: #b0b3b8;
+  --border: #4b4d50;
+  --border-soft: #35373a;
+  --accent: #2d88ff;
+  --accent-strong: #1877f2;
+  --accent-button: #166fe5;
+  --accent-button-hover: #0b5ed7;
+  --accent-ring: rgb(45 136 255 / 24%);
+  --success: #6adf8a;
+  --success-bg: #153522;
+  --info: #8ec7ff;
+  --info-bg: #163452;
+  --warn: #ffd15c;
+  --warn-bg: #3a2d12;
+  --keyword-highlight-bg: #4a3a12;
+  --keyword-highlight-text: #ffdf7a;
+  --danger: #ff8a8a;
+  --danger-bg: #3a181b;
+  --modal-backdrop: rgb(0 0 0 / 58%);
+  --shadow-subtle: 0 1px 2px rgb(0 0 0 / 28%);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 32%), 0 14px 32px rgb(0 0 0 / 22%);
+  --shadow-raised: 0 2px 10px rgb(0 0 0 / 34%);
+  --shadow-floating: 0 8px 24px rgb(0 0 0 / 34%);
+  --shadow-modal: 0 22px 64px rgb(0 0 0 / 50%);
+  --shadow-sidebar: 8px 0 24px rgb(0 0 0 / 24%);
+  --shadow-active-item: 0 1px 3px rgb(0 0 0 / 30%);
+  --shadow-inset-subtle: inset 0 0 0 1px rgb(255 255 255 / 7%);
 }
 
 * {

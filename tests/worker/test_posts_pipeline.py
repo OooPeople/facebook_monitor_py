@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.core.keyword_rules import INCLUDE_ALL_LABEL
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
@@ -17,7 +17,6 @@ from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
-from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 
 
 class FakeLocator:
@@ -189,7 +188,7 @@ def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票券",),
+                config=TargetConfigPatch(include_keywords=("票券",)),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -292,7 +291,7 @@ def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                max_items_per_scan=10,
+                config=TargetConfigPatch(max_items_per_scan=10),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -362,6 +361,7 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
             "reason": "updated_to_preferred_sort",
             "mutation_suppression_ms": 3200,
             "mutation_suppression_reason": "auto_adjust_sort",
+            "menu_candidate_texts": [],
         }
 
 
@@ -383,9 +383,11 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="(3) 測試社團 | Facebook",
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -447,9 +449,11 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -491,9 +495,11 @@ def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -517,10 +523,10 @@ def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
         assert events[0].message == "ntfy_skipped"
 
 
-def test_scan_posts_page_records_reserved_notification_channels(
+def test_scan_posts_page_records_all_enabled_notification_channels(
     tmp_path: Path,
 ) -> None:
-    """桌面與 Discord 通道已進入模型，但 sender 未補前會記錄 skipped。"""
+    """posts pipeline 會透過 outbox 記錄所有已啟用通知通道的發送結果。"""
 
     db_path = tmp_path / "app.db"
     sent_payloads: list[tuple[NtfyConfig, str, str]] = []
@@ -554,12 +560,14 @@ def test_scan_posts_page_records_reserved_notification_channels(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票券",),
-                enable_desktop_notification=True,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/example",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_desktop_notification=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/example",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -606,8 +614,10 @@ def test_scan_posts_page_supports_userscript_keyword_rules(tmp_path: Path) -> No
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("普通;票券 關鍵字",),
-                exclude_keywords=("普通",),
+                config=TargetConfigPatch(
+                    include_keywords=("普通;票券 關鍵字",),
+                    exclude_keywords=("普通",),
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -628,8 +638,8 @@ def test_scan_posts_page_supports_userscript_keyword_rules(tmp_path: Path) -> No
         assert latest_items[1].matched_keyword == ""
 
 
-def test_scan_posts_page_empty_include_matches_all(tmp_path: Path) -> None:
-    """未設定 include 時沿用 include-all 語義，掃描項目全部符合。"""
+def test_scan_posts_page_empty_include_does_not_match(tmp_path: Path) -> None:
+    """未設定 include 時不應產生命中或通知。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -652,11 +662,8 @@ def test_scan_posts_page_empty_include_matches_all(tmp_path: Path) -> None:
         )
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
 
-        assert summary.matched_count == 2
-        assert [item.matched_keyword for item in latest_items] == [
-            INCLUDE_ALL_LABEL,
-            INCLUDE_ALL_LABEL,
-        ]
+        assert summary.matched_count == 0
+        assert [item.matched_keyword for item in latest_items] == ["", ""]
 
 
 def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
@@ -697,9 +704,11 @@ def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                include_keywords=("票券",),
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         config = app.repositories.configs.get_for_target(target)
@@ -729,28 +738,4 @@ def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
 
     with SqliteApplicationContext(db_path):
         assert len(sent_payloads) == 1
-
-
-def test_select_one_shot_target_by_group_id_when_multiple_targets_exist(tmp_path: Path) -> None:
-    """多個社團 target 存在時可用 group id 選取指定 target。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app:
-        first = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="111",
-                canonical_url="https://www.facebook.com/groups/111",
-            )
-        )
-        second = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222",
-                canonical_url="https://www.facebook.com/groups/222",
-            )
-        )
-
-        selected = select_one_shot_target(app, target_id="", group_id="222")
-
-        assert selected.id != first.id
-        assert selected.id == second.id
 

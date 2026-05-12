@@ -6,20 +6,59 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
   "playwright>=1.44",
   "httpx>=0.27",
+  "cryptography>=43.0.0",
   "fastapi>=0.136.1",
   "uvicorn>=0.46.0",
   "jinja2>=3.1.6",
   "python-multipart>=0.0.27",
 ]
 
+[project.scripts]
+facebook-monitor = "facebook_monitor.launcher:main"
+facebook-monitor-login = "facebook_monitor.profile_setup:main"
+
+[build-system]
+requires = ["uv_build>=0.9.0,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "facebook_monitor"
+
 [tool.ruff]
 line-length = 100
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+explicit_package_bases = true
+files = [
+  "src/facebook_monitor",
+  "scripts",
+  "tests",
+]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+branch = true
+source = ["src/facebook_monitor"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
+
 [dependency-groups]
 dev = [
+    "hypothesis>=6.152.0",
+    "mypy>=1.18.0",
+    "pip-audit>=2.10.0",
     "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.12",
 ]

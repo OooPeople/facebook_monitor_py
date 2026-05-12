@@ -1,9 +1,10 @@
 /* 06 settings modal / 07 hit records modal */
 .settings-modal,
+.keyword-help-modal,
 .hit-records-modal {
   border: 0;
   border-radius: var(--radius-md);
-  box-shadow: 0 20px 60px rgb(31 41 51 / 22%);
+  box-shadow: var(--shadow-modal);
   color: inherit;
   max-height: calc(100vh - 32px);
   max-width: min(640px, calc(100vw - 32px));
@@ -17,8 +18,9 @@
 }
 
 .settings-modal::backdrop,
+.keyword-help-modal::backdrop,
 .hit-records-modal::backdrop {
-  background: rgb(31 41 51 / 34%);
+  background: var(--modal-backdrop);
 }
 
 .modal-shell {
@@ -133,14 +135,14 @@
 
 .hit-record-content span {
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .hit-record-row p {
   color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.45;
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -152,9 +154,22 @@
 }
 
 .hit-record-row a {
-  font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface-soft));
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 650;
   justify-self: end;
+  margin-top: 2px;
+  padding: 5px 9px;
+  text-decoration: none;
   white-space: nowrap;
+}
+
+.hit-record-fields .field-grid-cell dt,
+.hit-record-fields .field-grid-cell dd {
+  font-size: 14px;
 }
 
 .modal-section {
@@ -167,6 +182,24 @@
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   padding: 14px;
+}
+
+.keyword-help-body {
+  gap: 12px;
+}
+
+.keyword-help-body p {
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 6px 0 0;
+}
+
+.keyword-help-body code {
+  background: var(--surface-muted);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 1px 5px;
 }
 
 .modal-section h4 {
@@ -184,6 +217,10 @@
 .settings-modal input[type="number"] {
   font-size: 15px;
   line-height: 1.45;
+}
+
+.rename-target-body {
+  gap: 12px;
 }
 
 .setting-stack {

@@ -13,9 +13,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
+from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
+from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.query_service import get_dashboard_revision
 from facebook_monitor.webapp.query_service import get_dashboard_view
 from facebook_monitor.webapp.query_service import get_target_card
@@ -32,6 +35,68 @@ def _format_dashboard_revision_event(payload: dict[str, str]) -> str:
         "event: dashboard_revision\n"
         f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
     )
+
+
+def _serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:
+    """序列化 sidebar item read model。"""
+
+    return {
+        "target_id": item.target_id,
+        "display_name": item.display_name,
+        "anchor_id": item.anchor_id,
+        "base_status_summary": item.base_status_summary,
+        "status_class": item.status_class,
+        "status_detail": item.status_detail,
+        "status_summary": item.status_summary,
+        "hit_count": item.hit_count,
+        "latest_error_summary": item.latest_error_summary,
+    }
+
+
+def _render_collapsed_summary_html(templates: Jinja2Templates, row: TargetRow) -> str:
+    """以 Jinja 單一來源產生收合摘要 partial HTML。"""
+
+    template = templates.env.get_template("_collapsed_summary_fields.html")
+    return template.render(summary_sections=row.card_summary.sections).strip()
+
+
+def _render_preview_rows_html(
+    templates: Jinja2Templates,
+    rows: object,
+    empty_text: str,
+) -> str:
+    """以 Jinja 單一來源產生 preview rows partial HTML。"""
+
+    template = templates.env.get_template("_preview_rows.html")
+    preview_rows = getattr(template.module, "preview_rows")
+    return str(preview_rows(rows, empty_text)).strip()
+
+
+def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[str, object]:
+    """序列化 target card partial update read model。"""
+
+    return {
+        "target_id": row.target_id,
+        "anchor_id": row.anchor_id,
+        "display_name": row.display_name,
+        "status_label": row.status_label,
+        "status_class": row.status_class,
+        "header_summary_label": row.header_summary_label,
+        "latest_scan_diagnostics_summary": row.latest_scan_diagnostics_summary,
+        "latest_scan_diagnostics_text": row.latest_scan_diagnostics_text,
+        "hit_record_total_count": row.hit_record_total_count,
+        "card_summary_html": _render_collapsed_summary_html(templates, row),
+        "latest_scan_preview_html": _render_preview_rows_html(
+            templates,
+            row.latest_scan_preview_rows,
+            "尚無掃描紀錄",
+        ),
+        "hit_record_preview_html": _render_preview_rows_html(
+            templates,
+            row.hit_record_preview_rows,
+            "尚無命中紀錄",
+        ),
+    }
 
 
 async def _dashboard_revision_event_stream(
@@ -109,6 +174,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "profile_active": get_profile_manager(request).is_active(),
                 "scheduler_state": scheduler_state,
                 "dashboard_revision": dashboard_revision,
+                "initial_theme": get_app_theme(request),
             },
         )
 
@@ -149,21 +215,24 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
+        return {"items": [_serialize_sidebar_item(item) for item in items]}
+
+    @app.get("/api/dashboard-cards")
+    async def dashboard_cards(request: Request) -> dict[str, object]:
+        """提供 dashboard partial update 使用的 sidebar + card batch payload。"""
+
+        try:
+            dashboard = get_dashboard_view(
+                get_db_path(request),
+                session_started_at=get_session_started_at(request),
+            )
+        except DashboardReadUnavailable as exc:
+            raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         return {
-            "items": [
-                {
-                    "target_id": item.target_id,
-                    "display_name": item.display_name,
-                    "anchor_id": item.anchor_id,
-                    "base_status_summary": item.base_status_summary,
-                    "status_class": item.status_class,
-                    "status_detail": item.status_detail,
-                    "status_summary": item.status_summary,
-                    "hit_count": item.hit_count,
-                    "latest_error_summary": item.latest_error_summary,
-                }
-                for item in items
-            ],
+            "sidebar": {
+                "items": [_serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
+            },
+            "cards": [_serialize_target_card(row, templates) for row in dashboard.rows],
         }
 
     @app.get("/api/targets/{target_id}/card")
@@ -180,33 +249,4 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         if row is None:
             raise HTTPException(status_code=404, detail="target not found")
-        return {
-            "target_id": row.target_id,
-            "anchor_id": row.anchor_id,
-            "display_name": row.display_name,
-            "status_label": row.status_label,
-            "status_class": row.status_class,
-            "header_summary_label": row.header_summary_label,
-            "latest_scan_diagnostics_summary": row.latest_scan_diagnostics_summary,
-            "latest_scan_diagnostics_text": row.latest_scan_diagnostics_text,
-            "card_summary": {
-                "status_label": row.card_summary.status_label,
-                "latest_scan_label": row.card_summary.latest_scan_label,
-                "hit_record_total_count": row.card_summary.hit_record_total_count,
-                "refresh_label": row.card_summary.refresh_label,
-                "notification_summary": row.card_summary.notification_summary,
-                "latest_error_summary": row.card_summary.latest_error_summary,
-                "lines": row.card_summary.lines,
-                "sections": [
-                    {"label": section.label, "lines": section.lines}
-                    for section in row.card_summary.sections
-                ],
-            },
-            "hit_record_total_count": row.hit_record_total_count,
-            "latest_scan_preview_rows": [
-                preview_row.to_dict() for preview_row in row.latest_scan_preview_rows
-            ],
-            "hit_record_preview_rows": [
-                preview_row.to_dict() for preview_row in row.hit_record_preview_rows
-            ],
-        }
+        return _serialize_target_card(row, templates)

@@ -78,6 +78,55 @@ def test_background_scheduler_manager_runs_resident_mode(tmp_path: Path) -> None
     assert state.resident_browser_alive
 
 
+def test_background_scheduler_manager_passes_metadata_refresh_requests(
+    tmp_path: Path,
+) -> None:
+    """metadata refresh request 會交給 resident runtime options 並去重。"""
+
+    calls: list[tuple[str, ...]] = []
+
+    def fake_resident_main_runner(
+        options: ResidentRuntimeOptions,
+        stop_event: Event,
+        on_cycle: Callable[[ResidentCycleSummary], None],
+        sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        """取出 metadata refresh request 並結束 runner。"""
+
+        assert options.metadata_refresh_provider is not None
+        calls.append(options.metadata_refresh_provider())
+        calls.append(options.metadata_refresh_provider())
+        on_cycle(
+            ResidentCycleSummary(
+                cycle_index=1,
+                selected_count=0,
+                success_count=0,
+                failure_count=0,
+                skipped_count=0,
+                opened_page_count=0,
+                reused_page_count=0,
+                closed_page_count=0,
+            )
+        )
+        stop_event.set()
+        return object()
+
+    manager = BackgroundSchedulerManager(resident_main_runner=fake_resident_main_runner)
+    manager.request_metadata_refresh("target-1")
+    manager.request_metadata_refresh("target-1")
+    manager.request_metadata_refresh("target-2")
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    assert manager.thread is not None
+    manager.thread.join(timeout=2)
+
+    assert calls == [("target-1", "target-2"), ()]
+
+
 def test_background_scheduler_stop_timeout_keeps_stopping_state(tmp_path: Path) -> None:
     """stop timeout 後 thread 未結束時不得顯示為 stopped。"""
 

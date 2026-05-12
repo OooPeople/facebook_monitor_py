@@ -6,7 +6,7 @@
         <h3 id="settings-title-{{ row.target.id }}">設定</h3>
         <p>{{ row.display_name }}</p>
       </div>
-      <button class="icon-button" type="button" data-close-settings aria-label="關閉設定">×</button>
+      <button class="button--icon" type="button" data-close-settings aria-label="關閉設定">×</button>
     </header>
     <div class="modal-body">
       <section class="modal-section modal-section-card">
@@ -45,7 +45,7 @@
           </label>
           <label>
             ntfy topic
-            <input name="ntfy_topic" type="text" value="{{ row.config.ntfy_topic }}" form="{{ config_form_id }}">
+            <input name="ntfy_topic" type="text" value="{{ row.config.ntfy_topic }}" autocomplete="off" form="{{ config_form_id }}">
           </label>
           <label class="checkbox">
             <input name="enable_discord_notification" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_discord_notification %}checked{% endif %}>
@@ -53,7 +53,7 @@
           </label>
           <label>
             Discord webhook URL
-            <input name="discord_webhook" type="text" value="{{ row.config.discord_webhook }}" form="{{ config_form_id }}">
+            <input name="discord_webhook" type="text" value="{{ row.config.discord_webhook }}" autocomplete="off" form="{{ config_form_id }}">
           </label>
         </div>
       </section>
@@ -62,7 +62,7 @@
       <button type="submit" form="{{ config_form_id }}" formaction="/targets/{{ row.target.id }}/notifications/test" formmethod="post">測試通知</button>
       <div class="modal-footer-actions">
         <button type="button" data-close-settings>取消</button>
-        <button class="button primary" type="submit" form="{{ config_form_id }}">儲存設定</button>
+        <button class="button button--primary" type="submit" form="{{ config_form_id }}" data-dirty-submit>儲存設定</button>
       </div>
     </footer>
   </div>

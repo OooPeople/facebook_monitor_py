@@ -13,9 +13,12 @@ from threading import Event
 from threading import Lock
 from threading import Thread
 from typing import Any
+from typing import Protocol
 
 from playwright.sync_api import sync_playwright
 
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.facebook.browser_capture import get_start_page
 
@@ -33,6 +36,19 @@ class ProfileSessionOptions:
 
     profile_dir: Path
     start_url: str = DEFAULT_START_URL
+
+
+class ProfileManagerLike(Protocol):
+    """Web UI 需要的 profile session manager 介面，供正式實作與測試替身共用。"""
+
+    def is_active(self) -> bool:
+        """回傳目前是否有 profile 視窗開啟中。"""
+
+    def open(self, options: ProfileSessionOptions) -> None:
+        """開啟 profile 視窗。"""
+
+    def close(self) -> None:
+        """關閉 profile 視窗。"""
 
 
 @dataclass
@@ -117,10 +133,12 @@ class ProfileSessionManager:
         try:
             with acquire_profile_lease(options.profile_dir, "Facebook 設定視窗"):
                 with sync_playwright() as playwright:
-                    context = playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(options.profile_dir),
-                        headless=False,
-                        viewport={"width": 1366, "height": 900},
+                    context = launch_persistent_context_sync(
+                        playwright,
+                        BrowserRuntimeOptions(
+                            profile_dir=options.profile_dir,
+                            headless=False,
+                        ),
                     )
                     page = get_start_page(context)
                     page.goto(options.start_url, wait_until="domcontentloaded")

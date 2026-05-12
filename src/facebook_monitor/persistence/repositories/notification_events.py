@@ -7,6 +7,7 @@ import sqlite3
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.persistence.row_mappers import notification_event_from_row
+from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 
@@ -35,7 +36,7 @@ class NotificationEventRepository:
                 encode_datetime(event.created_at),
             ),
         )
-        return int(cursor.lastrowid)
+        return require_lastrowid(cursor.lastrowid, table_name="notification_events")
 
     def list_by_target(self, target_id: str, limit: int = 50) -> list[NotificationEvent]:
         """依 target id 查詢最近 notification events。"""

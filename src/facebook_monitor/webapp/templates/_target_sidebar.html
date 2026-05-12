@@ -1,44 +1,50 @@
-{% if rows %}
-  <aside class="target-sidebar" aria-label="監看清單快速跳轉">
-    <div class="sidebar-brand">
-      <span class="sidebar-brand-name">Facebook Monitor</span>
-    </div>
-    <div class="sidebar-header">
-      <h2>監看清單</h2>
-    </div>
-    <nav aria-label="監看清單">
-      <ul class="sidebar-list">
-        {% for item in dashboard.sidebar_items %}
-          <li>
-            <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
-              <span class="sidebar-avatar" aria-hidden="true">{{ item.display_name[:1] or "?" }}</span>
-              <span class="sidebar-copy">
-                <span class="sidebar-name">{{ item.display_name }}</span>
-                <span
-                  class="sidebar-status"
-                  data-sidebar-status="{{ item.target_id }}"
-                  data-sidebar-base-status="{{ item.base_status_summary }}"
-                  data-sidebar-status-class="{{ item.status_class }}"
-                  data-sidebar-status-detail="{{ item.status_detail }}"
-                  data-sidebar-default-detail="{{ item.status_detail }}"
-                >
-                  <span class="sidebar-status-pill {{ item.status_class }}">{{ item.base_status_summary }}</span>
-                  {% if item.status_detail %}
-                    <span class="sidebar-status-detail">{{ item.status_detail }}</span>
-                  {% endif %}
-                </span>
+<aside class="target-sidebar" aria-label="監看清單快速跳轉">
+  <div class="sidebar-brand">
+    <span class="sidebar-brand-name">Facebook Monitor</span>
+  </div>
+  <div class="sidebar-header">
+    <h2>監看清單</h2>
+  </div>
+  <nav aria-label="監看清單">
+    <ul class="sidebar-list">
+      {% for item in dashboard.sidebar_items %}
+        <li>
+          <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
+            <span class="sidebar-avatar" aria-hidden="true">{{ item.display_name[:1] or "?" }}</span>
+            <span class="sidebar-copy">
+              <span class="sidebar-name">{{ item.display_name }}</span>
+              <span
+                class="sidebar-status"
+                data-sidebar-status="{{ item.target_id }}"
+                data-sidebar-base-status="{{ item.base_status_summary }}"
+                data-sidebar-status-class="{{ item.status_class }}"
+                data-sidebar-status-detail="{{ item.status_detail }}"
+                data-sidebar-default-detail="{{ item.status_detail }}"
+              >
+                <span class="sidebar-status-pill {{ item.status_class }}">{{ item.base_status_summary }}</span>
+                {% if item.status_detail %}
+                  <span class="sidebar-status-detail">{{ item.status_detail }}</span>
+                {% endif %}
               </span>
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
-    </nav>
-    <a class="sidebar-add-target" href="/targets/new">
-      <span class="sidebar-avatar sidebar-avatar-add" aria-hidden="true">＋</span>
-      <span class="sidebar-copy">
-        <span class="sidebar-name">新增 Facebook target</span>
-        <span class="sidebar-status">貼上社團或貼文連結</span>
-      </span>
-    </a>
-  </aside>
-{% endif %}
+            </span>
+          </a>
+        </li>
+      {% else %}
+        <li class="sidebar-empty">
+          <span class="sidebar-avatar" aria-hidden="true">0</span>
+          <span class="sidebar-copy">
+            <span class="sidebar-name">尚未建立 target</span>
+            <span class="sidebar-status">新增後會顯示在這裡</span>
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+  </nav>
+  <a class="sidebar-add-target" href="/targets/new">
+    <span class="sidebar-avatar sidebar-avatar-add" aria-hidden="true">＋</span>
+    <span class="sidebar-copy">
+      <span class="sidebar-name">新增 Facebook target</span>
+      <span class="sidebar-status">貼上社團或貼文連結</span>
+    </span>
+  </a>
+</aside>

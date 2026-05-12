@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import timedelta
 
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import notification_outbox_from_row
+from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
+from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 
@@ -20,8 +23,14 @@ class NotificationOutboxRepository:
     after-commit hook。
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        secret_codec: SecretCodec | PlaintextSecretCodec,
+    ) -> None:
         self.connection = connection
+        self.secret_codec = secret_codec
 
     def enqueue(self, entry: NotificationOutboxEntry) -> NotificationOutboxEntry:
         """新增待送通知；idempotency key 已存在時回傳既有 row。"""
@@ -44,7 +53,7 @@ class NotificationOutboxRepository:
                 entry.status.value,
                 entry.title,
                 entry.message,
-                entry.endpoint,
+                self.secret_codec.encrypt(entry.endpoint),
                 entry.permalink,
                 entry.attempts,
                 entry.last_error,
@@ -65,7 +74,7 @@ class NotificationOutboxRepository:
             "SELECT * FROM notification_outbox WHERE idempotency_key = ?",
             (idempotency_key,),
         ).fetchone()
-        return notification_outbox_from_row(row) if row else None
+        return self._decrypt_entry(notification_outbox_from_row(row)) if row else None
 
     def list_pending(self, limit: int = 50) -> list[NotificationOutboxEntry]:
         """列出尚未 claim 的 pending events，僅供檢視與測試。"""
@@ -82,7 +91,7 @@ class NotificationOutboxRepository:
                 limit,
             ),
         ).fetchall()
-        return [notification_outbox_from_row(row) for row in rows]
+        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
 
     def claim_pending(self, limit: int = 50) -> list[NotificationOutboxEntry]:
         """原子 claim pending rows，外部 I/O 只能處理 claim 成功的 events。"""
@@ -114,7 +123,7 @@ class NotificationOutboxRepository:
             """,
             (NotificationOutboxStatus.FAILED.value, limit),
         ).fetchall()
-        return [notification_outbox_from_row(row) for row in rows]
+        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
 
     def recover_stale_processing(self, *, older_than_seconds: float) -> int:
         """將過期 processing rows 放回來源狀態，避免 dispatcher 崩潰後永久卡住。"""
@@ -239,5 +248,10 @@ class NotificationOutboxRepository:
             """,
             tuple(claimed_ids),
         ).fetchall()
-        return [notification_outbox_from_row(row) for row in claimed_rows]
+        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in claimed_rows]
+
+    def _decrypt_entry(self, entry: NotificationOutboxEntry) -> NotificationOutboxEntry:
+        """還原 repository 對外回傳的 notification endpoint。"""
+
+        return replace(entry, endpoint=self.secret_codec.decrypt(entry.endpoint))
 

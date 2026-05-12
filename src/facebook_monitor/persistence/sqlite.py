@@ -9,6 +9,7 @@ from __future__ import annotations
 from facebook_monitor.persistence.repositories.global_notification_settings import (
     GlobalNotificationSettingsRepository,
 )
+from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
 from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
@@ -21,7 +22,6 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
-from facebook_monitor.persistence.schema import ensure_column
 from facebook_monitor.persistence.schema import initialize_schema
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
@@ -35,6 +35,7 @@ from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 
 __all__ = [
     "GlobalNotificationSettingsRepository",
+    "AppSettingsRepository",
     "LatestScanItemRepository",
     "MatchHistoryRepository",
     "NotificationEventRepository",
@@ -51,7 +52,6 @@ __all__ = [
     "decode_runtime_status",
     "encode_datetime",
     "encode_keywords",
-    "ensure_column",
     "initialize_schema",
     "read_schema_version",
     "write_schema_version",

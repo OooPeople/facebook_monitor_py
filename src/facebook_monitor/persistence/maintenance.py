@@ -44,7 +44,6 @@ class RuntimeDataMaintenanceRepository:
         """清除可重建資料，保留 target、config、profile 與持久查看紀錄。"""
 
         latest_scan_items = self._delete_all("latest_scan_items")
-        notification_outbox = self._delete_all("notification_outbox")
         notification_events = self._delete_all("notification_events")
         scan_runs = self._delete_all("scan_runs")
         seen_items = self._delete_all("seen_items") if include_seen_items else 0
@@ -53,7 +52,7 @@ class RuntimeDataMaintenanceRepository:
             latest_scan_items=latest_scan_items,
             match_history=0,
             notification_events=notification_events,
-            notification_outbox=notification_outbox,
+            notification_outbox=0,
             seen_items=seen_items,
         )
 

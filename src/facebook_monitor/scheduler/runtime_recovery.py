@@ -23,3 +23,27 @@ def recover_stale_running_targets(db_path: Path, stale_after_seconds: float) -> 
                 stale_after_seconds=stale_after_seconds,
             )
         )
+
+
+def recover_stale_queued_targets(db_path: Path, stale_after_seconds: float) -> int:
+    """修復過舊的 queued runtime state，回傳修復筆數。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        return len(
+            app.services.targets.recover_stale_queued_targets(
+                stale_after_seconds=stale_after_seconds,
+            )
+        )
+
+
+def recover_stale_runtime_targets(db_path: Path, stale_after_seconds: float) -> int:
+    """修復所有會讓 target 卡住的過舊 runtime state。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        queued = app.services.targets.recover_stale_queued_targets(
+            stale_after_seconds=stale_after_seconds,
+        )
+        running = app.services.targets.recover_stale_running_targets(
+            stale_after_seconds=stale_after_seconds,
+        )
+        return len(queued) + len(running)

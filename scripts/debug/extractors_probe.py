@@ -1,5 +1,7 @@
 """Debug helper：重新匯出 feed extractor probe 需要的正式 package API。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import sys

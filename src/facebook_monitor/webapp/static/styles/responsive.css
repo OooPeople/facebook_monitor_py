@@ -38,7 +38,7 @@
     border-bottom: 1px solid var(--border-soft);
   }
 
-  .field-grid--summary .field-grid-cell:nth-last-child(-n + 1) {
+  .field-grid--summary .field-grid-cell:nth-last-child(-n + 2) {
     border-bottom: 0;
   }
 
@@ -114,12 +114,20 @@
     grid-template-columns: 1fr;
   }
 
+  .field-grid--summary .field-grid-cell:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--border-soft);
+  }
+
   .field-grid--summary .field-grid-cell:nth-child(odd):not(:last-child)::after {
     display: none;
   }
 
   .field-grid--summary .field-grid-cell:not(:last-child) {
     border-bottom: 1px solid var(--border-soft);
+  }
+
+  .field-grid--summary .field-grid-cell:last-child {
+    border-bottom: 0;
   }
 
   .hit-record-row {

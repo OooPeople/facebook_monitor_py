@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>設定 - Facebook Monitor</title>
-  <link rel="stylesheet" href="/static/style.css?v=ui-refactor-phase18-form-sidebar-status">
+  {% include "_theme_bootstrap.html" %}
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
   <main class="shell settings-shell">
@@ -13,7 +14,10 @@
         <h1>設定</h1>
         <p>全域 automation profile 與帳號狀態</p>
       </div>
-      <a class="button" href="/">返回</a>
+      <nav class="top-actions">
+        {% include "_theme_toggle.html" %}
+        <a class="button" href="/">返回</a>
+      </nav>
     </header>
 
     <div class="toast-stack" aria-live="polite" aria-atomic="true">
@@ -35,11 +39,45 @@
 
       <div class="settings-action-row">
         <form method="post" action="/settings/facebook/open">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit">開啟登入視窗</button>
         </form>
         <form method="post" action="/settings/facebook/close">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit">關閉視窗</button>
         </form>
+      </div>
+    </section>
+
+    <section class="target settings-card">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <h2>關鍵字預設值</h2>
+          <p>新增 target 時會套用這裡的預設值；既有 target 仍保留自己的關鍵字設定。</p>
+        </div>
+      </div>
+
+      <form id="target-keyword-defaults-form" class="config-form settings-keyword-form" method="post" action="/settings/target-keywords">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="settings-keyword-stack">
+          <label>
+            排除關鍵字
+            <textarea name="exclude_keywords" rows="2">{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
+          </label>
+          <label>
+            排除字忽略片語
+            <textarea name="exclude_ignore_phrases" rows="2">{{ target_keyword_defaults.exclude_ignore_phrases_text }}</textarea>
+          </label>
+        </div>
+      </form>
+
+      <div class="settings-keyword-actions">
+        <span
+          class="inline-feedback form-status"
+          data-dirty-status="target-keyword-defaults-form"
+          aria-live="polite"
+        >尚未儲存</span>
+        <button class="button button--primary" type="submit" form="target-keyword-defaults-form" data-dirty-submit>保存關鍵字預設值</button>
       </div>
     </section>
 
@@ -52,6 +90,7 @@
       </div>
 
       <form id="notification-defaults-form" class="config-form settings-notification-form" method="post" action="/settings/notifications">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="settings-notification-stack">
           <label class="checkbox">
             <input name="enable_desktop_notification" type="checkbox" {% if notification_settings.enable_desktop_notification %}checked{% endif %}>
@@ -63,7 +102,7 @@
           </label>
           <label>
             ntfy topic
-            <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}">
+            <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}" autocomplete="off">
           </label>
           <label class="checkbox">
             <input name="enable_discord_notification" type="checkbox" {% if notification_settings.enable_discord_notification %}checked{% endif %}>
@@ -71,83 +110,60 @@
           </label>
           <label>
             Discord webhook URL
-            <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}">
+            <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}" autocomplete="off">
           </label>
         </div>
       </form>
 
       <div class="settings-notification-actions">
-        <form method="post" action="/settings/notifications/test">
-          <button type="submit">發送測試通知</button>
-        </form>
+        <button
+          type="submit"
+          form="notification-defaults-form"
+          formaction="/settings/notifications/test"
+          formmethod="post"
+        >發送測試通知</button>
         <div class="settings-action-cluster">
-          <span class="inline-feedback form-status" data-dirty-status aria-live="polite">尚未儲存</span>
-          <form method="post" action="/settings/notifications/apply-to-targets" onsubmit="return confirm('套用通知預設值到所有社團設定？');">
+          <span
+            class="inline-feedback form-status"
+            data-dirty-status="notification-defaults-form"
+            aria-live="polite"
+          >尚未儲存</span>
+          <form method="post" action="/settings/notifications/apply-to-targets" onsubmit="return confirm('套用通知預設值到所有 target 設定？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit">套用到所有 target</button>
           </form>
-          <button class="button primary" type="submit" form="notification-defaults-form">保存通知預設值</button>
+          <button class="button button--primary" type="submit" form="notification-defaults-form" data-dirty-submit>保存通知預設值</button>
         </div>
       </div>
     </section>
+
+    <details class="target settings-card runtime-diagnostics-card">
+      <summary class="runtime-diagnostics-summary">
+        <span class="settings-card-title">
+          <span class="runtime-diagnostics-heading">Runtime diagnostics</span>
+          <span class="runtime-diagnostics-description">啟動路徑與目前背景服務狀態。</span>
+        </span>
+        <span class="runtime-diagnostics-toggle" aria-hidden="true">展開</span>
+      </summary>
+      <div class="runtime-diagnostics-body">
+        <dl class="field-grid runtime-diagnostics-grid">
+          {% for field in runtime_diagnostics.fields %}
+            <div class="field-grid-cell">
+              <dt>{{ field.label }}</dt>
+              <dd>{{ field.value }}</dd>
+            </div>
+          {% endfor %}
+        </dl>
+        <textarea id="runtime-diagnostics-copy-source" class="debug-copy-source" readonly rows="8">{{ runtime_diagnostics.copy_text }}</textarea>
+        <div class="settings-action-row">
+          <button type="button" data-copy-runtime-diagnostics>複製診斷資訊</button>
+          <span class="inline-feedback form-status" data-runtime-diagnostics-status aria-live="polite"></span>
+        </div>
+      </div>
+    </details>
   </main>
   <script id="page-feedback" type="application/json">{{ {"message": message, "error": error} | tojson }}</script>
-  <script>
-    (() => {
-      const editableSelector = "input, textarea, select";
-      const feedbackNode = document.getElementById("page-feedback");
-      const pageFeedback = feedbackNode ? JSON.parse(feedbackNode.textContent || "{}") : {};
-      const showInlineStatus = (node, text, kind, timeoutMs = 0) => {
-        if (!node) return;
-        node.textContent = text;
-        node.dataset.statusKind = kind;
-        node.classList.add("is-visible");
-        if (timeoutMs > 0) {
-          window.setTimeout(() => {
-            if (document.body.contains(node) && node.dataset.statusKind === kind) {
-              node.classList.remove("is-visible");
-            }
-          }, timeoutMs);
-        }
-      };
-      const showToast = (text, kind = "success") => {
-        if (!text) return;
-        const stack = document.querySelector(".toast-stack");
-        if (!stack) return;
-        const toast = document.createElement("div");
-        toast.className = `toast ${kind}`;
-        toast.textContent = text;
-        stack.appendChild(toast);
-        window.setTimeout(() => {
-          if (document.body.contains(toast)) {
-            toast.remove();
-          }
-        }, 3500);
-      };
-      const clearFeedbackParams = () => {
-        if (!pageFeedback.message && !pageFeedback.error) return;
-        const url = new URL(window.location.href);
-        url.searchParams.delete("message");
-        url.searchParams.delete("error");
-        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-      };
-      const notificationForm = document.querySelector('form[action="/settings/notifications"]');
-      const notificationStatus = notificationForm
-        ? notificationForm.querySelector("[data-dirty-status]")
-        : null;
-      if (notificationForm) {
-        const markDirty = () => showInlineStatus(notificationStatus, "尚未儲存", "dirty");
-        notificationForm.querySelectorAll(editableSelector).forEach((node) => {
-          node.addEventListener("input", markDirty);
-          node.addEventListener("change", markDirty);
-        });
-      }
-      if (pageFeedback.message === "通知預設值已保存") {
-        showInlineStatus(notificationStatus, "設定已更新", "saved", 2500);
-      } else if (pageFeedback.message) {
-        showToast(pageFeedback.message, "success");
-      }
-      clearFeedbackParams();
-    })();
-  </script>
+  {% include "_dashboard_importmap.html" %}
+  <script type="module" src="/static/dashboard/settings.js?v={{ asset_version }}"></script>
 </body>
 </html>

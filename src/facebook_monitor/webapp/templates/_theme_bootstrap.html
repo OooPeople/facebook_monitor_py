@@ -1,0 +1,11 @@
+<script>
+(() => {
+  const allowedThemes = new Set(["light", "dark"]);
+  let theme = {{ initial_theme | default("light") | tojson }};
+  if (!allowedThemes.has(theme)) {
+    theme = "light";
+  }
+  document.documentElement.dataset.theme = theme;
+})();
+</script>
+<meta name="csrf-token" content="{{ csrf_token }}">

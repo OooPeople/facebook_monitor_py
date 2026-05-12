@@ -1,5 +1,6 @@
-import { renderSidebarStatus } from "./sidebar_status.js?v=ui-refactor-phase18-form-sidebar-status";
-import { closeDialog, openDialog } from "./utils.js";
+import { csrfHeaders } from "/static/dashboard/csrf.js";
+import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
+import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
 
 const pageSize = 50;
 const emptyHitRecordsHtml = `
@@ -23,6 +24,25 @@ const appendHitRecordField = (container, labelText, value) => {
   item.appendChild(label);
   item.appendChild(detail);
   container.appendChild(item);
+};
+
+const appendTextSegments = (container, fallbackText, segments) => {
+  const segmentList = Array.isArray(segments) ? segments : [];
+  if (segmentList.length === 0) {
+    container.textContent = hitRecordText(fallbackText);
+    return;
+  }
+  segmentList.forEach((segment) => {
+    const text = hitRecordText(segment?.text);
+    if (segment?.highlighted) {
+      const mark = document.createElement("mark");
+      mark.className = "keyword-highlight";
+      mark.textContent = text;
+      container.appendChild(mark);
+      return;
+    }
+    container.appendChild(document.createTextNode(text));
+  });
 };
 
 const updateHitCount = (targetId, totalCount) => {
@@ -91,13 +111,13 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
     appendHitRecordField(fields, "類型", item.item_type);
     appendHitRecordField(fields, "作者", item.author_name);
     appendHitRecordField(fields, "關鍵字", item.matched_keyword);
-    appendHitRecordField(fields, "通知時間", item.notified_at || "未記錄");
+    appendHitRecordField(fields, "記錄時間", item.recorded_at || item.notified_at);
     const contentBlock = document.createElement("div");
     contentBlock.className = "hit-record-content";
     const contentLabel = document.createElement("span");
     contentLabel.textContent = "內容：";
     const content = document.createElement("p");
-    content.textContent = hitRecordText(item.content);
+    appendTextSegments(content, item.content, item.content_segments);
     contentBlock.appendChild(contentLabel);
     contentBlock.appendChild(content);
     const actions = document.createElement("div");
@@ -115,7 +135,7 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
       actions.appendChild(link);
     } else {
       const missing = document.createElement("span");
-      missing.className = "muted-text";
+      missing.className = "missing-link";
       missing.textContent = "無連結";
       actions.appendChild(missing);
     }
@@ -159,18 +179,9 @@ export const setupHitRecords = ({ showToast }) => {
     });
   });
 
-  document.querySelectorAll("[data-close-hit-records]").forEach((button) => {
-    button.addEventListener("click", () => {
-      closeDialog(button.closest("[data-hit-records-modal]"));
-    });
-  });
-
-  document.querySelectorAll("[data-hit-records-modal]").forEach((modal) => {
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) {
-        closeDialog(modal);
-      }
-    });
+  bindDialogDismiss({
+    modalSelector: "[data-hit-records-modal]",
+    closeSelector: "[data-close-hit-records]",
   });
 
   document.querySelectorAll("[data-clear-hit-records]").forEach((button) => {
@@ -185,6 +196,7 @@ export const setupHitRecords = ({ showToast }) => {
       try {
         const response = await fetch(`/api/targets/${targetId}/hit-records`, {
           method: "DELETE",
+          headers: csrfHeaders(),
         });
         if (!response.ok) {
           throw new Error("清空紀錄失敗");

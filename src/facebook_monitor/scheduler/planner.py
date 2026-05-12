@@ -117,7 +117,7 @@ class TargetSchedulePlanner:
         return sorted_targets[:bounded_count]
 
     def mark_dispatched(self, due_target: DueTarget, *, now: datetime | None = None) -> None:
-        """target 成功取得 scan lock 後，推進該 target 的 next_due_at。"""
+        """target 成功取得 scan lock 後，依 start-to-start cadence 推進 next_due_at。"""
 
         current_time = now or datetime.now(timezone.utc)
         self._last_started_at_by_target[due_target.target_id] = current_time

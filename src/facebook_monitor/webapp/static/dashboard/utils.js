@@ -1,5 +1,61 @@
 export const editableSelector = "input, textarea, select";
 
+export const getFormControls = (form) => {
+  if (!form) return [];
+  return Array.from(form.elements || []).filter((node) =>
+    node.matches?.(editableSelector)
+  );
+};
+
+export const setupDirtyFormStatus = ({
+  form,
+  statusElement,
+  dirtyText = "尚未儲存",
+  onDirtyChange = () => {},
+}) => {
+  if (!form) return;
+
+  const formId = form.id || "";
+  const submitButtons = () => [
+    ...Array.from(form.querySelectorAll("[data-dirty-submit]")),
+    ...(
+      formId
+        ? Array.from(document.querySelectorAll(`[form="${CSS.escape(formId)}"][data-dirty-submit]`))
+        : []
+    ),
+  ];
+  const controlSignature = () => JSON.stringify(
+    getFormControls(form).map((node) => ({
+      name: node.name || "",
+      type: node.type || "",
+      value: node.type === "checkbox" || node.type === "radio"
+        ? Boolean(node.checked)
+        : node.value,
+    })),
+  );
+  const baseline = controlSignature();
+
+  const updateDirtyState = () => {
+    const dirty = controlSignature() !== baseline;
+    form.classList.toggle("is-dirty", dirty);
+    submitButtons().forEach((button) => {
+      button.classList.toggle("is-dirty", dirty);
+    });
+    onDirtyChange(dirty);
+    if (dirty) {
+      showInlineStatus(statusElement, dirtyText, "dirty");
+    } else if (statusElement?.dataset.statusKind === "dirty") {
+      statusElement.classList.remove("is-visible");
+      delete statusElement.dataset.statusKind;
+    }
+  };
+  getFormControls(form).forEach((node) => {
+    node.addEventListener("input", updateDirtyState);
+    node.addEventListener("change", updateDirtyState);
+  });
+  updateDirtyState();
+};
+
 export const readJsonScript = (id, fallback) => {
   const node = document.getElementById(id);
   if (!node) return fallback;
@@ -51,6 +107,21 @@ export const openDialog = (modal) => {
   } else {
     modal.setAttribute("open", "");
   }
+};
+
+export const bindDialogDismiss = ({ modalSelector, closeSelector }) => {
+  document.querySelectorAll(closeSelector).forEach((button) => {
+    button.addEventListener("click", () => {
+      closeDialog(button.closest(modalSelector));
+    });
+  });
+  document.querySelectorAll(modalSelector).forEach((modal) => {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        closeDialog(modal);
+      }
+    });
+  });
 };
 
 export const clearFeedbackParams = (pageFeedback) => {

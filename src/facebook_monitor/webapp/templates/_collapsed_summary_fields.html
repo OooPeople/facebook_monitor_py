@@ -1,0 +1,41 @@
+{% for summary_section in summary_sections %}
+  <div class="target-collapsed-summary-field field-grid-cell">
+    <span class="target-collapsed-summary-icon" aria-hidden="true">
+      {% if summary_section.icon_key == "keyword" %}
+        <svg viewBox="0 0 24 24" focusable="false">
+          <circle cx="8" cy="8" r="5"/>
+          <path d="m11.5 11.5 7 7"/>
+        </svg>
+      {% elif summary_section.icon_key == "settings" %}
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M4 7h16"/>
+          <path d="M4 17h16"/>
+          <circle class="svg-fill" cx="9" cy="7" r="2"/>
+          <circle class="svg-fill" cx="15" cy="17" r="2"/>
+        </svg>
+      {% elif summary_section.icon_key == "scan" %}
+        <svg viewBox="0 0 24 24" focusable="false">
+          <circle cx="12" cy="12" r="2"/>
+          <path d="M16 8a5.5 5.5 0 0 1 0 8"/>
+          <path d="M8 16a5.5 5.5 0 0 1 0-8"/>
+          <path d="M19 5a10 10 0 0 1 0 14"/>
+          <path d="M5 19A10 10 0 0 1 5 5"/>
+        </svg>
+      {% else %}
+        <svg viewBox="0 0 24 24" focusable="false">
+          <circle cx="12" cy="12" r="7"/>
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+        </svg>
+      {% endif %}
+    </span>
+    <div class="target-collapsed-summary-copy">
+      <dt>{{ summary_section.label }}</dt>
+      <dd>
+        {% for summary_line in summary_section.lines %}
+          <span>{{ summary_line }}</span>
+        {% endfor %}
+      </dd>
+    </div>
+  </div>
+{% endfor %}

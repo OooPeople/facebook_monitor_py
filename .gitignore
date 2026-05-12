@@ -30,6 +30,7 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+secrets.key
 *.local
 coverage.xml
 htmlcov/

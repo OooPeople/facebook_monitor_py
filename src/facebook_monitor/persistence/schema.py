@@ -7,7 +7,7 @@ import sqlite3
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 17
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -15,14 +15,15 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
     existing_version = read_schema_version(connection)
     has_existing_data_schema = has_existing_user_tables(connection)
-    if (
-        existing_version == 0
-        and has_existing_data_schema
-        and not has_schema_metadata_table(connection)
-    ):
+    if existing_version == 0 and has_existing_data_schema:
         raise RuntimeError(
-            "Unsupported SQLite schema version 0. Existing DBs must have schema_metadata "
-            "for automatic migration."
+            "Unsupported SQLite schema version 0. Existing DBs must have a valid "
+            "schema_metadata version for automatic migration."
+        )
+    if existing_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Unsupported SQLite schema version {existing_version}. "
+            f"This app supports up to version {SCHEMA_VERSION}."
         )
     connection.executescript(
         """
@@ -51,24 +52,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
             include_keywords TEXT NOT NULL,
             exclude_keywords TEXT NOT NULL,
-            min_refresh_sec INTEGER NOT NULL,
-            max_refresh_sec INTEGER NOT NULL,
-            jitter_enabled INTEGER NOT NULL,
-            fixed_refresh_sec INTEGER,
-            max_items_per_scan INTEGER NOT NULL,
-            auto_load_more INTEGER NOT NULL,
-            auto_adjust_sort INTEGER NOT NULL,
-            enable_desktop_notification INTEGER NOT NULL,
-            enable_ntfy INTEGER NOT NULL,
-            ntfy_topic TEXT NOT NULL,
-            enable_discord_notification INTEGER NOT NULL,
-            discord_webhook TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS group_configs (
-            group_id TEXT PRIMARY KEY,
-            include_keywords TEXT NOT NULL,
-            exclude_keywords TEXT NOT NULL,
+            exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
             min_refresh_sec INTEGER NOT NULL,
             max_refresh_sec INTEGER NOT NULL,
             jitter_enabled INTEGER NOT NULL,
@@ -198,6 +182,12 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS dashboard_revision (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             revision INTEGER NOT NULL,
@@ -224,108 +214,6 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         """
     )
     ensure_dashboard_revision_triggers(connection)
-    ensure_column(
-        connection,
-        table_name="notification_outbox",
-        column_name="endpoint",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="latest_scan_items",
-        column_name="debug_metadata",
-        definition="TEXT NOT NULL DEFAULT '{}'",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="scan_requested_at",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="last_skip_reason",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="last_enqueued_at",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="last_started_at",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="last_finished_at",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="enqueue_reason",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="active_page_id",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="last_page_reloaded_at",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="target_runtime_state",
-        column_name="scan_guard_count",
-        definition="INTEGER NOT NULL DEFAULT 0",
-    )
-    ensure_column(
-        connection,
-        table_name="target_configs",
-        column_name="enable_desktop_notification",
-        definition="INTEGER NOT NULL DEFAULT 0",
-    )
-    ensure_column(
-        connection,
-        table_name="target_configs",
-        column_name="enable_discord_notification",
-        definition="INTEGER NOT NULL DEFAULT 0",
-    )
-    ensure_column(
-        connection,
-        table_name="target_configs",
-        column_name="discord_webhook",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
-    ensure_column(
-        connection,
-        table_name="group_configs",
-        column_name="enable_desktop_notification",
-        definition="INTEGER NOT NULL DEFAULT 0",
-    )
-    ensure_column(
-        connection,
-        table_name="group_configs",
-        column_name="enable_discord_notification",
-        definition="INTEGER NOT NULL DEFAULT 0",
-    )
-    ensure_column(
-        connection,
-        table_name="group_configs",
-        column_name="discord_webhook",
-        definition="TEXT NOT NULL DEFAULT ''",
-    )
     if 0 < existing_version < SCHEMA_VERSION:
         from facebook_monitor.persistence.migrations import run_known_migrations
 
@@ -336,21 +224,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         )
     elif existing_version < SCHEMA_VERSION:
         write_schema_version(connection, SCHEMA_VERSION)
-
-
-def ensure_column(
-    connection: sqlite3.Connection,
-    *,
-    table_name: str,
-    column_name: str,
-    definition: str,
-) -> None:
-    """確保既有 SQLite table 有指定欄位，供小型 schema migration 使用。"""
-
-    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-    if any(row["name"] == column_name for row in rows):
-        return
-    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+    ensure_target_scope_unique_index(connection)
 
 
 def has_existing_user_tables(connection: sqlite3.Connection) -> bool:
@@ -367,25 +241,12 @@ def has_existing_user_tables(connection: sqlite3.Connection) -> bool:
     return bool(rows)
 
 
-def has_schema_metadata_table(connection: sqlite3.Connection) -> bool:
-    """判斷 DB 是否已有 schema metadata table。"""
-
-    row = connection.execute(
-        """
-        SELECT 1 FROM sqlite_master
-        WHERE type = 'table' AND name = 'schema_metadata'
-        LIMIT 1
-        """
-    ).fetchone()
-    return row is not None
-
-
 def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
     """建立 dashboard revision bump triggers，讓 polling query 固定成本。"""
 
     for table_name in (
         "targets",
-        "group_configs",
+        "target_configs",
         "target_runtime_state",
         "scan_runs",
         "notification_events",
@@ -407,6 +268,78 @@ def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
                 END
                 """
             )
+
+
+def ensure_target_scope_unique_index(connection: sqlite3.Connection) -> None:
+    """確保 target kind/scope 在資料庫層唯一，避免 target-scoped state 分裂。"""
+
+    repair_duplicate_target_scopes(connection)
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_kind_scope_unique
+        ON targets(target_kind, scope_id)
+        """
+    )
+
+
+def repair_duplicate_target_scopes(connection: sqlite3.Connection) -> None:
+    """合併歷史上可能產生的重複 target scope，保留最早建立的 target。"""
+
+    duplicate_groups = connection.execute(
+        """
+        SELECT target_kind, scope_id, MIN(created_at) AS first_created_at, COUNT(*) AS count
+        FROM targets
+        GROUP BY target_kind, scope_id
+        HAVING count > 1
+        """
+    ).fetchall()
+    for group in duplicate_groups:
+        rows = connection.execute(
+            """
+            SELECT id
+            FROM targets
+            WHERE target_kind = ? AND scope_id = ?
+            ORDER BY created_at, id
+            """,
+            (group["target_kind"], group["scope_id"]),
+        ).fetchall()
+        if len(rows) <= 1:
+            continue
+        keep_id = str(rows[0]["id"])
+        duplicate_ids = [str(row["id"]) for row in rows[1:]]
+        for duplicate_id in duplicate_ids:
+            _merge_duplicate_target(connection, keep_id=keep_id, duplicate_id=duplicate_id)
+
+
+def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, duplicate_id: str) -> None:
+    """把 duplicate target 的 runtime/history 資料併回保留 target 後刪除 duplicate。"""
+
+    if keep_id == duplicate_id:
+        return
+    connection.execute("DELETE FROM target_configs WHERE target_id = ?", (duplicate_id,))
+    connection.execute("DELETE FROM target_runtime_state WHERE target_id = ?", (duplicate_id,))
+    connection.execute(
+        """
+        DELETE FROM latest_scan_items
+        WHERE target_id = ?
+          AND item_key IN (
+              SELECT item_key FROM latest_scan_items WHERE target_id = ?
+          )
+        """,
+        (duplicate_id, keep_id),
+    )
+    for table_name in (
+        "latest_scan_items",
+        "scan_runs",
+        "match_history",
+        "notification_events",
+        "notification_outbox",
+    ):
+        connection.execute(
+            f"UPDATE {table_name} SET target_id = ? WHERE target_id = ?",
+            (keep_id, duplicate_id),
+        )
+    connection.execute("DELETE FROM targets WHERE id = ?", (duplicate_id,))
 
 
 

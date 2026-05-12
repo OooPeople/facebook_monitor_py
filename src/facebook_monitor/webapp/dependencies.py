@@ -23,17 +23,20 @@ from facebook_monitor.facebook.group_metadata import resolve_group_name_with_pro
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
-from facebook_monitor.webapp.profile_session import ProfileSessionManager
+from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionOptions
-from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
+from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
+from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
 
 
-ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DB_PATH = ROOT / "data" / "app.db"
-DEFAULT_PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
+DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+TEMPLATES_DIR = DEFAULT_RUNTIME_PATHS.templates_dir
+STATIC_DIR = DEFAULT_RUNTIME_PATHS.static_dir
 
 
 def get_db_path(request: Request) -> Path:
@@ -48,7 +51,7 @@ def get_profile_dir(request: Request) -> Path:
     return Path(getattr(request.app.state, "profile_dir", DEFAULT_PROFILE_DIR))
 
 
-def get_profile_manager(request: Request) -> ProfileSessionManager:
+def get_profile_manager(request: Request) -> ProfileManagerLike:
     """從 app state 取得 automation profile session manager。"""
 
     return getattr(request.app.state, "profile_manager")
@@ -60,7 +63,7 @@ def get_group_name_resolver(request: Request) -> Callable[[Path, str], str]:
     return getattr(request.app.state, "group_name_resolver")
 
 
-def get_scheduler_manager(request: Request) -> BackgroundSchedulerManager:
+def get_scheduler_manager(request: Request) -> SchedulerManagerLike:
     """從 app state 取得 Web UI 背景 scheduler manager。"""
 
     return getattr(request.app.state, "scheduler_manager")
@@ -118,6 +121,8 @@ def pause_scheduler_for_profile_use(request: Request) -> None:
     request.app.state.scheduler_paused_for_profile = True
     request.app.state.scheduler_resume_options = scheduler.options or build_scheduler_options(request)
     scheduler.stop()
+    if scheduler.state().lifecycle_state == SchedulerLifecycleState.STOPPING:
+        return
 
 
 def resume_scheduler_after_profile_use(request: Request) -> None:
@@ -130,7 +135,15 @@ def resume_scheduler_after_profile_use(request: Request) -> None:
     options = getattr(request.app.state, "scheduler_resume_options", None)
     if options is None:
         options = build_scheduler_options(request)
-    get_scheduler_manager(request).start(options)
+    scheduler = get_scheduler_manager(request)
+    if scheduler.state().lifecycle_state == SchedulerLifecycleState.STOPPING:
+        return
+    try:
+        scheduler.start(options)
+    except RuntimeError as exc:
+        if "stopping" in str(exc).lower():
+            return
+        raise
     request.app.state.scheduler_paused_for_profile = False
     request.app.state.scheduler_resume_options = None
 
@@ -165,6 +178,20 @@ def get_global_notification_settings(request: Request) -> GlobalNotificationSett
 
     with SqliteApplicationContext(get_db_path(request)) as app_context:
         return app_context.repositories.global_notification_settings.get()
+
+
+def get_app_theme(request: Request) -> str:
+    """讀取 Web UI DB-backed theme preference。"""
+
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        return app_context.repositories.app_settings.get_theme()
+
+
+def get_target_keyword_defaults(request: Request) -> TargetKeywordDefaultSettings:
+    """讀取新增 target 使用的關鍵字預設值。"""
+
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        return app_context.repositories.app_settings.get_target_keyword_defaults()
 
 
 def redirect_with_message(message: str, *, return_to: str = "") -> RedirectResponse:

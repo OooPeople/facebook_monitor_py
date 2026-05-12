@@ -88,7 +88,7 @@ p {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(31 41 51 / 14%);
+  box-shadow: var(--shadow-floating);
   color: var(--text);
   font-size: 13px;
   line-height: 1.45;

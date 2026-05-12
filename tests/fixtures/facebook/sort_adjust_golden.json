@@ -1,0 +1,50 @@
+[
+  {
+    "name": "comment_option_missing",
+    "preferred_label": "由新到舊",
+    "payload": {
+      "attempted": true,
+      "changed": false,
+      "preferredLabel": "由新到舊",
+      "beforeLabel": "最相關",
+      "afterLabel": "最相關",
+      "reason": "preferred_sort_option_not_found",
+      "mutationSuppressionMs": 3200,
+      "mutationSuppressionReason": "auto_adjust_sort",
+      "menuCandidateTexts": ["最相關", "所有留言"]
+    },
+    "expected": {
+      "attempted": true,
+      "changed": false,
+      "preferred_label": "由新到舊",
+      "before_label": "最相關",
+      "after_label": "最相關",
+      "reason": "preferred_sort_option_not_found",
+      "menu_candidate_texts": ["最相關", "所有留言"]
+    }
+  },
+  {
+    "name": "feed_already_preferred",
+    "preferred_label": "新貼文",
+    "payload": {
+      "attempted": true,
+      "changed": false,
+      "preferredLabel": "新貼文",
+      "beforeLabel": "新貼文",
+      "afterLabel": "新貼文",
+      "reason": "already_preferred_sort",
+      "mutationSuppressionMs": 0,
+      "mutationSuppressionReason": "",
+      "menuCandidateTexts": []
+    },
+    "expected": {
+      "attempted": true,
+      "changed": false,
+      "preferred_label": "新貼文",
+      "before_label": "新貼文",
+      "after_label": "新貼文",
+      "reason": "already_preferred_sort",
+      "menu_candidate_texts": []
+    }
+  }
+]

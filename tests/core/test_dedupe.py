@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+from hypothesis import given
+from hypothesis import strategies as st
+
 from facebook_monitor.core.dedupe import ScanItemIdentity
 from facebook_monitor.core.dedupe import aliases_overlap
+from facebook_monitor.core.dedupe import build_stable_text_signature
 from facebook_monitor.core.dedupe import build_legacy_item_key
 from facebook_monitor.core.dedupe import get_item_key_aliases
 from facebook_monitor.core.dedupe import get_primary_item_key
 from facebook_monitor.core.dedupe import get_raw_item_key_aliases
+
+
+SURROGATE_CATEGORIES: tuple[Literal["Cs"], ...] = ("Cs",)
 
 
 def test_post_key_aliases_include_id_url_composite_and_legacy_key() -> None:
@@ -103,3 +112,44 @@ def test_comment_aliases_do_not_overlap_by_parent_post_legacy_permalink() -> Non
     )
 
     assert not aliases_overlap(first, second)
+
+
+@given(st.text())
+def test_stable_text_signature_is_bounded_and_idempotent(value: str) -> None:
+    """fallback signature 長度固定上限，重複整理不應改變結果。"""
+
+    signature = build_stable_text_signature(value)
+
+    assert len(signature) <= 120
+    assert build_stable_text_signature(signature) == signature
+
+
+@given(
+    post_id=st.from_regex(r"\d{8,18}", fullmatch=True),
+    author=st.text(alphabet=st.characters(blacklist_categories=SURROGATE_CATEGORIES)),
+    text=st.text(alphabet=st.characters(blacklist_categories=SURROGATE_CATEGORIES)),
+)
+def test_post_primary_key_is_stable_for_same_post_id(
+    post_id: str,
+    author: str,
+    text: str,
+) -> None:
+    """同一 post id 即使周邊文字變動，也應維持相同 primary key。"""
+
+    first = get_primary_item_key(
+        ScanItemIdentity(
+            post_id=post_id,
+            author=author,
+            text=text,
+        )
+    )
+    second = get_primary_item_key(
+        ScanItemIdentity(
+            post_id=post_id,
+            author=f"{author} updated",
+            text=f"{text} updated",
+        )
+    )
+
+    assert first
+    assert first == second

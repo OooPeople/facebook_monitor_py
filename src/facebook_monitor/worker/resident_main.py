@@ -10,13 +10,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
+import logging
+from typing import Any
 
 from playwright.async_api import async_playwright
 
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_running_targets
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import is_generated_group_comments_name
+from facebook_monitor.core.models import is_generated_group_posts_name
+from facebook_monitor.facebook.group_metadata import GroupMetadataError
+from facebook_monitor.facebook.group_metadata import resolve_group_name_with_context
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -28,6 +38,7 @@ from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePoo
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 
 
+logger = logging.getLogger(__name__)
 AsyncSleepCallable = Callable[[float], Awaitable[None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
@@ -98,11 +109,13 @@ async def run_resident_main_loop(
         try:
             with acquire_profile_lease(options.profile_dir, "resident main worker"):
                 async with async_playwright() as playwright:
-                    browser_context = await playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(options.profile_dir),
-                        headless=not options.headed_compat,
-                        viewport={"width": 1366, "height": 900},
-                        timeout=max(options.scan_timeout_seconds, 10) * 1000,
+                    browser_context = await launch_persistent_context_async(
+                        playwright,
+                        BrowserRuntimeOptions(
+                            profile_dir=options.profile_dir,
+                            headless=not options.headed_compat,
+                            timeout_seconds=max(options.scan_timeout_seconds, 10),
+                        ),
                     )
                     try:
                         browser_context.set_default_timeout(
@@ -136,6 +149,7 @@ async def run_resident_main_loop(
                                 cycle_index += 1
                                 summary = await run_resident_main_scheduler_tick(
                                     options=options,
+                                    browser_context=browser_context,
                                     page_pool=page_pool,
                                     target_queue=target_queue,
                                     executor=executor,
@@ -168,6 +182,7 @@ async def run_resident_main_loop(
 async def run_resident_main_scheduler_tick(
     *,
     options: ResidentRuntimeOptions,
+    browser_context: Any | None = None,
     page_pool: AsyncResidentPagePool,
     target_queue: TargetQueue,
     executor: ExecutorWorkerPool,
@@ -176,7 +191,11 @@ async def run_resident_main_scheduler_tick(
 ) -> ResidentCycleSummary:
     """producer-only scheduler tick：只負責發現 due targets 並 enqueue。"""
 
-    recover_stale_running_targets(options.db_path, options.stale_running_after_seconds)
+    recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
+    metadata_refresh_count = await refresh_requested_target_metadata(
+        options=options,
+        browser_context=browser_context,
+    )
     active_target_ids = list_active_resident_target_ids(options.db_path)
     closed_page_count = await page_pool.close_inactive(active_target_ids)
     due_targets = schedule_planner.list_due_targets(
@@ -195,7 +214,7 @@ async def run_resident_main_scheduler_tick(
         skipped_count=counters.skipped_count,
         opened_page_count=counters.opened_page_count,
         reused_page_count=counters.reused_page_count,
-        closed_page_count=closed_page_count,
+        closed_page_count=closed_page_count + metadata_refresh_count,
         queued_count=queued_count,
         running_count=running_count,
         queue_length=queued_count,
@@ -204,6 +223,80 @@ async def run_resident_main_scheduler_tick(
         page_pool_size=await page_pool.size(),
         resident_browser_alive=True,
     )
+
+
+async def refresh_requested_target_metadata(
+    *,
+    options: ResidentRuntimeOptions,
+    browser_context: Any | None,
+) -> int:
+    """消化 Web UI 丟給 resident scheduler 的 target metadata refresh request。"""
+
+    if options.metadata_refresh_provider is None or browser_context is None:
+        return 0
+    refreshed_count = 0
+    for target_id in options.metadata_refresh_provider():
+        try:
+            if await refresh_target_group_name_from_context(
+                options=options,
+                browser_context=browser_context,
+                target_id=target_id,
+            ):
+                refreshed_count += 1
+        except Exception:
+            logger.exception(
+                "metadata refresh failed",
+                extra={"target_id": target_id},
+            )
+    return refreshed_count
+
+
+async def refresh_target_group_name_from_context(
+    *,
+    options: ResidentRuntimeOptions,
+    browser_context: Any,
+    target_id: str,
+) -> bool:
+    """用 resident browser context 補齊 target group name。"""
+
+    group_id = ""
+    should_refresh = False
+    with SqliteApplicationContext(options.db_path) as app:
+        target = app.repositories.targets.get(target_id)
+        if target is None:
+            return False
+        group_id = target.group_id
+        should_refresh = (
+            target.target_kind == TargetKind.POSTS
+            and is_generated_group_posts_name(target.name, target.group_id)
+        ) or (
+            target.target_kind == TargetKind.COMMENTS
+            and is_generated_group_comments_name(
+                target.name,
+                target.group_id,
+                target.parent_post_id,
+            )
+        )
+        if target.group_name and not should_refresh:
+            return False
+    if not group_id:
+        return False
+    try:
+        group_name = await resolve_group_name_with_context(
+            browser_context,
+            canonical_url=f"https://www.facebook.com/groups/{group_id}",
+        )
+    except GroupMetadataError:
+        logger.info(
+            "metadata refresh skipped",
+            extra={"target_id": target_id},
+        )
+        return False
+    with SqliteApplicationContext(options.db_path) as app:
+        if app.repositories.targets.get(target_id) is None:
+            return False
+        app.services.targets.refresh_target_group_name(target_id, group_name)
+    return True
 
 
 async def run_resident_main_cycle(

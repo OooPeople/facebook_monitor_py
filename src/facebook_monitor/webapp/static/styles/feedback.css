@@ -21,6 +21,30 @@
   color: var(--success);
 }
 
+button.is-dirty,
+.button.is-dirty {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent), var(--shadow-subtle);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button.is-dirty,
+  .button.is-dirty {
+    animation: dirty-submit-pulse 1.8s ease-in-out infinite;
+  }
+
+  @keyframes dirty-submit-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 12%, transparent), var(--shadow-subtle);
+    }
+
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 22%, transparent), var(--shadow-raised);
+    }
+  }
+}
+
 button,
 .button {
   border: 1px solid var(--border-soft);
@@ -45,24 +69,60 @@ button:hover,
   box-shadow: var(--shadow-raised);
 }
 
-.button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+.button--primary {
+  background: var(--accent-button);
+  border-color: var(--accent-button);
   color: #ffffff;
   font-weight: 650;
 }
 
-.button.primary:hover {
-  background: var(--accent-strong);
+.button--primary:hover {
+  background: var(--accent-button-hover);
 }
 
-button.danger {
+.button--danger {
   border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
   color: var(--danger);
   font-weight: 650;
 }
 
-button.danger:hover {
+.button--danger:hover {
   background: var(--danger-bg);
+}
+
+.button--icon {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
+  width: 34px;
+}
+
+.theme-toggle {
+  gap: 8px;
+  min-height: 38px;
+  padding: 7px 10px;
+}
+
+.theme-toggle-icon {
+  align-items: center;
+  background: var(--surface-muted);
+  border-radius: 999px;
+  color: var(--text-soft);
+  display: inline-grid;
+  font-size: 15px;
+  font-weight: 750;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  width: 24px;
+}
+
+.theme-toggle-label {
+  font-size: 14px;
+  font-weight: 650;
 }
 

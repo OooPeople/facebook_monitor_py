@@ -1,4 +1,4 @@
-import { editableSelector } from "./utils.js";
+import { editableSelector } from "/static/dashboard/utils.js";
 
 export const storageKeys = {
   scroll: "facebookMonitor.dashboard.scrollY",

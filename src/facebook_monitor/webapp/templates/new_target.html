@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>新增 target - Facebook Monitor</title>
-  <link rel="stylesheet" href="/static/style.css?v=ui-refactor-phase18-form-sidebar-status">
+  {% include "_theme_bootstrap.html" %}
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
   <main class="shell new-target-shell">
@@ -13,7 +14,10 @@
         <h1>新增 target</h1>
         <p>貼上 Facebook 社團或貼文網址，建立監看規則。</p>
       </div>
-      <a class="button" href="/">返回</a>
+      <nav class="top-actions">
+        {% include "_theme_toggle.html" %}
+        <a class="button" href="/">返回</a>
+      </nav>
     </header>
 
     <div class="toast-stack" aria-live="polite" aria-atomic="true">
@@ -26,20 +30,23 @@
     </div>
 
     <section class="target new-target-card">
-      <form class="config-form new-target-form" method="post" action="/targets">
+      <form class="config-form new-target-form" method="post" action="/targets" data-new-target-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="max_items_per_scan" type="hidden" value="{{ target_defaults.max_items_per_scan }}">
         <input name="auto_load_more" type="hidden" value="on">
         <input name="auto_adjust_sort" type="hidden" value="on">
+        <input name="exclude_keywords" type="hidden" value="{{ target_keyword_defaults.exclude_keywords_text }}">
+        <input name="exclude_ignore_phrases" type="hidden" value="{{ target_keyword_defaults.exclude_ignore_phrases_text }}">
         <section class="new-target-section">
           <h2>目標來源</h2>
           <div class="new-target-stack">
             <label>
               Facebook group URL / post URL
-              <input name="group_url" type="text" required placeholder="社團: https://www.facebook.com/groups/123456789；留言: https://www.facebook.com/groups/123456789/posts/987654321">
+              <input name="group_url" type="text" required placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321">
             </label>
             <label>
               自訂顯示名稱
-              <input name="display_name" type="text">
+              <input name="display_name" type="text" placeholder="可留空，系統會嘗試使用社團名稱">
             </label>
           </div>
         </section>
@@ -68,22 +75,23 @@
             </div>
             <label>
               ntfy topic
-              <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}">
+              <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}" autocomplete="off">
             </label>
             <label>
               Discord webhook URL
-              <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}">
+              <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}" autocomplete="off">
             </label>
           </div>
         </section>
 
         <footer class="new-target-actions">
           <a class="button" href="/">返回</a>
-          <button class="button primary" type="submit">新增 target</button>
+          <button class="button button--primary" type="submit" data-loading-text="建立中...">新增 target</button>
         </footer>
       </form>
     </section>
   </main>
-  <script type="module" src="/static/dashboard/new_target.js?v=ui-refactor-phase8-5-ui-architecture"></script>
+  {% include "_dashboard_importmap.html" %}
+  <script type="module" src="/static/dashboard/new_target.js?v={{ asset_version }}"></script>
 </body>
 </html>

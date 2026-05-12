@@ -11,12 +11,7 @@ from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.notifications.channel_dispatch import NotificationChannelDefinition
 from facebook_monitor.notifications.channel_dispatch import NtfySender
-from facebook_monitor.notifications.channel_dispatch import dispatch_notification_outbox_entry
 from facebook_monitor.notifications.channel_dispatch import is_channel_enabled
-from facebook_monitor.notifications.channel_dispatch import record_notification_event
-from facebook_monitor.notifications.channel_dispatch import (
-    record_failed_notification_event_for_outbox_error,
-)
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
 from facebook_monitor.notifications.outbox_service import build_match_compact_notification_message
 from facebook_monitor.notifications.outbox_service import build_match_notification_message
@@ -40,12 +35,9 @@ __all__ = [
     "build_notification_idempotency_key",
     "dispatch_new_pending_notification_outbox",
     "dispatch_notification_outbox_entries",
-    "dispatch_notification_outbox_entry",
     "enqueue_match_notifications",
     "is_channel_enabled",
     "queue_match_notifications_after_commit",
-    "record_failed_notification_event_for_outbox_error",
-    "record_notification_event",
     "recover_stale_processing_outbox",
     "retry_failed_notification_outbox",
     "send_manual_test_notification",

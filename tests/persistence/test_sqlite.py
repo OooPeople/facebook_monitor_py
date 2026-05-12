@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+import sqlite3
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import GlobalNotificationSettings
@@ -25,21 +27,48 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.sqlite import MatchHistoryRepository
+from facebook_monitor.persistence.sqlite import AppSettingsRepository
 from facebook_monitor.persistence.sqlite import GlobalNotificationSettingsRepository
 from facebook_monitor.persistence.sqlite import LatestScanItemRepository
 from facebook_monitor.persistence.sqlite import NotificationEventRepository
 from facebook_monitor.persistence.sqlite import NotificationOutboxRepository
 from facebook_monitor.persistence.sqlite import ScanRunRepository
 from facebook_monitor.persistence.sqlite import SeenItemRepository
+from facebook_monitor.persistence.sqlite import SCHEMA_VERSION
 from facebook_monitor.persistence.sqlite import SqliteConnection
 from facebook_monitor.persistence.sqlite import TargetConfigRepository
 from facebook_monitor.persistence.sqlite import TargetRepository
 from facebook_monitor.persistence.sqlite import TargetRuntimeStateRepository
 from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.migrations import ensure_legacy_group_configs_table
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
+from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 
 
-def table_count(connection: object, table_name: str) -> int:
+PLAINTEXT_SECRET_CODEC = PlaintextSecretCodec()
+
+
+def target_config_repository(connection: sqlite3.Connection) -> TargetConfigRepository:
+    """測試用明文 secret codec；正式路徑由 application context 注入加密 codec。"""
+
+    return TargetConfigRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC)
+
+
+def global_notification_settings_repository(
+    connection: sqlite3.Connection,
+) -> GlobalNotificationSettingsRepository:
+    """測試用明文 global notification repository。"""
+
+    return GlobalNotificationSettingsRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC)
+
+
+def notification_outbox_repository(connection: sqlite3.Connection) -> NotificationOutboxRepository:
+    """測試用明文 notification outbox repository。"""
+
+    return NotificationOutboxRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC)
+
+
+def table_count(connection: sqlite3.Connection, table_name: str) -> int:
     """回傳指定測試資料表目前筆數。"""
 
     row = connection.execute(f"SELECT COUNT(1) FROM {table_name}").fetchone()
@@ -69,12 +98,110 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
     assert int(synchronous) == 1
     assert {
         "idx_targets_kind_scope",
+        "idx_targets_kind_scope_unique",
         "idx_scan_runs_target_created",
         "idx_notification_events_target_created",
         "idx_latest_scan_items_target_index",
         "idx_runtime_state_status_updated",
         "idx_runtime_state_desired_updated",
     }.issubset(indexes)
+
+
+def test_fresh_schema_does_not_create_group_configs_formal_table(tmp_path: Path) -> None:
+    """fresh DB 不再建立 group_configs，避免 legacy migration table 回到正式路徑。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        table_names = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert "group_configs" not in table_names
+
+
+def test_initialize_schema_repairs_duplicate_target_scopes_before_unique_index(
+    tmp_path: Path,
+) -> None:
+    """v16 以前若出現重複 scope，migration 會先合併再建立 DB unique index。"""
+
+    db_path = tmp_path / "app.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '16');
+            CREATE TABLE targets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                parent_post_id TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                paused INTEGER NOT NULL,
+                worker_mode TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE target_configs (
+                target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+                include_keywords TEXT NOT NULL,
+                exclude_keywords TEXT NOT NULL,
+                exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+                min_refresh_sec INTEGER NOT NULL,
+                max_refresh_sec INTEGER NOT NULL,
+                jitter_enabled INTEGER NOT NULL,
+                fixed_refresh_sec INTEGER,
+                max_items_per_scan INTEGER NOT NULL,
+                auto_load_more INTEGER NOT NULL,
+                auto_adjust_sort INTEGER NOT NULL,
+                enable_desktop_notification INTEGER NOT NULL,
+                enable_ntfy INTEGER NOT NULL,
+                ntfy_topic TEXT NOT NULL,
+                enable_discord_notification INTEGER NOT NULL,
+                discord_webhook TEXT NOT NULL
+            );
+            """
+        )
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-target",
+            name="duplicate",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        TargetRepository(connection).save(first)
+        TargetRepository(connection).save(duplicate)
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        targets = TargetRepository(connection).list_all()
+        indexes = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+    assert len(targets) == 1
+    assert targets[0].id == first.id
+    assert "idx_targets_kind_scope_unique" in indexes
 
 
 def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path) -> None:
@@ -119,7 +246,7 @@ def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path)
     assert loaded is not None
     assert loaded.runtime_status == TargetRuntimeStatus.IDLE
     assert loaded.desired_state == TargetDesiredState.STOPPED
-    assert version == "12"
+    assert version == str(SCHEMA_VERSION)
 
 
 def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path) -> None:
@@ -138,7 +265,8 @@ def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path
         ).fetchone()["value"]
         posts_target = TargetRepository(connection).get("posts-target")
         comments_target = TargetRepository(connection).get("comments-target")
-        group_config = TargetConfigRepository(connection).get_for_group("111")
+        posts_config = target_config_repository(connection).get_for_target_id("posts-target")
+        comments_config = target_config_repository(connection).get_for_target_id("comments-target")
         runtime_state = TargetRuntimeStateRepository(connection).get("posts-target")
         latest_scan = ScanRunRepository(connection).latest_by_target("posts-target")
         latest_items = LatestScanItemRepository(connection).list_by_target("posts-target")
@@ -146,20 +274,24 @@ def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path
         history = MatchHistoryRepository(connection).list_by_target("posts-target")
         has_seen = SeenItemRepository(connection).has_seen("111", "legacy-item")
 
-    assert version == "12"
+    assert version == str(SCHEMA_VERSION)
     assert posts_target is not None
     assert posts_target.group_id == "111"
     assert comments_target is not None
     assert comments_target.parent_post_id == "999"
-    assert group_config is not None
-    assert group_config.group_id == "111"
-    assert group_config.include_keywords == ("legacy",)
-    assert group_config.fixed_refresh_sec == 90
-    assert group_config.enable_desktop_notification is False
-    assert group_config.enable_ntfy
-    assert group_config.ntfy_topic == "legacy-topic"
-    assert group_config.enable_discord_notification is False
-    assert group_config.discord_webhook == ""
+    assert posts_config is not None
+    assert posts_config.target_id == "posts-target"
+    assert posts_config.include_keywords == ("legacy",)
+    assert posts_config.fixed_refresh_sec == 90
+    assert posts_config.enable_desktop_notification is False
+    assert posts_config.enable_ntfy
+    assert posts_config.ntfy_topic == "legacy-topic"
+    assert posts_config.enable_discord_notification is False
+    assert posts_config.discord_webhook == ""
+    assert comments_config is not None
+    assert comments_config.target_id == "comments-target"
+    assert comments_config.include_keywords == ("legacy",)
+    assert comments_config.ntfy_topic == "legacy-topic"
     assert runtime_state is not None
     assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
     assert runtime_state.desired_state == TargetDesiredState.STOPPED
@@ -176,7 +308,236 @@ def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path
     assert has_seen
 
 
-def create_raw_v10_fixture_schema(connection: object) -> None:
+def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Path) -> None:
+    """v12 歷史缺欄由正式 migration 鏈補齊到 current schema。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        create_raw_v12_missing_columns_schema(connection)
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        has_outbox_endpoint = table_has_column(connection, "notification_outbox", "endpoint")
+        has_latest_debug = table_has_column(connection, "latest_scan_items", "debug_metadata")
+        has_runtime_request = table_has_column(
+            connection,
+            "target_runtime_state",
+            "scan_requested_at",
+        )
+        has_runtime_guard_count = table_has_column(
+            connection,
+            "target_runtime_state",
+            "scan_guard_count",
+        )
+        has_target_discord = table_has_column(
+            connection,
+            "target_configs",
+            "enable_discord_notification",
+        )
+        has_target_exclude_ignore = table_has_column(
+            connection,
+            "target_configs",
+            "exclude_ignore_phrases",
+        )
+        has_group_discord_webhook = table_has_column(
+            connection,
+            "group_configs",
+            "discord_webhook",
+        )
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_outbox_endpoint
+    assert has_latest_debug
+    assert has_runtime_request
+    assert has_runtime_guard_count
+    assert has_target_discord
+    assert has_target_exclude_ignore
+    assert has_group_discord_webhook
+
+
+def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
+    tmp_path: Path,
+) -> None:
+    """v14 migration 會把 v13 group config 複製成每個 target 各自一筆設定。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        posts_target = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        comments_target = TargetDescriptor.for_comments(
+            group_id="111",
+            parent_post_id="999",
+            canonical_url="https://www.facebook.com/groups/111/posts/999",
+        )
+        fallback_target = TargetDescriptor.for_group_posts(
+            group_id="222",
+            canonical_url="https://www.facebook.com/groups/222",
+        )
+        defaults_target = TargetDescriptor.for_group_posts(
+            group_id="333",
+            canonical_url="https://www.facebook.com/groups/333",
+        )
+        for target in (posts_target, comments_target, fallback_target, defaults_target):
+            TargetRepository(connection).save(target)
+        target_config_repository(connection).save_for_target(
+            posts_target,
+            TargetConfig(target_id=posts_target.id, include_keywords=("stale",)),
+        )
+        target_config_repository(connection).save_for_target(
+            fallback_target,
+            TargetConfig(target_id=fallback_target.id, include_keywords=("fallback",)),
+        )
+        ensure_legacy_group_configs_table(connection)
+        connection.execute(
+            """
+            INSERT INTO group_configs (
+                group_id, include_keywords, exclude_keywords, min_refresh_sec,
+                max_refresh_sec, jitter_enabled, fixed_refresh_sec, max_items_per_scan,
+                auto_load_more, auto_adjust_sort, enable_desktop_notification,
+                enable_ntfy, ntfy_topic, enable_discord_notification, discord_webhook
+            )
+            VALUES ('111', '["group"]', '["售完"]', 30, 60, 0, 45, 8, 1, 1, 0, 1,
+                    'group-topic', 1, 'https://discord.com/api/webhooks/group')
+            """
+        )
+        connection.execute(
+            "UPDATE schema_metadata SET value = '13' WHERE key = 'version'"
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        posts_config = target_config_repository(connection).get_for_target(posts_target)
+        comments_config = target_config_repository(connection).get_for_target(comments_target)
+        fallback_config = target_config_repository(connection).get_for_target(fallback_target)
+        defaults_config = target_config_repository(connection).get_for_target(defaults_target)
+
+    assert version == str(SCHEMA_VERSION)
+    assert posts_config is not None
+    assert posts_config.target_id == posts_target.id
+    assert posts_config.include_keywords == ("group",)
+    assert posts_config.exclude_keywords == ("售完",)
+    assert posts_config.exclude_ignore_phrases == ()
+    assert posts_config.fixed_refresh_sec == 45
+    assert posts_config.enable_ntfy
+    assert posts_config.ntfy_topic == "group-topic"
+    assert posts_config.enable_discord_notification
+    assert comments_config is not None
+    assert comments_config.target_id == comments_target.id
+    assert comments_config.include_keywords == ("group",)
+    assert comments_config.ntfy_topic == "group-topic"
+    assert fallback_config is not None
+    assert fallback_config.include_keywords == ("fallback",)
+    assert defaults_config is not None
+    assert defaults_config.include_keywords == ()
+
+
+def create_raw_v12_missing_columns_schema(connection: sqlite3.Connection) -> None:
+    """建立 schema_metadata=12 但缺少歷史欄位的代表性 DB。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE schema_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO schema_metadata (key, value) VALUES ('version', '12');
+
+        CREATE TABLE target_configs (
+            target_id TEXT PRIMARY KEY,
+            include_keywords TEXT NOT NULL,
+            exclude_keywords TEXT NOT NULL,
+            min_refresh_sec INTEGER NOT NULL,
+            max_refresh_sec INTEGER NOT NULL,
+            jitter_enabled INTEGER NOT NULL,
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL,
+            auto_load_more INTEGER NOT NULL,
+            auto_adjust_sort INTEGER NOT NULL,
+            enable_ntfy INTEGER NOT NULL,
+            ntfy_topic TEXT NOT NULL
+        );
+
+        CREATE TABLE group_configs (
+            group_id TEXT PRIMARY KEY,
+            include_keywords TEXT NOT NULL,
+            exclude_keywords TEXT NOT NULL,
+            min_refresh_sec INTEGER NOT NULL,
+            max_refresh_sec INTEGER NOT NULL,
+            jitter_enabled INTEGER NOT NULL,
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL,
+            auto_load_more INTEGER NOT NULL,
+            auto_adjust_sort INTEGER NOT NULL,
+            enable_ntfy INTEGER NOT NULL,
+            ntfy_topic TEXT NOT NULL
+        );
+
+        CREATE TABLE latest_scan_items (
+            target_id TEXT NOT NULL,
+            scan_run_id INTEGER NOT NULL,
+            item_kind TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            item_index INTEGER NOT NULL,
+            author TEXT NOT NULL,
+            text TEXT NOT NULL,
+            permalink TEXT NOT NULL,
+            matched_keyword TEXT NOT NULL,
+            scanned_at TEXT NOT NULL,
+            PRIMARY KEY (target_id, item_key)
+        );
+
+        CREATE TABLE notification_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            target_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            item_kind TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            permalink TEXT NOT NULL,
+            attempts INTEGER NOT NULL,
+            last_error TEXT NOT NULL,
+            notification_event_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE target_runtime_state (
+            target_id TEXT PRIMARY KEY,
+            desired_state TEXT NOT NULL,
+            runtime_status TEXT NOT NULL,
+            last_heartbeat_at TEXT NOT NULL,
+            last_error TEXT NOT NULL,
+            active_worker_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+def table_has_column(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    """回傳 table 是否含指定欄位。"""
+
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def create_raw_v10_fixture_schema(connection: sqlite3.Connection) -> None:
     """建立不經 current schema helper 的 v10 代表性舊 DB。"""
 
     connection.executescript(
@@ -459,7 +820,7 @@ def create_raw_v10_fixture_schema(connection: object) -> None:
 def test_initialize_schema_rejects_existing_db_without_schema_metadata(
     tmp_path: Path,
 ) -> None:
-    """沒有 schema_metadata 的既有 DB 不得被 current-schema repair 靜默吞掉。"""
+    """沒有 schema_metadata 的既有 DB 不得被 migration 靜默吞掉。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -473,6 +834,91 @@ def test_initialize_schema_rejects_existing_db_without_schema_metadata(
         assert "Unsupported SQLite schema version 0" in str(exc)
     else:
         raise AssertionError("existing DB without schema_metadata should fail fast")
+
+
+def test_initialize_schema_rejects_existing_db_with_metadata_but_missing_version(
+    tmp_path: Path,
+) -> None:
+    """有 metadata table 但缺 version row 的既有 DB 不得被標成 current。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("CREATE TABLE target_configs (target_id TEXT PRIMARY KEY)")
+
+    try:
+        with SqliteConnection(db_path) as sqlite:
+            initialize_schema(sqlite.require_connection())
+    except RuntimeError as exc:
+        assert "valid schema_metadata version" in str(exc)
+    else:
+        raise AssertionError("existing DB with missing schema version should fail fast")
+
+
+def test_initialize_schema_rejects_existing_db_with_invalid_schema_version(
+    tmp_path: Path,
+) -> None:
+    """有 metadata table 但 version 無法解析時不得靜默跳過 migration。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES ('version', 'not-an-int')"
+        )
+        connection.execute("CREATE TABLE target_configs (target_id TEXT PRIMARY KEY)")
+
+    try:
+        with SqliteConnection(db_path) as sqlite:
+            initialize_schema(sqlite.require_connection())
+    except RuntimeError as exc:
+        assert "valid schema_metadata version" in str(exc)
+    else:
+        raise AssertionError("existing DB with invalid schema version should fail fast")
+
+
+def test_initialize_schema_rejects_future_schema_version(tmp_path: Path) -> None:
+    """高於目前 app 支援版本的 DB 不得被舊版 app 靜默接受。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute(
+            "UPDATE schema_metadata SET value = ? WHERE key = 'version'",
+            (str(SCHEMA_VERSION + 1),),
+        )
+
+    try:
+        with SqliteConnection(db_path) as sqlite:
+            initialize_schema(sqlite.require_connection())
+    except RuntimeError as exc:
+        assert f"Unsupported SQLite schema version {SCHEMA_VERSION + 1}" in str(exc)
+        assert f"supports up to version {SCHEMA_VERSION}" in str(exc)
+    else:
+        raise AssertionError("future schema version should fail fast")
+
+
+def test_initialize_schema_accepts_plain_sqlite_connection_for_current_db(
+    tmp_path: Path,
+) -> None:
+    """read_schema_version 不應隱含依賴 sqlite3.Row row factory。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        initialize_schema(sqlite.require_connection())
+
+    with sqlite3.connect(db_path) as connection:
+        initialize_schema(connection)
+
+        row = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == str(SCHEMA_VERSION)
 
 
 def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> None:
@@ -493,7 +939,12 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
 
         assert loaded_target is not None
         assert loaded_target.scope_id == target.group_id
-        assert TargetRepository(connection).list_enabled() == [loaded_target]
+        assert loaded_target.paused
+        assert TargetRepository(connection).list_enabled() == []
+        active_target = replace(loaded_target, paused=False)
+        TargetRepository(connection).save(active_target)
+        assert TargetRepository(connection).list_enabled() == [active_target]
+        loaded_target = active_target
         assert TargetRepository(connection).list_all() == [loaded_target]
 
         comments_target = TargetDescriptor.for_comments(
@@ -517,19 +968,20 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_comments.paused
 
         config = TargetConfig(
-            group_id=target.group_id,
+            target_id=target.id,
             include_keywords=("票", "交換"),
+            exclude_ignore_phrases=("全收;回收",),
             enable_desktop_notification=True,
             enable_ntfy=True,
             ntfy_topic="phase0test",
             enable_discord_notification=True,
             discord_webhook="https://discord.com/api/webhooks/example",
         )
-        TargetConfigRepository(connection).save_legacy_target_config_for_migration(
+        target_config_repository(connection).save_legacy_target_config_for_migration(
             target.id,
             config,
         )
-        loaded_config = TargetConfigRepository(
+        loaded_config = target_config_repository(
             connection
         ).get_legacy_target_config_for_migration(target.id)
 
@@ -537,6 +989,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_config.target_id == target.id
         assert not hasattr(loaded_config, "group_id")
         assert loaded_config.include_keywords == ("票", "交換")
+        assert loaded_config.exclude_ignore_phrases == ("全收;回收",)
         assert loaded_config.enable_desktop_notification
         assert loaded_config.enable_ntfy
         assert loaded_config.ntfy_topic == "phase0test"
@@ -550,7 +1003,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             enable_discord_notification=True,
             discord_webhook="https://discord.com/api/webhooks/global",
         )
-        settings_repo = GlobalNotificationSettingsRepository(connection)
+        settings_repo = global_notification_settings_repository(connection)
         settings_repo.save(global_settings)
         loaded_settings = settings_repo.get()
 
@@ -559,6 +1012,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_settings.ntfy_topic == "global-topic"
         assert loaded_settings.enable_discord_notification
         assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/global"
+        app_settings = AppSettingsRepository(connection)
+        assert app_settings.get_theme() == "light"
+        assert app_settings.save_theme("dark") == "dark"
+        assert app_settings.get_theme() == "dark"
 
         runtime_state = TargetRuntimeState(
             target_id=target.id,
@@ -667,7 +1124,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert events[0].status == NotificationStatus.SENT
         assert events[0].channel == NotificationChannel.NTFY
 
-        outbox_repo = NotificationOutboxRepository(connection)
+        outbox_repo = notification_outbox_repository(connection)
         outbox_entry = outbox_repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-hash:ntfy",
@@ -709,7 +1166,7 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
         connection = sqlite.require_connection()
         initialize_schema(connection)
         TargetRepository(connection).save(target)
-        NotificationOutboxRepository(connection).enqueue(
+        notification_outbox_repository(connection).enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-hash:ntfy",
                 target_id=target.id,
@@ -727,14 +1184,14 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
         initialize_schema(connection_a)
         initialize_schema(connection_b)
 
-        claimed_a = NotificationOutboxRepository(connection_a).claim_pending()
-        claimed_b = NotificationOutboxRepository(connection_b).claim_pending()
+        claimed_a = notification_outbox_repository(connection_a).claim_pending()
+        claimed_b = notification_outbox_repository(connection_b).claim_pending()
 
         assert len(claimed_a) == 1
         assert claimed_a[0].status == NotificationOutboxStatus.PROCESSING_PENDING
         assert claimed_b == []
 
-        NotificationOutboxRepository(connection_a).mark_result(
+        notification_outbox_repository(connection_a).mark_result(
             entry_id=claimed_a[0].id or 0,
             status=NotificationOutboxStatus.SENT,
             attempts=claimed_a[0].attempts + 1,
@@ -743,7 +1200,7 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
-        repo = NotificationOutboxRepository(connection)
+        repo = notification_outbox_repository(connection)
         loaded = repo.get_by_idempotency_key(f"{target.id}:item-hash:ntfy")
 
     assert loaded is not None
@@ -765,7 +1222,7 @@ def test_notification_outbox_recovers_stale_processing_for_future_claim(
         connection = sqlite.require_connection()
         initialize_schema(connection)
         TargetRepository(connection).save(target)
-        repo = NotificationOutboxRepository(connection)
+        repo = notification_outbox_repository(connection)
         repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:stale:ntfy",
@@ -791,7 +1248,7 @@ def test_notification_outbox_recovers_stale_processing_for_future_claim(
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
-        repo = NotificationOutboxRepository(connection)
+        repo = notification_outbox_repository(connection)
 
         recovered_count = repo.recover_stale_processing(older_than_seconds=60)
         claimed_again = repo.claim_pending()
@@ -801,8 +1258,8 @@ def test_notification_outbox_recovers_stale_processing_for_future_claim(
     assert claimed_again[0].status == NotificationOutboxStatus.PROCESSING_PENDING
 
 
-def test_group_config_migrates_from_legacy_target_config(tmp_path: Path) -> None:
-    """正式 group config 缺資料時，會從舊 target config fallback 並保存。"""
+def test_target_config_repository_reads_target_scoped_config(tmp_path: Path) -> None:
+    """正式 config repository 直接讀寫 target-scoped config。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -814,37 +1271,39 @@ def test_group_config_migrates_from_legacy_target_config(tmp_path: Path) -> None
             canonical_url="https://www.facebook.com/groups/222518561920110",
         )
         TargetRepository(connection).save(target)
-        repo = TargetConfigRepository(connection)
+        repo = target_config_repository(connection)
         repo.save_legacy_target_config_for_migration(
             target.id,
             TargetConfig(
-                group_id=target.group_id,
+                target_id=target.id,
                 include_keywords=("legacy",),
                 fixed_refresh_sec=90,
             )
         )
 
-        migrated = repo.get_for_target(target)
-        loaded_group_config = repo.get_for_group(target.group_id)
+        loaded = repo.get_for_target(target)
 
-    assert migrated is not None
-    assert migrated.group_id == target.group_id
-    assert migrated.include_keywords == ("legacy",)
-    assert migrated.fixed_refresh_sec == 90
-    assert loaded_group_config == migrated
+    assert loaded is not None
+    assert loaded.target_id == target.id
+    assert loaded.include_keywords == ("legacy",)
+    assert loaded.fixed_refresh_sec == 90
 
 
-def test_target_config_repository_legacy_methods_are_migration_only(tmp_path: Path) -> None:
-    """repository 不再提供正式 target-scoped save/get 入口。"""
+def test_target_config_repository_does_not_expose_group_config_api(tmp_path: Path) -> None:
+    """repository 不再提供正式 group-scoped save/get 入口。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
-        repo = TargetConfigRepository(connection)
+        repo = target_config_repository(connection)
 
         assert not hasattr(repo, "save")
         assert not hasattr(repo, "get")
+        assert not hasattr(repo, "save_for_group")
+        assert not hasattr(repo, "get_for_group")
+        assert hasattr(repo, "save_for_target")
+        assert hasattr(repo, "get_for_target")
         assert hasattr(repo, "save_legacy_target_config_for_migration")
         assert hasattr(repo, "get_legacy_target_config_for_migration")
 
@@ -865,9 +1324,9 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
             group_name="test group",
         )
         TargetRepository(connection).save(target)
-        TargetConfigRepository(connection).save_legacy_target_config_for_migration(
+        target_config_repository(connection).save_legacy_target_config_for_migration(
             target.id,
-            TargetConfig(group_id=target.group_id),
+            TargetConfig(target_id=target.id),
         )
         TargetRuntimeStateRepository(connection).save(
             TargetRuntimeState(
@@ -876,9 +1335,10 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
                 runtime_status=TargetRuntimeStatus.IDLE,
             )
         )
-        GlobalNotificationSettingsRepository(connection).save(
+        global_notification_settings_repository(connection).save(
             GlobalNotificationSettings(enable_ntfy=True, ntfy_topic="phase0test")
         )
+        AppSettingsRepository(connection).save_theme("dark")
         SeenItemRepository(connection).mark_seen(
             SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
         )
@@ -918,7 +1378,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
                 status=NotificationStatus.SENT,
             )
         )
-        NotificationOutboxRepository(connection).enqueue(
+        notification_outbox_repository(connection).enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:seen-key:ntfy",
                 target_id=target.id,
@@ -937,27 +1397,28 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert result.match_history == 0
         assert result.notification_events == 1
         assert result.seen_items == 1
-        assert result.notification_outbox == 1
-        assert result.total_deleted == 5
+        assert result.notification_outbox == 0
+        assert result.total_deleted == 4
         assert table_count(connection, "scan_runs") == 0
         assert table_count(connection, "latest_scan_items") == 0
         assert table_count(connection, "match_history") == 1
         assert table_count(connection, "notification_events") == 0
-        assert table_count(connection, "notification_outbox") == 0
+        assert table_count(connection, "notification_outbox") == 1
         assert table_count(connection, "seen_items") == 0
         assert TargetRepository(connection).get(target.id) is not None
         assert (
-            TargetConfigRepository(connection).get_legacy_target_config_for_migration(target.id)
+            target_config_repository(connection).get_legacy_target_config_for_migration(target.id)
             is not None
         )
         assert TargetRuntimeStateRepository(connection).get(target.id) is not None
-        assert GlobalNotificationSettingsRepository(connection).get().ntfy_topic == "phase0test"
+        assert global_notification_settings_repository(connection).get().ntfy_topic == "phase0test"
+        assert AppSettingsRepository(connection).get_theme() == "dark"
 
 
 def test_match_history_repository_counts_offsets_and_clears_by_target(
     tmp_path: Path,
 ) -> None:
-    """match history repository 支援 Phase 1 target-scoped 查詢與清空。"""
+    """match history repository 支援 target-scoped 查詢與清空。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:

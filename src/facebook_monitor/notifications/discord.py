@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from facebook_monitor.notifications.safe_messages import safe_exception_message
+
 
 DISCORD_CONTENT_LIMIT = 1900
 DISCORD_RATE_LIMIT_STATUS = 429
@@ -81,9 +83,17 @@ def send_discord_notification(
             )
         return DiscordResult(ok=False, status_code=None, message="discord_failed")
     except httpx.HTTPError as exc:
-        return DiscordResult(ok=False, status_code=None, message=f"discord_failed: {exc}")
+        return DiscordResult(
+            ok=False,
+            status_code=None,
+            message=safe_exception_message("discord_failed", exc),
+        )
     except Exception as exc:
-        return DiscordResult(ok=False, status_code=None, message=f"discord_failed: {exc}")
+        return DiscordResult(
+            ok=False,
+            status_code=None,
+            message=safe_exception_message("discord_failed", exc),
+        )
 
 
 def truncate_discord_content(value: str, limit: int = DISCORD_CONTENT_LIMIT) -> str:

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from typing import Protocol
 
 from playwright.async_api import Error as AsyncPlaywrightError
 from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
@@ -35,9 +36,25 @@ from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePoo
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.errors import classify_playwright_exception
+from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 
 
 AsyncScanCallable = Callable[..., Awaitable[Any]]
+
+
+class AsyncResidentPageLike(Protocol):
+    """resident executor page preparation 需要的 async Playwright page 能力。"""
+
+    url: str
+
+    async def reload(self, *, wait_until: str, timeout: float) -> object:
+        """重新載入目前 page。"""
+
+    async def goto(self, url: str, *, wait_until: str, timeout: float) -> object:
+        """前往指定 URL。"""
+
+    async def wait_for_timeout(self, timeout: int) -> None:
+        """等待指定毫秒。"""
 
 
 @dataclass(frozen=True)
@@ -324,7 +341,7 @@ class ExecutorWorkerPool:
 
 async def prepare_resident_main_page(
     *,
-    page: object,
+    page: AsyncResidentPageLike,
     target: ResidentTarget,
     timeout_ms: float,
 ) -> None:
@@ -335,4 +352,4 @@ async def prepare_resident_main_page(
         await page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
     else:
         await page.goto(target.target.canonical_url, wait_until="domcontentloaded", timeout=timeout_ms)
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)

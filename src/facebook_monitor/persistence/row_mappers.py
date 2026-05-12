@@ -52,12 +52,13 @@ def target_from_row(row: sqlite3.Row) -> TargetDescriptor:
 
 
 def target_config_from_row(row: sqlite3.Row, *, id_column: str) -> TargetConfig:
-    """將 target/group config row 轉為 TargetConfig。"""
+    """將 target config row 轉為 TargetConfig。"""
 
     return TargetConfig(
-        group_id=row[id_column],
+        target_id=row[id_column],
         include_keywords=decode_keywords(row["include_keywords"]),
         exclude_keywords=decode_keywords(row["exclude_keywords"]),
+        exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
         min_refresh_sec=row["min_refresh_sec"],
         max_refresh_sec=row["max_refresh_sec"],
         jitter_enabled=bool(row["jitter_enabled"]),
@@ -80,6 +81,7 @@ def legacy_target_config_from_row(row: sqlite3.Row) -> LegacyTargetConfig:
         target_id=row["target_id"],
         include_keywords=decode_keywords(row["include_keywords"]),
         exclude_keywords=decode_keywords(row["exclude_keywords"]),
+        exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
         min_refresh_sec=row["min_refresh_sec"],
         max_refresh_sec=row["max_refresh_sec"],
         jitter_enabled=bool(row["jitter_enabled"]),

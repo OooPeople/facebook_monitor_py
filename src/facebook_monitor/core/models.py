@@ -110,6 +110,18 @@ def generated_group_comments_name(group_id: str, parent_post_id: str) -> str:
     return f"group:{group_id}:post:{parent_post_id}:comments"
 
 
+def generated_group_comments_display_name(group_name: str, parent_post_id: str) -> str:
+    """回傳保留 post scope 的 comments target 顯示名稱。"""
+
+    normalized_group_name = str(group_name or "").strip()
+    normalized_parent_post_id = str(parent_post_id or "").strip()
+    if not normalized_group_name:
+        return ""
+    if not normalized_parent_post_id:
+        return normalized_group_name
+    return f"{normalized_group_name} / post:{normalized_parent_post_id}"
+
+
 def is_generated_group_posts_name(name: str, group_id: str) -> bool:
     """判斷 target name 是否為系統產生的 group posts 預設名稱。"""
 
@@ -170,6 +182,7 @@ class TargetDescriptor:
             group_name=group_name,
             scope_id=group_id,
             canonical_url=canonical_url,
+            paused=True,
         )
 
     @classmethod
@@ -185,7 +198,10 @@ class TargetDescriptor:
         """建立 group post comments target descriptor。"""
 
         scope_id = build_group_comments_scope_id(group_id, parent_post_id)
-        target_name = name or group_name or generated_group_comments_name(
+        target_name = name or generated_group_comments_display_name(
+            group_name,
+            parent_post_id,
+        ) or generated_group_comments_name(
             group_id,
             parent_post_id,
         )
@@ -204,14 +220,16 @@ class TargetDescriptor:
 
 @dataclass(frozen=True)
 class TargetConfig:
-    """保存社團層級監視設定。
+    """保存單一 target 的監視設定。
 
-    group config 以 group_id 作為 owner；seen / baseline / latest scan 仍由 target scope 分流。
+    設定 owner 是 target_id；同一 Facebook 社團下的 posts target 與各 comments
+    target 不能共用關鍵字、掃描或通知設定。
     """
 
-    group_id: str
+    target_id: str
     include_keywords: tuple[str, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
+    exclude_ignore_phrases: tuple[str, ...] = ()
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
     max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
     jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
@@ -233,6 +251,7 @@ class LegacyTargetConfig:
     target_id: str
     include_keywords: tuple[str, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
+    exclude_ignore_phrases: tuple[str, ...] = ()
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
     max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
     jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
@@ -246,13 +265,14 @@ class LegacyTargetConfig:
     enable_discord_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification
     discord_webhook: str = PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook
 
-    def to_target_config(self, *, group_id: str) -> TargetConfig:
-        """將舊 target-scoped row 明確轉成正式 group-scoped config。"""
+    def to_target_config(self, *, target_id: str | None = None) -> TargetConfig:
+        """將舊 target-scoped row 轉成正式 target-scoped config。"""
 
         return TargetConfig(
-            group_id=group_id,
+            target_id=target_id or self.target_id,
             include_keywords=self.include_keywords,
             exclude_keywords=self.exclude_keywords,
+            exclude_ignore_phrases=self.exclude_ignore_phrases,
             min_refresh_sec=self.min_refresh_sec,
             max_refresh_sec=self.max_refresh_sec,
             jitter_enabled=self.jitter_enabled,
@@ -329,7 +349,11 @@ class SeenItem:
 
 @dataclass(frozen=True)
 class MatchHistoryEntry:
-    """保存一次 keyword match 的歷史紀錄。"""
+    """保存一次 keyword match 的歷史紀錄。
+
+    `notified_at` 是既有 DB 欄位名；目前實際語義是 match 被記錄進
+    history 的時間，不保證外部通知已成功送達。
+    """
 
     target_id: str
     group_id: str

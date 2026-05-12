@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.highlight import HighlightSegment
+from facebook_monitor.webapp.highlight import build_highlight_segments
 
 
 def trim_preview_text(text: str, *, max_length: int) -> str:
@@ -29,6 +31,7 @@ class TargetPreviewRow:
     badge_text: str
     badge_kind: str
     content_preview: str
+    content_segments: tuple[HighlightSegment, ...] = ()
     permalink: str = ""
     link_label: str = "開啟連結"
     secondary_text: str = ""
@@ -49,6 +52,7 @@ class TargetPreviewRow:
             "badge_text": self.badge_text,
             "badge_kind": self.badge_kind,
             "content_preview": self.content_preview,
+            "content_segments": [segment.to_dict() for segment in self.content_segments],
             "permalink": self.permalink,
             "link_label": self.link_label,
             "secondary_text": self.secondary_text,
@@ -90,6 +94,7 @@ class LatestScanItemRow:
             badge_text=self.match_label,
             badge_kind="hit" if self.item.matched_keyword else "not_hit",
             content_preview=self.preview_text,
+            content_segments=build_highlight_segments(self.preview_text, self.item.matched_keyword),
             permalink=self.item.permalink,
             link_label=link_label,
         )
@@ -145,6 +150,7 @@ class HitRecordPreviewRow:
             badge_text=self.badge_text,
             badge_kind=self.badge_kind,
             content_preview=self.content_preview,
+            content_segments=build_highlight_segments(self.content_preview, self.entry.include_rule),
             permalink=self.permalink,
             link_label="開啟連結",
             secondary_text=self.secondary_text,

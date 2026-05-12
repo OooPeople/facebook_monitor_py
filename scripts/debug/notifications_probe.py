@@ -1,5 +1,7 @@
 """Debug helper：重新匯出 ntfy probe 需要的正式通知 API。"""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import sys

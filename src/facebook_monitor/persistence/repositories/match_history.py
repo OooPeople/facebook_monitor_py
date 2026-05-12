@@ -8,6 +8,7 @@ from datetime import datetime
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import match_history_from_row
+from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 MATCH_HISTORY_GLOBAL_LIMIT = 10
@@ -61,7 +62,7 @@ class MatchHistoryRepository:
             ),
         )
         self.prune_global_limit()
-        return int(cursor.lastrowid)
+        return require_lastrowid(cursor.lastrowid, table_name="match_history")
 
     def prune_global_limit(self, limit: int = MATCH_HISTORY_GLOBAL_LIMIT) -> int:
         """裁切全域 match history，只保留最近 N 筆，對齊 userscript。"""

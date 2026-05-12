@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from typing import TypeVar
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
@@ -46,15 +47,12 @@ def provided_or_existing(
 
 
 @dataclass(frozen=True)
-class UpsertGroupPostsTargetRequest:
-    """建立或更新 group posts target 所需輸入。"""
+class TargetConfigPatch:
+    """保存 target config 欄位 patch，集中 posts/comments/update 共用映射。"""
 
-    group_id: str
-    canonical_url: str
-    group_name: str = ""
-    name: str = ""
     include_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
     exclude_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
+    exclude_ignore_phrases: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
     fixed_refresh_sec: int | None | UnsetConfigValue = UNSET_CONFIG_VALUE
     min_refresh_sec: int | UnsetConfigValue = UNSET_CONFIG_VALUE
     max_refresh_sec: int | UnsetConfigValue = UNSET_CONFIG_VALUE
@@ -67,6 +65,17 @@ class UpsertGroupPostsTargetRequest:
     ntfy_topic: str | UnsetConfigValue = UNSET_CONFIG_VALUE
     enable_discord_notification: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
     discord_webhook: str | UnsetConfigValue = UNSET_CONFIG_VALUE
+
+
+@dataclass(frozen=True)
+class UpsertGroupPostsTargetRequest:
+    """建立或更新 group posts target 所需輸入。"""
+
+    group_id: str
+    canonical_url: str
+    group_name: str = ""
+    name: str = ""
+    config: TargetConfigPatch = field(default_factory=TargetConfigPatch)
 
 
 @dataclass(frozen=True)
@@ -78,20 +87,7 @@ class UpsertCommentsTargetRequest:
     canonical_url: str
     group_name: str = ""
     name: str = ""
-    include_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
-    exclude_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
-    fixed_refresh_sec: int | None | UnsetConfigValue = UNSET_CONFIG_VALUE
-    min_refresh_sec: int | UnsetConfigValue = UNSET_CONFIG_VALUE
-    max_refresh_sec: int | UnsetConfigValue = UNSET_CONFIG_VALUE
-    jitter_enabled: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    max_items_per_scan: int | UnsetConfigValue = UNSET_CONFIG_VALUE
-    auto_load_more: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    auto_adjust_sort: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    enable_desktop_notification: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    enable_ntfy: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    ntfy_topic: str | UnsetConfigValue = UNSET_CONFIG_VALUE
-    enable_discord_notification: bool | UnsetConfigValue = UNSET_CONFIG_VALUE
-    discord_webhook: str | UnsetConfigValue = UNSET_CONFIG_VALUE
+    config: TargetConfigPatch = field(default_factory=TargetConfigPatch)
 
 
 TargetConfigRequest = UpsertGroupPostsTargetRequest | UpsertCommentsTargetRequest
@@ -99,23 +95,10 @@ TargetConfigRequest = UpsertGroupPostsTargetRequest | UpsertCommentsTargetReques
 
 @dataclass(frozen=True)
 class UpdateTargetConfigRequest:
-    """更新 target 所屬 group config 所需輸入。"""
+    """更新單一 target config 所需輸入。"""
 
     target_id: str
-    include_keywords: tuple[str, ...]
-    exclude_keywords: tuple[str, ...]
-    fixed_refresh_sec: int | None
-    max_items_per_scan: int
-    auto_load_more: bool
-    auto_adjust_sort: bool
-    min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
-    max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
-    jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
-    enable_ntfy: bool = False
-    ntfy_topic: str = ""
-    enable_desktop_notification: bool | None = None
-    enable_discord_notification: bool | None = None
-    discord_webhook: str | None = None
+    config: TargetConfigPatch
 
 
 @dataclass(frozen=True)

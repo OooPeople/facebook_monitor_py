@@ -12,8 +12,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from facebook_monitor.core.keyword_rules import normalize_for_match
-from facebook_monitor.facebook.permalink import extract_comment_id_from_value
-from facebook_monitor.facebook.permalink import normalize_permalink
+from facebook_monitor.core.permalink_identity import extract_comment_id_from_value
+from facebook_monitor.core.permalink_identity import normalize_permalink
 
 
 POST_ID_PATTERN = re.compile(r"/posts/(\d{8,})(?:$|[/?#])")

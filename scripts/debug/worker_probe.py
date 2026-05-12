@@ -4,28 +4,34 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from extractors_probe import ExtractRoundStats
-from extractors_probe import collect_items_with_diagnostics
-from extractors_probe import make_item_key
-from notifications_probe import NtfyConfig, send_ntfy_notification
+from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
+from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
+from facebook_monitor.automation.profile_lease import ProfileLeaseError
+from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+if TYPE_CHECKING:
+    from scripts.debug.extractors_probe import ExtractRoundStats
+    from scripts.debug.extractors_probe import collect_items_with_diagnostics
+    from scripts.debug.extractors_probe import make_item_key
+    from scripts.debug.notifications_probe import NtfyConfig
+    from scripts.debug.notifications_probe import send_ntfy_notification
+else:
+    from extractors_probe import ExtractRoundStats
+    from extractors_probe import collect_items_with_diagnostics
+    from extractors_probe import make_item_key
+    from notifications_probe import NtfyConfig, send_ntfy_notification
 
-from facebook_monitor.automation.profile_lease import ProfileLeaseError
-from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
+ROOT = Path(__file__).resolve().parents[2]
 
 PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
 LOG_PATH = ROOT / "logs" / "worker_probe.log"
@@ -191,7 +197,7 @@ def run_probe(args: argparse.Namespace) -> ScanResult:
     if not PROFILE_DIR.exists():
         raise ProbeFailure(
             "profile_missing",
-            "Profile does not exist yet. Run scripts/start/setup_login.py first: "
+            "Profile does not exist yet. Run facebook-monitor-login first: "
             f"{PROFILE_DIR}",
         )
 
@@ -201,10 +207,12 @@ def run_probe(args: argparse.Namespace) -> ScanResult:
     try:
         with acquire_profile_lease(PROFILE_DIR, "debug worker probe"):
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=str(PROFILE_DIR),
-                    headless=True,
-                    viewport={"width": 1366, "height": 900},
+                context = launch_persistent_context_sync(
+                    p,
+                    BrowserRuntimeOptions(
+                        profile_dir=PROFILE_DIR,
+                        headless=True,
+                    ),
                 )
                 try:
                     page = context.new_page()
@@ -405,4 +413,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -2,10 +2,9 @@ import {
   clearTargetUpdatePending,
   isTargetDirty,
   markTargetUpdatePending,
-} from "./state.js";
-import { renderPreviewRows } from "./render_preview_rows.js";
-import { renderSidebarStatus } from "./sidebar_status.js?v=ui-refactor-phase18-form-sidebar-status";
-import { showInlineStatus } from "./utils.js";
+} from "/static/dashboard/state.js";
+import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
+import { showInlineStatus } from "/static/dashboard/utils.js";
 
 const fetchJson = async (url) => {
   const response = await fetch(url, { cache: "no-store" });
@@ -32,45 +31,13 @@ const updateStatusBadge = (card, payload) => {
 const updateCollapsedSummary = (card, payload) => {
   const summary = card.querySelector("[data-collapsed-summary]");
   if (!summary) return;
-  summary.replaceChildren();
-  const sections = payload.card_summary?.sections || [];
-  if (sections.length) {
-    sections.forEach((section) => {
-      const field = document.createElement("div");
-      field.className = "target-collapsed-summary-field field-grid-cell";
-
-      const label = document.createElement("dt");
-      label.textContent = section.label || "";
-      field.appendChild(label);
-
-      const value = document.createElement("dd");
-      (section.lines || []).forEach((line) => {
-        const item = document.createElement("span");
-        item.textContent = line;
-        value.appendChild(item);
-      });
-      field.appendChild(value);
-      summary.appendChild(field);
-    });
-    return;
-  }
-
-  (payload.card_summary?.lines || []).forEach((line) => {
-    const field = document.createElement("div");
-    field.className = "target-collapsed-summary-field field-grid-cell";
-    const value = document.createElement("dd");
-    const item = document.createElement("span");
-    item.textContent = line;
-    value.appendChild(item);
-    field.appendChild(value);
-    summary.appendChild(field);
-  });
+  summary.innerHTML = payload.card_summary_html || "";
 };
 
-const updatePreviewPanel = (card, panelName, rows, emptyText) => {
+const updatePreviewPanel = (card, panelName, html) => {
   const panel = card.querySelector(`[data-preview-panel="${panelName}"]`);
   if (!panel) return;
-  panel.replaceChildren(renderPreviewRows(rows || [], emptyText));
+  panel.innerHTML = html || "";
 };
 
 const updateScanDiagnostics = (card, payload) => {
@@ -94,6 +61,15 @@ const updateSidebar = (payload) => {
       allItemsMatched = false;
       return;
     }
+    const link = status.closest("[data-sidebar-target]");
+    const name = link?.querySelector(".sidebar-name");
+    const avatar = link?.querySelector(".sidebar-avatar");
+    if (name) {
+      name.textContent = item.display_name || "";
+    }
+    if (avatar) {
+      avatar.textContent = (item.display_name || "?").slice(0, 1) || "?";
+    }
     renderSidebarStatus(status, {
       baseStatus: item.base_status_summary || "",
       statusClass: item.status_class || "",
@@ -109,6 +85,8 @@ const updateTargetCard = (state, payload) => {
   if (!card) return;
 
   updateStatusBadge(card, payload);
+  updateText(card, "[data-target-title]", payload.display_name || "");
+  updateText(card, "[data-target-avatar]", (payload.display_name || "?").slice(0, 1) || "?");
   updateText(card, "[data-header-summary]", payload.header_summary_label);
   updateCollapsedSummary(card, payload);
   updateText(card, `[data-hit-count="${payload.target_id}"]`, payload.hit_record_total_count);
@@ -127,14 +105,12 @@ const updateTargetCard = (state, payload) => {
   updatePreviewPanel(
     card,
     "latest",
-    payload.latest_scan_preview_rows,
-    "尚無掃描紀錄",
+    payload.latest_scan_preview_html,
   );
   updatePreviewPanel(
     card,
     "hits",
-    payload.hit_record_preview_rows,
-    "尚無命中紀錄",
+    payload.hit_record_preview_html,
   );
   clearTargetUpdatePending(state, payload.target_id);
 };
@@ -145,9 +121,10 @@ export const applyDashboardPartialUpdate = async (state) => {
   state.partialUpdateInFlight = true;
 
   try {
-    const sidebarPayload = await fetchJson("/api/sidebar");
+    const dashboardPayload = await fetchJson("/api/dashboard-cards");
     if (sequence !== state.partialUpdateSeq) return;
     const targetCards = Array.from(document.querySelectorAll("[data-target-card][data-target-id]"));
+    const sidebarPayload = dashboardPayload.sidebar || {};
     if (
       !updateSidebar(sidebarPayload)
       || (sidebarPayload.items || []).length !== targetCards.length
@@ -155,16 +132,19 @@ export const applyDashboardPartialUpdate = async (state) => {
       throw new Error("partial_update_requires_reload:target_list_changed");
     }
 
-    await Promise.all(
-      targetCards.map(async (card) => {
-        const targetId = card.dataset.targetId || "";
-        if (!targetId) return;
-        const payload = await fetchJson(`/api/targets/${targetId}/card`);
-        if (sequence === state.partialUpdateSeq) {
-          updateTargetCard(state, payload);
-        }
-      }),
-    );
+    const cardPayloads = dashboardPayload.cards || [];
+    if (cardPayloads.length !== targetCards.length) {
+      throw new Error("partial_update_requires_reload:card_count_changed");
+    }
+    const targetCardIds = new Set(targetCards.map((card) => card.dataset.targetId || ""));
+    if (!cardPayloads.every((payload) => targetCardIds.has(payload.target_id || ""))) {
+      throw new Error("partial_update_requires_reload:card_ids_changed");
+    }
+    cardPayloads.forEach((payload) => {
+      if (sequence === state.partialUpdateSeq) {
+        updateTargetCard(state, payload);
+      }
+    });
   } finally {
     if (sequence === state.partialUpdateSeq) {
       state.partialUpdateInFlight = false;

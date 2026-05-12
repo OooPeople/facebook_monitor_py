@@ -33,15 +33,16 @@
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-subtle);
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
 }
 
 .field-grid--summary .field-grid-cell {
-  align-content: start;
-  gap: 10px;
-  min-height: 84px;
-  padding: 14px 20px;
+  align-items: center;
+  gap: 14px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  min-height: 92px;
+  padding: 16px 22px;
 }
 
 .field-grid--summary .field-grid-cell:not(:last-child)::after {
@@ -55,18 +56,51 @@
 }
 
 .field-grid--summary .field-grid-cell dt {
-  font-size: 14px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 750;
 }
 
 .field-grid--summary .field-grid-cell dd {
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
 .field-grid--summary .field-grid-cell dd span {
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.45;
+}
+
+.target-collapsed-summary-icon {
+  align-items: center;
+  color: var(--text-soft);
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.target-collapsed-summary-icon svg {
+  display: block;
+  fill: none;
+  height: 38px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 38px;
+}
+
+.target-collapsed-summary-icon .svg-fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.target-collapsed-summary-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
 }
 
 .field-grid--stacked {

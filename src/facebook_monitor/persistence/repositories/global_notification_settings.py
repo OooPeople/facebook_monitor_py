@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 from facebook_monitor.core.models import GlobalNotificationSettings
-from facebook_monitor.persistence.sqlite_codec import encode_datetime
+from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
+from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
+
 
 class GlobalNotificationSettingsRepository:
     """保存 Web UI 通知預設值。"""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        secret_codec: SecretCodec | PlaintextSecretCodec,
+    ) -> None:
         self.connection = connection
+        self.secret_codec = secret_codec
 
     def get(self) -> GlobalNotificationSettings:
         """讀取通知預設值；尚未設定時回傳預設值。"""
@@ -23,13 +33,15 @@ class GlobalNotificationSettingsRepository:
         if not row:
             return GlobalNotificationSettings()
         updated_at = decode_datetime(row["updated_at"])
-        return GlobalNotificationSettings(
-            enable_desktop_notification=bool(row["enable_desktop_notification"]),
-            enable_ntfy=bool(row["enable_ntfy"]),
-            ntfy_topic=row["ntfy_topic"],
-            enable_discord_notification=bool(row["enable_discord_notification"]),
-            discord_webhook=row["discord_webhook"],
-            updated_at=updated_at or GlobalNotificationSettings().updated_at,
+        return self._decrypt_settings(
+            GlobalNotificationSettings(
+                enable_desktop_notification=bool(row["enable_desktop_notification"]),
+                enable_ntfy=bool(row["enable_ntfy"]),
+                ntfy_topic=row["ntfy_topic"],
+                enable_discord_notification=bool(row["enable_discord_notification"]),
+                discord_webhook=row["discord_webhook"],
+                updated_at=updated_at or GlobalNotificationSettings().updated_at,
+            )
         )
 
     def save(self, settings: GlobalNotificationSettings) -> None:
@@ -53,10 +65,21 @@ class GlobalNotificationSettingsRepository:
             (
                 int(settings.enable_desktop_notification),
                 int(settings.enable_ntfy),
-                settings.ntfy_topic,
+                self.secret_codec.encrypt(settings.ntfy_topic),
                 int(settings.enable_discord_notification),
-                settings.discord_webhook,
+                self.secret_codec.encrypt(settings.discord_webhook),
                 encode_datetime(settings.updated_at),
             ),
         )
 
+    def _decrypt_settings(
+        self,
+        settings: GlobalNotificationSettings,
+    ) -> GlobalNotificationSettings:
+        """還原 repository 對外回傳的全域 notification secrets。"""
+
+        return replace(
+            settings,
+            ntfy_topic=self.secret_codec.decrypt(settings.ntfy_topic),
+            discord_webhook=self.secret_codec.decrypt(settings.discord_webhook),
+        )

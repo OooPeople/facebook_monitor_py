@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import timedelta
 from pathlib import Path
 
+from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application import context as application_context
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import RecordScanRequest
@@ -24,109 +27,317 @@ from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetKind
-from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.webapp.app import create_app
+from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import parse_keywords_text
 from facebook_monitor.webapp import query_service
 from facebook_monitor.webapp.query_service import get_dashboard_view
-from facebook_monitor.webapp.profile_session import ProfileSessionOptions
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
-from facebook_monitor.webapp.scheduler_session import SchedulerSessionState
+from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
+from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
+from facebook_monitor.webapp.assets import ASSET_VERSION
+from tests.helpers.webapp import FakeProfileManager
+from tests.helpers.webapp import FakeSchedulerManager
+from tests.helpers.notifications import NotificationRecorder
 
 
-class FakeProfileManager:
-    """測試用 profile manager，避免 Web UI route 測試真的開 Playwright。"""
+def create_app(**kwargs):
+    """Web route tests 預設關閉 CSRF；CSRF 專門測試使用 production factory。"""
 
-    def __init__(self) -> None:
-        self.active = False
-        self.options: ProfileSessionOptions | None = None
-
-    def is_active(self) -> bool:
-        """回傳 fake profile 視窗是否開啟。"""
-
-        return self.active
-
-    def open(self, options: ProfileSessionOptions) -> None:
-        """保存設定並標記 fake profile 視窗已開啟。"""
-
-        self.options = options
-        self.active = True
-
-    def close(self) -> None:
-        """關閉 fake profile 視窗。"""
-
-        self.active = False
-
-
-class FakeSchedulerManager:
-    """測試用 scheduler manager，避免 Web UI route 測試真的跑背景掃描。"""
-
-    def __init__(self) -> None:
-        self.running = False
-        self.started_count = 0
-        self.stopped_count = 0
-        self.woken_count = 0
-        self.options: object | None = None
-        self.queued_target_ids: tuple[str, ...] = ()
-
-    def state(self) -> SchedulerSessionState:
-        """回傳 fake scheduler 狀態。"""
-
-        return SchedulerSessionState(
-            running=self.running,
-            interval_seconds=60,
-            last_cycle_at="",
-            last_error="",
-            max_concurrent_scans=2,
-            current_running_count=1 if self.running else 0,
-            current_queued_count=len(self.queued_target_ids),
-            queue_length=len(self.queued_target_ids),
-            queued_target_ids=self.queued_target_ids,
-            worker_ids=("resident-slot-1", "resident-slot-2") if self.running else (),
-            page_pool_size=1 if self.running else 0,
-            last_opened_page_count=1 if self.running else 0,
-            last_reused_page_count=2 if self.running else 0,
-            last_closed_page_count=0,
-            resident_browser_alive=self.running,
-        )
-
-    def is_running(self) -> bool:
-        """回傳 fake scheduler 是否執行中。"""
-
-        return self.running
-
-    def start(self, options: object) -> None:
-        """標記 fake scheduler 已啟動。"""
-
-        self.started_count += 1
-        self.options = options
-        self.running = True
-
-    def stop(self) -> None:
-        """標記 fake scheduler 已停止。"""
-
-        self.stopped_count += 1
-        self.running = False
-
-    def wake(self) -> None:
-        """記錄 manual-start 喚醒要求。"""
-
-        self.woken_count += 1
+    kwargs.setdefault("enforce_csrf", False)
+    return create_production_app(**kwargs)
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
     """Web UI keyword parser 會去除空白與重複值。"""
 
     assert parse_keywords_text("票, 交換,票,,讓票") == ("票", "交換", "讓票")
+    assert parse_keywords_text("徵;收;已售") == ("徵;收;已售",)
 
 
-def test_index_renders_target_rows(tmp_path: Path) -> None:
-    """首頁會顯示已保存 target，並清理 Facebook title 前置通知數。"""
+def test_static_assets_revalidate_for_local_ui(tmp_path: Path) -> None:
+    """Static JS/CSS 不保留本機快取，避免 sidebar module 沿用舊版。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/static/dashboard/sidebar.js")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, max-age=0, must-revalidate"
+    assert response.headers["pragma"] == "no-cache"
+    assert response.headers["expires"] == "0"
+
+
+def test_create_app_uses_explicit_static_resource_dir(tmp_path: Path) -> None:
+    """launcher 傳入的 static dir 應成為 Web UI 實際掛載資源路徑。"""
+
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "resource-check.txt").write_text("custom static", encoding="utf-8")
+    app = create_app(
+        db_path=tmp_path / "app.db",
+        profile_dir=tmp_path / "profile",
+        static_dir=static_dir,
+    )
+    client = TestClient(app)
+
+    response = client.get("/static/resource-check.txt")
+
+    assert response.status_code == 200
+    assert response.text == "custom static"
+    assert app.state.static_dir == static_dir
+
+
+def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
+    """Health endpoint 供 launcher 判斷既有 Web UI 是否存活。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "status": "ok",
+        "app": "Facebook Monitor",
+        "version": "0.0.0",
+        "asset_version": ASSET_VERSION,
+        "python_version": payload["python_version"],
+        "packaging_mode": "source",
+    }
+    assert payload["python_version"]
+
+
+def test_mutating_routes_require_csrf_token_for_loopback_host(tmp_path: Path) -> None:
+    """真實 localhost/loopback host 的 mutating route 必須帶 Web UI 產生的 CSRF token。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_production_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+        )
+    )
+    missing_token_response = client.post(
+        "/settings/target-keywords",
+        data={"exclude_keywords": "售完"},
+        headers={"host": "127.0.0.1:4818"},
+        follow_redirects=False,
+    )
+    valid_token_response = client.post(
+        "/settings/target-keywords",
+        data={"csrf_token": "known-token", "exclude_keywords": "售完"},
+        headers={"host": "127.0.0.1:4818"},
+        follow_redirects=False,
+    )
+
+    assert missing_token_response.status_code == 403
+    assert valid_token_response.status_code == 303
+
+
+def test_mutating_routes_require_csrf_token_for_testserver_host(tmp_path: Path) -> None:
+    """TestClient 預設 testserver host 也不能繞過 runtime CSRF 驗證。"""
+
+    client = TestClient(
+        create_production_app(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+        )
+    )
+
+    response = client.post(
+        "/settings/target-keywords",
+        data={"exclude_keywords": "售完"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+
+def test_pages_render_csrf_token_for_forms_and_fetch_headers(tmp_path: Path) -> None:
+    """HTML 會把同一個 CSRF token 提供給 form 與前端 fetch 使用。"""
+
+    client = TestClient(
+        create_app(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+        )
+    )
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert '<meta name="csrf-token" content="known-token">' in response.text
+    assert response.text.count('name="csrf_token" value="known-token"') >= 4
+    assert re.search(r'name="csrf_token" value="known-token"', response.text)
+
+
+def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
+    """設定頁顯示可複製的 runtime diagnostics。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data")
+    app = create_app(
+        db_path=paths.db_path,
+        profile_dir=paths.profile_dir,
+        scheduler_manager=FakeSchedulerManager(),
+    )
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "Runtime diagnostics" in response.text
+    assert response.text.index("通知預設值") < response.text.index("Runtime diagnostics")
+    assert '<details class="target settings-card runtime-diagnostics-card">' in response.text
+    assert '<summary class="runtime-diagnostics-summary">' in response.text
+    assert str(paths.db_path) in response.text
+    assert str(paths.profile_dir) in response.text
+    assert str(paths.logs_dir) in response.text
+    assert "Browser mode" in response.text
+    assert "playwright_chromium" in response.text
+    assert "Asset version" in response.text
+    assert "Python version" in response.text
+    assert "Packaging mode" in response.text
+    assert "Build date" in response.text
+    assert "Git commit" in response.text
+    assert "Reset targets on startup" in response.text
+    assert "Resume active targets on startup" in response.text
+    assert "Reset runtime data on startup" in response.text
+    assert "複製診斷資訊" in response.text
+    assert "runtime-diagnostics-copy-source" in response.text
+    assert "data-secret-input" not in response.text
+    assert "data-dirty-submit" in response.text
+
+
+def test_settings_page_updates_target_keyword_defaults(tmp_path: Path) -> None:
+    """設定頁可保存新增 target 使用的排除字預設值。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    initial_response = client.get("/settings")
+    save_response = client.post(
+        "/settings/target-keywords",
+        data={
+            "exclude_keywords": "售完,暫停",
+            "exclude_ignore_phrases": "全收;回收",
+        },
+        follow_redirects=False,
+    )
+    settings_response = client.get("/settings")
+    new_target_response = client.get("/targets/new")
+
+    assert initial_response.status_code == 200
+    assert "關鍵字預設值" in initial_response.text
+    assert "徵;收;已售" in initial_response.text
+    assert "全收;回收" in initial_response.text
+    assert save_response.status_code == 303
+    assert "message=" in save_response.headers["location"]
+    assert "售完,暫停" in settings_response.text
+    assert "全收;回收" in settings_response.text
+    assert 'name="exclude_keywords" type="hidden" value="售完,暫停"' in new_target_response.text
+    assert (
+        'name="exclude_ignore_phrases" type="hidden" value="全收;回收"'
+        in new_target_response.text
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        defaults = app_context.repositories.app_settings.get_target_keyword_defaults()
+    assert defaults.exclude_keywords_text == "售完,暫停"
+    assert defaults.exclude_ignore_phrases_text == "全收;回收"
+
+
+def test_create_target_route_uses_saved_keyword_defaults_when_fields_are_omitted(
+    tmp_path: Path,
+) -> None:
+    """新增 target 表單沒有送關鍵字欄位時，route 會讀 DB 預設值。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=lambda _profile_dir, _url: "測試社團",
+        )
+    )
+    client.post(
+        "/settings/target-keywords",
+        data={
+            "exclude_keywords": "售完,暫停",
+            "exclude_ignore_phrases": "全收,回收",
+        },
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "include_keywords": "票",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+            "auto_load_more": "on",
+            "auto_adjust_sort": "on",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+        assert target is not None
+        config = app_context.repositories.configs.get_for_target(target)
+    assert config is not None
+    assert config.exclude_keywords == ("售完", "暫停")
+    assert config.exclude_ignore_phrases == ("全收", "回收")
+
+
+def test_theme_preference_is_stored_in_database_for_all_pages(tmp_path: Path) -> None:
+    """主題偏好必須存進 app DB，避免 auto-port 或瀏覽器狀態遺失。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    initial_response = client.get("/")
+    save_response = client.post("/settings/theme", json={"theme": "dark"})
+    index_response = client.get("/")
+    settings_response = client.get("/settings")
+    new_target_response = client.get("/targets/new")
+
+    assert initial_response.status_code == 200
+    assert 'let theme = "light";' in initial_response.text
+    assert save_response.status_code == 200
+    assert save_response.json() == {"theme": "dark"}
+    assert 'let theme = "dark";' in index_response.text
+    assert 'let theme = "dark";' in settings_response.text
+    assert 'let theme = "dark";' in new_target_response.text
+    with SqliteApplicationContext(db_path) as app_context:
+        assert app_context.repositories.app_settings.get_theme() == "dark"
+
+
+def test_theme_preference_rejects_unknown_value(tmp_path: Path) -> None:
+    """theme API 不接受未定義值。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post("/settings/theme", json={"theme": "system"})
+
+    assert response.status_code == 400
+
+
+def test_dashboard_import_map_versions_sidebar_module(tmp_path: Path) -> None:
+    """Dashboard module graph 也要版本化，避免 Chrome 沿用舊 sidebar.js。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -134,177 +345,79 @@ def test_index_renders_target_rows(tmp_path: Path) -> None:
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                group_name="(3) 測試社團",
             )
         )
-        target = app_context.repositories.targets.find_by_kind_scope(
-            TargetKind.POSTS,
-            "222518561920110",
-        )
-        assert target is not None
-        app_context.services.scans.record_scan(
-            RecordScanRequest(
-                target_id=target.id,
-                status=ScanStatus.FAILED,
-                error_message="page_load_timeout: timeout",
-            )
-        )
-        app_context.services.scans.record_scan(
-            RecordScanRequest(
-                target_id=target.id,
-                status=ScanStatus.SUCCESS,
-                item_count=2,
-                matched_count=1,
-                metadata={
-                    "worker": "posts_scan",
-                    "collection_strategy": "feed_visible_window",
-                    "new_count": 1,
-                    "matched_count": 1,
-                    "target_count": 5,
-                    "scanned_count": 2,
-                    "candidate_count": 2,
-                    "round_count": 1,
-                    "scroll_rounds": 0,
-                    "scroll_wait_ms": 0,
-                    "stop_reason": "scroll_rounds_completed",
-                    "rounds": [
-                        {
-                            "round_index": 0,
-                            "raw_item_count": 2,
-                            "unique_item_count": 2,
-                            "scroll_y": 0,
-                            "scroll_height": 1200,
-                        }
-                    ],
-                },
-            )
-        )
-        app_context.repositories.latest_scan_items.replace_for_target(
-            target.id,
-            [
-                LatestScanItem(
-                    target_id=target.id,
-                    scan_run_id=1,
-                    item_kind=ItemKind.POST,
-                    item_key="item-1",
-                    item_index=0,
-                    author="王小明",
-                    text="這是一篇有票券關鍵字的貼文",
-                    permalink="https://www.facebook.com/groups/222518561920110/posts/1",
-                    matched_keyword="票券",
-                    debug_metadata={
-                        "textSource": "primary",
-                        "permalinkSource": "container:groups_post_anchor",
-                        "expandCount": 1,
-                        "linkDiagnostics": {
-                            "total": 2,
-                            "kindCounts": {"profile": 1, "hashtag": 1},
-                            "samples": [
-                                {
-                                    "kind": "profile",
-                                    "href": "https://www.facebook.com/groups/1/user/2",
-                                    "text": "王小明",
-                                }
-                            ],
-                        },
-                    },
-                ),
-                LatestScanItem(
-                    target_id=target.id,
-                    scan_run_id=1,
-                    item_kind=ItemKind.POST,
-                    item_key="item-2",
-                    item_index=1,
-                    author="陳小華",
-                    text="這是一篇普通貼文",
-                    permalink="",
-                    matched_keyword="",
-                ),
-            ],
-        )
-        app_context.repositories.notification_events.add(
-            NotificationEvent(
-                target_id=target.id,
-                item_key="item-1",
-                channel=NotificationChannel.NTFY,
-                status=NotificationStatus.SENT,
-                message="sent",
-            )
-        )
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
 
-    scheduler_manager = FakeSchedulerManager()
-    scheduler_manager.running = True
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            scheduler_manager=scheduler_manager,
-        )
-    )
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "測試社團" in response.text
-    assert "(3) 測試社團" not in response.text
-    assert "222518561920110" in response.text
-    assert "group=222518561920110" not in response.text
-    assert "scope=222518561920110" not in response.text
-    assert "閒置" in response.text
-    assert "最近掃描" in response.text
-    assert "命中紀錄 0" in response.text
-    assert f'data-hit-records-modal="{target.id}"' in response.text
-    assert f'data-clear-hit-records data-target-id="{target.id}"' in response.text
-    assert "/static/dashboard/main.js" in response.text
-    assert "查看紀錄" in response.text
-    assert "設定" in response.text
-    assert "掃描診斷" in response.text
-    assert "rounds=1 · candidates=2 · stop=完成捲動輪數" in response.text
-    assert "collection_strategy=feed_visible_window" in response.text
-    assert "round=0 raw=2 unique=2" in response.text
-    assert "複製掃描診斷" in response.text
-    assert "最近有錯誤" in response.text
-    assert "最近掃描貼文" not in response.text
-    assert "最近通知" in response.text
-    assert "ntfy: sent" not in response.text
-    assert "背景掃描服務" not in response.text
-    assert "running=1 · queued=0 · slots=2" not in response.text
-    assert "監看清單快速跳轉" in response.text
-    assert f'data-sidebar-target="target-{target.id}"' in response.text
-    assert f'data-action-anchor="target-{target.id}"' in response.text
-    assert f'id="target-{target.id}"' in response.text
-    assert f'value="#target-{target.id}"' not in response.text
-    assert "啟動自動掃描" not in response.text
-    assert "停止自動掃描" not in response.text
-    assert "王小明" in response.text
-    assert "命中: 票券" in response.text
-    assert "陳小華" in response.text
-    assert "未命中" in response.text
-    assert "未取得連結" in response.text
-    assert "這是一篇有票券關鍵字的貼文" in response.text
-    assert "開啟連結" in response.text
-    assert "除錯" not in response.text
-    assert "複製除錯資訊" not in response.text
-    assert "latest_scan_items:" in response.text
-    assert "textSource=primary" in response.text
-    assert "expandCount=1" in response.text
-    assert "linkDiagnostics=" in response.text
-    assert "debug_json=" not in response.text
-    assert "https://www.facebook.com/groups/1/user/2" in response.text
-    assert "監視中" not in response.text
-    assert "掃描一次" not in response.text
-    assert 'class="collapse-toggle"' in response.text
-    assert 'aria-label="收合 target"' in response.text
-    assert 'class="collapse-toggle-icon"' in response.text
-    assert (
-        '<dl class="target-collapsed-summary field-grid field-grid--summary" '
-        "data-collapsed-summary hidden>"
-    ) in response.text
-    assert "target-collapsed-summary-field" in response.text
-    assert "包含關鍵字" in response.text
-    assert "排除關鍵字" in response.text
-    assert "設定摘要" in response.text
-    assert '</div>\n\n  <div class="target-footer-controls">' in response.text
-    assert ">收合</button>" not in response.text
+    assert '<script type="importmap">' in response.text
+    assert '"/static/dashboard/sidebar.js"' in response.text
+    assert f'"/static/dashboard/sidebar.js?v={ASSET_VERSION}"' in response.text
+
+
+def test_target_card_panels_share_preview_height_contract() -> None:
+    """Target card 左右 panel 必須共用高度約束，避免底部錯位回歸。"""
+
+    styles = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "grid-auto-rows: var(--preview-panel-height);" in styles
+    assert ".target-settings" in styles
+    assert ".match-panel" in styles
+    assert ".section-title .form-status" in styles
+    assert "overflow-y: auto;" in styles
+    assert ".compact-config-form .keyword-rule-tabs" in styles
+    assert ".keyword-rule-tab-row" in styles
+    assert ".compact-config-form .keyword-rule-tab" in styles
+    assert ".keyword-help-button" in styles
+    assert ".more-menu-trigger" in styles
+    assert "min-width: 48px;" in styles
+    assert ".more-menu-panel form" in styles
+    assert ".more-menu-action" in styles
+    assert ".compact-config-form .keyword-rule-panel[hidden]" in styles
+    assert styles.count("height: var(--preview-panel-height);") >= 2
+    assert styles.count("max-height: var(--preview-panel-height);") >= 2
+
+
+def test_settings_keyword_defaults_use_compact_two_column_layout() -> None:
+    """設定頁關鍵字預設值維持左右雙欄，textarea 不提供拖曳縮放。"""
+
+    forms_css = Path("src/facebook_monitor/webapp/static/styles/forms.css").read_text(
+        encoding="utf-8"
+    )
+    pages_css = Path("src/facebook_monitor/webapp/static/styles/pages.css").read_text(
+        encoding="utf-8"
+    )
+    diagnostics_css = Path("src/facebook_monitor/webapp/static/styles/diagnostics.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "textarea {\n  resize: none;\n}" in forms_css
+    assert ".settings-keyword-stack {\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n}" in pages_css
+    assert "  .settings-keyword-stack {\n    grid-template-columns: 1fr;\n  }" in pages_css
+    assert ".debug-copy-source {\n  min-height: 150px;\n  resize: none;" in diagnostics_css
+
+
+def test_hit_records_modal_matches_preview_typography_and_link_style() -> None:
+    """查看紀錄 modal 字級與連結樣式需對齊最近掃描 / 命中紀錄 preview。"""
+
+    modal_styles = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
+    hit_records_js = Path("src/facebook_monitor/webapp/static/dashboard/hit_records.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert ".hit-record-fields .field-grid-cell dt" in modal_styles
+    assert ".hit-record-fields .field-grid-cell dd" in modal_styles
+    assert modal_styles.count("font-size: 14px;") >= 4
+    assert ".hit-record-row a" in modal_styles
+    assert "border-radius: 999px;" in modal_styles
+    assert "font-weight: 650;" in modal_styles
+    assert "missing.className = \"missing-link\";" in hit_records_js
 
 
 def test_index_renders_runtime_state_and_error(tmp_path: Path) -> None:
@@ -359,6 +472,7 @@ def test_index_does_not_render_queue_position_runtime_note(tmp_path: Path) -> No
                 group_name="排隊測試社團",
             )
         )
+        app_context.services.targets.restart_target_monitoring(target.id)
         app_context.services.targets.mark_target_queued(target.id, "due")
 
     scheduler_manager = FakeSchedulerManager()
@@ -520,12 +634,23 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     assert preview_payload["total_count"] == 1
     assert preview_payload["items"][0]["author_name"] == "林本次"
     assert preview_payload["items"][0]["badge_text"] == "命中: 票券"
+    assert preview_payload["items"][0]["content_segments"] == [
+        {"text": "本次啟動期間的", "highlighted": False},
+        {"text": "票券", "highlighted": True},
+        {"text": "命中", "highlighted": False},
+    ]
     assert count_response.json() == {"target_id": first_target.id, "total_count": 1}
     full_payload = full_response.json()
     assert full_payload["total_count"] == 3
     assert full_payload["items"][0]["sequence_number"] == 2
     assert full_payload["items"][0]["item_type"] == "留言"
     assert full_payload["items"][0]["notified_at"]
+    assert "notification_summary" in full_payload["items"][0]
+    assert {"text": "票券", "highlighted": True} in full_payload["items"][0]["content_segments"]
+    hit_records_js = Path("src/facebook_monitor/webapp/static/dashboard/hit_records.js").read_text(
+        encoding="utf-8"
+    )
+    assert "通知狀態" not in hit_records_js
     assert sidebar_response.status_code == 200
     sidebar_payload = sidebar_response.json()
     assert sidebar_payload["items"][0]["target_id"] == first_target.id
@@ -533,21 +658,20 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     assert card_response.status_code == 200
     card_payload = card_response.json()
     assert card_payload["target_id"] == first_target.id
-    assert card_payload["card_summary"]["hit_record_total_count"] == 1
     assert card_payload["hit_record_total_count"] == 1
-    assert card_payload["card_summary"]["sections"][0]["label"] == "包含關鍵字"
-    assert card_payload["card_summary"]["sections"][2]["lines"][0].startswith("刷新 ")
-    assert len(card_payload["card_summary"]["sections"][3]["lines"]) == 1
-    assert card_payload["card_summary"]["sections"][4]["lines"] == ["1 筆"]
+    assert "target-collapsed-summary-field" in card_payload["card_summary_html"]
+    assert "關鍵字" in card_payload["card_summary_html"]
+    assert "命中 1 筆" in card_payload["card_summary_html"]
+    assert "preview-list" in card_payload["latest_scan_preview_html"]
+    assert "preview-list" in card_payload["hit_record_preview_html"]
     assert "latest_scan_items:" in card_payload["latest_scan_diagnostics_text"]
     assert "textSource=primary" in card_payload["latest_scan_diagnostics_text"]
-    assert card_payload["hit_record_preview_rows"][0]["badge_text"] == "命中: 票券"
-    assert card_payload["latest_scan_preview_rows"][0]["link_label"] == "開啟連結"
-    assert card_payload["hit_record_preview_rows"][0]["link_label"] == "開啟連結"
-    assert not card_payload["latest_scan_preview_rows"][0]["debug_summary"]
-    assert not card_payload["latest_scan_preview_rows"][0]["debug_text"]
-    assert not card_payload["latest_scan_preview_rows"][0]["has_debug"]
-    assert not card_payload["hit_record_preview_rows"][0]["has_debug"]
+    assert "命中: 票券" in card_payload["hit_record_preview_html"]
+    assert '<mark class="keyword-highlight">票券</mark>' in card_payload["hit_record_preview_html"]
+    assert "開啟連結" in card_payload["hit_record_preview_html"]
+    assert "latest_scan_preview_rows" not in card_payload
+    assert "hit_record_preview_rows" not in card_payload
+    assert "card_summary" not in card_payload
     assert clear_response.status_code == 200
     assert clear_response.json() == {
         "target_id": first_target.id,
@@ -630,8 +754,10 @@ def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path)
         assert not app_context.repositories.seen_items.has_seen(target.scope_id, "persisted-1")
 
 
-def test_dashboard_view_model_includes_phase3_read_models(tmp_path: Path) -> None:
-    """Phase 3 dashboard read model 會帶入 sidebar、hit preview 與設定摘要。"""
+def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
+    tmp_path: Path,
+) -> None:
+    """dashboard read model 會帶入 sidebar、hit preview 與設定摘要。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -640,12 +766,14 @@ def test_dashboard_view_model_includes_phase3_read_models(tmp_path: Path) -> Non
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
                 group_name="測試社團",
-                fixed_refresh_sec=None,
-                min_refresh_sec=25,
-                max_refresh_sec=35,
-                jitter_enabled=True,
-                enable_ntfy=True,
-                ntfy_topic="phase0test",
+                config=TargetConfigPatch(
+                    fixed_refresh_sec=None,
+                    min_refresh_sec=25,
+                    max_refresh_sec=35,
+                    jitter_enabled=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
             )
         )
         app_context.repositories.latest_scan_items.replace_for_target(
@@ -695,8 +823,12 @@ def test_dashboard_view_model_includes_phase3_read_models(tmp_path: Path) -> Non
     assert "命中 1 筆" in dashboard.sidebar_items[0].status_summary
     assert row.hit_record_total_count == 1
     assert row.hit_records_heading == "命中紀錄（1）"
-    assert row.settings_summary.lines[0] == "刷新：浮動 25-35 秒"
-    assert row.settings_summary.lines[-1] == "通知：ntfy"
+    assert row.settings_summary.lines[0].icon_key == "refresh"
+    assert row.settings_summary.lines[0].label == "刷新"
+    assert row.settings_summary.lines[0].value == "浮動 25-35 秒"
+    assert row.settings_summary.lines[-1].icon_key == "notification"
+    assert row.settings_summary.lines[-1].label == "通知"
+    assert row.settings_summary.lines[-1].value == "ntfy"
     assert latest_preview.author_name == "王小明"
     assert latest_preview.badge_kind == "hit"
     assert latest_preview.link_label == "開啟連結"
@@ -760,6 +892,7 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
         data={
             "include_keywords": "票,交換",
             "exclude_keywords": "售完",
+            "exclude_ignore_phrases": "全收,回收",
             "fixed_refresh_sec": "90",
             "max_items_per_scan": "30",
             "auto_adjust_sort": "on",
@@ -778,6 +911,7 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
     assert config is not None
     assert config.include_keywords == ("票", "交換")
     assert config.exclude_keywords == ("售完",)
+    assert config.exclude_ignore_phrases == ("全收", "回收")
     assert config.fixed_refresh_sec == 90
     assert config.max_items_per_scan == 10
     assert not config.auto_load_more
@@ -916,10 +1050,20 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
 
     assert form_response.status_code == 200
     assert "Facebook group URL" in form_response.text
+    assert (
+        "https://www.facebook.com/groups/123456789 或 "
+        "https://www.facebook.com/groups/123456789/posts/987654321"
+    ) in form_response.text
     assert "自訂顯示名稱" in form_response.text
+    assert "可留空，系統會嘗試使用社團名稱" in form_response.text
+    assert "data-new-target-form" in form_response.text
+    assert 'data-loading-text="建立中..."' in form_response.text
+    assert "data-secret-input" not in form_response.text
+    assert 'name="ntfy_topic" type="text"' in form_response.text
+    assert 'name="discord_webhook" type="text"' in form_response.text
     assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec}"' in form_response.text
     assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan}"' in form_response.text
-    assert 'name="auto_adjust_sort" type="checkbox" checked' in form_response.text
+    assert 'name="auto_adjust_sort" type="hidden" value="on"' in form_response.text
     assert "Target kind" not in form_response.text
     assert create_response.status_code == 303
     with SqliteApplicationContext(db_path) as app_context:
@@ -934,6 +1078,7 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config is not None
     assert config.include_keywords == ("票",)
     assert config.exclude_keywords == ("售完",)
+    assert config.exclude_ignore_phrases == ("全收;回收",)
     assert config.fixed_refresh_sec == 75
     assert config.max_items_per_scan == 10
     assert config.auto_load_more
@@ -982,6 +1127,122 @@ def test_create_target_route_uses_custom_display_name_without_resolver(tmp_path:
     assert target is not None
     assert target.name == "我的票券社團"
     assert target.group_name == ""
+    with SqliteApplicationContext(db_path) as app_context:
+        config = app_context.repositories.configs.get_for_target(target)
+    assert config is not None
+    assert config.exclude_keywords == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
+
+
+def test_index_renders_target_rename_modal(tmp_path: Path) -> None:
+    """target card 更多選單提供更改名稱 dialog，且輸入框預填目前名稱。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的票券社團",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "data-rename-target-button" in response.text
+    assert "更改 target 名稱" in response.text
+    assert 'name="display_name" type="text" value="我的票券社團"' in response.text
+
+
+def test_update_target_name_route_updates_display_name(tmp_path: Path) -> None:
+    """更改名稱 route 會更新 target.name 並回到原 target card。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="原本名稱",
+                group_name="測試社團",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        f"/targets/{target.id}/name",
+        data={
+            "display_name": "(1) 新卡片名稱 | Facebook",
+            "return_to": f"#target-{target.id}",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"].endswith(f"#target-{target.id}")
+    with SqliteApplicationContext(db_path) as app_context:
+        loaded = app_context.repositories.targets.get(target.id)
+    assert loaded is not None
+    assert loaded.name == "新卡片名稱"
+    assert loaded.group_name == "測試社團"
+
+
+def test_create_target_route_skips_name_resolver_when_scheduler_running(tmp_path: Path) -> None:
+    """scheduler 正在跑時，新增 target 不應為了解析名稱而停止 scheduler。"""
+
+    db_path = tmp_path / "app.db"
+    resolver_calls: list[str] = []
+
+    def failing_resolver(_profile_dir: Path, url: str) -> str:
+        resolver_calls.append(url)
+        raise AssertionError("resolver should not run while scheduler is running")
+
+    scheduler_manager = BackgroundSchedulerManager(
+        resident_main_runner=lambda _options, stop_event, _on_cycle, _sleep_fn=None: (
+            stop_event.wait(timeout=2)
+        )
+    )
+    scheduler_manager.start(
+        SchedulerSessionOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    try:
+        client = TestClient(
+            create_app(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                group_name_resolver=failing_resolver,
+                scheduler_manager=scheduler_manager,
+            )
+        )
+
+        response = client.post(
+            "/targets",
+            data={
+                "group_url": "https://www.facebook.com/groups/222518561920110/",
+                "fixed_refresh_sec": "60",
+                "max_items_per_scan": "20",
+                "auto_load_more": "on",
+            },
+            follow_redirects=False,
+        )
+    finally:
+        scheduler_manager.stop(timeout_seconds=2)
+
+    assert response.status_code == 303
+    assert resolver_calls == []
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+    assert target is not None
+    assert target.group_name == ""
+    assert target.name == "group:222518561920110:posts"
+    assert scheduler_manager.take_metadata_refresh_requests() == (target.id,)
 
 
 def test_create_target_route_adds_comments_target_and_resolves_group_name(
@@ -1037,10 +1298,11 @@ def test_create_target_route_adds_comments_target_and_resolves_group_name(
     assert target.canonical_url == (
         "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
     )
-    assert target.name == "留言測試社團"
+    assert target.name == "留言測試社團 / post:2187454285426518"
     assert target.group_name == "留言測試社團"
     assert target.paused
     assert config is not None
+    assert config.exclude_keywords == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
     assert state is not None
 
     index_response = client.get("/")
@@ -1126,29 +1388,7 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     """設定頁可保存通知預設值、送測試通知，並批次套用到 target。"""
 
     db_path = tmp_path / "app.db"
-    sent: list[str] = []
-
-    def fake_desktop_sender(title: str, message: str) -> DesktopNotificationResult:
-        """記錄桌面測試通知。"""
-
-        sent.append(f"desktop:{title}:{message}")
-        return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
-
-    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
-        """記錄 ntfy 測試通知。"""
-
-        sent.append(f"ntfy:{config.topic}:{title}:{message}")
-        return NtfyResult(ok=True, status_code=200, message="sent")
-
-    def fake_discord_sender(
-        config: DiscordConfig,
-        title: str,
-        message: str,
-    ) -> DiscordResult:
-        """記錄 Discord 測試通知。"""
-
-        sent.append(f"discord:{config.webhook_url}:{title}:{message}")
-        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+    notifications = NotificationRecorder()
 
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.services.targets.upsert_group_posts_target(
@@ -1162,9 +1402,9 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
         create_app(
             db_path=db_path,
             profile_dir=tmp_path / "profile",
-            desktop_sender=fake_desktop_sender,
-            ntfy_sender=fake_ntfy_sender,
-            discord_sender=fake_discord_sender,
+            desktop_sender=notifications.desktop_sender,
+            ntfy_sender=notifications.ntfy_sender,
+            discord_sender=notifications.discord_sender,
         )
     )
     settings_page = client.get("/settings")
@@ -1182,6 +1422,13 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     form_response = client.get("/targets/new")
     test_response = client.post(
         "/settings/notifications/test",
+        data={
+            "enable_desktop_notification": "on",
+            "enable_ntfy": "on",
+            "ntfy_topic": "phase0test",
+            "enable_discord_notification": "on",
+            "discord_webhook": "https://discord.com/api/webhooks/example",
+        },
         follow_redirects=True,
     )
     apply_response = client.post(
@@ -1197,9 +1444,12 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     assert "https://discord.com/api/webhooks/example" in form_response.text
     assert test_response.status_code == 200
     assert "desktop_sent / ntfy_sent / discord_sent" in test_response.text
-    assert any(item.startswith("desktop:") for item in sent)
-    assert any(item.startswith("ntfy:phase0test:") for item in sent)
-    assert any(item.startswith("discord:https://discord.com/api/webhooks/example:") for item in sent)
+    assert any(item.startswith("desktop:") for item in notifications.sent)
+    assert any(item.startswith("ntfy:phase0test:") for item in notifications.sent)
+    assert any(
+        item.startswith("discord:https://discord.com/api/webhooks/example:")
+        for item in notifications.sent
+    )
     assert apply_response.status_code == 303
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
@@ -1217,29 +1467,7 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     """target 設定 modal 的測試通知會使用表單值，但不保存 target 設定。"""
 
     db_path = tmp_path / "app.db"
-    sent: list[str] = []
-
-    def fake_desktop_sender(title: str, message: str) -> DesktopNotificationResult:
-        """記錄桌面測試通知。"""
-
-        sent.append(f"desktop:{title}:{message}")
-        return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
-
-    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
-        """記錄 ntfy 測試通知。"""
-
-        sent.append(f"ntfy:{config.topic}:{title}:{message}")
-        return NtfyResult(ok=True, status_code=200, message="sent")
-
-    def fake_discord_sender(
-        config: DiscordConfig,
-        title: str,
-        message: str,
-    ) -> DiscordResult:
-        """記錄 Discord 測試通知。"""
-
-        sent.append(f"discord:{config.webhook_url}:{title}:{message}")
-        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+    notifications = NotificationRecorder()
 
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.services.targets.upsert_group_posts_target(
@@ -1253,9 +1481,9 @@ def test_target_settings_modal_can_test_notifications_without_saving(
         create_app(
             db_path=db_path,
             profile_dir=tmp_path / "profile",
-            desktop_sender=fake_desktop_sender,
-            ntfy_sender=fake_ntfy_sender,
-            discord_sender=fake_discord_sender,
+            desktop_sender=notifications.desktop_sender,
+            ntfy_sender=notifications.ntfy_sender,
+            discord_sender=notifications.discord_sender,
         )
     )
     index_response = client.get("/")
@@ -1285,9 +1513,12 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     )
     assert test_response.status_code == 200
     assert "desktop_sent / ntfy_sent / discord_sent" in test_response.text
-    assert any(item.startswith("desktop:") for item in sent)
-    assert any(item.startswith("ntfy:modal-topic:") for item in sent)
-    assert any(item.startswith("discord:https://discord.com/api/webhooks/modal:") for item in sent)
+    assert any(item.startswith("desktop:") for item in notifications.sent)
+    assert any(item.startswith("ntfy:modal-topic:") for item in notifications.sent)
+    assert any(
+        item.startswith("discord:https://discord.com/api/webhooks/modal:")
+        for item in notifications.sent
+    )
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
@@ -1296,6 +1527,82 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert config.ntfy_topic == ""
     assert not config.enable_discord_notification
     assert config.discord_webhook == ""
+
+
+def test_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
+    """手動測試通知失敗時，UI 錯誤不得回填 webhook / topic。"""
+
+    db_path = tmp_path / "app.db"
+
+    def failing_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        """模擬自訂 sender 例外內含 topic。"""
+
+        raise RuntimeError(f"failed https://ntfy.sh/{config.topic}")
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            ntfy_sender=failing_ntfy_sender,
+        )
+    )
+
+    response = client.post(
+        "/settings/notifications/test",
+        data={
+            "enable_ntfy": "on",
+            "ntfy_topic": "private-topic",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "notification_test_failed:RuntimeError" in response.text
+    assert "private-topic" not in response.text
+
+
+def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
+    """target 測試通知失敗時，UI 錯誤不得回填 webhook / topic。"""
+
+    db_path = tmp_path / "app.db"
+
+    def failing_discord_sender(
+        config: DiscordConfig,
+        _title: str,
+        _message: str,
+    ) -> DiscordResult:
+        """模擬自訂 sender 例外內含 webhook。"""
+
+        raise RuntimeError(f"failed {config.webhook_url}")
+
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            discord_sender=failing_discord_sender,
+        )
+    )
+
+    response = client.post(
+        f"/targets/{target.id}/notifications/test",
+        data={
+            "enable_discord_notification": "on",
+            "discord_webhook": "https://discord.com/api/webhooks/private-token",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "notification_test_failed:RuntimeError" in response.text
+    assert "private-token" not in response.text
 
 
 def test_settings_open_pauses_scheduler_until_profile_closes(tmp_path: Path) -> None:
@@ -1328,10 +1635,10 @@ def test_settings_open_pauses_scheduler_until_profile_closes(tmp_path: Path) -> 
     assert scheduler_manager.running
 
 
-def test_create_target_temporarily_pauses_scheduler_for_auto_name_resolve(
+def test_create_target_uses_fallback_name_when_scheduler_running(
     tmp_path: Path,
 ) -> None:
-    """背景掃描執行中時，新增 target 會短暫暫停 scheduler 再解析社團名稱。"""
+    """背景掃描執行中時，新增 target 不為了解析社團名稱暫停 scheduler。"""
 
     db_path = tmp_path / "app.db"
     scheduler_manager = FakeSchedulerManager()
@@ -1363,14 +1670,22 @@ def test_create_target_temporarily_pauses_scheduler_for_auto_name_resolve(
     )
 
     assert response.status_code == 303
-    assert resolver_calls == ["https://www.facebook.com/groups/222518561920110"]
-    assert scheduler_manager.stopped_count == 1
-    assert scheduler_manager.started_count == 1
+    assert resolver_calls == []
+    assert scheduler_manager.stopped_count == 0
+    assert scheduler_manager.started_count == 0
     assert scheduler_manager.running
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+    assert target is not None
+    assert target.name == "group:222518561920110:posts"
+    assert scheduler_manager.metadata_refresh_target_ids == [target.id]
 
 
-def test_scheduler_routes_control_background_scan(tmp_path: Path) -> None:
-    """Web UI 啟停內建背景 scheduler 時一律走 resident 路徑。"""
+def test_scheduler_routes_are_not_public_daily_controls(tmp_path: Path) -> None:
+    """Web UI 不再提供全域 scheduler 日常主開關 route。"""
 
     db_path = tmp_path / "app.db"
     scheduler_manager = FakeSchedulerManager()
@@ -1386,15 +1701,14 @@ def test_scheduler_routes_control_background_scan(tmp_path: Path) -> None:
     index_response = client.get("/")
     stop_response = client.post("/scheduler/stop", follow_redirects=False)
 
-    assert start_response.status_code == 303
-    assert scheduler_manager.started_count == 1
-    assert scheduler_manager.options is not None
-    assert scheduler_manager.options.profile_dir == tmp_path / "profile"
+    assert start_response.status_code == 404
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.options is None
     assert "背景掃描服務" not in index_response.text
     assert "啟動自動掃描" not in index_response.text
     assert "停止自動掃描" not in index_response.text
-    assert stop_response.status_code == 303
-    assert scheduler_manager.stopped_count == 1
+    assert stop_response.status_code == 404
+    assert scheduler_manager.stopped_count == 0
     assert not scheduler_manager.running
 
 
@@ -1408,10 +1722,12 @@ def test_webui_startup_resets_targets_to_stopped(tmp_path: Path) -> None:
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                fixed_refresh_sec=None,
-                min_refresh_sec=25,
-                max_refresh_sec=35,
-                jitter_enabled=True,
+                config=TargetConfigPatch(
+                    fixed_refresh_sec=None,
+                    min_refresh_sec=25,
+                    max_refresh_sec=35,
+                    jitter_enabled=True,
+                ),
             )
         )
 
@@ -1647,6 +1963,7 @@ def test_scan_once_requests_resident_scan_for_posts_and_comments(tmp_path: Path)
                 ),
             )
         )
+        app_context.services.targets.restart_target_monitoring(posts_target.id)
         app_context.services.targets.restart_target_monitoring(comments_target.id)
 
     scheduler_manager = FakeSchedulerManager()
@@ -1742,7 +2059,7 @@ def test_dashboard_revision_endpoint_changes_after_target_update(tmp_path: Path)
 
 def test_dashboard_revision_read_path_does_not_initialize_schema(
     tmp_path: Path,
-    monkeypatch: object,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     """SSE revision read path 不應建立 application context 或重跑 schema init。"""
 
@@ -1767,7 +2084,7 @@ def test_dashboard_revision_read_path_does_not_initialize_schema(
 
 def test_dashboard_sidebar_read_path_does_not_initialize_schema(
     tmp_path: Path,
-    monkeypatch: object,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     """Sidebar partial update read path 不應在掃描寫入期間重跑 schema init。"""
 
@@ -1792,7 +2109,7 @@ def test_dashboard_sidebar_read_path_does_not_initialize_schema(
 
 def test_dashboard_revision_endpoint_ignores_temporary_sqlite_lock(
     tmp_path: Path,
-    monkeypatch: object,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     """dashboard polling endpoint 遇到短暫 DB lock 時回 503，前端可忽略該輪。"""
 
@@ -1813,7 +2130,7 @@ def test_dashboard_revision_endpoint_ignores_temporary_sqlite_lock(
 
 def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
     tmp_path: Path,
-    monkeypatch: object,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     """Sidebar partial update 遇到短暫 DB lock 時回 503，避免 ASGI traceback。"""
 
@@ -1833,7 +2150,7 @@ def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
 
 
 def test_dashboard_events_streams_revision_event(tmp_path: Path) -> None:
-    """dashboard SSE endpoint 與 event 格式會提供 Phase 10A revision event。"""
+    """dashboard event stream endpoint 與 event 格式會提供 revision event。"""
 
     db_path = tmp_path / "app.db"
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
@@ -1859,7 +2176,7 @@ def test_index_shows_latest_items_up_to_target_max_items(tmp_path: Path) -> None
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                max_items_per_scan=7,
+                config=TargetConfigPatch(max_items_per_scan=7),
             )
         )
         app_context.repositories.latest_scan_items.replace_for_target(

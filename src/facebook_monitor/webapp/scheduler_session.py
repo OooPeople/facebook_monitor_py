@@ -41,6 +41,7 @@ class ResidentMainRunner(Protocol):
         stop_event: Event,
         on_cycle: Callable[[ResidentCycleSummary], None],
         sleep_fn: Callable[[float], object] | None = None,
+        /,
     ) -> object:
         """執行 resident main worker。"""
 
@@ -88,6 +89,32 @@ class SchedulerSessionState:
         return "常駐"
 
 
+class SchedulerManagerLike(Protocol):
+    """Web UI 需要的 scheduler manager 介面，供正式實作與測試替身共用。"""
+
+    @property
+    def options(self) -> SchedulerSessionOptions | None:
+        """回傳目前 scheduler 啟動設定。"""
+
+    def is_running(self) -> bool:
+        """回傳 scheduler 是否執行中。"""
+
+    def state(self) -> SchedulerSessionState:
+        """回傳 UI 可呈現的 scheduler 狀態。"""
+
+    def start(self, options: SchedulerSessionOptions) -> None:
+        """依指定設定啟動 scheduler。"""
+
+    def stop(self) -> None:
+        """停止 scheduler。"""
+
+    def wake(self) -> None:
+        """喚醒 scheduler 進入下一輪工作。"""
+
+    def request_metadata_refresh(self, target_id: str) -> None:
+        """要求 scheduler 補齊指定 target metadata。"""
+
+
 class BackgroundSchedulerManager:
     """管理 Web UI process 內的背景自動掃描 thread。"""
 
@@ -116,6 +143,8 @@ class BackgroundSchedulerManager:
         self.last_reused_page_count = 0
         self.last_closed_page_count = 0
         self.resident_browser_alive = False
+        self.metadata_refresh_target_ids: set[str] = set()
+        self.metadata_refresh_order: list[str] = []
         self._lock = RLock()
 
     def is_running(self) -> bool:
@@ -200,6 +229,27 @@ class BackgroundSchedulerManager:
         with self._lock:
             self.wake_event.set()
 
+    def request_metadata_refresh(self, target_id: str) -> None:
+        """要求 resident scheduler 用既有 browser context 補齊 target metadata。"""
+
+        normalized_target_id = target_id.strip()
+        if not normalized_target_id:
+            return
+        with self._lock:
+            if normalized_target_id not in self.metadata_refresh_target_ids:
+                self.metadata_refresh_target_ids.add(normalized_target_id)
+                self.metadata_refresh_order.append(normalized_target_id)
+            self.wake_event.set()
+
+    def take_metadata_refresh_requests(self) -> tuple[str, ...]:
+        """取出並清空等待中的 metadata refresh target ids。"""
+
+        with self._lock:
+            target_ids = tuple(self.metadata_refresh_order)
+            self.metadata_refresh_target_ids.clear()
+            self.metadata_refresh_order.clear()
+            return target_ids
+
     def _run_loop(self) -> None:
         """背景 thread 主迴圈，依自動掃描模式委派對應 worker。"""
 
@@ -240,6 +290,7 @@ class BackgroundSchedulerManager:
                         scroll_wait_ms=options.scroll_wait_ms,
                         scan_timeout_seconds=options.scan_timeout_seconds,
                         stale_running_after_seconds=options.stale_running_after_seconds,
+                        metadata_refresh_provider=self.take_metadata_refresh_requests,
                     ),
                     self.stop_event,
                     self._record_resident_cycle,

@@ -4,12 +4,14 @@
 避免多個 template 或 JS import 各自手動維護版本字串。
 """
 
-ASSET_VERSION = "ui-refactor-phase24-arch-review"
+ASSET_VERSION = "ui-refactor-phase31-early-scroll-lazy-sortable"
 
 DASHBOARD_MODULE_FILENAMES = (
+    "api.js",
     "card_collapse.js",
     "csrf.js",
     "debug_tools.js",
+    "dialogs.js",
     "forms.js",
     "hit_records.js",
     "main.js",
@@ -19,11 +21,17 @@ DASHBOARD_MODULE_FILENAMES = (
     "revision_client.js",
     "settings.js",
     "sidebar.js",
+    "sidebar_layout.js",
+    "sidebar_sorting.js",
     "sidebar_status.js",
     "state.js",
     "tabs.js",
     "theme.js",
     "utils.js",
+)
+
+VENDOR_MODULE_PATHS = (
+    "/static/vendor/sortablejs/sortable.esm.js",
 )
 
 
@@ -36,12 +44,17 @@ def versioned_static_path(path: str) -> str:
 def build_dashboard_module_imports() -> dict[str, str]:
     """產生 dashboard ES module import map，讓子模組 URL 也會版本化。"""
 
-    return {
+    imports = {
         f"/static/dashboard/{filename}": versioned_static_path(
             f"/static/dashboard/{filename}"
         )
         for filename in DASHBOARD_MODULE_FILENAMES
     }
+    imports.update({
+        path: versioned_static_path(path)
+        for path in VENDOR_MODULE_PATHS
+    })
+    return imports
 
 
 __all__ = [

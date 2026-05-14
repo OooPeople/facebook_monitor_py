@@ -94,16 +94,14 @@
 
 .more-menu-trigger {
   color: var(--text-soft);
-  font-size: 14px;
   list-style: none;
-  min-width: 48px;
 }
 
 .more-menu summary::-webkit-details-marker {
   display: none;
 }
 
-.more-menu-panel {
+.menu-panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -118,12 +116,12 @@
   z-index: 15;
 }
 
-.more-menu-panel form {
+.menu-panel form {
   display: block;
   width: 100%;
 }
 
-.more-menu-action {
+.menu-action {
   min-height: 38px;
   text-align: center;
   white-space: nowrap;
@@ -260,12 +258,12 @@
 }
 
 .section-title {
-  align-items: flex-start;
+  align-items: center;
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   padding: 0;
 }
 
@@ -273,7 +271,6 @@
   flex: 0 0 auto;
   justify-content: flex-end;
   min-width: 92px;
-  padding-bottom: 11px;
 }
 
 .section-title h3 {
@@ -281,7 +278,7 @@
   font-size: 16px;
   font-weight: 650;
   line-height: 1.5;
-  padding: 0 0 11px;
+  padding: 0 0 6px;
 }
 
 .compact-config-form label {
@@ -358,17 +355,16 @@
 }
 
 .settings-summary-button {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
   color: var(--text-soft);
-  display: flex;
   font-weight: 650;
-  justify-content: center;
   gap: 10px;
   min-height: 42px;
   width: 100%;
+}
+
+.settings-summary-button .ui-icon {
+  height: 18px;
+  width: 18px;
 }
 
 .settings-summary-button:hover {

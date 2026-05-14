@@ -13,6 +13,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
@@ -92,6 +93,42 @@ class TargetRegistryService:
             target,
             name=next_name,
             group_name=request_group_name,
+            metadata_status=TargetMetadataStatus.RESOLVED,
+            metadata_error="",
+            updated_at=utc_now(),
+        )
+        self.targets.save(updated_target)
+        return updated_target
+
+    def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
+        """標記 target 正等待 resident worker 補齊 Facebook metadata。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        updated_target = replace(
+            target,
+            metadata_status=TargetMetadataStatus.PENDING,
+            metadata_error="",
+            updated_at=utc_now(),
+        )
+        self.targets.save(updated_target)
+        return updated_target
+
+    def mark_target_metadata_refresh_failed(
+        self,
+        target_id: str,
+        error: str,
+    ) -> TargetDescriptor:
+        """標記 target metadata 補齊失敗，讓 UI 顯示可手動改名的狀態。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        updated_target = replace(
+            target,
+            metadata_status=TargetMetadataStatus.FAILED,
+            metadata_error=_normalize_metadata_error(error),
             updated_at=utc_now(),
         )
         self.targets.save(updated_target)
@@ -109,6 +146,8 @@ class TargetRegistryService:
         updated_target = replace(
             target,
             name=request_name,
+            metadata_status=TargetMetadataStatus.RESOLVED,
+            metadata_error="",
             updated_at=utc_now(),
         )
         self.targets.save(updated_target)
@@ -139,6 +178,12 @@ class TargetRegistryService:
                 name=next_name,
                 group_name=request_group_name or existing_group_name,
                 canonical_url=request.canonical_url,
+                metadata_status=(
+                    TargetMetadataStatus.RESOLVED
+                    if request_name or request_group_name
+                    else existing.metadata_status
+                ),
+                metadata_error="" if request_name or request_group_name else existing.metadata_error,
                 updated_at=utc_now(),
             )
         else:
@@ -193,6 +238,12 @@ class TargetRegistryService:
                 name=next_name,
                 group_name=request_group_name or existing_group_name,
                 canonical_url=request.canonical_url,
+                metadata_status=(
+                    TargetMetadataStatus.RESOLVED
+                    if request_name or request_group_name
+                    else existing.metadata_status
+                ),
+                metadata_error="" if request_name or request_group_name else existing.metadata_error,
                 updated_at=utc_now(),
             )
         else:
@@ -216,3 +267,12 @@ def clean_facebook_group_name(value: str) -> str:
     """清理準備保存的 Facebook 社團名稱，對齊 userscript 取得名稱階段。"""
 
     return clean_facebook_page_title(value)
+
+
+def _normalize_metadata_error(value: str) -> str:
+    """把 metadata refresh 錯誤壓成可保存的短訊息。"""
+
+    normalized = " ".join(str(value or "").split())
+    if not normalized:
+        return "metadata refresh failed"
+    return normalized[:500]

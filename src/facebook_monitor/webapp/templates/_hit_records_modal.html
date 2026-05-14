@@ -7,7 +7,12 @@
       </div>
       <div class="modal-header-actions">
         <button class="button--danger" type="button" data-clear-hit-records data-target-id="{{ row.target.id }}">清空紀錄</button>
-        <button class="button--icon" type="button" data-close-hit-records aria-label="關閉紀錄">×</button>
+        <button class="button--icon" type="button" data-close-hit-records aria-label="關閉紀錄">
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+          </svg>
+        </button>
       </div>
     </header>
     <div class="modal-body">
@@ -19,7 +24,6 @@
     </div>
     <footer class="modal-footer">
       <p class="muted-text">清空紀錄不會刪除 target，也不會清除最近掃描結果或設定。</p>
-      <button type="button" data-close-hit-records>關閉</button>
     </footer>
   </div>
 </dialog>

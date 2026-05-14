@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from dataclasses import replace
 
+from facebook_monitor.core.keyword_rules import format_keyword_rules
+from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import match_history_from_row
@@ -26,6 +29,18 @@ class MatchHistoryRepository:
         notified_at = entry.notified_at or utc_now()
         created_at = entry.created_at or notified_at
         if entry.item_key:
+            self.connection.execute(
+                """
+                DELETE FROM match_history_matches
+                WHERE history_id IN (
+                    SELECT id
+                    FROM match_history
+                    WHERE target_id = ?
+                      AND item_key = ?
+                )
+                """,
+                (entry.target_id, entry.item_key),
+            )
             self.connection.execute(
                 """
                 DELETE FROM match_history
@@ -61,13 +76,39 @@ class MatchHistoryRepository:
                 encode_datetime(created_at),
             ),
         )
+        history_id = require_lastrowid(cursor.lastrowid, table_name="match_history")
+        self._save_match_rules(history_id, _include_rules_for_entry(entry))
         self.prune_global_limit()
-        return require_lastrowid(cursor.lastrowid, table_name="match_history")
+        return history_id
 
     def prune_global_limit(self, limit: int = MATCH_HISTORY_GLOBAL_LIMIT) -> int:
         """裁切全域 match history，只保留最近 N 筆，對齊 userscript。"""
 
         bounded_limit = max(int(limit), 1)
+        keep_rows = self.connection.execute(
+            """
+            SELECT id
+            FROM match_history
+            ORDER BY
+                CASE WHEN notified_at = '' THEN 1 ELSE 0 END,
+                notified_at DESC,
+                id DESC
+            LIMIT ?
+            """,
+            (bounded_limit,),
+        ).fetchall()
+        keep_ids = [int(row["id"]) for row in keep_rows]
+        if keep_ids:
+            placeholders = ",".join("?" for _ in keep_ids)
+            self.connection.execute(
+                f"""
+                DELETE FROM match_history_matches
+                WHERE history_id NOT IN ({placeholders})
+                """,
+                tuple(keep_ids),
+            )
+        else:
+            self.connection.execute("DELETE FROM match_history_matches")
         cursor = self.connection.execute(
             """
             DELETE FROM match_history
@@ -122,7 +163,7 @@ class MatchHistoryRepository:
             """,
             tuple(params),
         ).fetchall()
-        return [match_history_from_row(row) for row in rows]
+        return self._enrich_entries_with_matches(rows)
 
     def list_by_targets(
         self,
@@ -179,8 +220,7 @@ class MatchHistoryRepository:
         entries_by_target: dict[str, list[MatchHistoryEntry]] = {
             target_id: [] for target_id in unique_target_ids
         }
-        for row in rows:
-            entry = match_history_from_row(row)
+        for entry in self._enrich_entries_with_matches(rows):
             entries_by_target.setdefault(entry.target_id, []).append(entry)
         return entries_by_target
 
@@ -243,6 +283,15 @@ class MatchHistoryRepository:
     def clear_by_target(self, target_id: str) -> int:
         """清空單一 target 的 match history 並回傳刪除筆數。"""
 
+        self.connection.execute(
+            """
+            DELETE FROM match_history_matches
+            WHERE history_id IN (
+                SELECT id FROM match_history WHERE target_id = ?
+            )
+            """,
+            (target_id,),
+        )
         cursor = self.connection.execute(
             """
             DELETE FROM match_history
@@ -251,4 +300,62 @@ class MatchHistoryRepository:
             (target_id,),
         )
         return int(cursor.rowcount)
+
+    def _save_match_rules(self, history_id: int, rules: tuple[str, ...]) -> None:
+        """保存單筆 history 的多命中規則。"""
+
+        self.connection.executemany(
+            """
+            INSERT INTO match_history_matches (history_id, match_order, rule)
+            VALUES (?, ?, ?)
+            """,
+            [(history_id, index, rule) for index, rule in enumerate(rules)],
+        )
+
+    def _enrich_entries_with_matches(self, rows: list[sqlite3.Row]) -> list[MatchHistoryEntry]:
+        """將正規化 match 子表資料併回 MatchHistoryEntry。"""
+
+        if not rows:
+            return []
+        entries = [match_history_from_row(row) for row in rows]
+        ids = [int(row["id"]) for row in rows]
+        rules_by_id = self._load_match_rules(ids)
+        enriched_entries: list[MatchHistoryEntry] = []
+        for entry, history_id in zip(entries, ids, strict=True):
+            rules = rules_by_id.get(history_id, entry.include_rules)
+            enriched_entries.append(
+                replace(
+                    entry,
+                    include_rule=format_keyword_rules(rules) if rules else entry.include_rule,
+                    include_rules=rules,
+                )
+            )
+        return enriched_entries
+
+    def _load_match_rules(self, history_ids: list[int]) -> dict[int, tuple[str, ...]]:
+        """批次讀取 match history 的多命中規則。"""
+
+        unique_ids = list(dict.fromkeys(history_ids))
+        if not unique_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT history_id, rule
+            FROM match_history_matches
+            WHERE history_id IN ({placeholders})
+            ORDER BY history_id, match_order
+            """,
+            tuple(unique_ids),
+        ).fetchall()
+        rules_by_id: dict[int, list[str]] = {}
+        for row in rows:
+            rules_by_id.setdefault(int(row["history_id"]), []).append(row["rule"])
+        return {history_id: tuple(rules) for history_id, rules in rules_by_id.items()}
+
+
+def _include_rules_for_entry(entry: MatchHistoryEntry) -> tuple[str, ...]:
+    """回傳 entry 的正規化多命中規則，保留舊欄位相容。"""
+
+    return entry.include_rules or split_keyword_rule_text(entry.include_rule)
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
+from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.highlight import HighlightSegment
 from facebook_monitor.webapp.highlight import build_highlight_segments
@@ -44,12 +45,24 @@ class TargetPreviewRow:
 
         return bool(self.debug_summary or self.debug_text)
 
+    @property
+    def badge_labels(self) -> tuple[str, ...]:
+        """回傳 preview row 需顯示的 badge 文字，可支援多組命中。"""
+
+        if not self.badge_text.startswith("命中: "):
+            return (self.badge_text,) if self.badge_text else ()
+        rules = split_keyword_rule_text(self.badge_text.removeprefix("命中: "))
+        if not rules:
+            return (self.badge_text,)
+        return tuple(f"命中: {rule}" for rule in rules)
+
     def to_dict(self) -> dict[str, object]:
         """轉成 API response 使用的純 dict。"""
 
         return {
             "author_name": self.author_name,
             "badge_text": self.badge_text,
+            "badge_labels": list(self.badge_labels),
             "badge_kind": self.badge_kind,
             "content_preview": self.content_preview,
             "content_segments": [segment.to_dict() for segment in self.content_segments],

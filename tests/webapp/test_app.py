@@ -27,6 +27,7 @@ from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
@@ -57,7 +58,7 @@ def test_parse_keywords_text_dedupes_and_trims() -> None:
     """Web UI keyword parser 會去除空白與重複值。"""
 
     assert parse_keywords_text("票, 交換,票,,讓票") == ("票", "交換", "讓票")
-    assert parse_keywords_text("徵;收;已售") == ("徵;收;已售",)
+    assert parse_keywords_text("徵;收;已售") == ("徵", "收", "已售")
 
 
 def test_static_assets_revalidate_for_local_ui(tmp_path: Path) -> None:
@@ -114,7 +115,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
 
 
 def test_mutating_routes_require_csrf_token_for_loopback_host(tmp_path: Path) -> None:
-    """真實 localhost/loopback host 的 mutating route 必須帶 Web UI 產生的 CSRF token。"""
+    """CSRF middleware 驗 token 後，下游 Form route 仍要讀得到 body。"""
 
     db_path = tmp_path / "app.db"
     client = TestClient(
@@ -139,6 +140,9 @@ def test_mutating_routes_require_csrf_token_for_loopback_host(tmp_path: Path) ->
 
     assert missing_token_response.status_code == 403
     assert valid_token_response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        defaults = app_context.repositories.app_settings.get_target_keyword_defaults()
+    assert defaults.exclude_keywords_text == "售完"
 
 
 def test_mutating_routes_require_csrf_token_for_testserver_host(tmp_path: Path) -> None:
@@ -374,9 +378,13 @@ def test_target_card_panels_share_preview_height_contract() -> None:
     assert ".compact-config-form .keyword-rule-tab" in styles
     assert ".keyword-help-button" in styles
     assert ".more-menu-trigger" in styles
-    assert "min-width: 48px;" in styles
-    assert ".more-menu-panel form" in styles
-    assert ".more-menu-action" in styles
+    more_trigger_rule = styles.split(".more-menu-trigger {", 1)[1].split("}", 1)[0]
+    assert "color: var(--text-soft);" in more_trigger_rule
+    assert "list-style: none;" in more_trigger_rule
+    for duplicated_button_property in ("border-radius:", "min-height:", "min-width:", "padding:"):
+        assert duplicated_button_property not in more_trigger_rule
+    assert ".menu-panel form" in styles
+    assert ".menu-action" in styles
     assert ".compact-config-form .keyword-rule-panel[hidden]" in styles
     assert styles.count("height: var(--preview-panel-height);") >= 2
     assert styles.count("max-height: var(--preview-panel-height);") >= 2
@@ -429,7 +437,7 @@ def test_index_renders_runtime_state_and_error(tmp_path: Path) -> None:
             UpsertGroupPostsTargetRequest(
                 group_id="111",
                 canonical_url="https://www.facebook.com/groups/111",
-                group_name="執行中社團",
+                group_name="掃描測試社團",
             )
         )
         error_target = app_context.services.targets.upsert_group_posts_target(
@@ -446,18 +454,31 @@ def test_index_renders_runtime_state_and_error(tmp_path: Path) -> None:
                 group_name="停止社團",
             )
         )
+        idle_target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="444",
+                canonical_url="https://www.facebook.com/groups/444",
+                group_name="啟用等待社團",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(running_target.id)
         app_context.services.targets.mark_target_running(running_target.id, "worker-1")
+        app_context.services.targets.restart_target_monitoring(error_target.id)
         app_context.services.targets.mark_target_error(error_target.id, "login_required: 需要登入")
         app_context.services.targets.pause_target_monitoring(stopped_target.id)
+        app_context.services.targets.restart_target_monitoring(idle_target.id)
 
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "執行中" in response.text
+    assert "已啟用" in response.text
+    assert "掃描中" in response.text
     assert "錯誤" in response.text
     assert "login_required: 需要登入" in response.text
     assert "已停止" in response.text
+    assert "閒置" not in response.text
+    assert "執行中" not in response.text
 
 
 def test_index_does_not_render_queue_position_runtime_note(tmp_path: Path) -> None:
@@ -694,6 +715,45 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         )
 
 
+def test_hit_record_preview_splits_multiple_matched_keyword_badges(tmp_path: Path) -> None:
+    """命中紀錄 preview 會把多組命中 keyword 拆成多個 badge 並全部高亮。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="multi-keyword",
+                author="王小明",
+                text="售6/5,6/6的票各一張",
+                include_rule="6/5;6/6",
+                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                created_at=app.state.session_started_at + timedelta(seconds=1),
+            )
+        )
+
+    client = TestClient(app)
+    response = client.get(f"/api/targets/{target.id}/hit-records/preview")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["badge_text"] == "命中: 6/5;6/6"
+    assert item["badge_labels"] == ["命中: 6/5", "命中: 6/6"]
+    assert {"text": "6/5", "highlighted": True} in item["content_segments"]
+    assert {"text": "6/6", "highlighted": True} in item["content_segments"]
+
+
 def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path) -> None:
     """Web UI 重啟保留查看紀錄，但卡片命中 preview 只顯示本次 session。"""
 
@@ -736,6 +796,17 @@ def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path)
                 item_kind=ItemKind.POST,
             )
         )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:persisted-1:ntfy",
+                target_id=target.id,
+                item_key="persisted-1",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
 
     app = create_app(
         db_path=db_path,
@@ -752,6 +823,12 @@ def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path)
         assert app_context.repositories.match_history.count_by_target(target.id) == 1
         assert not app_context.repositories.latest_scan_items.list_by_target(target.id)
         assert not app_context.repositories.seen_items.has_seen(target.scope_id, "persisted-1")
+        assert (
+            app_context.repositories.notification_outbox.get_by_idempotency_key(
+                f"{target.id}:persisted-1:ntfy"
+            )
+            is not None
+        )
 
 
 def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
@@ -1078,7 +1155,7 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config is not None
     assert config.include_keywords == ("票",)
     assert config.exclude_keywords == ("售完",)
-    assert config.exclude_ignore_phrases == ("全收;回收",)
+    assert config.exclude_ignore_phrases == ("全收", "回收")
     assert config.fixed_refresh_sec == 75
     assert config.max_items_per_scan == 10
     assert config.auto_load_more
@@ -1088,6 +1165,44 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.ntfy_topic == "phase0test"
     assert config.enable_discord_notification
     assert config.discord_webhook == "https://discord.com/api/webhooks/example"
+
+
+def test_create_target_route_preserves_form_body_after_csrf_validation(
+    tmp_path: Path,
+) -> None:
+    """production CSRF middleware 讀 token 後，route 仍要讀得到 group_url。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_production_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+            group_name_resolver=lambda _profile_dir, _url: "測試社團",
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "csrf_token": "known-token",
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "display_name": "測試 target",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+            "auto_load_more": "on",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+    assert target is not None
 
 
 def test_create_target_route_uses_custom_display_name_without_resolver(tmp_path: Path) -> None:
@@ -1155,6 +1270,95 @@ def test_index_renders_target_rename_modal(tmp_path: Path) -> None:
     assert 'name="display_name" type="text" value="我的票券社團"' in response.text
 
 
+def test_index_hides_generated_fallback_name_until_metadata_refresh(tmp_path: Path) -> None:
+    """metadata 尚未回填時，UI 顯示待抓取文案而不是系統 fallback id。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="204808657039646",
+                parent_post_id="2155501991970293",
+                canonical_url=(
+                    "https://www.facebook.com/groups/204808657039646/posts/"
+                    "2155501991970293"
+                ),
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "抓取社團名稱中，請稍後" in response.text
+    assert 'name="display_name" type="text" value=""' in response.text
+    assert "group:204808657039646:post:2155501991970293:comments" not in response.text
+
+
+def test_metadata_refresh_updates_rename_modal_display_name(tmp_path: Path) -> None:
+    """metadata refresh 補名後，read model 同步提供卡片標題與更名 modal 預填值。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="204808657039646",
+                parent_post_id="2155501991970293",
+                canonical_url=(
+                    "https://www.facebook.com/groups/204808657039646/posts/"
+                    "2155501991970293"
+                ),
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    pending_payload = client.get(f"/api/targets/{target.id}/card").json()
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.targets.refresh_target_group_name(target.id, "票券測試社團")
+    refreshed_payload = client.get(f"/api/targets/{target.id}/card").json()
+    index_response = client.get("/")
+
+    assert pending_payload["display_name"] == "抓取社團名稱中，請稍後"
+    assert pending_payload["rename_display_name"] == ""
+    assert refreshed_payload["display_name"] == "票券測試社團 / post:2155501991970293"
+    assert refreshed_payload["rename_display_name"] == "票券測試社團 / post:2155501991970293"
+    assert index_response.status_code == 200
+    assert (
+        'name="display_name" type="text" '
+        'value="票券測試社團 / post:2155501991970293"'
+    ) in index_response.text
+    assert "group:204808657039646:post:2155501991970293:comments" not in index_response.text
+
+
+def test_index_shows_metadata_failed_name_fallback(tmp_path: Path) -> None:
+    """metadata 補名失敗時，UI 顯示手動改名提示並避免回填系統 fallback。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="204808657039646",
+                parent_post_id="2155501991970293",
+                canonical_url=(
+                    "https://www.facebook.com/groups/204808657039646/posts/"
+                    "2155501991970293"
+                ),
+            )
+        )
+        app_context.services.targets.mark_target_metadata_refresh_failed(
+            target.id,
+            "Facebook 尚未登入",
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "無法自動抓取名稱，請手動更改名稱" in response.text
+    assert 'name="display_name" type="text" value=""' in response.text
+    assert "group:204808657039646:post:2155501991970293:comments" not in response.text
+
+
 def test_update_target_name_route_updates_display_name(tmp_path: Path) -> None:
     """更改名稱 route 會更新 target.name 並回到原 target card。"""
 
@@ -1167,6 +1371,10 @@ def test_update_target_name_route_updates_display_name(tmp_path: Path) -> None:
                 name="原本名稱",
                 group_name="測試社團",
             )
+        )
+        app_context.services.targets.mark_target_metadata_refresh_failed(
+            target.id,
+            "測試失敗",
         )
 
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
@@ -1186,6 +1394,8 @@ def test_update_target_name_route_updates_display_name(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.name == "新卡片名稱"
     assert loaded.group_name == "測試社團"
+    assert loaded.metadata_status == TargetMetadataStatus.RESOLVED
+    assert loaded.metadata_error == ""
 
 
 def test_create_target_route_skips_name_resolver_when_scheduler_running(tmp_path: Path) -> None:
@@ -1242,6 +1452,63 @@ def test_create_target_route_skips_name_resolver_when_scheduler_running(tmp_path
     assert target is not None
     assert target.group_name == ""
     assert target.name == "group:222518561920110:posts"
+    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert target.metadata_error == ""
+    assert scheduler_manager.take_metadata_refresh_requests() == (target.id,)
+
+
+def test_create_permalink_comments_target_while_scheduler_running(tmp_path: Path) -> None:
+    """scheduler 執行中仍可用 group permalink URL 建立 comments target。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = BackgroundSchedulerManager(
+        resident_main_runner=lambda _options, stop_event, _on_cycle, _sleep_fn=None: (
+            stop_event.wait(timeout=2)
+        )
+    )
+    scheduler_manager.start(
+        SchedulerSessionOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    try:
+        client = TestClient(
+            create_app(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                scheduler_manager=scheduler_manager,
+            )
+        )
+
+        response = client.post(
+            "/targets",
+            data={
+                "group_url": (
+                    "https://www.facebook.com/groups/204808657039646/"
+                    "permalink/2155501991970293"
+                ),
+                "fixed_refresh_sec": "60",
+                "max_items_per_scan": "5",
+                "auto_load_more": "on",
+            },
+            follow_redirects=False,
+        )
+    finally:
+        scheduler_manager.stop(timeout_seconds=2)
+
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.COMMENTS,
+            scope_id="204808657039646:post:2155501991970293:comments",
+        )
+    assert target is not None
+    assert target.canonical_url == (
+        "https://www.facebook.com/groups/204808657039646/posts/2155501991970293"
+    )
+    assert target.metadata_status == TargetMetadataStatus.PENDING
     assert scheduler_manager.take_metadata_refresh_requests() == (target.id,)
 
 
@@ -1681,6 +1948,7 @@ def test_create_target_uses_fallback_name_when_scheduler_running(
         )
     assert target is not None
     assert target.name == "group:222518561920110:posts"
+    assert target.metadata_status == TargetMetadataStatus.PENDING
     assert scheduler_manager.metadata_refresh_target_ids == [target.id]
 
 
@@ -1854,6 +2122,17 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
                 item_kind=ItemKind.POST,
             )
         )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:seen-before-start:ntfy",
+                target_id=target.id,
+                item_key="seen-before-start",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
 
     scheduler_manager = FakeSchedulerManager()
     client = TestClient(
@@ -1880,12 +2159,16 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
             target.scope_id,
             "seen-before-start",
         )
+        outbox_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:seen-before-start:ntfy",
+        )
     assert loaded is not None
     assert loaded.enabled
     assert not loaded.paused
     assert state is not None
     assert state.scan_requested_at is not None
     assert not has_seen
+    assert outbox_entry is None
     assert scheduler_manager.woken_count == 2
 
 
@@ -2147,6 +2430,84 @@ def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
     response = client.get("/api/sidebar")
 
     assert response.status_code == 503
+
+
+def test_sidebar_layout_api_saves_group_order_and_placements_atomically(tmp_path: Path) -> None:
+    """sidebar layout API 以單一請求保存 group order 與 placements。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        first_group = app_context.services.sidebar_layout.create_group("第一群")
+        second_group = app_context.services.sidebar_layout.create_group("第二群")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        "/api/sidebar/layout",
+        json={
+            "group_ids": [second_group.id, first_group.id],
+            "groups": [
+                {"group_id": second_group.id, "target_ids": [second.id]},
+                {"group_id": first_group.id, "target_ids": [first.id]},
+                {"group_id": None, "target_ids": []},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "updated_count": 2}
+    with SqliteApplicationContext(db_path) as app_context:
+        groups = app_context.repositories.sidebar_layout.list_groups()
+        placements = app_context.repositories.sidebar_layout.list_placements()
+    assert [group.id for group in groups] == [second_group.id, first_group.id]
+    assert placements[first.id].sidebar_group_id == first_group.id
+    assert placements[second.id].sidebar_group_id == second_group.id
+
+
+def test_flat_sidebar_order_api_rejects_when_targets_are_grouped(tmp_path: Path) -> None:
+    """舊平面排序 API 不可在已有 group placement 時打平 sidebar 狀態。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("已分組")
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id]), (None, [second.id])]
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        "/api/sidebar/order",
+        json={"target_ids": [second.id, first.id]},
+    )
+
+    assert response.status_code == 400
+    assert "grouped placement" in response.json()["detail"]
+    with SqliteApplicationContext(db_path) as app_context:
+        placements = app_context.repositories.sidebar_layout.list_placements()
+    assert placements[first.id].sidebar_group_id == group.id
 
 
 def test_dashboard_events_streams_revision_event(tmp_path: Path) -> None:

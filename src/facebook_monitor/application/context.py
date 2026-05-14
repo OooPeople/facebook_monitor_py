@@ -13,6 +13,7 @@ from pathlib import Path
 
 from facebook_monitor.application.services import ScanApplicationService
 from facebook_monitor.application.services import TargetApplicationService
+from facebook_monitor.application.sidebar_layout_service import SidebarLayoutService
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
@@ -25,6 +26,7 @@ from facebook_monitor.persistence.repositories.notification_events import Notifi
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.repositories.sidebar_layout import SidebarLayoutRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
@@ -55,6 +57,7 @@ class RepositoryBundle:
     notification_outbox: NotificationOutboxRepository
     global_notification_settings: GlobalNotificationSettingsRepository
     app_settings: AppSettingsRepository
+    sidebar_layout: SidebarLayoutRepository
     maintenance: RuntimeDataMaintenanceRepository
     dashboard_revision: DashboardRevisionRepository
 
@@ -65,6 +68,7 @@ class ServiceBundle:
 
     targets: TargetApplicationService
     scans: ScanApplicationService
+    sidebar_layout: SidebarLayoutService
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,10 @@ def build_repositories(
             secret_codec=secret_codec,
         ),
         app_settings=AppSettingsRepository(connection),
+        sidebar_layout=SidebarLayoutRepository(
+            connection,
+            secret_codec=secret_codec,
+        ),
         maintenance=RuntimeDataMaintenanceRepository(connection),
         dashboard_revision=DashboardRevisionRepository(connection),
     )
@@ -133,8 +141,15 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
             configs=repositories.configs,
             runtime_states=repositories.runtime_states,
             seen_items=repositories.seen_items,
+            notification_outbox=repositories.notification_outbox,
         ),
         scans=ScanApplicationService(scan_runs=repositories.scan_runs),
+        sidebar_layout=SidebarLayoutService(
+            targets=repositories.targets,
+            configs=repositories.configs,
+            app_settings=repositories.app_settings,
+            sidebar_layout=repositories.sidebar_layout,
+        ),
     )
 
 

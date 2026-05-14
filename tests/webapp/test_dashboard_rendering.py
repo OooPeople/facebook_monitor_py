@@ -6,8 +6,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.webapp.app import create_app
 from tests.helpers.webapp import render_seeded_index
+from tests.helpers.webapp import seed_dashboard_index_target
 
 
 def test_index_renders_target_identity_status_and_actions(tmp_path: Path) -> None:
@@ -55,14 +60,54 @@ def test_index_renders_latest_preview_hits_and_highlights(tmp_path: Path) -> Non
     assert "開啟連結" in text
 
 
+def test_index_renders_latest_notification_status_by_channel(tmp_path: Path) -> None:
+    """首頁最近通知會顯示各通道最新狀態，不只顯示最後一筆事件。"""
+
+    db_path = tmp_path / "app.db"
+    target = seed_dashboard_index_target(db_path)
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.notification_events.add(
+            NotificationEvent(
+                target_id=target.id,
+                item_key="item-1",
+                channel=NotificationChannel.DESKTOP,
+                status=NotificationStatus.FAILED,
+                message="desktop_failed",
+            )
+        )
+        app_context.repositories.notification_events.add(
+            NotificationEvent(
+                target_id=target.id,
+                item_key="item-1",
+                channel=NotificationChannel.DISCORD,
+                status=NotificationStatus.SENT,
+                message="discord_sent",
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            enforce_csrf=False,
+        )
+    )
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "最近通知 桌面 failed / ntfy sent / Discord sent" in response.text
+
+
 def test_index_renders_scan_diagnostics_without_legacy_debug_json(
     tmp_path: Path,
 ) -> None:
-    """首頁掃描診斷可複製，但不回到舊 debug_json 區塊。"""
+    """首頁掃描診斷在更多選單 modal 內可複製，但不回到舊 debug_json 區塊。"""
 
     text, _target_id = render_seeded_index(tmp_path)
 
     assert "掃描診斷" in text
+    assert "data-scan-diagnostics-button" in text
+    assert "data-scan-diagnostics-modal" in text
     assert "rounds=1 · candidates=2 · stop=完成捲動輪數" in text
     assert "collection_strategy=feed_visible_window" in text
     assert "round=0 raw=2 unique=2" in text
@@ -74,6 +119,7 @@ def test_index_renders_scan_diagnostics_without_legacy_debug_json(
     assert "linkDiagnostics=" in text
     assert "debug_json=" not in text
     assert "https://www.facebook.com/groups/1/user/2" in text
+    assert '<details class="debug-details scan-debug-details">' not in text
 
 
 def test_index_keeps_internal_scheduler_and_old_debug_ui_hidden(
@@ -119,9 +165,14 @@ def test_index_renders_target_settings_summary_and_collapse_controls(
     assert "data-keyword-help-button" in text
     assert "data-keyword-help-modal" in text
     assert "排除字忽略片語</h3>" in text
-    assert "忽略片語只會在排除判斷前遮罩該片語本身" in text
+    assert "避免排除關鍵字誤判。" in text
+    assert "系統會先保護忽略片語，再檢查排除關鍵字。" in text
+    assert "收一張票" in text
+    assert "售一張票，贈品回收" in text
+    assert "預設忽略片語" not in text
     assert 'data-keyword-panel="ignore" hidden' in text
     assert '</div>\n\n  <div class="target-footer-controls">' in text
+    assert 'placeholder="例如：全收;回收"' in text
     assert ">收合</button>" not in text
 
 

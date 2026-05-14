@@ -16,6 +16,7 @@ from facebook_monitor.persistence.repositories.notification_events import Notifi
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.repositories.sidebar_layout import SidebarLayoutRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -43,6 +44,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "ScanRunRepository",
     "SeenItemRepository",
+    "SidebarLayoutRepository",
     "SqliteConnection",
     "TargetConfigRepository",
     "TargetRepository",

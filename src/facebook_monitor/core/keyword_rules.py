@@ -11,6 +11,8 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import ahocorasick  # type: ignore[import-not-found]
+
 
 ZERO_WIDTH_PATTERN = re.compile(r"[\u200b-\u200d\ufeff]")
 WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -30,6 +32,7 @@ class KeywordMatchResult:
 
     matched: bool
     rule: str = ""
+    rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,8 @@ class KeywordEvaluation:
     eligible: bool
     include_rule: str = ""
     exclude_rule: str = ""
+    include_rules: tuple[str, ...] = ()
+    exclude_rules: tuple[str, ...] = ()
 
     @property
     def display_rule(self) -> str:
@@ -98,6 +103,24 @@ def parse_keyword_values(values: Iterable[object]) -> tuple[KeywordRule, ...]:
     return tuple(rules)
 
 
+def format_keyword_rules(rules: Iterable[str]) -> str:
+    """將多組命中規則整理成既有儲存欄位可承載的顯示文字。"""
+
+    return ";".join(dedupe_keyword_rules(rules))
+
+
+def split_keyword_rule_text(value: str) -> tuple[str, ...]:
+    """將既有字串欄位中的多組 keyword rule 拆回顯示清單。"""
+
+    return dedupe_keyword_rules(rule.raw for rule in parse_keyword_input(value))
+
+
+def dedupe_keyword_rules(rules: Iterable[str]) -> tuple[str, ...]:
+    """依出現順序去除空白與重複 keyword rule。"""
+
+    return tuple(rule for rule in dict.fromkeys(rules) if rule)
+
+
 def matches_keyword_rule(rule: KeywordRule | None, normalized_text: str) -> bool:
     """檢查單一 keyword 規則是否命中指定文字。"""
 
@@ -105,16 +128,101 @@ def matches_keyword_rule(rule: KeywordRule | None, normalized_text: str) -> bool
 
 
 def match_rules(rules: Iterable[KeywordRule], normalized_text: str) -> KeywordMatchResult:
-    """逐條規則比對，任一規則成立就視為命中。"""
+    """比對全部規則並回傳所有命中的規則。"""
 
-    rule_tuple = tuple(rules)
-    if not rule_tuple:
-        return KeywordMatchResult(matched=False, rule="")
+    return KeywordRuleSetMatcher(rules).match(normalized_text)
 
-    for rule in rule_tuple:
-        if matches_keyword_rule(rule, normalized_text):
-            return KeywordMatchResult(matched=True, rule=rule.raw)
-    return KeywordMatchResult(matched=False, rule="")
+
+class KeywordRuleSetMatcher:
+    """以 Aho-Corasick automaton 一次掃描多組 keyword terms。"""
+
+    def __init__(self, rules: Iterable[KeywordRule]) -> None:
+        self.rules = tuple(rules)
+        terms = tuple(
+            dict.fromkeys(term for rule in self.rules for term in rule.terms if term)
+        )
+        self._automaton = _build_automaton(terms)
+
+    def match(self, normalized_text: str) -> KeywordMatchResult:
+        """回傳全部成立的 OR 規則，單一規則內 terms 維持 AND 語義。"""
+
+        if not self.rules:
+            return KeywordMatchResult(matched=False, rule="", rules=())
+        found_terms = set(_iter_automaton_values(self._automaton, normalized_text))
+        matched_rules = dedupe_keyword_rules(
+            rule.raw for rule in self.rules if all(term in found_terms for term in rule.terms)
+        )
+        return KeywordMatchResult(
+            matched=bool(matched_rules),
+            rule=matched_rules[0] if matched_rules else "",
+            rules=matched_rules,
+        )
+
+
+class PhraseRangeMatcher:
+    """以 Aho-Corasick automaton 尋找多組片語 range。"""
+
+    def __init__(self, phrases: Iterable[str]) -> None:
+        self.phrases = tuple(dict.fromkeys(phrase for phrase in phrases if phrase))
+        self._automaton = _build_automaton(self.phrases)
+
+    def ranges(self, normalized_text: str) -> tuple[tuple[int, int], ...]:
+        """回傳 normalized text 中所有片語命中 range。"""
+
+        ranges: list[tuple[int, int]] = []
+        for end_index, phrase in _iter_automaton_matches(self._automaton, normalized_text):
+            ranges.append((end_index - len(phrase) + 1, end_index + 1))
+        return _merge_ranges(ranges)
+
+
+class CompiledKeywordMatcher:
+    """保存 target config 編譯後的 keyword matcher，可重複評估多篇內容。"""
+
+    def __init__(
+        self,
+        *,
+        include_keywords: Iterable[object],
+        exclude_keywords: Iterable[object] = (),
+        exclude_ignore_phrases: Iterable[object] = (),
+    ) -> None:
+        self.include_matcher = KeywordRuleSetMatcher(parse_keyword_values(include_keywords))
+        self.exclude_matcher = KeywordRuleSetMatcher(parse_keyword_values(exclude_keywords))
+        self.exclude_ignore_matcher = PhraseRangeMatcher(
+            normalize_for_match(rule.raw)
+            for rule in parse_keyword_values(exclude_ignore_phrases)
+        )
+
+    def evaluate(self, text: object) -> KeywordEvaluation:
+        """依 include / exclude 規則判斷單段文字是否符合監視條件。"""
+
+        normalized_text = normalize_for_match(text)
+        include_result = self.include_matcher.match(normalized_text)
+        exclude_text = _mask_ranges(normalized_text, self.exclude_ignore_matcher.ranges(normalized_text))
+        exclude_result = self.exclude_matcher.match(exclude_text)
+        include_rules = include_result.rules
+        exclude_rules = exclude_result.rules if exclude_result.matched else ()
+        return KeywordEvaluation(
+            eligible=include_result.matched and not exclude_result.matched,
+            include_rule=format_keyword_rules(include_rules),
+            exclude_rule=format_keyword_rules(exclude_rules),
+            include_rules=include_rules,
+            exclude_rules=exclude_rules,
+        )
+
+
+def compile_keyword_matcher(
+    *,
+    include_keywords: Iterable[object],
+    exclude_keywords: Iterable[object] = (),
+    exclude_ignore_phrases: Iterable[object] = (),
+) -> CompiledKeywordMatcher:
+    """編譯 target keyword 設定，供單輪掃描重複使用。"""
+
+    return CompiledKeywordMatcher(
+        include_keywords=include_keywords,
+        exclude_keywords=exclude_keywords,
+        exclude_ignore_phrases=exclude_ignore_phrases,
+    )
 
 
 def mask_exclude_ignore_phrases(
@@ -123,33 +231,10 @@ def mask_exclude_ignore_phrases(
 ) -> str:
     """在 normalized text 上遮罩排除字忽略片語的命中範圍。"""
 
-    ranges: list[tuple[int, int]] = []
-    for rule in parse_keyword_values(exclude_ignore_phrases):
-        phrase = normalize_for_match(rule.raw)
-        if not phrase:
-            continue
-        start = 0
-        while True:
-            index = normalized_text.find(phrase, start)
-            if index < 0:
-                break
-            ranges.append((index, index + len(phrase)))
-            start = index + 1
-    if not ranges:
-        return normalized_text
-
-    merged_ranges: list[tuple[int, int]] = []
-    for start, end in sorted(ranges):
-        if not merged_ranges or start > merged_ranges[-1][1]:
-            merged_ranges.append((start, end))
-            continue
-        previous_start, previous_end = merged_ranges[-1]
-        merged_ranges[-1] = (previous_start, max(previous_end, end))
-
-    chars = list(normalized_text)
-    for start, end in merged_ranges:
-        chars[start:end] = " " * (end - start)
-    return "".join(chars)
+    matcher = PhraseRangeMatcher(
+        normalize_for_match(rule.raw) for rule in parse_keyword_values(exclude_ignore_phrases)
+    )
+    return _mask_ranges(normalized_text, matcher.ranges(normalized_text))
 
 
 def evaluate_keyword_rules(
@@ -160,17 +245,65 @@ def evaluate_keyword_rules(
 ) -> KeywordEvaluation:
     """依 include / exclude 規則判斷單段文字是否符合監視條件。"""
 
-    normalized_text = normalize_for_match(text)
-    include_result = match_rules(parse_keyword_values(include_keywords), normalized_text)
-    exclude_rules = parse_keyword_values(exclude_keywords)
-    exclude_text = mask_exclude_ignore_phrases(normalized_text, exclude_ignore_phrases)
-    exclude_result = (
-        match_rules(exclude_rules, exclude_text)
-        if exclude_rules
-        else KeywordMatchResult(matched=False, rule="")
-    )
-    return KeywordEvaluation(
-        eligible=include_result.matched and not exclude_result.matched,
-        include_rule=include_result.rule,
-        exclude_rule=exclude_result.rule if exclude_result.matched else "",
-    )
+    return compile_keyword_matcher(
+        include_keywords=include_keywords,
+        exclude_keywords=exclude_keywords,
+        exclude_ignore_phrases=exclude_ignore_phrases,
+    ).evaluate(text)
+
+
+def _build_automaton(values: Iterable[str]) -> ahocorasick.Automaton | None:
+    """建立 Aho-Corasick automaton；空集合回傳 None。"""
+
+    unique_values = tuple(dict.fromkeys(value for value in values if value))
+    if not unique_values:
+        return None
+    automaton = ahocorasick.Automaton()
+    for value in unique_values:
+        automaton.add_word(value, value)
+    automaton.make_automaton()
+    return automaton
+
+
+def _iter_automaton_matches(
+    automaton: ahocorasick.Automaton | None,
+    text: str,
+) -> Iterable[tuple[int, str]]:
+    """走訪 automaton 命中結果。"""
+
+    if automaton is None:
+        return ()
+    return automaton.iter(text)
+
+
+def _iter_automaton_values(automaton: ahocorasick.Automaton | None, text: str) -> Iterable[str]:
+    """走訪 automaton 命中的 value。"""
+
+    return (value for _end_index, value in _iter_automaton_matches(automaton, text))
+
+
+def _mask_ranges(normalized_text: str, ranges: Iterable[tuple[int, int]]) -> str:
+    """將 normalized text 指定 ranges 以空白遮罩。"""
+
+    merged_ranges = _merge_ranges(ranges)
+    if not merged_ranges:
+        return normalized_text
+    chars = list(normalized_text)
+    for start, end in merged_ranges:
+        chars[start:end] = " " * (end - start)
+    return "".join(chars)
+
+
+def _merge_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    """合併重疊或相鄰 range。"""
+
+    merged_ranges: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if start >= end:
+            continue
+        if not merged_ranges or start > merged_ranges[-1][1]:
+            merged_ranges.append((start, end))
+            continue
+        previous_start, previous_end = merged_ranges[-1]
+        merged_ranges[-1] = (previous_start, max(previous_end, end))
+    return tuple(merged_ranges)

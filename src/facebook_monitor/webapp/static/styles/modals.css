@@ -4,6 +4,7 @@
 .hit-records-modal {
   border: 0;
   border-radius: var(--radius-md);
+  background: var(--surface);
   box-shadow: var(--shadow-modal);
   color: inherit;
   max-height: calc(100vh - 32px);
@@ -12,9 +13,24 @@
   width: min(640px, calc(100vw - 32px));
 }
 
+.app-dialog {
+  max-width: min(520px, calc(100vw - 32px));
+  width: min(520px, calc(100vw - 32px));
+}
+
 .hit-records-modal {
   max-width: min(980px, calc(100vw - 32px));
   width: min(980px, calc(100vw - 32px));
+}
+
+.sidebar-template-modal {
+  max-width: min(1040px, calc(100vw - 32px));
+  width: min(1040px, calc(100vw - 32px));
+}
+
+.sidebar-template-modal,
+.sidebar-template-modal .modal-shell {
+  overflow: hidden;
 }
 
 .settings-modal::backdrop,
@@ -23,11 +39,35 @@
   background: var(--modal-backdrop);
 }
 
+.app-dialog-body {
+  gap: 12px;
+}
+
+.app-dialog-body p {
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.app-dialog-body label {
+  display: grid;
+  gap: 8px;
+}
+
+.app-dialog-body.danger {
+  border-left: 3px solid var(--danger);
+}
+
 .modal-shell {
   background: var(--surface);
   display: grid;
   max-height: calc(100vh - 32px);
   grid-template-rows: auto auto auto;
+}
+
+.sidebar-template-modal .modal-shell {
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .modal-header,
@@ -63,10 +103,15 @@
 }
 
 .modal-body {
+  background: var(--surface);
   display: grid;
   gap: 10px;
   overflow-y: visible;
   padding: 18px;
+}
+
+.sidebar-template-modal .modal-body {
+  overflow-y: auto;
 }
 
 .hit-records-modal .modal-shell {
@@ -195,6 +240,16 @@
   margin: 6px 0 0;
 }
 
+.keyword-help-body ul {
+  color: var(--text-soft);
+  display: grid;
+  font-size: 14px;
+  gap: 8px;
+  line-height: 1.55;
+  margin: 2px 0 0;
+  padding-left: 20px;
+}
+
 .keyword-help-body code {
   background: var(--surface-muted);
   border-radius: 4px;
@@ -226,6 +281,23 @@
 .setting-stack {
   display: grid;
   gap: 12px;
+}
+
+.sidebar-template-keyword-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sidebar-template-title-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.sidebar-template-keyword-grid textarea {
+  min-height: 112px;
 }
 
 .scan-toggle-grid {
@@ -272,6 +344,7 @@
 }
 
 .modal-footer {
+  background: var(--surface);
   border-top: 1px solid var(--border-soft);
   justify-content: space-between;
 }
@@ -311,5 +384,11 @@
   gap: 8px;
   margin-top: 12px;
   align-items: center;
+}
+
+@media (max-width: 860px) {
+  .sidebar-template-keyword-grid {
+    grid-template-columns: 1fr;
+  }
 }
 

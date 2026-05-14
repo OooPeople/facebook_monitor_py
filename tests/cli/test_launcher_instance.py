@@ -274,7 +274,7 @@ def test_launcher_filters_windows_proactor_connection_lost_noise(monkeypatch) ->
 
     monkeypatch.setattr(launcher.sys, "platform", "win32")
     exception = OSError("bad argument")
-    exception.winerror = 10022
+    setattr(exception, "winerror", 10022)
     context = {
         "exception": exception,
         "handle": "<Handle _ProactorBasePipeTransport._call_connection_lost()>",
@@ -300,7 +300,7 @@ def test_launcher_keeps_unrelated_asyncio_exceptions(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher.sys, "platform", "win32")
     exception = OSError("other")
-    exception.winerror = 10054
+    setattr(exception, "winerror", 10054)
 
     assert not launcher._is_windows_proactor_connection_lost_noise(
         {
@@ -373,6 +373,7 @@ def test_launcher_no_auto_port_uses_fixed_default_port(tmp_path, monkeypatch) ->
         "run",
         lambda *args, **kwargs: seen_ports.append(kwargs["port"]),
     )
+    monkeypatch.setattr(launcher, "_port_is_available", lambda host, port: True)
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)
 
     try:

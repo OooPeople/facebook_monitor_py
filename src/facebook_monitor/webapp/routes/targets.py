@@ -204,6 +204,10 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             group_name=resolved_group_name,
                         )
                     )
+                    if scheduler_running and not custom_name:
+                        target = app_context.services.targets.mark_target_metadata_refresh_pending(
+                            target.id,
+                        )
                 if scheduler_running and not custom_name:
                     get_scheduler_manager(request).request_metadata_refresh(target.id)
             else:
@@ -221,6 +225,10 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             group_name=resolved_group_name,
                         )
                     )
+                    if scheduler_running and not custom_name:
+                        target = app_context.services.targets.mark_target_metadata_refresh_pending(
+                            target.id,
+                        )
                 if scheduler_running and not custom_name:
                     get_scheduler_manager(request).request_metadata_refresh(target.id)
         except RouteDetectionError as exc:

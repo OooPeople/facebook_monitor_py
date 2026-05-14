@@ -7,7 +7,7 @@ import sqlite3
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 21
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -41,6 +41,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             parent_post_id TEXT NOT NULL,
             scope_id TEXT NOT NULL,
             canonical_url TEXT NOT NULL,
+            metadata_status TEXT NOT NULL DEFAULT 'resolved',
+            metadata_error TEXT NOT NULL DEFAULT '',
             enabled INTEGER NOT NULL,
             paused INTEGER NOT NULL,
             worker_mode TEXT NOT NULL,
@@ -96,6 +98,13 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS match_history_matches (
+            history_id INTEGER NOT NULL REFERENCES match_history(id) ON DELETE CASCADE,
+            match_order INTEGER NOT NULL,
+            rule TEXT NOT NULL,
+            PRIMARY KEY (history_id, match_order)
+        );
+
         CREATE TABLE IF NOT EXISTS latest_scan_items (
             target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
             scan_run_id INTEGER NOT NULL,
@@ -109,6 +118,18 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             debug_metadata TEXT NOT NULL DEFAULT '{}',
             scanned_at TEXT NOT NULL,
             PRIMARY KEY (target_id, item_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS latest_scan_item_matches (
+            target_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            match_order INTEGER NOT NULL,
+            rule TEXT NOT NULL,
+            PRIMARY KEY (target_id, item_key, match_order),
+            FOREIGN KEY (target_id, item_key)
+                REFERENCES latest_scan_items(target_id, item_key)
+                ON UPDATE CASCADE
+                ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS scan_runs (
@@ -188,6 +209,42 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS sidebar_groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sidebar_target_placements (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            sidebar_group_id TEXT REFERENCES sidebar_groups(id) ON DELETE SET NULL,
+            sort_order INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sidebar_group_config_templates (
+            sidebar_group_id TEXT PRIMARY KEY REFERENCES sidebar_groups(id) ON DELETE CASCADE,
+            include_keywords TEXT NOT NULL DEFAULT '[]',
+            exclude_keywords TEXT NOT NULL DEFAULT '[]',
+            exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+            min_refresh_sec INTEGER NOT NULL,
+            max_refresh_sec INTEGER NOT NULL,
+            jitter_enabled INTEGER NOT NULL,
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL,
+            auto_load_more INTEGER NOT NULL,
+            auto_adjust_sort INTEGER NOT NULL,
+            enable_desktop_notification INTEGER NOT NULL,
+            enable_ntfy INTEGER NOT NULL,
+            ntfy_topic TEXT NOT NULL,
+            enable_discord_notification INTEGER NOT NULL,
+            discord_webhook TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS dashboard_revision (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             revision INTEGER NOT NULL,
@@ -197,20 +254,26 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         INSERT OR IGNORE INTO dashboard_revision (id, revision, updated_at)
         VALUES (1, 0, '');
 
-        CREATE INDEX IF NOT EXISTS idx_targets_kind_scope
-            ON targets(target_kind, scope_id);
         CREATE INDEX IF NOT EXISTS idx_scan_runs_target_created
             ON scan_runs(target_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_notification_events_target_created
             ON notification_events(target_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_latest_scan_items_target_index
             ON latest_scan_items(target_id, item_index);
+        CREATE INDEX IF NOT EXISTS idx_latest_scan_item_matches_target_item
+            ON latest_scan_item_matches(target_id, item_key, match_order);
+        CREATE INDEX IF NOT EXISTS idx_match_history_matches_history
+            ON match_history_matches(history_id, match_order);
         CREATE INDEX IF NOT EXISTS idx_runtime_state_status_updated
             ON target_runtime_state(runtime_status, updated_at);
         CREATE INDEX IF NOT EXISTS idx_runtime_state_desired_updated
             ON target_runtime_state(desired_state, updated_at);
         CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_updated
             ON notification_outbox(status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_sidebar_groups_order
+            ON sidebar_groups(sort_order);
+        CREATE INDEX IF NOT EXISTS idx_sidebar_target_placements_group_order
+            ON sidebar_target_placements(sidebar_group_id, sort_order);
         """
     )
     ensure_dashboard_revision_triggers(connection)
@@ -224,7 +287,9 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         )
     elif existing_version < SCHEMA_VERSION:
         write_schema_version(connection, SCHEMA_VERSION)
+    ensure_target_metadata_index(connection)
     ensure_target_scope_unique_index(connection)
+    drop_redundant_target_scope_index(connection)
 
 
 def has_existing_user_tables(connection: sqlite3.Connection) -> bool:
@@ -241,18 +306,26 @@ def has_existing_user_tables(connection: sqlite3.Connection) -> bool:
     return bool(rows)
 
 
+DASHBOARD_REVISION_TABLES = (
+    "targets",
+    "target_configs",
+    "target_runtime_state",
+    "scan_runs",
+    "notification_events",
+    "latest_scan_items",
+    "latest_scan_item_matches",
+    "match_history",
+    "match_history_matches",
+    "sidebar_groups",
+    "sidebar_target_placements",
+    "sidebar_group_config_templates",
+)
+
+
 def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
     """建立 dashboard revision bump triggers，讓 polling query 固定成本。"""
 
-    for table_name in (
-        "targets",
-        "target_configs",
-        "target_runtime_state",
-        "scan_runs",
-        "notification_events",
-        "latest_scan_items",
-        "match_history",
-    ):
+    for table_name in DASHBOARD_REVISION_TABLES:
         for operation in ("INSERT", "UPDATE", "DELETE"):
             trigger_name = f"trg_dashboard_revision_{table_name}_{operation.lower()}"
             connection.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
@@ -280,6 +353,23 @@ def ensure_target_scope_unique_index(connection: sqlite3.Connection) -> None:
         ON targets(target_kind, scope_id)
         """
     )
+
+
+def ensure_target_metadata_index(connection: sqlite3.Connection) -> None:
+    """建立 metadata refresh 狀態查詢 index；欄位需先由 migration 補齊。"""
+
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_targets_metadata_status_updated
+        ON targets(metadata_status, updated_at)
+        """
+    )
+
+
+def drop_redundant_target_scope_index(connection: sqlite3.Connection) -> None:
+    """移除已被 unique index 涵蓋的舊普通 target scope index。"""
+
+    connection.execute("DROP INDEX IF EXISTS idx_targets_kind_scope")
 
 
 def repair_duplicate_target_scopes(connection: sqlite3.Connection) -> None:

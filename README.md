@@ -85,5 +85,5 @@ git diff --check
 - 只使用 app data directory 內的專用 automation profile。
 - 不 commit cookies、browser profiles、tokens、session dumps、本機 logs 或私人 runtime data。
 - notification endpoint 屬於敏感診斷資料；sender exception 與 UI error message 在保存或顯示前都必須安全化。
-- notification secrets 在 SQLite 內會加密保存；設計與安全邊界記錄在 [docs/SECRET_STORAGE.md](docs/SECRET_STORAGE.md)。
+- notification secrets 在 SQLite 內會加密保存；安全邊界記錄在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#notification-與-secret)。
 - Web UI 預設只供本機 loopback 使用，除非明確改用其他 host 設定。

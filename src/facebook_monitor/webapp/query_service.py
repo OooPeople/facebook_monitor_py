@@ -13,6 +13,9 @@ from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.sidebar_models import SidebarGroup
+from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
+from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
@@ -22,6 +25,7 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
+from facebook_monitor.webapp.dashboard_models import SidebarGroupSection
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.hit_record_models import FullHitRecordRow
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
@@ -49,6 +53,7 @@ class DashboardViewModel:
     """保存 dashboard template 所需 read model。"""
 
     rows: tuple[TargetRow, ...]
+    sidebar_groups: tuple[SidebarGroupSection, ...] = ()
 
     @property
     def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
@@ -64,11 +69,49 @@ def list_target_rows(
 ) -> list[TargetRow]:
     """讀取所有 target 與 config，整理為首頁 target row。"""
 
-    return _list_target_rows(
-        db_path,
-        initialize_schema_on_enter=False,
-        session_started_at=session_started_at,
+    return list(
+        _read_dashboard_model(
+            db_path,
+            initialize_schema_on_enter=False,
+            session_started_at=session_started_at,
+        ).rows
     )
+
+
+@dataclass(frozen=True)
+class _DashboardReadResult:
+    """保存 dashboard read 內部結果。"""
+
+    rows: tuple[TargetRow, ...]
+    sidebar_groups: tuple[SidebarGroupSection, ...]
+
+
+def _read_dashboard_model(
+    db_path: Path,
+    *,
+    initialize_schema_on_enter: bool,
+    session_started_at: datetime | None,
+) -> _DashboardReadResult:
+    """讀取 dashboard rows 與 sidebar group sections。"""
+
+    try:
+        return _list_target_rows(
+            db_path,
+            initialize_schema_on_enter=initialize_schema_on_enter,
+            session_started_at=session_started_at,
+        )
+    except sqlite3.OperationalError as exc:
+        if (
+            not initialize_schema_on_enter
+            and _is_missing_schema_error(exc)
+        ):
+            return _read_dashboard_model(
+                db_path,
+                initialize_schema_on_enter=True,
+                session_started_at=session_started_at,
+            )
+        _raise_dashboard_read_unavailable_if_locked(exc)
+        raise
 
 
 def _list_target_rows(
@@ -76,74 +119,86 @@ def _list_target_rows(
     *,
     initialize_schema_on_enter: bool,
     session_started_at: datetime | None,
-) -> list[TargetRow]:
+) -> _DashboardReadResult:
     """執行 target row read；必要時供空 DB 首次讀取補 schema 後重試。"""
 
-    try:
-        with SqliteApplicationContext(
-            db_path,
-            initialize_schema_on_enter=initialize_schema_on_enter,
-        ) as app_context:
-            targets = app_context.repositories.targets.list_all()
-            target_ids = [target.id for target in targets]
-            configs_by_target = _configs_by_target(app_context, targets)
-            runtime_by_target = app_context.repositories.runtime_states.list_by_targets(target_ids)
-            latest_scan_runs = app_context.repositories.scan_runs.latest_by_targets(target_ids)
-            latest_failed_scan_runs = app_context.repositories.scan_runs.latest_by_targets(
-                target_ids,
-                status=ScanStatus.FAILED,
+    with SqliteApplicationContext(
+        db_path,
+        initialize_schema_on_enter=initialize_schema_on_enter,
+    ) as app_context:
+        targets = app_context.repositories.targets.list_all()
+        target_ids = [target.id for target in targets]
+        placements_by_target = app_context.repositories.sidebar_layout.list_placements()
+        groups = app_context.repositories.sidebar_layout.list_groups()
+        targets = _order_targets_by_sidebar(targets, placements_by_target, groups)
+        target_ids = [target.id for target in targets]
+        configs_by_target = _configs_by_target(app_context, targets)
+        runtime_by_target = app_context.repositories.runtime_states.list_by_targets(target_ids)
+        latest_scan_runs = app_context.repositories.scan_runs.latest_by_targets(target_ids)
+        latest_failed_scan_runs = app_context.repositories.scan_runs.latest_by_targets(
+            target_ids,
+            status=ScanStatus.FAILED,
+        )
+        latest_notification_events = (
+            app_context.repositories.notification_events.latest_by_targets(target_ids)
+        )
+        latest_notification_events_by_channel = (
+            app_context.repositories.notification_events.latest_by_targets_and_channels(
+                target_ids
             )
-            latest_notification_events = (
-                app_context.repositories.notification_events.latest_by_targets(target_ids)
+        )
+        max_items_limit = max(
+            (config.max_items_per_scan for config in configs_by_target.values()),
+            default=1,
+        )
+        latest_scan_items = app_context.repositories.latest_scan_items.list_by_targets(
+            target_ids,
+            limit_per_target=max_items_limit,
+        )
+        hit_record_preview_items = app_context.repositories.match_history.list_by_targets(
+            target_ids,
+            limit_per_target=5,
+            notified_since=session_started_at,
+        )
+        hit_record_counts = app_context.repositories.match_history.count_by_targets(
+            target_ids,
+            notified_since=session_started_at,
+        )
+        rows = tuple(
+            _build_target_row(
+                target=target,
+                config=configs_by_target[target.id],
+                runtime_state=runtime_by_target.get(
+                    target.id,
+                    TargetRuntimeState(target_id=target.id),
+                ),
+                latest_scan_items=latest_scan_items.get(target.id, ())[
+                    : configs_by_target[target.id].max_items_per_scan
+                ],
+                hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
+                latest_scan_run=latest_scan_runs.get(target.id),
+                latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
+                latest_notification_event=latest_notification_events.get(target.id),
+                latest_notification_events=tuple(
+                    latest_notification_events_by_channel.get(target.id, {}).values()
+                ),
+                hit_record_total_count=hit_record_counts.get(target.id, 0),
             )
-            max_items_limit = max(
-                (config.max_items_per_scan for config in configs_by_target.values()),
-                default=1,
-            )
-            latest_scan_items = app_context.repositories.latest_scan_items.list_by_targets(
-                target_ids,
-                limit_per_target=max_items_limit,
-            )
-            hit_record_preview_items = app_context.repositories.match_history.list_by_targets(
-                target_ids,
-                limit_per_target=5,
-                notified_since=session_started_at,
-            )
-            hit_record_counts = app_context.repositories.match_history.count_by_targets(
-                target_ids,
-                notified_since=session_started_at,
-            )
-            return [
-                _build_target_row(
-                    target=target,
-                    config=configs_by_target[target.id],
-                    runtime_state=runtime_by_target.get(
-                        target.id,
-                        TargetRuntimeState(target_id=target.id),
-                    ),
-                    latest_scan_items=latest_scan_items.get(target.id, ())[
-                        : configs_by_target[target.id].max_items_per_scan
-                    ],
-                    hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
-                    latest_scan_run=latest_scan_runs.get(target.id),
-                    latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
-                    latest_notification_event=latest_notification_events.get(target.id),
-                    hit_record_total_count=hit_record_counts.get(target.id, 0),
+            for target in targets
+        )
+        sidebar_groups = _build_sidebar_groups(
+            rows=rows,
+            placements_by_target=placements_by_target,
+            groups=groups,
+            templates_by_group={
+                group.id: (
+                    app_context.repositories.sidebar_layout.get_template(group.id)
+                    or SidebarGroupConfigTemplate(sidebar_group_id=group.id)
                 )
-                for target in targets
-            ]
-    except sqlite3.OperationalError as exc:
-        if (
-            not initialize_schema_on_enter
-            and _is_missing_schema_error(exc)
-        ):
-            return _list_target_rows(
-                db_path,
-                initialize_schema_on_enter=True,
-                session_started_at=session_started_at,
-            )
-        _raise_dashboard_read_unavailable_if_locked(exc)
-        raise
+                for group in groups
+            },
+        )
+        return _DashboardReadResult(rows=rows, sidebar_groups=sidebar_groups)
 
 
 def get_dashboard_view(
@@ -153,8 +208,14 @@ def get_dashboard_view(
 ) -> DashboardViewModel:
     """讀取 dashboard read model。"""
 
+    result = _read_dashboard_model(
+        db_path,
+        initialize_schema_on_enter=False,
+        session_started_at=session_started_at,
+    )
     return DashboardViewModel(
-        rows=tuple(list_target_rows(db_path, session_started_at=session_started_at))
+        rows=result.rows,
+        sidebar_groups=result.sidebar_groups,
     )
 
 
@@ -206,6 +267,11 @@ def get_target_card(
                 latest_notification_event=(
                     app_context.repositories.notification_events.latest_by_target(target.id)
                 ),
+                latest_notification_events=tuple(
+                    app_context.repositories.notification_events.latest_by_target_channels(
+                        target.id
+                    ).values()
+                ),
                 hit_record_total_count=app_context.repositories.match_history.count_by_target(
                     target.id,
                     notified_since=session_started_at,
@@ -214,6 +280,70 @@ def get_target_card(
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+
+
+def _order_targets_by_sidebar(
+    targets: list[TargetDescriptor],
+    placements_by_target: dict[str, SidebarTargetPlacement],
+    groups: tuple[SidebarGroup, ...],
+) -> list[TargetDescriptor]:
+    """依 sidebar group/order 排列 dashboard rows，不改 target repository 語義。"""
+
+    target_by_id = {target.id: target for target in targets}
+    original_index = {target.id: index for index, target in enumerate(targets)}
+    group_order = {group.id: index for index, group in enumerate(groups)}
+
+    def sort_key(target: TargetDescriptor) -> tuple[int, int, int, int]:
+        placement = placements_by_target.get(target.id)
+        group_id = placement.sidebar_group_id if placement else None
+        sort_order = placement.sort_order if placement else original_index[target.id]
+        if group_id in group_order:
+            return (0, group_order[group_id], sort_order, original_index[target.id])
+        return (1, 0, sort_order, original_index[target.id])
+
+    return sorted(target_by_id.values(), key=sort_key)
+
+
+def _build_sidebar_groups(
+    *,
+    rows: tuple[TargetRow, ...],
+    placements_by_target: dict[str, SidebarTargetPlacement],
+    groups: tuple[SidebarGroup, ...],
+    templates_by_group: dict[str, SidebarGroupConfigTemplate],
+) -> tuple[SidebarGroupSection, ...]:
+    """依 rows 與 placement 建立 sidebar sections。"""
+
+    rows_by_group: dict[str | None, list[TargetRow]] = {group.id: [] for group in groups}
+    rows_by_group[None] = []
+    known_group_ids = {group.id for group in groups}
+    for row in rows:
+        placement = placements_by_target.get(row.target_id)
+        group_id = placement.sidebar_group_id if placement else None
+        if group_id not in known_group_ids:
+            group_id = None
+        rows_by_group.setdefault(group_id, []).append(row)
+
+    sections: list[SidebarGroupSection] = []
+    for group in groups:
+        sections.append(
+            SidebarGroupSection(
+                group_id=group.id,
+                name=group.name,
+                collapsed=group.collapsed,
+                items=tuple(row.sidebar_item for row in rows_by_group.get(group.id, ())),
+                template=templates_by_group.get(group.id),
+            )
+        )
+    ungrouped_rows = rows_by_group.get(None, [])
+    sections.append(
+        SidebarGroupSection(
+            group_id=None,
+            name="未分組",
+            items=tuple(row.sidebar_item for row in ungrouped_rows),
+            is_system=True,
+        )
+    )
+    return tuple(sections)
 
 
 def _configs_by_target(
@@ -242,6 +372,7 @@ def _build_target_row(
     latest_scan_run: ScanRun | None,
     latest_failed_scan_run: ScanRun | None,
     latest_notification_event: NotificationEvent | None,
+    latest_notification_events: tuple[NotificationEvent, ...],
     hit_record_total_count: int,
 ) -> TargetRow:
     """將 repository raw models 組成 dashboard target row。"""
@@ -253,6 +384,7 @@ def _build_target_row(
         latest_scan_run=latest_scan_run,
         latest_failed_scan_run=latest_failed_scan_run,
         latest_notification_event=latest_notification_event,
+        latest_notification_events=latest_notification_events,
         latest_scan_items=tuple(LatestScanItemRow(item=item) for item in latest_scan_items),
         hit_record_preview_items=tuple(
             HitRecordPreviewRow(entry=entry) for entry in hit_record_preview_items

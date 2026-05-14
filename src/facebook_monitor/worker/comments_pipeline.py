@@ -105,6 +105,11 @@ def build_comments_scan_metadata(
                 load_more_mode=stat.load_more_mode,
                 added_count=stat.added_count,
                 stagnant_windows=stat.stagnant_windows,
+                dom_settle_attempted=stat.dom_settle_attempted,
+                dom_settle_stable=stat.dom_settle_stable,
+                dom_settle_observations=stat.dom_settle_observations,
+                dom_settle_wait_ms=stat.dom_settle_wait_ms,
+                dom_settle_candidate_count=stat.dom_settle_candidate_count,
             )
             for stat in round_stats
         ),

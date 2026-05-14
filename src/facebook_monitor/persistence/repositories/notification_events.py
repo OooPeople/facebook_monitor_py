@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.persistence.row_mappers import notification_event_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
@@ -94,6 +95,46 @@ class NotificationEventRepository:
             event = notification_event_from_row(row)
             events[event.target_id] = event
         return events
+
+    def latest_by_targets_and_channels(
+        self,
+        target_ids: list[str],
+    ) -> dict[str, dict[NotificationChannel, NotificationEvent]]:
+        """一次查詢多個 target 各通知通道的最近事件。"""
+
+        unique_target_ids = list(dict.fromkeys(target_id for target_id in target_ids if target_id))
+        if not unique_target_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_target_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM (
+                SELECT notification_events.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY target_id, channel
+                           ORDER BY id DESC
+                       ) AS row_number
+                FROM notification_events
+                WHERE target_id IN ({placeholders})
+            )
+            WHERE row_number = 1
+            """,
+            tuple(unique_target_ids),
+        ).fetchall()
+        events: dict[str, dict[NotificationChannel, NotificationEvent]] = {}
+        for row in rows:
+            event = notification_event_from_row(row)
+            events.setdefault(event.target_id, {})[event.channel] = event
+        return events
+
+    def latest_by_target_channels(
+        self,
+        target_id: str,
+    ) -> dict[NotificationChannel, NotificationEvent]:
+        """查詢單一 target 各通知通道的最近事件。"""
+
+        return self.latest_by_targets_and_channels([target_id]).get(target_id, {})
 
     def latest_sent_by_target_item_keys(
         self,

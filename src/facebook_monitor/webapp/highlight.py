@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from facebook_monitor.core.keyword_rules import ZERO_WIDTH_PATTERN
-from facebook_monitor.core.keyword_rules import build_keyword_rule
+from facebook_monitor.core.keyword_rules import parse_keyword_input
 
 
 WHITESPACE_CHAR_PATTERN = re.compile(r"\s")
@@ -32,25 +32,26 @@ class HighlightSegment:
 
 
 def build_highlight_segments(text: str, matched_rule: str) -> tuple[HighlightSegment, ...]:
-    """依 matched keyword rule 回傳原文 segments。"""
+    """依一或多組 matched keyword rules 回傳原文 segments。"""
 
     if not text:
         return ()
-    rule = build_keyword_rule(matched_rule)
-    if rule is None:
+    rules = parse_keyword_input(matched_rule)
+    if not rules:
         return (HighlightSegment(text=text),)
 
     normalized_text, normalized_to_original = _normalize_with_original_map(text)
     ranges: list[tuple[int, int]] = []
-    for term in rule.terms:
-        start = 0
-        while True:
-            index = normalized_text.find(term, start)
-            if index < 0:
-                break
-            original_indexes = normalized_to_original[index : index + len(term)]
-            ranges.append((min(original_indexes), max(original_indexes) + 1))
-            start = index + 1
+    for rule in rules:
+        for term in rule.terms:
+            start = 0
+            while True:
+                index = normalized_text.find(term, start)
+                if index < 0:
+                    break
+                original_indexes = normalized_to_original[index : index + len(term)]
+                ranges.append((min(original_indexes), max(original_indexes) + 1))
+                start = index + 1
     merged_ranges = _merge_ranges(ranges)
     if not merged_ranges:
         return (HighlightSegment(text=text),)

@@ -47,14 +47,16 @@ def test_read_server_info_ignores_invalid_json(tmp_path) -> None:
 def test_resource_identity_path_uses_normcase_on_windows(monkeypatch) -> None:
     """Windows resource lock identity 應避免大小寫差異繞過互斥。"""
 
-    monkeypatch.setattr(instance_lock.os, "name", "nt")
     monkeypatch.setattr(
         instance_lock.os.path,
         "normcase",
         lambda value: value.lower().replace("/", "\\"),
     )
 
-    canonical = _canonical_resource_identity_path(Path("C:/Temp/Facebook/App.DB"))
+    canonical = _canonical_resource_identity_path(
+        Path("C:/Temp/Facebook/App.DB"),
+        is_windows=True,
+    )
 
     assert canonical.endswith("\\temp\\facebook\\app.db")
 

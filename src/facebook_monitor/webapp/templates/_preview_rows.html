@@ -7,7 +7,9 @@
             <div class="preview-row-copy">
               <div class="preview-row-header">
                 <span class="preview-author">{{ preview.author_name }}</span>
-                <span class="preview-badge {{ preview.badge_kind }}">{{ preview.badge_text }}</span>
+                {% for badge_label in preview.badge_labels %}
+                  <span class="preview-badge {{ preview.badge_kind }}">{{ badge_label }}</span>
+                {% endfor %}
               </div>
               {% if preview.content_preview %}
                 <p>{%- if preview.content_segments -%}{%- for segment in preview.content_segments -%}{%- if segment.highlighted -%}<mark class="keyword-highlight">{{ segment.text }}</mark>{%- else -%}{{ segment.text }}{%- endif -%}{%- endfor -%}{%- else -%}{{ preview.content_preview }}{%- endif -%}</p>

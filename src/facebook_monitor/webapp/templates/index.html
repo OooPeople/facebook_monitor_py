@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Facebook Monitor</title>
   {% include "_theme_bootstrap.html" %}
+  {% include "_dashboard_scroll_restore_head.html" %}
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
@@ -48,6 +49,7 @@
   </main>
   <script id="page-feedback" type="application/json">{{ {"message": message, "error": error} | tojson }}</script>
   <script id="dashboard-revision" type="application/json">{{ dashboard_revision.revision | tojson }}</script>
+  {% include "_dashboard_scroll_restore_body.html" %}
   {% include "_dashboard_importmap.html" %}
   <script type="module" src="/static/dashboard/main.js?v={{ asset_version }}"></script>
 </body>

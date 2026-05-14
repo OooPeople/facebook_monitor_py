@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
@@ -14,6 +15,7 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresenter
@@ -22,6 +24,7 @@ from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
@@ -45,6 +48,87 @@ class SidebarTargetItem:
 
 
 @dataclass(frozen=True)
+class SidebarGroupSection:
+    """保存 sidebar group 區塊與其 target 摘要。"""
+
+    group_id: str | None
+    name: str
+    items: tuple[SidebarTargetItem, ...]
+    collapsed: bool = False
+    is_system: bool = False
+    template: SidebarGroupConfigTemplate | None = None
+
+    @property
+    def target_count(self) -> int:
+        """回傳 group 內 target 數量。"""
+
+        return len(self.items)
+
+    @property
+    def dom_group_id(self) -> str:
+        """回傳前端 data attribute 使用的 group id。"""
+
+        return self.group_id or ""
+
+    @property
+    def template_presenter(self) -> TargetSettingsPresenter | None:
+        """回傳 group template 設定 presenter。"""
+
+        if self.template is None:
+            return None
+        return TargetSettingsPresenter(config=self.template.to_target_config(target_id=""))
+
+    @property
+    def include_text(self) -> str:
+        """回傳 template include keywords 表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.include_text if presenter else ""
+
+    @property
+    def exclude_text(self) -> str:
+        """回傳 template exclude keywords 表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.exclude_text if presenter else ""
+
+    @property
+    def exclude_ignore_phrases_text(self) -> str:
+        """回傳 template 排除字忽略片語表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.exclude_ignore_phrases_text if presenter else ""
+
+    @property
+    def refresh_mode(self) -> str:
+        """回傳 template refresh mode。"""
+
+        presenter = self.template_presenter
+        return presenter.refresh_mode if presenter else "fixed"
+
+    @property
+    def fixed_refresh_value(self) -> int:
+        """回傳 template 固定刷新秒數。"""
+
+        presenter = self.template_presenter
+        return presenter.fixed_refresh_value if presenter else 60
+
+    @property
+    def min_refresh_value(self) -> int:
+        """回傳 template 浮動刷新最小秒數。"""
+
+        presenter = self.template_presenter
+        return presenter.min_refresh_value if presenter else 60
+
+    @property
+    def max_refresh_value(self) -> int:
+        """回傳 template 浮動刷新最大秒數。"""
+
+        presenter = self.template_presenter
+        return presenter.max_refresh_value if presenter else 120
+
+
+@dataclass(frozen=True)
 class TargetRow:
     """保存 target 清單顯示所需資料。"""
 
@@ -54,6 +138,7 @@ class TargetRow:
     latest_scan_run: ScanRun | None = None
     latest_failed_scan_run: ScanRun | None = None
     latest_notification_event: NotificationEvent | None = None
+    latest_notification_events: tuple[NotificationEvent, ...] = ()
     latest_scan_items: tuple[LatestScanItemRow, ...] = ()
     hit_record_preview_items: tuple[HitRecordPreviewRow, ...] = ()
     hit_record_total_count: int = 0
@@ -109,6 +194,12 @@ class TargetRow:
         """回傳 UI 顯示名稱。"""
 
         return TargetIdentityPresenter(self.target).display_name
+
+    @property
+    def rename_display_name(self) -> str:
+        """回傳更名 modal 的預填名稱。"""
+
+        return TargetIdentityPresenter(self.target).rename_value
 
     @property
     def kind_label(self) -> str:
@@ -175,8 +266,15 @@ class TargetRow:
         """回傳 target header 的低干擾摘要，避免主畫面顯示診斷 ID。"""
 
         parts = [self.target_type_label, f"最近掃描 {self.latest_scan_label}"]
-        if self.latest_notification_event:
-            parts.append(f"最近通知 {self.latest_notification_event.channel.value}")
+        notification_events = self._latest_notification_events_for_display()
+        if notification_events:
+            parts.append(
+                "最近通知 "
+                + " / ".join(
+                    f"{format_notification_channel_label(event.channel)} {event.status.value}"
+                    for event in notification_events
+                )
+            )
         else:
             parts.append("尚無通知")
         if self.latest_failed_scan_run:
@@ -261,13 +359,36 @@ class TargetRow:
         """回傳最近通知通道狀態。"""
 
         if not self.latest_notification_event:
+            if not self.latest_notification_events:
+                return "尚無通知"
+        events = self._latest_notification_events_for_display()
+        if not events:
             return "尚無通知"
-        event = self.latest_notification_event
-        return (
-            f"{event.channel.value}: {event.status.value} · "
+        return " / ".join(
+            f"{format_notification_channel_label(event.channel)}: {event.status.value} · "
             f"{format_datetime_for_ui(event.created_at)}"
             + (f" · {event.message}" if event.message else "")
+            for event in events
         )
+
+    def _latest_notification_events_for_display(self) -> tuple[NotificationEvent, ...]:
+        """依固定通道順序回傳最近通知事件，讓 UI 顯示多通道狀態。"""
+
+        if self.latest_notification_events:
+            order = {
+                NotificationChannel.DESKTOP: 0,
+                NotificationChannel.NTFY: 1,
+                NotificationChannel.DISCORD: 2,
+            }
+            return tuple(
+                sorted(
+                    self.latest_notification_events,
+                    key=lambda event: order.get(event.channel, 99),
+                )
+            )
+        if self.latest_notification_event:
+            return (self.latest_notification_event,)
+        return ()
 
     @property
     def notification_summary_label(self) -> str:

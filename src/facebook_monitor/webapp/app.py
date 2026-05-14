@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import compare_digest
 from secrets import token_urlsafe
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI
 from fastapi import Request
@@ -67,6 +68,7 @@ from facebook_monitor.webapp.profile_session import ProfileSessionManager
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
 from facebook_monitor.webapp.routes.hit_records import register_hit_record_routes
 from facebook_monitor.webapp.routes.settings import register_settings_routes
+from facebook_monitor.webapp.routes.sidebar import register_sidebar_routes
 from facebook_monitor.webapp.routes.targets import register_target_routes
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
@@ -184,11 +186,17 @@ def create_app(
     ) -> Response:
         """保護本機管理 UI 的 mutating routes，避免跨站表單直接操作 localhost。"""
 
+        request_body: bytes | None = None
         if _should_validate_csrf(request):
-            submitted_token = await _submitted_csrf_token(request)
+            submitted_token = request.headers.get(CSRF_HEADER, "").strip()
+            if not submitted_token:
+                request_body = await request.body()
+                submitted_token = _submitted_csrf_token_from_body(request, request_body)
             expected_token = str(getattr(request.app.state, "csrf_token", ""))
             if not submitted_token or not compare_digest(submitted_token, expected_token):
                 return Response("CSRF validation failed", status_code=403)
+        if request_body is not None:
+            request = _replay_request_body(request, request_body)
         return await call_next(request)
 
     @app.get("/health")
@@ -207,6 +215,7 @@ def create_app(
 
     register_dashboard_routes(app, route_templates)
     register_hit_record_routes(app)
+    register_sidebar_routes(app)
     register_target_routes(app, route_templates)
     register_settings_routes(app, route_templates)
     return app
@@ -232,21 +241,24 @@ def _should_validate_csrf(request: Request) -> bool:
     return True
 
 
-async def _submitted_csrf_token(request: Request) -> str:
-    """從 header 或 form body 讀取 CSRF token。"""
+def _submitted_csrf_token_from_body(request: Request, body: bytes) -> str:
+    """從已讀取的 urlencoded body 解析 CSRF token。"""
 
-    header_token = request.headers.get(CSRF_HEADER, "").strip()
-    if header_token:
-        return header_token
     content_type = request.headers.get("content-type", "")
-    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
-        try:
-            form = await request.form()
-        except Exception:
-            return ""
-        value = form.get(CSRF_FORM_FIELD, "")
-        return str(value).strip()
+    if "application/x-www-form-urlencoded" in content_type:
+        decoded_body = body.decode("utf-8", errors="replace")
+        values = parse_qs(decoded_body).get(CSRF_FORM_FIELD, [])
+        return str(values[0]).strip() if values else ""
     return ""
+
+
+def _replay_request_body(request: Request, body: bytes) -> Request:
+    """重建 request receive，避免 middleware 讀 body 後 route 讀不到 form。"""
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(request.scope, receive)
 
 
 app = create_app(

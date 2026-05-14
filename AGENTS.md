@@ -28,7 +28,7 @@
 - 不可使用使用者日常 Chrome profile。
 - 不可把 profile 放到 runtime path resolver 管理的 `<data-dir>/profiles/` 以外。
 - 不可把 runtime logs 放到 runtime path resolver 管理的 `<logs-dir>` 以外。
-- 既有最小依賴以外的新第三方套件，新增前必須先詢問。
+- 若已有成熟的第三方依賴可降低實作與維護風險，應積極尋找並優先評估可靠、社群仍持續維護且廣泛使用的第三方依賴；但新增任何既有最小依賴以外的第三方依賴前，依然必須先詢問。
 - 不要機械式逐行翻譯 userscript；只能把它當作行為參考。
 - 不可直接改寫 JS 版成熟常數、字串 label、判斷條件，只因為 Python 版「目前看起來也能動」。
 - 不可在未對照 JS 成熟行為前，自行發明替代邏輯來填空。

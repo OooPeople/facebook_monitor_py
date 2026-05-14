@@ -23,6 +23,7 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
@@ -43,6 +44,7 @@ from facebook_monitor.persistence.sqlite import initialize_schema
 from facebook_monitor.persistence.migrations import ensure_legacy_group_configs_table
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 
 PLAINTEXT_SECRET_CODEC = PlaintextSecretCodec()
@@ -97,14 +99,15 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
     assert int(busy_timeout) == 5000
     assert int(synchronous) == 1
     assert {
-        "idx_targets_kind_scope",
         "idx_targets_kind_scope_unique",
+        "idx_targets_metadata_status_updated",
         "idx_scan_runs_target_created",
         "idx_notification_events_target_created",
         "idx_latest_scan_items_target_index",
         "idx_runtime_state_status_updated",
         "idx_runtime_state_desired_updated",
     }.issubset(indexes)
+    assert "idx_targets_kind_scope" not in indexes
 
 
 def test_fresh_schema_does_not_create_group_configs_formal_table(tmp_path: Path) -> None:
@@ -185,8 +188,32 @@ def test_initialize_schema_repairs_duplicate_target_scopes_before_unique_index(
             created_at=first.created_at + timedelta(seconds=1),
             updated_at=first.updated_at + timedelta(seconds=1),
         )
-        TargetRepository(connection).save(first)
-        TargetRepository(connection).save(duplicate)
+        for target in (first, duplicate):
+            connection.execute(
+                """
+                INSERT INTO targets (
+                    id, name, target_kind, group_id, group_name, parent_post_id,
+                    scope_id, canonical_url, enabled, paused, worker_mode,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target.id,
+                    target.name,
+                    target.target_kind.value,
+                    target.group_id,
+                    target.group_name,
+                    target.parent_post_id,
+                    target.scope_id,
+                    target.canonical_url,
+                    int(target.enabled),
+                    int(target.paused),
+                    target.worker_mode.value,
+                    encode_datetime(target.created_at),
+                    encode_datetime(target.updated_at),
+                ),
+            )
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
@@ -247,6 +274,83 @@ def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path)
     assert loaded.runtime_status == TargetRuntimeStatus.IDLE
     assert loaded.desired_state == TargetDesiredState.STOPPED
     assert version == str(SCHEMA_VERSION)
+
+
+def test_initialize_schema_migrates_v20_keyword_match_tables(
+    tmp_path: Path,
+) -> None:
+    """v21 會新增多 keyword 命中子表，並回填既有摘要欄位。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = encode_datetime(utc_now())
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        connection.execute(
+            """
+            INSERT INTO match_history (
+                target_id, group_id, group_name, item_kind, parent_post_id,
+                comment_id, item_key, author, text, permalink, include_rule,
+                timestamp_text, notified_at, created_at
+            )
+            VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, '', ?, ?)
+            """,
+            (
+                target.id,
+                target.group_id,
+                target.group_name,
+                ItemKind.POST.value,
+                "item-hash",
+                "王小明",
+                "售6/5,6/6的票各一張",
+                "https://www.facebook.com/groups/222518561920110/posts/1",
+                "6/5;6/6",
+                now_text,
+                now_text,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO latest_scan_items (
+                target_id, scan_run_id, item_kind, item_key, item_index,
+                author, text, permalink, matched_keyword, debug_metadata, scanned_at
+            )
+            VALUES (?, 1, ?, ?, 0, ?, ?, ?, ?, '{}', ?)
+            """,
+            (
+                target.id,
+                ItemKind.POST.value,
+                "item-hash",
+                "王小明",
+                "售6/5,6/6的票各一張",
+                "https://www.facebook.com/groups/222518561920110/posts/1",
+                "6/5;6/6",
+                now_text,
+            ),
+        )
+        connection.execute("DROP TABLE latest_scan_item_matches")
+        connection.execute("DROP TABLE match_history_matches")
+        connection.execute(
+            "INSERT OR REPLACE INTO schema_metadata (key, value) VALUES ('version', '20')"
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        history = MatchHistoryRepository(connection).list_by_target(target.id)
+        latest_items = LatestScanItemRepository(connection).list_by_target(target.id)
+
+    assert version == str(SCHEMA_VERSION)
+    assert history[0].include_rules == ("6/5", "6/6")
+    assert latest_items[0].matched_keywords == ("6/5", "6/6")
 
 
 def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path) -> None:
@@ -344,6 +448,16 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
             "target_configs",
             "exclude_ignore_phrases",
         )
+        has_target_metadata_status = table_has_column(
+            connection,
+            "targets",
+            "metadata_status",
+        )
+        has_target_metadata_error = table_has_column(
+            connection,
+            "targets",
+            "metadata_error",
+        )
         has_group_discord_webhook = table_has_column(
             connection,
             "group_configs",
@@ -357,6 +471,8 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
     assert has_runtime_guard_count
     assert has_target_discord
     assert has_target_exclude_ignore
+    assert has_target_metadata_status
+    assert has_target_metadata_error
     assert has_group_discord_webhook
 
 
@@ -378,6 +494,11 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
             parent_post_id="999",
             canonical_url="https://www.facebook.com/groups/111/posts/999",
         )
+        second_comments_target = TargetDescriptor.for_comments(
+            group_id="111",
+            parent_post_id="1000",
+            canonical_url="https://www.facebook.com/groups/111/posts/1000",
+        )
         fallback_target = TargetDescriptor.for_group_posts(
             group_id="222",
             canonical_url="https://www.facebook.com/groups/222",
@@ -386,7 +507,13 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
             group_id="333",
             canonical_url="https://www.facebook.com/groups/333",
         )
-        for target in (posts_target, comments_target, fallback_target, defaults_target):
+        for target in (
+            posts_target,
+            comments_target,
+            second_comments_target,
+            fallback_target,
+            defaults_target,
+        ):
             TargetRepository(connection).save(target)
         target_config_repository(connection).save_for_target(
             posts_target,
@@ -421,6 +548,9 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
         ).fetchone()["value"]
         posts_config = target_config_repository(connection).get_for_target(posts_target)
         comments_config = target_config_repository(connection).get_for_target(comments_target)
+        second_comments_config = target_config_repository(connection).get_for_target(
+            second_comments_target
+        )
         fallback_config = target_config_repository(connection).get_for_target(fallback_target)
         defaults_config = target_config_repository(connection).get_for_target(defaults_target)
 
@@ -438,6 +568,19 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
     assert comments_config.target_id == comments_target.id
     assert comments_config.include_keywords == ("group",)
     assert comments_config.ntfy_topic == "group-topic"
+    assert second_comments_config is not None
+    assert second_comments_config.target_id == second_comments_target.id
+    assert second_comments_config.include_keywords == ("group",)
+    assert second_comments_config.ntfy_topic == "group-topic"
+    assert {
+        posts_config.target_id,
+        comments_config.target_id,
+        second_comments_config.target_id,
+    } == {
+        posts_target.id,
+        comments_target.id,
+        second_comments_target.id,
+    }
     assert fallback_config is not None
     assert fallback_config.include_keywords == ("fallback",)
     assert defaults_config is not None
@@ -934,13 +1077,24 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             canonical_url="https://www.facebook.com/groups/222518561920110",
             group_name="test group",
         )
+        target = replace(
+            target,
+            metadata_status=TargetMetadataStatus.PENDING,
+            metadata_error="",
+        )
         TargetRepository(connection).save(target)
         loaded_target = TargetRepository(connection).get(target.id)
 
         assert loaded_target is not None
         assert loaded_target.scope_id == target.group_id
+        assert loaded_target.metadata_status == TargetMetadataStatus.PENDING
+        assert loaded_target.metadata_error == ""
         assert loaded_target.paused
         assert TargetRepository(connection).list_enabled() == []
+        assert TargetRepository(connection).list_by_metadata_status(
+            TargetMetadataStatus.PENDING,
+            limit=10,
+        ) == [loaded_target]
         active_target = replace(loaded_target, paused=False)
         TargetRepository(connection).save(active_target)
         assert TargetRepository(connection).list_enabled() == [active_target]
@@ -1077,13 +1231,20 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                 item_key="item-hash",
                 text="測試文字",
                 permalink="https://www.facebook.com/groups/example/posts/1",
-                include_rule="票",
+                include_rule="票;讓票",
+                include_rules=("票", "讓票"),
             )
         )
         assert history_id > 0
         history = history_repo.list_by_target(target.id)
         assert len(history) == 1
-        assert history[0].include_rule == "票"
+        assert history[0].include_rule == "票;讓票"
+        assert history[0].include_rules == ("票", "讓票")
+        history_match_rows = connection.execute(
+            "SELECT rule FROM match_history_matches WHERE history_id = ? ORDER BY match_order",
+            (history_id,),
+        ).fetchall()
+        assert [row["rule"] for row in history_match_rows] == ["票", "讓票"]
 
         latest_repo = LatestScanItemRepository(connection)
         latest_repo.replace_for_target(
@@ -1098,7 +1259,8 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                     author="王小明",
                     text="測試文字",
                     permalink="https://www.facebook.com/groups/example/posts/1",
-                    matched_keyword="票",
+                    matched_keyword="票;讓票",
+                    matched_keywords=("票", "讓票"),
                     debug_metadata={"textSource": "primary", "expandCount": 1},
                 )
             ],
@@ -1106,8 +1268,19 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         latest_items = latest_repo.list_by_target(target.id)
         assert len(latest_items) == 1
         assert latest_items[0].author == "王小明"
-        assert latest_items[0].matched_keyword == "票"
+        assert latest_items[0].matched_keyword == "票;讓票"
+        assert latest_items[0].matched_keywords == ("票", "讓票")
         assert latest_items[0].debug_metadata == {"textSource": "primary", "expandCount": 1}
+        latest_match_rows = connection.execute(
+            """
+            SELECT rule
+            FROM latest_scan_item_matches
+            WHERE target_id = ? AND item_key = ?
+            ORDER BY match_order
+            """,
+            (target.id, "item-hash"),
+        ).fetchall()
+        assert [row["rule"] for row in latest_match_rows] == ["票", "讓票"]
 
         event_id = NotificationEventRepository(connection).add(
             NotificationEvent(
@@ -1150,6 +1323,55 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_outbox is not None
         assert loaded_outbox.status == NotificationOutboxStatus.SENT
         assert loaded_outbox.notification_event_id == event_id
+
+
+def test_notification_outbox_clear_by_target_only_deletes_target_rows(
+    tmp_path: Path,
+) -> None:
+    """notification outbox 可依 target 清除，支援重新開始監看時重置通知去重。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        second = TargetDescriptor.for_group_posts(
+            group_id="222",
+            canonical_url="https://www.facebook.com/groups/222",
+        )
+        TargetRepository(connection).save(first)
+        TargetRepository(connection).save(second)
+        repo = notification_outbox_repository(connection)
+        repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{first.id}:item-hash:ntfy",
+                target_id=first.id,
+                item_key="item-hash",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{second.id}:item-hash:ntfy",
+                target_id=second.id,
+                item_key="item-hash",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+        assert repo.clear_by_target(first.id) == 1
+
+        assert repo.get_by_idempotency_key(f"{first.id}:item-hash:ntfy") is None
+        assert repo.get_by_idempotency_key(f"{second.id}:item-hash:ntfy") is not None
 
 
 def test_notification_outbox_claim_pending_is_single_owner_across_connections(
@@ -1413,6 +1635,46 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert TargetRuntimeStateRepository(connection).get(target.id) is not None
         assert global_notification_settings_repository(connection).get().ntfy_topic == "phase0test"
         assert AppSettingsRepository(connection).get_theme() == "dark"
+
+
+def test_runtime_data_maintenance_keeps_outbox_when_seen_items_are_kept(
+    tmp_path: Path,
+) -> None:
+    """只清 debug tables 時保留 seen/outbox，避免管理清理誤觸通知去重邊界。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        SeenItemRepository(connection).mark_seen(
+            SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
+        )
+        notification_outbox_repository(connection).enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:seen-key:ntfy",
+                target_id=target.id,
+                item_key="seen-key",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data(
+            include_seen_items=False,
+        )
+
+        assert result.seen_items == 0
+        assert result.notification_outbox == 0
+        assert table_count(connection, "seen_items") == 1
+        assert table_count(connection, "notification_outbox") == 1
 
 
 def test_match_history_repository_counts_offsets_and_clears_by_target(

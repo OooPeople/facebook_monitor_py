@@ -86,6 +86,14 @@ class TargetRuntimeStatus(StrEnum):
     ERROR = "error"
 
 
+class TargetMetadataStatus(StrEnum):
+    """target metadata 補齊狀態。"""
+
+    RESOLVED = "resolved"
+    PENDING = "pending"
+    FAILED = "failed"
+
+
 def utc_now() -> datetime:
     """取得 timezone-aware UTC 時間。"""
 
@@ -156,6 +164,8 @@ class TargetDescriptor:
     canonical_url: str
     group_name: str = ""
     parent_post_id: str = ""
+    metadata_status: TargetMetadataStatus = TargetMetadataStatus.RESOLVED
+    metadata_error: str = ""
     enabled: bool = True
     paused: bool = False
     worker_mode: WorkerMode = WorkerMode.HEADLESS
@@ -305,7 +315,7 @@ class TargetRuntimeState:
     """保存 scheduler 對單一 target 的期望狀態與實際執行狀態。"""
 
     target_id: str
-    desired_state: TargetDesiredState = TargetDesiredState.ACTIVE
+    desired_state: TargetDesiredState = TargetDesiredState.STOPPED
     runtime_status: TargetRuntimeStatus = TargetRuntimeStatus.IDLE
     scan_requested_at: datetime | None = None
     last_enqueued_at: datetime | None = None
@@ -369,6 +379,7 @@ class MatchHistoryEntry:
     timestamp_text: str = ""
     notified_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
+    include_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -384,6 +395,7 @@ class LatestScanItem:
     text: str = ""
     permalink: str = ""
     matched_keyword: str = ""
+    matched_keywords: tuple[str, ...] = ()
     debug_metadata: dict[str, Any] = field(default_factory=dict)
     scanned_at: datetime = field(default_factory=utc_now)
 

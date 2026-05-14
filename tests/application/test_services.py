@@ -14,13 +14,24 @@ from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
 from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+
+
+def test_target_runtime_state_default_is_stopped() -> None:
+    """直接建立 runtime state 時，預設應符合新 target 停止語義。"""
+
+    state = TargetRuntimeState(target_id="target-1")
+
+    assert state.desired_state == TargetDesiredState.STOPPED
 
 
 def test_create_target_and_record_scan_through_application_context(tmp_path: Path) -> None:
@@ -500,7 +511,7 @@ def test_update_target_config(tmp_path: Path) -> None:
         initial_config = app.repositories.configs.get_for_target(target)
 
         assert initial_config is not None
-        assert initial_config.exclude_ignore_phrases == ("全收;回收",)
+        assert initial_config.exclude_ignore_phrases == ("全收", "回收")
 
         config = app.services.targets.update_target_config(
             UpdateTargetConfigRequest(
@@ -672,8 +683,8 @@ def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> Non
         assert first_runtime_state.scan_requested_at is not None
 
 
-def test_restart_monitoring_clears_only_target_seen_scope(tmp_path: Path) -> None:
-    """開始監視會清該 target seen scope，對齊 userscript restart 語義。"""
+def test_restart_monitoring_clears_only_target_runtime_dedupe_state(tmp_path: Path) -> None:
+    """開始監視會清該 target seen/outbox 去重狀態，不影響其他 target。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -695,11 +706,45 @@ def test_restart_monitoring_clears_only_target_seen_scope(tmp_path: Path) -> Non
         app.repositories.seen_items.mark_seen(
             SeenItem(scope_id=second.scope_id, item_key="second-item", item_kind=ItemKind.POST)
         )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{first.id}:first-item:ntfy",
+                target_id=first.id,
+                item_key="first-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{second.id}:second-item:ntfy",
+                target_id=second.id,
+                item_key="second-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
 
         app.services.targets.restart_target_monitoring(first.id)
 
         assert not app.repositories.seen_items.has_seen(first.scope_id, "first-item")
         assert app.repositories.seen_items.has_seen(second.scope_id, "second-item")
+        assert (
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                f"{first.id}:first-item:ntfy"
+            )
+            is None
+        )
+        assert (
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                f"{second.id}:second-item:ntfy"
+            )
+            is not None
+        )
 
 
 def test_restart_comments_monitoring_clears_comments_seen_scope(tmp_path: Path) -> None:

@@ -15,11 +15,13 @@ from threading import Lock
 from typing import BinaryIO
 
 if os.name == "nt":
-    import msvcrt
+    import msvcrt as _msvcrt_module
+    _msvcrt: object | None = _msvcrt_module
     _fcntl: object | None = None
 else:
     import fcntl as _fcntl_module
 
+    _msvcrt = None
     _fcntl = _fcntl_module
 
 
@@ -97,7 +99,7 @@ def _lock_file(lock_file: BinaryIO, lock_path: Path, owner: str) -> None:
     lock_file.seek(0)
     try:
         if os.name == "nt":
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, LOCK_BYTE_COUNT)
+            _windows_locking(lock_file.fileno(), _windows_lock_nonblocking_flag())
         else:
             _posix_flock(lock_file.fileno(), _posix_lock_exclusive_nonblocking_flags())
     except OSError as exc:
@@ -114,7 +116,7 @@ def _unlock_file(lock_file: BinaryIO) -> None:
 
     lock_file.seek(0)
     if os.name == "nt":
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, LOCK_BYTE_COUNT)
+        _windows_locking(lock_file.fileno(), _windows_unlock_flag())
     else:
         _posix_flock(lock_file.fileno(), _posix_unlock_flags())
 
@@ -136,6 +138,31 @@ def _read_owner(lock_path: Path) -> str:
         return lock_path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def _windows_locking(file_descriptor: int, mode: int) -> None:
+    """呼叫 Windows msvcrt locking；POSIX 分支不應進入此函式。"""
+
+    if _msvcrt is None:
+        raise RuntimeError("msvcrt is not available on this platform")
+    locking = getattr(_msvcrt, "locking")
+    locking(file_descriptor, mode, LOCK_BYTE_COUNT)
+
+
+def _windows_lock_nonblocking_flag() -> int:
+    """回傳 Windows non-blocking lock flag。"""
+
+    if _msvcrt is None:
+        raise RuntimeError("msvcrt is not available on this platform")
+    return int(getattr(_msvcrt, "LK_NBLCK"))
+
+
+def _windows_unlock_flag() -> int:
+    """回傳 Windows unlock flag。"""
+
+    if _msvcrt is None:
+        raise RuntimeError("msvcrt is not available on this platform")
+    return int(getattr(_msvcrt, "LK_UNLCK"))
 
 
 def _posix_flock(file_descriptor: int, flags: int) -> None:

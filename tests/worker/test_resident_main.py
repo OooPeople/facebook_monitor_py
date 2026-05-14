@@ -11,6 +11,7 @@ from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.scheduler.planner import DueTarget
@@ -86,6 +87,15 @@ class FakeMetadataLocator:
         return "Facebook group page"
 
 
+class FakeLoggedOutMetadataLocator(FakeMetadataLocator):
+    """metadata refresh 失敗測試用 locator。"""
+
+    async def inner_text(self, timeout: int) -> str:
+        """回傳未登入頁面的 body text。"""
+
+        return "Log into Facebook"
+
+
 class FakeMetadataPage:
     """metadata refresh 測試用 page。"""
 
@@ -117,6 +127,15 @@ class FakeMetadataPage:
         self.closed = True
 
 
+class FakeLoggedOutMetadataPage(FakeMetadataPage):
+    """metadata refresh 失敗測試用 page。"""
+
+    def locator(self, selector: str) -> FakeLoggedOutMetadataLocator:
+        """回傳未登入頁面的 body locator。"""
+
+        return FakeLoggedOutMetadataLocator()
+
+
 class FakeMetadataBrowserContext:
     """metadata refresh 測試用 browser context。"""
 
@@ -127,6 +146,20 @@ class FakeMetadataBrowserContext:
         """建立 metadata page。"""
 
         page = FakeMetadataPage()
+        self.pages.append(page)
+        return page
+
+
+class FakeLoggedOutMetadataBrowserContext:
+    """metadata refresh 失敗測試用 browser context。"""
+
+    def __init__(self) -> None:
+        self.pages: list[FakeLoggedOutMetadataPage] = []
+
+    async def new_page(self) -> FakeLoggedOutMetadataPage:
+        """建立未登入 fake metadata page。"""
+
+        page = FakeLoggedOutMetadataPage()
         self.pages.append(page)
         return page
 
@@ -200,6 +233,69 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated is not None
     assert updated.name == "測試社團"
     assert updated.group_name == "測試社團"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert updated.metadata_error == ""
+
+
+def test_resident_scheduler_tick_marks_pending_metadata_failed(tmp_path: Path) -> None:
+    """resident metadata refresh 失敗會寫回 failed，避免 UI 永久顯示等待。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.services.targets.mark_target_metadata_refresh_pending(target.id)
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("metadata refresh should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeLoggedOutMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 0
+        assert len(metadata_context.pages) == 1
+        assert metadata_context.pages[0].closed
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+    assert updated is not None
+    assert updated.metadata_status == TargetMetadataStatus.FAILED
+    assert "Facebook 尚未登入" in updated.metadata_error
 
 
 def test_target_queue_snapshot_keeps_enqueue_order() -> None:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace
 from typing import Any
@@ -29,6 +30,11 @@ from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_s
 from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_controls import scroll_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_load_more_async
+
+FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD = 4
+
+
+SeenItemPredicate = Callable[[tuple[str, ...]], bool]
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,12 @@ class ExtractCollectionMeta:
     article_element_count: int
     posts_with_post_id_count: int
     load_more_mode: str = ""
+    seen_stop_enabled: bool = False
+    seen_stop_triggered: bool = False
+    seen_stop_threshold: int = FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD
+    seen_stop_consecutive_seen_count: int = 0
+    seen_stop_seen_count: int = 0
+    seen_stop_new_count: int = 0
 
     def to_metadata(self) -> dict[str, Any]:
         """轉成 scan metadata，欄位命名保留 userscript collected meta 語義。"""
@@ -110,7 +122,25 @@ class ExtractCollectionMeta:
             "articleElementCount": self.article_element_count,
             "postsWithPostIdCount": self.posts_with_post_id_count,
             "loadMoreMode": self.load_more_mode,
+            "seenStopEnabled": self.seen_stop_enabled,
+            "seenStopTriggered": self.seen_stop_triggered,
+            "seenStopThreshold": self.seen_stop_threshold,
+            "seenStopConsecutiveSeenCount": self.seen_stop_consecutive_seen_count,
+            "seenStopSeenCount": self.seen_stop_seen_count,
+            "seenStopNewCount": self.seen_stop_new_count,
         }
+
+
+@dataclass
+class FeedSeenStopState:
+    """保存 feed seen-stop 的保守觀察狀態。"""
+
+    enabled: bool
+    threshold: int = FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD
+    consecutive_seen_count: int = 0
+    seen_count: int = 0
+    new_count: int = 0
+    triggered: bool = False
 
 
 def normalize_text_fingerprint(raw_text: str) -> str:
@@ -229,6 +259,7 @@ def collect_items_with_diagnostics(
     max_items: int,
     scroll_rounds: int,
     scroll_wait_ms: int,
+    seen_item_predicate: SeenItemPredicate | None = None,
 ) -> tuple[list[ExtractedItem], list[ExtractRoundStats], ExtractCollectionMeta]:
     """多輪捲動 feed，並回傳每輪匿名診斷統計。"""
 
@@ -240,6 +271,7 @@ def collect_items_with_diagnostics(
 
     snapshot_captured = False
     stagnant_windows = 0
+    seen_stop_state = FeedSeenStopState(enabled=seen_item_predicate is not None)
     if rounds > 0:
         capture_load_more_scroll_snapshot(page)
         snapshot_captured = True
@@ -257,6 +289,11 @@ def collect_items_with_diagnostics(
                     continue
                 if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
                     continue
+                observe_seen_stop_item(
+                    state=seen_stop_state,
+                    item_aliases=item_aliases,
+                    seen_item_predicate=seen_item_predicate,
+                )
                 collected.append(
                     (
                         item_aliases,
@@ -268,6 +305,8 @@ def collect_items_with_diagnostics(
                         ),
                     )
                 )
+                if seen_stop_state.triggered:
+                    break
             added_count = len(collected) - previous_count
             if added_count == 0:
                 stagnant_windows += 1
@@ -275,7 +314,11 @@ def collect_items_with_diagnostics(
                 stagnant_windows = 0
             scroll_metrics = get_scroll_metrics(page)
             scroll_action: dict[str, Any] = {}
-            should_scroll = round_index < rounds and len(collected) < max_items
+            should_scroll = (
+                round_index < rounds
+                and len(collected) < max_items
+                and not seen_stop_state.triggered
+            )
             if should_scroll:
                 scroll_action = scroll_load_more(page)
             round_stats.append(
@@ -326,6 +369,8 @@ def collect_items_with_diagnostics(
             )
             if round_index >= rounds or len(collected) >= max_items:
                 break
+            if seen_stop_state.triggered:
+                break
             if scroll_action and not bool(scroll_action.get("moved")):
                 break
             if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
@@ -341,6 +386,7 @@ def collect_items_with_diagnostics(
         scroll_rounds=rounds,
         round_stats=round_stats,
         accumulated_count=len(items),
+        seen_stop_state=seen_stop_state,
     )
 
 
@@ -349,6 +395,7 @@ async def collect_items_with_diagnostics_async(
     max_items: int,
     scroll_rounds: int,
     scroll_wait_ms: int,
+    seen_item_predicate: SeenItemPredicate | None = None,
 ) -> tuple[list[ExtractedItem], list[ExtractRoundStats], ExtractCollectionMeta]:
     """resident main worker 多輪捲動 feed，並回傳匿名診斷統計。"""
 
@@ -360,6 +407,7 @@ async def collect_items_with_diagnostics_async(
 
     snapshot_captured = False
     stagnant_windows = 0
+    seen_stop_state = FeedSeenStopState(enabled=seen_item_predicate is not None)
     if rounds > 0:
         await capture_load_more_scroll_snapshot_async(page)
         snapshot_captured = True
@@ -377,6 +425,11 @@ async def collect_items_with_diagnostics_async(
                     continue
                 if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
                     continue
+                observe_seen_stop_item(
+                    state=seen_stop_state,
+                    item_aliases=item_aliases,
+                    seen_item_predicate=seen_item_predicate,
+                )
                 collected.append(
                     (
                         item_aliases,
@@ -388,6 +441,8 @@ async def collect_items_with_diagnostics_async(
                         ),
                     )
                 )
+                if seen_stop_state.triggered:
+                    break
             added_count = len(collected) - previous_count
             if added_count == 0:
                 stagnant_windows += 1
@@ -395,7 +450,11 @@ async def collect_items_with_diagnostics_async(
                 stagnant_windows = 0
             scroll_metrics = await get_scroll_metrics_async(page)
             scroll_action: dict[str, Any] = {}
-            should_scroll = round_index < rounds and len(collected) < max_items
+            should_scroll = (
+                round_index < rounds
+                and len(collected) < max_items
+                and not seen_stop_state.triggered
+            )
             if should_scroll:
                 scroll_action = await scroll_load_more_async(page)
             round_stats.append(
@@ -446,6 +505,8 @@ async def collect_items_with_diagnostics_async(
             )
             if round_index >= rounds or len(collected) >= max_items:
                 break
+            if seen_stop_state.triggered:
+                break
             if scroll_action and not bool(scroll_action.get("moved")):
                 break
             if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
@@ -461,7 +522,28 @@ async def collect_items_with_diagnostics_async(
         scroll_rounds=rounds,
         round_stats=round_stats,
         accumulated_count=len(items),
+        seen_stop_state=seen_stop_state,
     )
+
+
+def observe_seen_stop_item(
+    *,
+    state: FeedSeenStopState,
+    item_aliases: tuple[str, ...],
+    seen_item_predicate: SeenItemPredicate | None,
+) -> None:
+    """依 userscript seen-stop 語義觀察新收集 item，但保守要求先看見新 item。"""
+
+    if not state.enabled or seen_item_predicate is None:
+        return
+    if seen_item_predicate(item_aliases):
+        state.seen_count += 1
+        state.consecutive_seen_count += 1
+    else:
+        state.new_count += 1
+        state.consecutive_seen_count = 0
+    if state.consecutive_seen_count >= state.threshold:
+        state.triggered = True
 
 
 def build_collection_meta(
@@ -470,6 +552,7 @@ def build_collection_meta(
     scroll_rounds: int,
     round_stats: list[ExtractRoundStats],
     accumulated_count: int,
+    seen_stop_state: FeedSeenStopState | None = None,
 ) -> ExtractCollectionMeta:
     """依每輪診斷彙整 userscript collected meta 等價摘要。"""
 
@@ -477,6 +560,7 @@ def build_collection_meta(
     attempted = any(stat.scroll_moved is not None for stat in round_stats)
     attempts = sum(1 for stat in round_stats if stat.scroll_moved is not None)
     max_window_count = get_dynamic_max_windows(target_count) if scroll_rounds > 0 else 1
+    seen_state = seen_stop_state or FeedSeenStopState(enabled=False)
     return ExtractCollectionMeta(
         target_count=target_count,
         mode="scroll" if scroll_rounds > 0 else "off",
@@ -492,7 +576,7 @@ def build_collection_meta(
         accumulated_count=accumulated_count,
         max_window_count=max_window_count,
         stagnant_windows=round_stats[-1].stagnant_windows if round_stats else 0,
-        stop_reason="",
+        stop_reason="seen_stop_consecutive_seen" if seen_state.triggered else "",
         filtered_empty_text_count=sum(
             stat.filtered_empty_text_count for stat in round_stats
         ),
@@ -506,6 +590,12 @@ def build_collection_meta(
             (stat.load_more_mode for stat in round_stats if stat.load_more_mode),
             "scroll" if scroll_rounds > 0 else "off",
         ),
+        seen_stop_enabled=seen_state.enabled,
+        seen_stop_triggered=seen_state.triggered,
+        seen_stop_threshold=seen_state.threshold,
+        seen_stop_consecutive_seen_count=seen_state.consecutive_seen_count,
+        seen_stop_seen_count=seen_state.seen_count,
+        seen_stop_new_count=seen_state.new_count,
     )
 
 

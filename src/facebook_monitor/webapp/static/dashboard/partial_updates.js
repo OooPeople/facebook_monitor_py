@@ -53,6 +53,14 @@ const updateScanDiagnostics = (card, payload) => {
   }
 };
 
+const updateRenameInput = (card, payload) => {
+  const input = card.querySelector('[data-rename-target-modal] input[name="display_name"]');
+  if (!input || document.activeElement === input) return;
+  const nextValue = String(payload.rename_display_name ?? payload.display_name ?? "");
+  input.value = nextValue;
+  input.setAttribute("value", nextValue);
+};
+
 const updateSidebar = (payload) => {
   let allItemsMatched = true;
   (payload.items || []).forEach((item) => {
@@ -87,6 +95,7 @@ const updateTargetCard = (state, payload) => {
   updateStatusBadge(card, payload);
   updateText(card, "[data-target-title]", payload.display_name || "");
   updateText(card, "[data-target-avatar]", (payload.display_name || "?").slice(0, 1) || "?");
+  updateRenameInput(card, payload);
   updateText(card, "[data-header-summary]", payload.header_summary_label);
   updateCollapsedSummary(card, payload);
   updateText(card, `[data-hit-count="${payload.target_id}"]`, payload.hit_record_total_count);
@@ -115,6 +124,12 @@ const updateTargetCard = (state, payload) => {
   clearTargetUpdatePending(state, payload.target_id);
 };
 
+const orderedTargetIds = (nodes) => nodes.map((node) => node.dataset.targetId || "");
+
+const sameOrder = (left, right) => (
+  left.length === right.length && left.every((value, index) => value === right[index])
+);
+
 export const applyDashboardPartialUpdate = async (state) => {
   const sequence = state.partialUpdateSeq + 1;
   state.partialUpdateSeq = sequence;
@@ -139,6 +154,10 @@ export const applyDashboardPartialUpdate = async (state) => {
     const targetCardIds = new Set(targetCards.map((card) => card.dataset.targetId || ""));
     if (!cardPayloads.every((payload) => targetCardIds.has(payload.target_id || ""))) {
       throw new Error("partial_update_requires_reload:card_ids_changed");
+    }
+    const payloadOrder = cardPayloads.map((payload) => payload.target_id || "");
+    if (!sameOrder(orderedTargetIds(targetCards), payloadOrder)) {
+      throw new Error("partial_update_requires_reload:card_order_changed");
     }
     cardPayloads.forEach((payload) => {
       if (sequence === state.partialUpdateSeq) {

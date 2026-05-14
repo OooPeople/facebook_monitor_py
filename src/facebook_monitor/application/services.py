@@ -27,6 +27,9 @@ from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.persistence.repositories.notification_outbox import (
+    NotificationOutboxRepository,
+)
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
@@ -44,11 +47,13 @@ class TargetApplicationService:
         configs: TargetConfigRepository,
         runtime_states: TargetRuntimeStateRepository,
         seen_items: SeenItemRepository,
+        notification_outbox: NotificationOutboxRepository,
     ) -> None:
         self.targets = targets
         self.configs = configs
         self.runtime_states = runtime_states
         self.seen_items = seen_items
+        self.notification_outbox = notification_outbox
         self.config_service = TargetConfigService(targets=targets, configs=configs)
         self.runtime_service = TargetRuntimeService(
             targets=targets,
@@ -63,6 +68,7 @@ class TargetApplicationService:
             targets=targets,
             runtime_states=runtime_states,
             seen_items=seen_items,
+            notification_outbox=notification_outbox,
             registry=self.registry_service,
             configs=self.config_service,
             runtime=self.runtime_service,
@@ -82,6 +88,20 @@ class TargetApplicationService:
         """以 scheduler metadata refresh 結果補齊 target 顯示名稱。"""
 
         return self.registry_service.refresh_target_group_name(target_id, group_name)
+
+    def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
+        """標記 target 正等待 resident worker 補齊 metadata。"""
+
+        return self.registry_service.mark_target_metadata_refresh_pending(target_id)
+
+    def mark_target_metadata_refresh_failed(
+        self,
+        target_id: str,
+        error: str,
+    ) -> TargetDescriptor:
+        """標記 target metadata 補齊失敗。"""
+
+        return self.registry_service.mark_target_metadata_refresh_failed(target_id, error)
 
     def update_target_name(self, target_id: str, name: str) -> TargetDescriptor:
         """更新使用者自訂 target 顯示名稱。"""

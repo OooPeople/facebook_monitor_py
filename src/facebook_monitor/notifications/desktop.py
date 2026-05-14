@@ -86,7 +86,11 @@ def _escape_powershell_single_quoted_text(value: str) -> str:
 def _run_command(command: list[str]) -> None:
     """執行桌面通知命令。"""
 
-    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+    creationflags = (
+        int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if sys.platform.startswith("win")
+        else 0
+    )
     subprocess.run(
         command,
         check=True,

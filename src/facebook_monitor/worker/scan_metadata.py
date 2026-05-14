@@ -123,6 +123,11 @@ class CommentScanRoundMetadata:
     load_more_mode: str
     added_count: int
     stagnant_windows: int
+    dom_settle_attempted: bool = False
+    dom_settle_stable: bool = False
+    dom_settle_observations: int = 0
+    dom_settle_wait_ms: int = 0
+    dom_settle_candidate_count: int = 0
 
     def to_metadata(self) -> dict[str, Any]:
         """轉成 latest scan JSON metadata。"""
@@ -146,6 +151,11 @@ class CommentScanRoundMetadata:
             "load_more_mode": self.load_more_mode,
             "added_count": self.added_count,
             "stagnant_windows": self.stagnant_windows,
+            "dom_settle_attempted": self.dom_settle_attempted,
+            "dom_settle_stable": self.dom_settle_stable,
+            "dom_settle_observations": self.dom_settle_observations,
+            "dom_settle_wait_ms": self.dom_settle_wait_ms,
+            "dom_settle_candidate_count": self.dom_settle_candidate_count,
         }
 
 

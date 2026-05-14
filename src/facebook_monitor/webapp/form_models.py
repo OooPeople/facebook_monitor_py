@@ -18,6 +18,7 @@ from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import clamp_target_post_count
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 
 
 FIXED_REFRESH_MODE = "fixed"
@@ -222,6 +223,29 @@ class TargetConfigForm:
         return UpdateTargetConfigRequest(
             target_id=target_id,
             config=self.to_config_patch(),
+        )
+
+    def to_sidebar_group_template(self, *, sidebar_group_id: str) -> SidebarGroupConfigTemplate:
+        """轉成 sidebar group config template；不是 target config owner。"""
+
+        self.validate_refresh_range()
+        return SidebarGroupConfigTemplate(
+            sidebar_group_id=sidebar_group_id,
+            include_keywords=self.include_keyword_tuple,
+            exclude_keywords=self.exclude_keyword_tuple,
+            exclude_ignore_phrases=self.exclude_ignore_phrase_tuple,
+            fixed_refresh_sec=self.refresh_fixed_value,
+            min_refresh_sec=self.normalized_min_refresh_sec,
+            max_refresh_sec=self.normalized_max_refresh_sec,
+            jitter_enabled=self.refresh_jitter_enabled,
+            max_items_per_scan=self.normalized_max_items_per_scan,
+            auto_load_more=checkbox_checked(self.auto_load_more),
+            auto_adjust_sort=checkbox_checked(self.auto_adjust_sort),
+            enable_desktop_notification=checkbox_checked(self.enable_desktop_notification),
+            enable_ntfy=checkbox_checked(self.enable_ntfy),
+            ntfy_topic=self.ntfy_topic.strip(),
+            enable_discord_notification=checkbox_checked(self.enable_discord_notification),
+            discord_webhook=self.discord_webhook.strip(),
         )
 
     def to_group_posts_upsert_request(

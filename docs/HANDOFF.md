@@ -27,6 +27,10 @@
 - Web UI 啟動時預設停止 targets，不自動恢復上次掃描。
 - scheduler running 時新增 target 不同步搶 profile；名稱解析交給 resident metadata refresh。
 - 正式 config 路徑只讀寫 `target_configs[target_id]`；`group_configs` 只保留為 migration 來源。
+- Sidebar layout 只影響 Web UI 順序，不影響 scheduler 掃描順序；排序保存走單一 layout command。
+- Group template 只在明確套用時覆蓋 group 內 target configs，不是 config fallback owner。
+- Dashboard read model 不應寫入 sidebar placement；缺失 placement 只能作為未分組顯示。
+- Startup runtime cleanup 保留 `notification_outbox`；不要用重置 debug data 來清 pending/failed 通知。
 - Dashboard 更新維持短生命週期 revision event stream + batch partial update；不要描述成真正長連線 SSE。
 - keyword highlight 由 `webapp/highlight.py` 產生 text segments；template / JS 不應改回 `innerHTML` 字串替換。
 - Python 預設值集中於 `core/defaults.py`。

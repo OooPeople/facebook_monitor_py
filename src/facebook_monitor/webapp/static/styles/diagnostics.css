@@ -8,6 +8,11 @@
   margin-top: 0;
 }
 
+.scan-diagnostics-body {
+  display: grid;
+  gap: 10px;
+}
+
 .debug-details summary {
   cursor: pointer;
   color: var(--accent);
@@ -26,6 +31,10 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.scan-diagnostics-modal .debug-copy-source {
+  min-height: min(50vh, 420px);
 }
 
 .debug-copy-button {

@@ -11,6 +11,20 @@ export const setupSettingsModals = () => {
     });
   });
 
+  document.querySelectorAll("[data-scan-diagnostics-button]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = button.closest("[data-target-card]");
+      const modal = card?.querySelector("[data-scan-diagnostics-modal]");
+      button.closest(".more-menu")?.removeAttribute("open");
+      openDialog(modal);
+    });
+  });
+
+  bindDialogDismiss({
+    modalSelector: "[data-scan-diagnostics-modal]",
+    closeSelector: "[data-close-scan-diagnostics]",
+  });
+
   bindDialogDismiss({
     modalSelector: "[data-rename-target-modal]",
     closeSelector: "[data-close-rename-target]",

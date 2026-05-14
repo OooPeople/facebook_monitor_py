@@ -63,6 +63,7 @@ class FullHitRecordRow:
             "item_type": self.item_type,
             "author_name": self.entry.author or "(unknown)",
             "matched_keyword": self.entry.include_rule,
+            "matched_keywords": list(self.entry.include_rules),
             "matched_at": self.matched_at,
             "recorded_at": self.recorded_at,
             "notified_at": self.recorded_at,

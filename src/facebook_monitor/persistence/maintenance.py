@@ -41,7 +41,7 @@ class RuntimeDataMaintenanceRepository:
         self.connection = connection
 
     def clear_runtime_data(self, *, include_seen_items: bool = True) -> RuntimeDataCleanupResult:
-        """清除可重建資料，保留 target、config、profile 與持久查看紀錄。"""
+        """清除可重建資料，保留 target、config、profile、outbox 與持久查看紀錄。"""
 
         latest_scan_items = self._delete_all("latest_scan_items")
         notification_events = self._delete_all("notification_events")

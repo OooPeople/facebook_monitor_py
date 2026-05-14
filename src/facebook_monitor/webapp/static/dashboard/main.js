@@ -1,10 +1,12 @@
 import { setupCardCollapse } from "/static/dashboard/card_collapse.js";
 import { setupDebugCopyButtons } from "/static/dashboard/debug_tools.js";
+import { setupConfirmSubmitForms } from "/static/dashboard/dialogs.js";
 import { setupConfigForms, setupFormSubmitTracking, setupRefreshFields } from "/static/dashboard/forms.js";
 import { setupHitRecords } from "/static/dashboard/hit_records.js";
 import { setupSettingsModals } from "/static/dashboard/modals.js";
 import { setupRevisionClient } from "/static/dashboard/revision_client.js";
 import { setupSidebar } from "/static/dashboard/sidebar.js";
+import { setupSidebarLayout } from "/static/dashboard/sidebar_layout.js";
 import {
   clearSubmittedActionAnchor,
   clearSubmittedConfigAnchor,
@@ -71,10 +73,12 @@ setupConfigForms(state);
 setupCardCollapse(state);
 setupRefreshFields();
 setupSidebar();
+setupSidebarLayout({ showToast });
 setupPreviewTabs();
 setupKeywordTabs();
 setupHitRecords({ showToast });
 setupSettingsModals();
+setupConfirmSubmitForms();
 setupFormSubmitTracking();
 setupRevisionClient(state);
 setupDebugCopyButtons();

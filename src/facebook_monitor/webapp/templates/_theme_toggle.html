@@ -1,4 +1,12 @@
 <button class="button theme-toggle" type="button" data-theme-toggle aria-label="切換深色模式">
-  <span class="theme-toggle-icon" data-theme-toggle-icon aria-hidden="true">◐</span>
+  <span class="theme-toggle-icon" aria-hidden="true">
+    <svg class="ui-icon" viewBox="0 0 24 24" data-theme-icon-light focusable="false">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+    </svg>
+    <svg class="ui-icon" viewBox="0 0 24 24" data-theme-icon-dark focusable="false" hidden>
+      <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8Z"/>
+    </svg>
+  </span>
   <span class="theme-toggle-label" data-theme-toggle-label>淺色</span>
 </button>

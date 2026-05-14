@@ -79,6 +79,7 @@ def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[s
         "target_id": row.target_id,
         "anchor_id": row.anchor_id,
         "display_name": row.display_name,
+        "rename_display_name": row.rename_display_name,
         "status_label": row.status_label,
         "status_class": row.status_class,
         "header_summary_label": row.header_summary_label,

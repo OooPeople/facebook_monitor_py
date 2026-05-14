@@ -77,6 +77,33 @@ def test_evaluate_keyword_rules_uses_semicolon_or() -> None:
     assert result.include_rule == "交換"
 
 
+def test_evaluate_keyword_rules_returns_all_include_matches() -> None:
+    """同一內容可命中多組 include 規則，供 UI 全部標示與高亮。"""
+
+    result = evaluate_keyword_rules(
+        "售6/5,6/6的票各一張",
+        include_keywords=("6/5;6/6",),
+    )
+
+    assert result.eligible is True
+    assert result.include_rules == ("6/5", "6/6")
+    assert result.include_rule == "6/5;6/6"
+    assert result.display_rule == "6/5;6/6"
+
+
+def test_evaluate_keyword_rules_deduplicates_repeated_include_matches() -> None:
+    """重複 keyword 規則不應造成重複 badge 或重複 persistence 子列。"""
+
+    result = evaluate_keyword_rules(
+        "售6/5,6/6的票各一張",
+        include_keywords=("6/5;6/5;6/6",),
+    )
+
+    assert result.eligible is True
+    assert result.include_rules == ("6/5", "6/6")
+    assert result.include_rule == "6/5;6/6"
+
+
 def test_evaluate_keyword_rules_exclude_blocks_include_match() -> None:
     """exclude 命中時，即使 include 命中也不符合通知條件。"""
 

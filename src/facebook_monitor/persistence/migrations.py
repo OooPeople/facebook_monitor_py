@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
@@ -309,6 +310,165 @@ def migrate_16_to_17(connection: sqlite3.Connection) -> None:
     return None
 
 
+def migrate_17_to_18(connection: sqlite3.Connection) -> None:
+    """新增 target metadata refresh 狀態欄位。"""
+
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "targets",
+            "metadata_status",
+            "TEXT NOT NULL DEFAULT 'resolved'",
+        ),
+    )
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "targets",
+            "metadata_error",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    )
+
+
+def migrate_18_to_19(connection: sqlite3.Connection) -> None:
+    """新增 sidebar layout tables，並為既有 targets 建立未分組 placement。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sidebar_groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sidebar_target_placements (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            sidebar_group_id TEXT REFERENCES sidebar_groups(id) ON DELETE SET NULL,
+            sort_order INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sidebar_groups_order
+            ON sidebar_groups(sort_order);
+        CREATE INDEX IF NOT EXISTS idx_sidebar_target_placements_group_order
+            ON sidebar_target_placements(sidebar_group_id, sort_order);
+        """
+    )
+    target_rows = connection.execute(
+        """
+        SELECT id
+        FROM targets
+        ORDER BY created_at, id
+        """
+    ).fetchall()
+    for index, row in enumerate(target_rows):
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO sidebar_target_placements (
+                target_id, sidebar_group_id, sort_order, updated_at
+            )
+            VALUES (?, NULL, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            """,
+            (row["id"], index),
+        )
+
+
+def migrate_19_to_20(connection: sqlite3.Connection) -> None:
+    """新增 sidebar group config template table。"""
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sidebar_group_config_templates (
+            sidebar_group_id TEXT PRIMARY KEY REFERENCES sidebar_groups(id) ON DELETE CASCADE,
+            include_keywords TEXT NOT NULL DEFAULT '[]',
+            exclude_keywords TEXT NOT NULL DEFAULT '[]',
+            exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+            min_refresh_sec INTEGER NOT NULL,
+            max_refresh_sec INTEGER NOT NULL,
+            jitter_enabled INTEGER NOT NULL,
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL,
+            auto_load_more INTEGER NOT NULL,
+            auto_adjust_sort INTEGER NOT NULL,
+            enable_desktop_notification INTEGER NOT NULL,
+            enable_ntfy INTEGER NOT NULL,
+            ntfy_topic TEXT NOT NULL,
+            enable_discord_notification INTEGER NOT NULL,
+            discord_webhook TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def migrate_20_to_21(connection: sqlite3.Connection) -> None:
+    """新增多 keyword 命中正規化表，並回填既有摘要欄位。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS match_history_matches (
+            history_id INTEGER NOT NULL REFERENCES match_history(id) ON DELETE CASCADE,
+            match_order INTEGER NOT NULL,
+            rule TEXT NOT NULL,
+            PRIMARY KEY (history_id, match_order)
+        );
+
+        CREATE TABLE IF NOT EXISTS latest_scan_item_matches (
+            target_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            match_order INTEGER NOT NULL,
+            rule TEXT NOT NULL,
+            PRIMARY KEY (target_id, item_key, match_order),
+            FOREIGN KEY (target_id, item_key)
+                REFERENCES latest_scan_items(target_id, item_key)
+                ON UPDATE CASCADE
+                ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_match_history_matches_history
+            ON match_history_matches(history_id, match_order);
+        CREATE INDEX IF NOT EXISTS idx_latest_scan_item_matches_target_item
+            ON latest_scan_item_matches(target_id, item_key, match_order);
+        """
+    )
+    for row in connection.execute(
+        """
+        SELECT id, include_rule
+        FROM match_history
+        WHERE include_rule <> ''
+        """
+    ).fetchall():
+        for index, rule in enumerate(split_keyword_rule_text(row["include_rule"])):
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO match_history_matches (history_id, match_order, rule)
+                VALUES (?, ?, ?)
+                """,
+                (row["id"], index, rule),
+            )
+    for row in connection.execute(
+        """
+        SELECT target_id, item_key, matched_keyword
+        FROM latest_scan_items
+        WHERE matched_keyword <> ''
+        """
+    ).fetchall():
+        for index, rule in enumerate(split_keyword_rule_text(row["matched_keyword"])):
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO latest_scan_item_matches (
+                    target_id, item_key, match_order, rule
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (row["target_id"], row["item_key"], index, rule),
+            )
+
+
 MIGRATIONS: dict[int, Migration] = {
     10: migrate_10_to_11,
     11: migrate_11_to_12,
@@ -317,6 +477,10 @@ MIGRATIONS: dict[int, Migration] = {
     14: migrate_14_to_15,
     15: migrate_15_to_16,
     16: migrate_16_to_17,
+    17: migrate_17_to_18,
+    18: migrate_18_to_19,
+    19: migrate_19_to_20,
+    20: migrate_20_to_21,
 }
 
 
@@ -408,5 +572,9 @@ __all__ = [
     "migrate_14_to_15",
     "migrate_15_to_16",
     "migrate_16_to_17",
+    "migrate_17_to_18",
+    "migrate_18_to_19",
+    "migrate_19_to_20",
+    "migrate_20_to_21",
     "run_known_migrations",
 ]

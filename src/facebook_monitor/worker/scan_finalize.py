@@ -8,12 +8,13 @@ Extractor、sort 與 load-more 仍由 target-kind-specific pipeline 負責。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.keyword_rules import KeywordEvaluation
-from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
+from facebook_monitor.core.keyword_rules import compile_keyword_matcher
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -63,6 +64,7 @@ class ScanMatchResult:
     exclude_rule: str
     eligible_for_notify: bool
     matched_keyword: str
+    matched_keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,11 @@ def finalize_scan_items(
     matched_items: list[NormalizedScanItem] = []
     history_entries: list[MatchHistoryEntry] = []
     notification_payloads: list[MatchNotificationPayload] = []
+    keyword_matcher = compile_keyword_matcher(
+        include_keywords=config.include_keywords,
+        exclude_keywords=config.exclude_keywords,
+        exclude_ignore_phrases=config.exclude_ignore_phrases,
+    )
 
     for item in items:
         is_new = app.repositories.seen_items.mark_seen_aliases(
@@ -166,12 +173,7 @@ def finalize_scan_items(
             ),
             item.alias_keys,
         )
-        keyword_evaluation = evaluate_keyword_rules(
-            item.text,
-            include_keywords=config.include_keywords,
-            exclude_keywords=config.exclude_keywords,
-            exclude_ignore_phrases=config.exclude_ignore_phrases,
-        )
+        keyword_evaluation = keyword_matcher.evaluate(item.text)
         result = build_scan_match_result(
             item=item,
             is_new=is_new,
@@ -198,6 +200,7 @@ def finalize_scan_items(
             text=item.text,
             permalink=item.permalink,
             include_rule=result.include_rule,
+            include_rules=keyword_evaluation.include_rules,
             timestamp_text=item.timestamp_text,
             notified_at=notified_at,
             created_at=notified_at,
@@ -241,10 +244,17 @@ def finalize_scan_items(
             metadata=scan_metadata,
         )
     )
+    previous_latest_items = app.repositories.latest_scan_items.list_by_target(
+        target.id,
+        limit=config.max_items_per_scan,
+    )
     latest_items = build_latest_scan_items(
         target=target,
         scan_run_id=scan_run_id,
         match_results=match_results,
+        previous_latest_items=previous_latest_items,
+        target_count=config.max_items_per_scan,
+        carry_over_previous_items=should_carry_over_previous_latest_items(scan_metadata),
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, latest_items)
 
@@ -276,6 +286,7 @@ def build_scan_match_result(
         exclude_rule=keyword_evaluation.exclude_rule,
         eligible_for_notify=is_new and keyword_evaluation.eligible,
         matched_keyword=keyword_evaluation.display_rule,
+        matched_keywords=keyword_evaluation.include_rules if keyword_evaluation.eligible else (),
     )
 
 
@@ -284,10 +295,13 @@ def build_latest_scan_items(
     target: TargetDescriptor,
     scan_run_id: int,
     match_results: list[ScanMatchResult],
+    previous_latest_items: list[LatestScanItem] | None = None,
+    target_count: int | None = None,
+    carry_over_previous_items: bool = False,
 ) -> list[LatestScanItem]:
     """將 shared classification 結果轉成 latest scan snapshot。"""
 
-    return [
+    latest_items = [
         LatestScanItem(
             target_id=target.id,
             scan_run_id=scan_run_id,
@@ -298,7 +312,41 @@ def build_latest_scan_items(
             text=result.item.text,
             permalink=result.item.permalink,
             matched_keyword=result.matched_keyword,
+            matched_keywords=result.matched_keywords,
             debug_metadata=result.item.metadata or {},
         )
         for item_index, result in enumerate(match_results)
     ]
+    if not carry_over_previous_items:
+        return latest_items
+
+    existing_item_keys = {item.item_key for item in latest_items}
+    limit = max(int(target_count or len(latest_items)), len(latest_items))
+    for previous_item in previous_latest_items or []:
+        if len(latest_items) >= limit:
+            break
+        if previous_item.item_key in existing_item_keys:
+            continue
+        existing_item_keys.add(previous_item.item_key)
+        latest_items.append(
+            replace(
+                previous_item,
+                scan_run_id=scan_run_id,
+                item_index=len(latest_items),
+                debug_metadata={
+                    **(previous_item.debug_metadata or {}),
+                    "carriedOverFromPreviousScan": True,
+                    "carriedOverFromScanRunId": previous_item.scan_run_id,
+                },
+            )
+        )
+    return latest_items
+
+
+def should_carry_over_previous_latest_items(metadata: dict[str, Any]) -> bool:
+    """seen-stop 提早停止時，用上一輪 latest snapshot 補足 UI 可檢視項目。"""
+
+    collected_meta = metadata.get("collected_meta")
+    if isinstance(collected_meta, dict) and collected_meta.get("seenStopTriggered") is True:
+        return True
+    return metadata.get("stop_reason") == "seen_stop_consecutive_seen"

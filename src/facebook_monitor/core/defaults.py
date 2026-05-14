@@ -17,8 +17,8 @@ class TargetConfigDefaults:
     min_refresh_sec: int = 50
     max_refresh_sec: int = 70
     jitter_enabled: bool = True
-    exclude_keywords: tuple[str, ...] = ("徵;收;已售",)
-    exclude_ignore_phrases: tuple[str, ...] = ("全收;回收",)
+    exclude_keywords: tuple[str, ...] = ("徵", "收", "已售")
+    exclude_ignore_phrases: tuple[str, ...] = ("全收", "回收")
     max_items_per_scan: int = 5
     auto_load_more: bool = True
     auto_adjust_sort: bool = True

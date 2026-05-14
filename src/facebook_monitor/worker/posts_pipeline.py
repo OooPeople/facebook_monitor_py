@@ -21,8 +21,10 @@ from facebook_monitor.facebook.collection_policy import (
 from facebook_monitor.facebook.collection_policy import get_dynamic_max_windows
 from facebook_monitor.facebook.feed_extractor import ExtractCollectionMeta
 from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
+from facebook_monitor.facebook.feed_extractor import SeenItemPredicate
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics_async
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics
+from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.facebook.sort_controls import ensure_preferred_feed_sort_async
 from facebook_monitor.facebook.sort_controls import ensure_preferred_feed_sort
@@ -97,7 +99,7 @@ def build_scan_metadata(
         )
     raw_counts = [stat.raw_item_count for stat in round_stats]
     candidate_count = max(raw_counts) if raw_counts else items_count
-    stop_reason = infer_scan_stop_reason(
+    stop_reason = collection_meta.stop_reason or infer_scan_stop_reason(
         items_count=items_count,
         max_items_per_scan=max_items_per_scan,
         scroll_rounds=scroll_rounds,
@@ -181,6 +183,13 @@ def scan_posts_page(
         max_items=config.max_items_per_scan,
         scroll_rounds=effective_scroll_rounds,
         scroll_wait_ms=scroll_wait_ms,
+        seen_item_predicate=build_feed_seen_stop_predicate(
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=effective_scroll_rounds,
+            sort_adjust_result=sort_adjust_result,
+        ),
     )
     if not items:
         raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
@@ -233,6 +242,13 @@ async def scan_posts_page_async(
         max_items=config.max_items_per_scan,
         scroll_rounds=effective_scroll_rounds,
         scroll_wait_ms=scroll_wait_ms,
+        seen_item_predicate=build_feed_seen_stop_predicate(
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=effective_scroll_rounds,
+            sort_adjust_result=sort_adjust_result,
+        ),
     )
     if not items:
         raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
@@ -310,3 +326,24 @@ def finalize_posts_pipeline_scan(
         scan_run_id=finalize_result.scan_run_id,
         round_stats=tuple(round_stats),
     )
+
+
+def build_feed_seen_stop_predicate(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    scroll_rounds: int,
+    sort_adjust_result: SortAdjustResult,
+) -> SeenItemPredicate | None:
+    """只在已確認 feed 為新貼文排序時啟用 seen-stop，避免置頂貼文造成漏掃。"""
+
+    if not config.auto_load_more or max(scroll_rounds, 0) <= 0:
+        return None
+    if sort_adjust_result.after_label != FEED_SORT_NEWEST_LABEL:
+        return None
+
+    def has_seen_item(item_aliases: tuple[str, ...]) -> bool:
+        return app.repositories.seen_items.has_seen_any(target.scope_id, item_aliases)
+
+    return has_seen_item

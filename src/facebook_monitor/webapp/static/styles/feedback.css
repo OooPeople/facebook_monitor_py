@@ -69,6 +69,15 @@ button:hover,
   box-shadow: var(--shadow-raised);
 }
 
+.button--toolbar {
+  min-height: 42px;
+  min-width: 68px;
+}
+
+.button--toolbar-icon {
+  min-width: 52px;
+}
+
 .button--primary {
   background: var(--accent-button);
   border-color: var(--accent-button);
@@ -101,6 +110,23 @@ button:hover,
   width: 34px;
 }
 
+.ui-icon {
+  display: block;
+  fill: none;
+  height: 17px;
+  pointer-events: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 17px;
+}
+
+.ui-icon--dots {
+  fill: currentcolor;
+  stroke: none;
+}
+
 .theme-toggle {
   gap: 8px;
   min-height: 38px;
@@ -119,6 +145,11 @@ button:hover,
   justify-content: center;
   line-height: 1;
   width: 24px;
+}
+
+.theme-toggle-icon .ui-icon {
+  height: 16px;
+  width: 16px;
 }
 
 .theme-toggle-label {

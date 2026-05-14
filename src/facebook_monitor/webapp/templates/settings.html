@@ -128,7 +128,14 @@
             data-dirty-status="notification-defaults-form"
             aria-live="polite"
           >尚未儲存</span>
-          <form method="post" action="/settings/notifications/apply-to-targets" onsubmit="return confirm('套用通知預設值到所有 target 設定？');">
+          <form
+            method="post"
+            action="/settings/notifications/apply-to-targets"
+            data-confirm-submit
+            data-confirm-title="套用通知預設值"
+            data-confirm-message="這會覆蓋所有 target 的通知設定。關鍵字與掃描設定不會改變。"
+            data-confirm-label="套用"
+          >
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit">套用到所有 target</button>
           </form>

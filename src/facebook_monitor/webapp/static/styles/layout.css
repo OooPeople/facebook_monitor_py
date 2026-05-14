@@ -63,6 +63,10 @@ p {
   margin-bottom: 16px;
 }
 
+.target-card {
+  padding-bottom: 12px;
+}
+
 .notice.success {
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
   background: var(--success-bg);

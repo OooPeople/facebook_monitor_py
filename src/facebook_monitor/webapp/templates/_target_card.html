@@ -17,22 +17,37 @@
         <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="return_to" value="">
-          <button type="submit">{{ row.monitoring_button_label }}</button>
+          <button class="button button--toolbar" type="submit">{{ row.monitoring_button_label }}</button>
         </form>
       {% else %}
         <span class="muted-text">尚未接上掃描流程</span>
       {% endif %}
-      <button type="submit" form="config-{{ row.target.id }}" data-dirty-submit>儲存</button>
-      <button class="button" type="button" data-view-records-button data-target-id="{{ row.target.id }}">查看紀錄</button>
-      <button class="button" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">設定</button>
+      <button class="button button--toolbar" type="submit" form="config-{{ row.target.id }}" data-dirty-submit>儲存</button>
+      <button class="button button--toolbar" type="button" data-view-records-button data-target-id="{{ row.target.id }}">查看紀錄</button>
+      <button class="button button--toolbar" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">設定</button>
       <details class="more-menu">
-        <summary class="button more-menu-trigger" aria-label="更多操作">⋯</summary>
-        <div class="more-menu-panel">
-          <button class="more-menu-action" type="button" data-rename-target-button>更改名稱</button>
-          <form method="post" action="/targets/{{ row.target.id }}/delete" onsubmit="return confirm('刪除這個 target？');">
+        <summary class="button button--toolbar button--toolbar-icon more-menu-trigger" aria-label="更多操作">
+          <svg class="ui-icon ui-icon--dots" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="5" cy="12" r="1.8"/>
+            <circle cx="12" cy="12" r="1.8"/>
+            <circle cx="19" cy="12" r="1.8"/>
+          </svg>
+        </summary>
+        <div class="more-menu-panel menu-panel">
+          <button class="more-menu-action menu-action" type="button" data-scan-diagnostics-button>掃描診斷</button>
+          <button class="more-menu-action menu-action" type="button" data-rename-target-button>更改名稱</button>
+          <form
+            method="post"
+            action="/targets/{{ row.target.id }}/delete"
+            data-confirm-submit
+            data-confirm-title="刪除 target"
+            data-confirm-message="刪除這個 target？此操作不會影響其他 target。"
+            data-confirm-label="刪除"
+            data-confirm-danger="1"
+          >
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="return_to" value="">
-            <button class="more-menu-action button--danger" type="submit">刪除</button>
+            <button class="more-menu-action menu-action button--danger" type="submit">刪除</button>
           </form>
         </div>
       </details>
@@ -69,7 +84,12 @@
               <div class="preview-tab-list keyword-rule-tab-list" role="tablist" aria-label="排除規則">
                 <button class="preview-tab keyword-rule-tab active" type="button" role="tab" aria-selected="true" aria-controls="exclude-keywords-panel-{{ row.target.id }}" data-keyword-tab="exclude">排除關鍵字</button>
                 <button class="preview-tab keyword-rule-tab" type="button" role="tab" aria-selected="false" aria-controls="exclude-ignore-panel-{{ row.target.id }}" data-keyword-tab="ignore">排除字忽略片語</button>
-                <button class="keyword-help-button" type="button" aria-label="查看排除字忽略片語說明" aria-controls="keyword-help-{{ row.target.id }}" data-keyword-help-button>?</button>
+                <button class="keyword-help-button" type="button" aria-label="查看排除字忽略片語說明" aria-controls="keyword-help-{{ row.target.id }}" data-keyword-help-button>
+                  <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M9.5 9a2.7 2.7 0 1 1 4.4 2.1c-1.3.9-1.9 1.5-1.9 2.9"/>
+                    <path d="M12 18h.01"/>
+                  </svg>
+                </button>
               </div>
             </div>
             <div class="keyword-rule-panel" id="exclude-keywords-panel-{{ row.target.id }}" role="tabpanel" data-keyword-panel="exclude">
@@ -81,7 +101,7 @@
             <div class="keyword-rule-panel" id="exclude-ignore-panel-{{ row.target.id }}" role="tabpanel" data-keyword-panel="ignore" hidden>
               <label class="keyword-rule-field">
                 <span class="keyword-rule-field-label">排除字忽略片語</span>
-                <textarea name="exclude_ignore_phrases" rows="2" placeholder="例如：全收, 回收">{{ row.exclude_ignore_phrases_text }}</textarea>
+                <textarea name="exclude_ignore_phrases" rows="2" placeholder="例如：全收;回收">{{ row.exclude_ignore_phrases_text }}</textarea>
               </label>
             </div>
           </div>
@@ -126,7 +146,9 @@
           </div>
           <button class="settings-summary-button" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">
             <span>查看全部設定</span>
-            <span aria-hidden="true">›</span>
+            <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="m9 6 6 6-6 6"/>
+            </svg>
           </button>
         </form>
       </aside>
@@ -147,12 +169,6 @@
   </div>
 
   <div class="target-footer-controls">
-    <details class="debug-details scan-debug-details">
-      <summary>掃描診斷</summary>
-      <div class="debug-summary">{{ row.latest_scan_diagnostics_summary }}</div>
-      <textarea class="debug-copy-source" readonly rows="10">{{ row.latest_scan_diagnostics_text }}</textarea>
-      <button class="debug-copy-button" type="button">複製掃描診斷</button>
-    </details>
     <div class="target-collapse-control">
       <button
         class="collapse-toggle"
@@ -173,6 +189,30 @@
 
   {% include "_target_settings_modal.html" %}
   {% include "_hit_records_modal.html" %}
+  <dialog class="settings-modal scan-diagnostics-modal" data-scan-diagnostics-modal aria-labelledby="scan-diagnostics-title-{{ row.target.id }}">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h3 id="scan-diagnostics-title-{{ row.target.id }}">掃描診斷</h3>
+          <p>{{ row.display_name }}</p>
+        </div>
+        <button class="button--icon" type="button" data-close-scan-diagnostics aria-label="關閉掃描診斷">
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div class="modal-body scan-diagnostics-body scan-debug-details">
+        <div class="debug-summary">{{ row.latest_scan_diagnostics_summary }}</div>
+        <textarea class="debug-copy-source" readonly rows="12">{{ row.latest_scan_diagnostics_text }}</textarea>
+      </div>
+      <footer class="modal-footer">
+        <span class="field-caption">診斷內容只供排查掃描行為，不會影響 target 設定。</span>
+        <button class="debug-copy-button" type="button">複製掃描診斷</button>
+      </footer>
+    </div>
+  </dialog>
   <dialog class="settings-modal rename-target-modal" data-rename-target-modal aria-labelledby="rename-target-title-{{ row.target.id }}">
     <form class="modal-shell" method="post" action="/targets/{{ row.target.id }}/name" data-action-anchor="{{ row.anchor_id }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -182,12 +222,11 @@
           <h3 id="rename-target-title-{{ row.target.id }}">更改 target 名稱</h3>
           <p>只會更新卡片與側邊欄顯示名稱。</p>
         </div>
-        <button class="button--icon" type="button" data-close-rename-target aria-label="關閉更改名稱視窗">×</button>
       </header>
       <div class="modal-body rename-target-body">
         <label>
           名稱
-          <input name="display_name" type="text" value="{{ row.display_name }}" autocomplete="off" required>
+          <input name="display_name" type="text" value="{{ row.rename_display_name }}" placeholder="等社團名稱抓取完成後會自動回填，或輸入自訂名稱" autocomplete="off" required>
         </label>
       </div>
       <footer class="modal-footer">
@@ -204,22 +243,29 @@
       <header class="modal-header">
         <div>
           <h3 id="keyword-help-title-{{ row.target.id }}">排除字忽略片語</h3>
-          <p>用來避免排除字誤傷特定常見片語。</p>
+          <p>避免排除關鍵字誤判。</p>
         </div>
-        <button class="button--icon" type="button" data-close-keyword-help aria-label="關閉說明">×</button>
+        <button class="button--icon" type="button" data-close-keyword-help aria-label="關閉說明">
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+          </svg>
+        </button>
       </header>
       <div class="modal-body keyword-help-body">
         <section class="modal-section-card">
-          <p>忽略片語只會在排除判斷前遮罩該片語本身，不會讓整篇內容直接通過。</p>
-          <p>例如排除關鍵字是 <code>收</code>，忽略片語是 <code>全收;回收</code> 時，<code>全收</code> 裡的 <code>收</code> 不會觸發排除。</p>
-          <p>如果同一段文字其他位置仍出現 <code>收</code>，仍會照常被排除。</p>
-          <p>包含關鍵字先用原文判斷；排除關鍵字會在遮罩忽略片語後判斷。通知與紀錄仍保存原始文字。</p>
+          <p>
+            系統會先保護忽略片語，再檢查排除關鍵字。<br><br>
+            <strong>例：</strong><br><br>
+            排除關鍵字：<code>收</code><br>
+            忽略片語：<code>全收;回收</code><br><br>
+          </p>
+          <ul>
+            <li><code>收一張票</code> → <strong>排除</strong></li>
+            <li><code>售一張票，贈品回收</code> → <strong>不排除</strong></li>
+          </ul>
         </section>
       </div>
-      <footer class="modal-footer">
-        <span class="field-caption">預設忽略片語：全收;回收</span>
-        <button type="button" data-close-keyword-help>關閉</button>
-      </footer>
     </div>
   </dialog>
 </article>

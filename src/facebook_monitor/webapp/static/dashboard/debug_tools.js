@@ -2,7 +2,8 @@ export const setupDebugCopyButtons = () => {
   document.querySelectorAll(".debug-copy-button").forEach((button) => {
     button.addEventListener("click", async () => {
       const defaultText = button.dataset.defaultText || button.textContent;
-      const source = button.parentElement.querySelector(".debug-copy-source");
+      const source = button.closest(".scan-debug-details, .debug-details")
+        ?.querySelector(".debug-copy-source");
       const text = source ? source.value : "";
       try {
         await navigator.clipboard.writeText(text);

@@ -30,6 +30,7 @@ class FakeCommentsPage:
 
     def __init__(self) -> None:
         self.sort_adjusted = False
+        self.settle_calls = 0
 
     def locator(self, selector: str) -> FakeLocator:
         """回傳 body locator。"""
@@ -50,6 +51,13 @@ class FakeCommentsPage:
                 "reason": "updated_to_preferred_sort",
                 "mutationSuppressionMs": 3200,
                 "mutationSuppressionReason": "auto_adjust_sort",
+            }
+        if "comment_dom_settle" in script:
+            self.settle_calls += 1
+            return {
+                "mode": "comment_dom_settle",
+                "candidateCount": 1,
+                "signature": "stable-comment-signature",
             }
         assert "comments_visible_window" in script
         return {
@@ -108,6 +116,13 @@ class FakeScrollableCommentsPage(FakeCommentsPage):
                 "reason": "already_preferred_sort",
                 "mutationSuppressionMs": 0,
                 "mutationSuppressionReason": "",
+            }
+        if "comment_dom_settle" in script:
+            self.settle_calls += 1
+            return {
+                "mode": "comment_dom_settle",
+                "candidateCount": self.visible_count,
+                "signature": f"stable-comment-signature-{self.visible_count}",
             }
         if "comment_load_more_guard_active" in script:
             if self.guard_active:
@@ -244,6 +259,9 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
     assert summary.matched_count == 1
     assert latest_scan is not None
     assert latest_scan.metadata["collection_strategy"] == "comments_visible_window"
+    assert latest_scan.metadata["comments_meta"]["domSettleAttempted"] is True
+    assert latest_scan.metadata["comments_meta"]["domSettleStable"] is True
+    assert latest_scan.metadata["comment_extract_rounds"][0]["dom_settle_stable"] is True
     assert latest_scan.metadata["comment_sort"]["reason"] == "updated_to_preferred_sort"
     assert latest_scan.metadata["comments_meta"]["commentsWithCommentIdCount"] == 1
     assert len(latest_items) == 1
@@ -358,6 +376,7 @@ def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) 
     assert latest_scan.metadata["comment_scroll_collection_enabled"] is True
     assert latest_scan.metadata["load_more_mode"] == "comment_nested_scroll"
     assert latest_scan.metadata["comment_extract_rounds"][0]["scroll_moved"] is True
+    assert latest_scan.metadata["comment_extract_rounds"][0]["dom_settle_attempted"] is True
     assert latest_scan.metadata["comments_meta"]["attempted"] is True
     assert latest_items[1].matched_keyword == "票券"
 

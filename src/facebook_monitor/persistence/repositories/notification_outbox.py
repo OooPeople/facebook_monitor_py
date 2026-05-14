@@ -76,6 +76,15 @@ class NotificationOutboxRepository:
         ).fetchone()
         return self._decrypt_entry(notification_outbox_from_row(row)) if row else None
 
+    def clear_by_target(self, target_id: str) -> int:
+        """清除單一 target 的通知去重 outbox rows，供重新開始監看時重置。"""
+
+        cursor = self.connection.execute(
+            "DELETE FROM notification_outbox WHERE target_id = ?",
+            (target_id,),
+        )
+        return int(cursor.rowcount or 0)
+
     def list_pending(self, limit: int = 50) -> list[NotificationOutboxEntry]:
         """列出尚未 claim 的 pending events，僅供檢視與測試。"""
 

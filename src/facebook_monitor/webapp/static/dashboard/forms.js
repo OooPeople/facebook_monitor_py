@@ -24,8 +24,10 @@ export const setupRefreshFields = () => {
   document.querySelectorAll("[data-refresh-form]").forEach((refreshForm) => {
     const firstRefreshInput = refreshForm.querySelector('input[name="refresh_mode"]');
     const form = refreshForm.closest("form") || firstRefreshInput?.form;
-    if (!form) return;
-    const refreshContainer = refreshForm.parentElement || form;
+    const refreshContainer = refreshForm.closest("[data-refresh-container]")
+      || refreshForm.parentElement
+      || form;
+    if (!refreshContainer) return;
     const syncRefreshFields = () => {
       const mode = refreshContainer.querySelector('input[name="refresh_mode"]:checked')?.value
         || "fixed";

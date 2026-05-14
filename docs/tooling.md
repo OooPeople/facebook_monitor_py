@@ -1,4 +1,4 @@
-# Tooling
+# 工具索引
 
 本文件是 scripts / CLI 工具索引。README 只保留正式日常入口；架構語義看 `docs/ARCHITECTURE.md`。
 
@@ -27,7 +27,7 @@
 | Notifications Probe Helper | `scripts/debug/notifications_probe.py` | Debug helper | 重新匯出 ntfy probe 需要的正式通知 API | 否 |
 | One-shot Scheduler | `scripts/internal/one_shot_scheduler.py` | Internal | 直接啟動 one-shot debug/fallback scheduler loop，不追求正式主路徑 parity | 否 |
 | Resident Main | `scripts/internal/resident_main.py` | Internal | 直接啟動正式 async resident main worker loop | 否 |
-| uv wrapper | `scripts/uv.ps1` | Tooling | 固定從專案根目錄執行 uv，並使用工作區內 cache | 是，指令 wrapper |
+| uv wrapper | `scripts/uv.ps1` | 指令 wrapper | 固定從專案根目錄執行 uv，並使用工作區內 cache | 是 |
 
 ## 常用指令
 
@@ -38,8 +38,8 @@
 .\scripts\uv.ps1 run facebook-monitor-login
 .\scripts\uv.ps1 run facebook-monitor --data-dir "D:\fb_monitor_data"
 .\scripts\uv.ps1 run facebook-monitor --data-dir "D:\fb_monitor_data" --port 4818 --no-open-browser
-.\scripts\uv.ps1 run facebook-monitor --data-dir "D:\fb_monitor_data" --profile-name phase0_default
-.\scripts\uv.ps1 run facebook-monitor-login --data-dir "D:\fb_monitor_data" --profile-name phase0_default
+.\scripts\uv.ps1 run facebook-monitor --data-dir "D:\fb_monitor_data" --profile-name automation_alt
+.\scripts\uv.ps1 run facebook-monitor-login --data-dir "D:\fb_monitor_data" --profile-name automation_alt
 ```
 
 低頻工具：

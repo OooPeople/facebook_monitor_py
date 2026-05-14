@@ -29,8 +29,10 @@ const applyTheme = (theme) => {
     const label = isDark ? "深色" : "淺色";
     button.setAttribute("aria-pressed", String(isDark));
     button.setAttribute("title", `目前：${label}`);
-    const icon = button.querySelector("[data-theme-toggle-icon]");
-    if (icon) icon.textContent = isDark ? "☾" : "☼";
+    const lightIcon = button.querySelector("[data-theme-icon-light]");
+    const darkIcon = button.querySelector("[data-theme-icon-dark]");
+    lightIcon?.toggleAttribute("hidden", isDark);
+    darkIcon?.toggleAttribute("hidden", !isDark);
     const labelElement = button.querySelector("[data-theme-toggle-label]");
     if (labelElement) labelElement.textContent = label;
   });

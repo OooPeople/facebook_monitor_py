@@ -17,6 +17,9 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.persistence.repositories.notification_outbox import (
+    NotificationOutboxRepository,
+)
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -33,6 +36,7 @@ class TargetMonitoringCommands:
         targets: TargetRepository,
         runtime_states: TargetRuntimeStateRepository,
         seen_items: SeenItemRepository,
+        notification_outbox: NotificationOutboxRepository,
         registry: TargetRegistryService,
         configs: TargetConfigService,
         runtime: TargetRuntimeService,
@@ -40,6 +44,7 @@ class TargetMonitoringCommands:
         self.targets = targets
         self.runtime_states = runtime_states
         self.seen_items = seen_items
+        self.notification_outbox = notification_outbox
         self.registry = registry
         self.configs = configs
         self.runtime = runtime
@@ -72,7 +77,7 @@ class TargetMonitoringCommands:
         return updated_target
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """對齊 userscript「開始」：清 seen scope、啟用並要求立即掃描。"""
+        """對齊 userscript「開始」：清 target runtime 去重狀態並要求立即掃描。"""
 
         target = self.targets.get(target_id)
         if target is None:
@@ -82,6 +87,7 @@ class TargetMonitoringCommands:
         target = self.registry.normalize_target_names(target)
 
         self.seen_items.clear_scope(target.scope_id)
+        self.notification_outbox.clear_by_target(target.id)
         updated_target = replace(
             target,
             enabled=True,

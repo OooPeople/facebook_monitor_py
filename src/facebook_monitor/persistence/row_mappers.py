@@ -19,9 +19,11 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import WorkerMode
+from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
 from facebook_monitor.persistence.sqlite_codec import decode_runtime_status
@@ -43,6 +45,8 @@ def target_from_row(row: sqlite3.Row) -> TargetDescriptor:
         parent_post_id=row["parent_post_id"],
         scope_id=row["scope_id"],
         canonical_url=row["canonical_url"],
+        metadata_status=TargetMetadataStatus(row["metadata_status"]),
+        metadata_error=row["metadata_error"],
         enabled=bool(row["enabled"]),
         paused=bool(row["paused"]),
         worker_mode=WorkerMode(row["worker_mode"]),
@@ -118,6 +122,7 @@ def match_history_from_row(row: sqlite3.Row) -> MatchHistoryEntry:
         timestamp_text=row["timestamp_text"],
         notified_at=decode_datetime(row["notified_at"]),
         created_at=created_at,
+        include_rules=split_keyword_rule_text(row["include_rule"]),
     )
 
 
@@ -157,6 +162,7 @@ def latest_scan_item_from_row(row: sqlite3.Row) -> LatestScanItem:
         text=row["text"],
         permalink=row["permalink"],
         matched_keyword=row["matched_keyword"],
+        matched_keywords=split_keyword_rule_text(row["matched_keyword"]),
         debug_metadata=json.loads(row["debug_metadata"] or "{}"),
         scanned_at=scanned_at,
     )

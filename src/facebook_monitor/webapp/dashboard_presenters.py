@@ -14,12 +14,20 @@ from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
+from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
+
+PENDING_TARGET_DISPLAY_NAME = "抓取社團名稱中，請稍後"
+FAILED_TARGET_DISPLAY_NAME = "無法自動抓取名稱，請手動更改名稱"
+EMPTY_INCLUDE_KEYWORDS_LABEL = "目前沒有關鍵字"
 
 
 @dataclass(frozen=True)
@@ -130,9 +138,9 @@ class TargetStatusPresenter:
         if not self.scanning_supported:
             return "尚未接上掃描"
         labels = {
-            TargetRuntimeStatus.IDLE: "閒置",
+            TargetRuntimeStatus.IDLE: "已啟用",
             TargetRuntimeStatus.QUEUED: "排隊中",
-            TargetRuntimeStatus.RUNNING: "執行中",
+            TargetRuntimeStatus.RUNNING: "掃描中",
             TargetRuntimeStatus.ERROR: "錯誤",
         }
         return labels.get(self.runtime_state.runtime_status, "已啟用")
@@ -171,14 +179,38 @@ class TargetIdentityPresenter:
                 self.target.parent_post_id,
             ):
                 return clean_facebook_page_title(self.target.name)
-            base_name = self.target.group_name or self.target.name
-            return clean_facebook_page_title(base_name)
+            if self.target.group_name:
+                return clean_facebook_page_title(
+                    generated_group_comments_display_name(
+                        self.target.group_name,
+                        self.target.parent_post_id,
+                    )
+                )
+            return self._metadata_fallback_display_name()
         if self.target.name and not is_generated_group_posts_name(
             self.target.name,
             self.target.group_id,
         ):
             return clean_facebook_page_title(self.target.name)
-        return clean_facebook_page_title(self.target.group_name or self.target.name)
+        if self.target.group_name:
+            return clean_facebook_page_title(self.target.group_name)
+        return self._metadata_fallback_display_name()
+
+    @property
+    def rename_value(self) -> str:
+        """回傳更名 modal 預填值；metadata 未完成時不回填系統 fallback。"""
+
+        display_name = self.display_name
+        if display_name in {PENDING_TARGET_DISPLAY_NAME, FAILED_TARGET_DISPLAY_NAME}:
+            return ""
+        return display_name
+
+    def _metadata_fallback_display_name(self) -> str:
+        """依 target metadata 狀態顯示 fallback 名稱文案。"""
+
+        if self.target.metadata_status == TargetMetadataStatus.FAILED:
+            return FAILED_TARGET_DISPLAY_NAME
+        return PENDING_TARGET_DISPLAY_NAME
 
     @property
     def kind_label(self) -> str:
@@ -203,19 +235,19 @@ class TargetSettingsPresenter:
     def include_text(self) -> str:
         """回傳 include keywords 表單文字。"""
 
-        return ", ".join(self.config.include_keywords)
+        return ";".join(self.config.include_keywords)
 
     @property
     def exclude_text(self) -> str:
         """回傳 exclude keywords 表單文字。"""
 
-        return ", ".join(self.config.exclude_keywords)
+        return ";".join(self.config.exclude_keywords)
 
     @property
     def exclude_ignore_phrases_text(self) -> str:
         """回傳排除字忽略片語表單文字。"""
 
-        return ", ".join(self.config.exclude_ignore_phrases)
+        return ";".join(self.config.exclude_ignore_phrases)
 
     @property
     def fixed_refresh_value(self) -> int:
@@ -259,11 +291,11 @@ class TargetSettingsPresenter:
 
         channels: list[str] = []
         if self.config.enable_desktop_notification:
-            channels.append("桌面")
+            channels.append(format_notification_channel_label(NotificationChannel.DESKTOP))
         if self.config.enable_ntfy:
-            channels.append("ntfy")
+            channels.append(format_notification_channel_label(NotificationChannel.NTFY))
         if self.config.enable_discord_notification:
-            channels.append("Discord")
+            channels.append(format_notification_channel_label(NotificationChannel.DISCORD))
         return " / ".join(channels) if channels else "關閉"
 
     @property
@@ -325,7 +357,7 @@ class TargetCardSummaryPresenter:
         return TargetCardSummary(
             target_type_label=self.target_type_label,
             status_label=self.status_label,
-            include_keywords_summary=self.settings.include_text or "未設定",
+            include_keywords_summary=self.settings.include_text or EMPTY_INCLUDE_KEYWORDS_LABEL,
             exclude_keywords_summary=self.settings.exclude_text or "未設定",
             latest_scan_label=self.latest_scan_label,
             hit_record_total_count=self.hit_record_total_count,

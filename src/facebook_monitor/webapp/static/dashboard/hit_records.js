@@ -1,4 +1,5 @@
 import { csrfHeaders } from "/static/dashboard/csrf.js";
+import { confirmDialog } from "/static/dashboard/dialogs.js";
 import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
 import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
 
@@ -189,9 +190,12 @@ export const setupHitRecords = ({ showToast }) => {
       const targetId = button.dataset.targetId || "";
       const modal = button.closest("[data-hit-records-modal]");
       if (!targetId || !modal) return;
-      const confirmed = window.confirm(
-        "確定要清空此 target 的所有命中紀錄嗎？\n此操作不會刪除 target，也不會清除最近掃描結果或設定。",
-      );
+      const confirmed = await confirmDialog({
+        title: "清空命中紀錄",
+        message: "此操作不會刪除 target，也不會清除最近掃描結果或設定。",
+        confirmLabel: "清空",
+        danger: true,
+      });
       if (!confirmed) return;
       try {
         const response = await fetch(`/api/targets/${targetId}/hit-records`, {

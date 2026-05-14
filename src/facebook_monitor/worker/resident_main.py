@@ -23,6 +23,7 @@ from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_ta
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 AsyncSleepCallable = Callable[[float], Awaitable[None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
+METADATA_REFRESH_TARGET_LIMIT_PER_TICK = 1
 
 
 def _is_playwright_driver_shutdown_exception(exc: object) -> bool:
@@ -230,12 +232,12 @@ async def refresh_requested_target_metadata(
     options: ResidentRuntimeOptions,
     browser_context: Any | None,
 ) -> int:
-    """消化 Web UI 丟給 resident scheduler 的 target metadata refresh request。"""
+    """消化 Web UI request 與 DB pending metadata refresh job。"""
 
-    if options.metadata_refresh_provider is None or browser_context is None:
+    if browser_context is None:
         return 0
     refreshed_count = 0
-    for target_id in options.metadata_refresh_provider():
+    for target_id in list_metadata_refresh_target_ids(options):
         try:
             if await refresh_target_group_name_from_context(
                 options=options,
@@ -248,7 +250,42 @@ async def refresh_requested_target_metadata(
                 "metadata refresh failed",
                 extra={"target_id": target_id},
             )
+            mark_target_metadata_refresh_failed(
+                options,
+                target_id,
+                "metadata refresh failed",
+            )
     return refreshed_count
+
+
+def list_metadata_refresh_target_ids(options: ResidentRuntimeOptions) -> tuple[str, ...]:
+    """列出本輪要消化的明確 metadata refresh target ids。"""
+
+    target_ids: list[str] = []
+    if options.metadata_refresh_provider is not None:
+        target_ids.extend(options.metadata_refresh_provider())
+    with SqliteApplicationContext(options.db_path) as app:
+        target_ids.extend(
+            target.id
+            for target in app.repositories.targets.list_by_metadata_status(
+                TargetMetadataStatus.PENDING,
+                limit=METADATA_REFRESH_TARGET_LIMIT_PER_TICK,
+            )
+        )
+    return tuple(dict.fromkeys(target_id for target_id in target_ids if target_id))
+
+
+def mark_target_metadata_refresh_failed(
+    options: ResidentRuntimeOptions,
+    target_id: str,
+    error: str,
+) -> None:
+    """將 metadata refresh 失敗寫回 DB；target 已被刪除時忽略。"""
+
+    with SqliteApplicationContext(options.db_path) as app:
+        if app.repositories.targets.get(target_id) is None:
+            return
+        app.services.targets.mark_target_metadata_refresh_failed(target_id, error)
 
 
 async def refresh_target_group_name_from_context(
@@ -286,11 +323,12 @@ async def refresh_target_group_name_from_context(
             browser_context,
             canonical_url=f"https://www.facebook.com/groups/{group_id}",
         )
-    except GroupMetadataError:
+    except GroupMetadataError as exc:
         logger.info(
             "metadata refresh skipped",
             extra={"target_id": target_id},
         )
+        mark_target_metadata_refresh_failed(options, target_id, str(exc))
         return False
     with SqliteApplicationContext(options.db_path) as app:
         if app.repositories.targets.get(target_id) is None:

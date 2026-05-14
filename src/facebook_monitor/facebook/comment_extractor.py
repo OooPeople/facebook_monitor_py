@@ -18,6 +18,7 @@ from facebook_monitor.facebook.collection_policy import (
 from facebook_monitor.facebook.collection_policy import get_dynamic_max_windows
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
+from facebook_monitor.facebook.comment_dom_settle_script import COMMENT_DOM_SETTLE_SCRIPT
 from facebook_monitor.facebook.scroll_controls import begin_comment_load_more_guard
 from facebook_monitor.facebook.scroll_controls import begin_comment_load_more_guard_async
 from facebook_monitor.facebook.scroll_controls import capture_comment_scroll_snapshot
@@ -30,6 +31,10 @@ from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more_async
 from facebook_monitor.facebook.text_cleanup import collapse_repeated_adjacent_text
 
+COMMENT_DOM_SETTLE_INITIAL_WAIT_MS = 700
+COMMENT_DOM_SETTLE_POLL_INTERVAL_MS = 500
+COMMENT_DOM_SETTLE_MAX_WAIT_MS = 2500
+COMMENT_DOM_SETTLE_STABLE_OBSERVATIONS = 2
 
 @dataclass(frozen=True)
 class CommentCollectionMeta:
@@ -58,6 +63,11 @@ class CommentCollectionMeta:
     load_more_mode: str = "off"
     guard_reason: str = ""
     stop_reason: str = "visible_window_completed"
+    dom_settle_attempted: bool = False
+    dom_settle_stable: bool = False
+    dom_settle_observations: int = 0
+    dom_settle_wait_ms: int = 0
+    dom_settle_candidate_count: int = 0
 
     def to_metadata(self) -> dict[str, Any]:
         """轉成 latest scan metadata 使用的 comments vocabulary。"""
@@ -86,6 +96,11 @@ class CommentCollectionMeta:
             "currentRoutePostId": self.current_route_post_id,
             "currentRouteMatchesTarget": self.current_route_matches_target,
             "stopReason": self.stop_reason,
+            "domSettleAttempted": self.dom_settle_attempted,
+            "domSettleStable": self.dom_settle_stable,
+            "domSettleObservations": self.dom_settle_observations,
+            "domSettleWaitMs": self.dom_settle_wait_ms,
+            "domSettleCandidateCount": self.dom_settle_candidate_count,
         }
 
 
@@ -114,6 +129,22 @@ class CommentExtractRoundStats:
     load_more_mode: str = "off"
     added_count: int = 0
     stagnant_windows: int = 0
+    dom_settle_attempted: bool = False
+    dom_settle_stable: bool = False
+    dom_settle_observations: int = 0
+    dom_settle_wait_ms: int = 0
+    dom_settle_candidate_count: int = 0
+
+
+@dataclass(frozen=True)
+class CommentDomSettleResult:
+    """保存 comments DOM settle 的非破壞性觀察結果。"""
+
+    attempted: bool
+    stable: bool
+    observations: int
+    wait_ms: int
+    candidate_count: int = 0
 
 
 def extract_visible_comment_items(
@@ -136,6 +167,172 @@ def extract_visible_comment_items(
     return normalize_comment_extraction_payload(raw_items, max_items=max_items)
 
 
+def wait_for_comment_dom_settle(page: Any, *, max_items: int) -> CommentDomSettleResult:
+    """等待 comments DOM 短暫穩定；失敗時回傳診斷但不中斷既有抽取。"""
+
+    return _wait_for_comment_dom_settle_with_waiter(
+        evaluate=page.evaluate,
+        wait_for_timeout=getattr(page, "wait_for_timeout", None),
+        max_items=max_items,
+    )
+
+
+async def wait_for_comment_dom_settle_async(
+    page: Any,
+    *,
+    max_items: int,
+) -> CommentDomSettleResult:
+    """async 版本：等待 comments DOM 短暫穩定。"""
+
+    return await _wait_for_comment_dom_settle_with_waiter_async(
+        evaluate=page.evaluate,
+        wait_for_timeout=getattr(page, "wait_for_timeout", None),
+        max_items=max_items,
+    )
+
+
+def _wait_for_comment_dom_settle_with_waiter(
+    *,
+    evaluate: Any,
+    wait_for_timeout: Any,
+    max_items: int,
+) -> CommentDomSettleResult:
+    """同步 settle 實作，將 Playwright 例外降級成不阻斷診斷。"""
+
+    wait_ms = 0
+    observations = 0
+    last_signature = ""
+    stable_observations = 0
+    candidate_count = 0
+    try:
+        _call_waiter(wait_for_timeout, COMMENT_DOM_SETTLE_INITIAL_WAIT_MS)
+        wait_ms += COMMENT_DOM_SETTLE_INITIAL_WAIT_MS
+        while wait_ms <= COMMENT_DOM_SETTLE_MAX_WAIT_MS:
+            payload = evaluate(
+                COMMENT_DOM_SETTLE_SCRIPT,
+                {"limit": max(max_items, 1)},
+            )
+            signature, candidate_count = _normalize_comment_dom_settle_payload(payload)
+            observations += 1
+            if signature and signature == last_signature:
+                stable_observations += 1
+            else:
+                stable_observations = 1
+                last_signature = signature
+            if stable_observations >= COMMENT_DOM_SETTLE_STABLE_OBSERVATIONS:
+                return CommentDomSettleResult(
+                    attempted=True,
+                    stable=True,
+                    observations=observations,
+                    wait_ms=wait_ms,
+                    candidate_count=candidate_count,
+                )
+            if wait_ms >= COMMENT_DOM_SETTLE_MAX_WAIT_MS:
+                break
+            _call_waiter(wait_for_timeout, COMMENT_DOM_SETTLE_POLL_INTERVAL_MS)
+            wait_ms += COMMENT_DOM_SETTLE_POLL_INTERVAL_MS
+    except Exception:
+        return CommentDomSettleResult(
+            attempted=True,
+            stable=False,
+            observations=observations,
+            wait_ms=wait_ms,
+            candidate_count=candidate_count,
+        )
+    return CommentDomSettleResult(
+        attempted=True,
+        stable=False,
+        observations=observations,
+        wait_ms=wait_ms,
+        candidate_count=candidate_count,
+    )
+
+
+async def _wait_for_comment_dom_settle_with_waiter_async(
+    *,
+    evaluate: Any,
+    wait_for_timeout: Any,
+    max_items: int,
+) -> CommentDomSettleResult:
+    """async settle 實作，保持失敗不阻斷 comments extractor。"""
+
+    wait_ms = 0
+    observations = 0
+    last_signature = ""
+    stable_observations = 0
+    candidate_count = 0
+    try:
+        await _call_waiter_async(wait_for_timeout, COMMENT_DOM_SETTLE_INITIAL_WAIT_MS)
+        wait_ms += COMMENT_DOM_SETTLE_INITIAL_WAIT_MS
+        while wait_ms <= COMMENT_DOM_SETTLE_MAX_WAIT_MS:
+            payload = await evaluate(
+                COMMENT_DOM_SETTLE_SCRIPT,
+                {"limit": max(max_items, 1)},
+            )
+            signature, candidate_count = _normalize_comment_dom_settle_payload(payload)
+            observations += 1
+            if signature and signature == last_signature:
+                stable_observations += 1
+            else:
+                stable_observations = 1
+                last_signature = signature
+            if stable_observations >= COMMENT_DOM_SETTLE_STABLE_OBSERVATIONS:
+                return CommentDomSettleResult(
+                    attempted=True,
+                    stable=True,
+                    observations=observations,
+                    wait_ms=wait_ms,
+                    candidate_count=candidate_count,
+                )
+            if wait_ms >= COMMENT_DOM_SETTLE_MAX_WAIT_MS:
+                break
+            await _call_waiter_async(wait_for_timeout, COMMENT_DOM_SETTLE_POLL_INTERVAL_MS)
+            wait_ms += COMMENT_DOM_SETTLE_POLL_INTERVAL_MS
+    except Exception:
+        return CommentDomSettleResult(
+            attempted=True,
+            stable=False,
+            observations=observations,
+            wait_ms=wait_ms,
+            candidate_count=candidate_count,
+        )
+    return CommentDomSettleResult(
+        attempted=True,
+        stable=False,
+        observations=observations,
+        wait_ms=wait_ms,
+        candidate_count=candidate_count,
+    )
+
+
+def _normalize_comment_dom_settle_payload(payload: object) -> tuple[str, int]:
+    """整理 settle script payload。"""
+
+    if not isinstance(payload, Mapping):
+        return "", 0
+    return (
+        str(payload.get("signature") or ""),
+        int(payload.get("candidateCount") or 0),
+    )
+
+
+def _call_waiter(wait_for_timeout: Any, milliseconds: int) -> None:
+    """呼叫 Playwright wait_for_timeout；測試 fake 缺方法時安靜略過。"""
+
+    if callable(wait_for_timeout):
+        wait_for_timeout(milliseconds)
+
+
+async def _call_waiter_async(wait_for_timeout: Any, milliseconds: int) -> None:
+    """async 呼叫 Playwright wait_for_timeout；相容同步 fake。"""
+
+    if not callable(wait_for_timeout):
+        return
+    result = wait_for_timeout(milliseconds)
+    if hasattr(result, "__await__"):
+        await result
+
+
 def collect_comment_items_with_diagnostics(
     page: Any,
     *,
@@ -151,6 +348,7 @@ def collect_comment_items_with_diagnostics(
     rounds = max(int(scroll_rounds), 0) if auto_load_more else 0
     wait_ms = max(int(scroll_wait_ms), 0)
     if rounds <= 0:
+        settle = wait_for_comment_dom_settle(page, max_items=max_items)
         items, meta = extract_visible_comment_items(
             page,
             group_id=group_id,
@@ -163,6 +361,7 @@ def collect_comment_items_with_diagnostics(
                 items=items,
                 meta=meta,
                 accumulated_count=len(items),
+                dom_settle=settle,
             )
         ]
         return items, round_stats, build_comment_collection_meta(
@@ -175,6 +374,7 @@ def collect_comment_items_with_diagnostics(
 
     guard = begin_comment_load_more_guard(page)
     if not guard.get("acquired"):
+        settle = wait_for_comment_dom_settle(page, max_items=max_items)
         items, meta = extract_visible_comment_items(
             page,
             group_id=group_id,
@@ -187,6 +387,7 @@ def collect_comment_items_with_diagnostics(
                 items=items,
                 meta=meta,
                 accumulated_count=len(items),
+                dom_settle=settle,
             )
         ]
         reason = str(guard.get("reason") or "comment_load_more_guard_active")
@@ -245,6 +446,7 @@ async def collect_comment_items_with_diagnostics_async(
     rounds = max(int(scroll_rounds), 0) if auto_load_more else 0
     wait_ms = max(int(scroll_wait_ms), 0)
     if rounds <= 0:
+        settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
         items, meta = await extract_visible_comment_items_async(
             page,
             group_id=group_id,
@@ -257,6 +459,7 @@ async def collect_comment_items_with_diagnostics_async(
                 items=items,
                 meta=meta,
                 accumulated_count=len(items),
+                dom_settle=settle,
             )
         ]
         return items, round_stats, build_comment_collection_meta(
@@ -269,6 +472,7 @@ async def collect_comment_items_with_diagnostics_async(
 
     guard = await begin_comment_load_more_guard_async(page)
     if not guard.get("acquired"):
+        settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
         items, meta = await extract_visible_comment_items_async(
             page,
             group_id=group_id,
@@ -281,6 +485,7 @@ async def collect_comment_items_with_diagnostics_async(
                 items=items,
                 meta=meta,
                 accumulated_count=len(items),
+                dom_settle=settle,
             )
         ]
         reason = str(guard.get("reason") or "comment_load_more_guard_active")
@@ -372,10 +577,17 @@ def build_comment_round_stats(
     scroll_action: dict[str, Any] | None = None,
     added_count: int = 0,
     stagnant_windows: int = 0,
+    dom_settle: CommentDomSettleResult | None = None,
 ) -> CommentExtractRoundStats:
     """把單輪 comments 抽取與捲動結果整理成診斷資料。"""
 
     action = scroll_action or {}
+    settle = dom_settle or CommentDomSettleResult(
+        attempted=False,
+        stable=False,
+        observations=0,
+        wait_ms=0,
+    )
     return CommentExtractRoundStats(
         round_index=round_index,
         raw_item_count=len(items),
@@ -398,6 +610,11 @@ def build_comment_round_stats(
         load_more_mode=str(action.get("loadMoreMode") or ("comment_nested_scroll" if action else "off")),
         added_count=added_count,
         stagnant_windows=stagnant_windows,
+        dom_settle_attempted=settle.attempted,
+        dom_settle_stable=settle.stable,
+        dom_settle_observations=settle.observations,
+        dom_settle_wait_ms=settle.wait_ms,
+        dom_settle_candidate_count=settle.candidate_count,
     )
 
 
@@ -438,6 +655,20 @@ def build_comment_collection_meta(
         ),
         guard_reason=guard_reason,
         stop_reason=stop_reason,
+        dom_settle_attempted=any(stat.dom_settle_attempted for stat in round_stats),
+        dom_settle_stable=all(
+            stat.dom_settle_stable
+            for stat in round_stats
+            if stat.dom_settle_attempted
+        )
+        if any(stat.dom_settle_attempted for stat in round_stats)
+        else False,
+        dom_settle_observations=sum(stat.dom_settle_observations for stat in round_stats),
+        dom_settle_wait_ms=sum(stat.dom_settle_wait_ms for stat in round_stats),
+        dom_settle_candidate_count=max(
+            (stat.dom_settle_candidate_count for stat in round_stats),
+            default=0,
+        ),
     )
 
 
@@ -508,6 +739,7 @@ def collect_comment_items_with_load_more_guard_held(
     snapshot_captured = True
     try:
         for round_index in range(max(scroll_rounds, 0) + 1):
+            settle = wait_for_comment_dom_settle(page, max_items=max_items)
             items, meta = extract_visible_comment_items(
                 page,
                 group_id=group_id,
@@ -533,6 +765,7 @@ def collect_comment_items_with_load_more_guard_held(
                     scroll_action=scroll_action,
                     added_count=added_count,
                     stagnant_windows=stagnant_windows,
+                    dom_settle=settle,
                 )
             )
             if round_index >= max(scroll_rounds, 0) or len(collected) >= max_items:
@@ -584,6 +817,7 @@ async def collect_comment_items_with_load_more_guard_held_async(
     snapshot_captured = True
     try:
         for round_index in range(max(scroll_rounds, 0) + 1):
+            settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
             items, meta = await extract_visible_comment_items_async(
                 page,
                 group_id=group_id,
@@ -609,6 +843,7 @@ async def collect_comment_items_with_load_more_guard_held_async(
                     scroll_action=scroll_action,
                     added_count=added_count,
                     stagnant_windows=stagnant_windows,
+                    dom_settle=settle,
                 )
             )
             if round_index >= max(scroll_rounds, 0) or len(collected) >= max_items:

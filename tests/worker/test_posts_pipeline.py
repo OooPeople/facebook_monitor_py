@@ -6,11 +6,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import LatestScanItem
+from facebook_monitor.core.models import SeenItem
+from facebook_monitor.facebook.extracted_item import ExtractedItem
+from facebook_monitor.facebook.extracted_item import make_item_key
+from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
@@ -179,6 +186,66 @@ class GrowingFakePage(FakePage):
         return super().evaluate(script, *args)
 
 
+class SeenStopFakePage(FakePage):
+    """模擬最上方連續四篇已看過貼文，後方仍有深度內容。"""
+
+    def __init__(self) -> None:
+        items = [
+            build_post_payload("10000001", "舊貼文 1"),
+            build_post_payload("10000002", "舊貼文 2"),
+            build_post_payload("10000003", "舊貼文 3"),
+            build_post_payload("10000004", "舊貼文 4"),
+            build_post_payload("10000005", "後面還有未載入貼文"),
+            build_post_payload("10000006", "後面還有未載入貼文"),
+        ]
+        super().__init__(items)
+        self.scroll_count = 0
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """連續 seen 觸發後不應再呼叫 scroll script。"""
+
+        if "scrollTargetBy" in script and "moved:" in script:
+            self.scroll_count += 1
+        return super().evaluate(script, *args)
+
+
+def build_post_payload(post_id: str, text: str) -> dict[str, Any]:
+    """建立 posts pipeline 測試用 payload。"""
+
+    return {
+        "text": text,
+        "textLength": len(text),
+        "permalink": f"https://www.facebook.com/groups/222518561920110/posts/{post_id}",
+        "linkCount": 1,
+        "author": "作者",
+    }
+
+
+def mark_post_payload_seen(
+    app: ApplicationContext,
+    *,
+    scope_id: str,
+    payload: dict[str, Any],
+) -> None:
+    """用正式 alias 規則預先建立 seen item。"""
+
+    item = ExtractedItem(
+        text=str(payload["text"]),
+        text_length=int(payload["textLength"]),
+        permalink=str(payload["permalink"]),
+        link_count=int(payload["linkCount"]),
+        author=str(payload["author"]),
+    )
+    app.repositories.seen_items.mark_seen_aliases(
+        SeenItem(
+            scope_id=scope_id,
+            item_key=make_item_key(item),
+            item_kind=ItemKind.POST,
+        ),
+        make_item_key_aliases(item),
+    )
+
+
 def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
     """單輪掃描會寫入 seen、match history 與 scan run。"""
 
@@ -244,6 +311,50 @@ def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
             }
         ]
         assert app.repositories.notification_events.list_by_target(target.id) == []
+
+
+def test_scan_posts_page_records_all_matched_keywords(tmp_path: Path) -> None:
+    """同一貼文命中多組 include 規則時，history/latest scan 會保留全部命中。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(include_keywords=("6/5;6/6",)),
+            )
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        fake_page = FakePage(
+            items=[
+                {
+                    "text": "售6/5,6/6的票各一張",
+                    "textLength": 14,
+                    "permalink": "https://www.facebook.com/groups/222518561920110/posts/1",
+                    "linkCount": 1,
+                    "author": "王小明",
+                }
+            ]
+        )
+        summary = scan_posts_page(
+            page=fake_page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=0,
+            scroll_wait_ms=0,
+        )
+        history = app.repositories.match_history.list_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+
+        assert summary.matched_count == 1
+        assert history[0].include_rule == "6/5;6/6"
+        assert history[0].include_rules == ("6/5", "6/6")
+        assert latest_items[0].matched_keyword == "6/5;6/6"
+        assert latest_items[0].matched_keywords == ("6/5", "6/6")
 
 
 def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
@@ -322,6 +433,112 @@ def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
         assert latest_scan.metadata["collected_meta"]["maxWindowCount"] == 20
         assert latest_scan.metadata["collected_meta"]["attempts"] > 3
         assert latest_scan.metadata["collected_meta"]["accumulatedCount"] == 10
+
+
+def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
+    tmp_path: Path,
+) -> None:
+    """feed seen-stop 從最上方開始，連續四篇 seen 即跳過深度掃描。"""
+
+    db_path = tmp_path / "app.db"
+    fake_page = SeenStopFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=10,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        for payload in fake_page.items[:4]:
+            mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=fake_page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=5,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+        assert summary.item_count == 4
+        assert summary.new_count == 0
+        assert fake_page.scroll_count == 0
+        assert latest_scan is not None
+        assert latest_scan.metadata["stop_reason"] == "seen_stop_consecutive_seen"
+        assert latest_scan.metadata["collected_meta"]["seenStopTriggered"] is True
+        assert latest_scan.metadata["collected_meta"]["seenStopThreshold"] == 4
+        assert latest_scan.metadata["collected_meta"]["seenStopSeenCount"] == 4
+        assert latest_scan.metadata["collected_meta"]["seenStopNewCount"] == 0
+
+
+def test_seen_stop_latest_scan_snapshot_carries_previous_items_to_target_count(
+    tmp_path: Path,
+) -> None:
+    """seen-stop 提早停止時，最近掃描沿用上一輪項目補足可檢視清單。"""
+
+    db_path = tmp_path / "app.db"
+    fake_page = SeenStopFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=5,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        for payload in fake_page.items[:4]:
+            mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
+        app.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.POST,
+                    item_key=f"previous-{index}",
+                    item_index=index,
+                    author="作者",
+                    text=f"上一輪貼文 {index}",
+                    permalink=f"https://www.facebook.com/groups/222518561920110/posts/prev-{index}",
+                )
+                for index in range(5)
+            ],
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=fake_page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=5,
+            scroll_wait_ms=0,
+        )
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+
+        assert summary.item_count == 4
+        assert len(latest_items) == 5
+        assert latest_items[0].text == "舊貼文 1"
+        assert latest_items[4].text == "上一輪貼文 0"
+        assert latest_items[4].scan_run_id == summary.scan_run_id
+        assert latest_items[4].debug_metadata["carriedOverFromPreviousScan"] is True
+        assert latest_items[4].debug_metadata["carriedOverFromScanRunId"] == 99
 
 
 def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:

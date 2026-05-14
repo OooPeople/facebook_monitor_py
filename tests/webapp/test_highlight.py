@@ -40,3 +40,17 @@ def test_highlight_segments_mark_all_and_terms() -> None:
         ("熱區", True),
         ("兩張", False),
     ]
+
+
+def test_highlight_segments_mark_multiple_matched_rules() -> None:
+    """多組 OR 規則命中時，原文會標示每一組命中關鍵字。"""
+
+    segments = build_highlight_segments("售6/5,6/6的票各一張", "6/5;6/6")
+
+    assert [(segment.text, segment.highlighted) for segment in segments] == [
+        ("售", False),
+        ("6/5", True),
+        (",", False),
+        ("6/6", True),
+        ("的票各一張", False),
+    ]

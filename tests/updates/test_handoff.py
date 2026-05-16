@@ -7,7 +7,9 @@ from pathlib import Path
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.handoff import load_pending_update
+from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import pending_update_path
+from facebook_monitor.updates.handoff import validate_pending_update_paths
 from facebook_monitor.updates.handoff import write_pending_update
 from facebook_monitor.updates.release_check import UpdateCheckResult
 
@@ -155,3 +157,37 @@ def test_load_pending_update_accepts_utf8_bom(tmp_path: Path) -> None:
     path.write_text(text, encoding="utf-8-sig")
 
     assert load_pending_update(path).zip_path == zip_path.resolve()
+
+
+def test_validate_pending_update_rejects_nested_data_dir_under_app(
+    tmp_path: Path,
+) -> None:
+    """data dir 若在 app root 內，必須是直接的 app/data，避免替換時刪到父層。"""
+
+    app_base_dir = tmp_path / "app"
+    data_dir = app_base_dir / "nested" / "data"
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_bytes(b"zip")
+    pending = PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name=zip_path.name,
+        zip_path=zip_path,
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        app_base_dir=app_base_dir,
+        data_dir=data_dir,
+        db_path=data_dir / "app.db",
+        profile_dir=data_dir / "profiles" / "automation_default",
+        logs_dir=data_dir / "logs",
+        runtime_dir=data_dir / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+
+    try:
+        validate_pending_update_paths(pending)
+    except ValueError as exc:
+        assert str(exc) == "pending_update_data_dir_must_be_app_data"
+    else:
+        raise AssertionError("expected nested app data dir to fail")

@@ -399,6 +399,24 @@ html[data-theme="dark"] .target-mode-chip.posts {
   display: none;
 }
 
+.keyword-field {
+  display: grid;
+  gap: 6px;
+}
+
+.keyword-field-header {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  font-weight: 650;
+  gap: 8px;
+}
+
+.keyword-field-header label {
+  display: inline;
+}
+
 .compact-config-form .keyword-rule-field {
   gap: 0;
 }

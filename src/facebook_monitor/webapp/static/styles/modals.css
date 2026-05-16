@@ -321,6 +321,20 @@
   padding: 1px 5px;
 }
 
+.keyword-help-rule-list,
+.keyword-help-example {
+  display: grid;
+  gap: 8px;
+}
+
+.keyword-help-rule-list {
+  padding: 0 18px;
+}
+
+.keyword-help-example h4 {
+  margin: 0;
+}
+
 .notification-help-body {
   gap: 12px;
 }

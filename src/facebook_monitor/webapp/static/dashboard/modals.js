@@ -43,6 +43,18 @@ export const setupSettingsModals = () => {
     closeSelector: "[data-close-settings]",
   });
 
+  document.querySelectorAll("[data-include-keyword-help-button]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const modal = button.closest("[data-target-card]")?.querySelector("[data-include-keyword-help-modal]");
+      openDialog(modal);
+    });
+  });
+
+  bindDialogDismiss({
+    modalSelector: "[data-include-keyword-help-modal]",
+    closeSelector: "[data-close-include-keyword-help]",
+  });
+
   document.querySelectorAll("[data-keyword-help-button]").forEach((button) => {
     button.addEventListener("click", () => {
       const modal = button.closest("[data-target-card]")?.querySelector("[data-keyword-help-modal]");

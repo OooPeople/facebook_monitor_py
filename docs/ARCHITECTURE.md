@@ -80,10 +80,11 @@
 - `facebook-monitor-updater.exe` 是獨立 PyInstaller onedir entrypoint。從 Web UI 啟動時會複製 updater exe 與同層 `_internal/` 到唯一 temp 目錄，避免 updater 鎖住原 app base dir；舊 temp updater runtime copy 會依保留時間清理。
 - updater 在主程式釋放 app instance lock 後，會重驗 SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、備份目前 app files、替換 app files，並保留 `data/`。
 - pending update path 必須受 runtime path resolver 管理；`zip_path` 必須位於 `<data-dir>/updates/`，`runtime_dir` 必須是 `<data-dir>/runtime`，DB/profile/logs 路徑必須留在 data tree 內。
-- 成功套用後 updater 會清除本次下載 zip、`.sha256`、pending handoff 與 staging；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
+- 成功套用後 updater 會清除本次下載 zip、`.sha256`、pending handoff 與 staging，並保留最近 3 份 app backup 供人工追查或 rollback；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
 - 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
 - updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
-- SHA256 只驗證下載完整性，不驗證發布者身分；尚未加入 signed manifest、detached signature 或 Authenticode signer 驗證。
+- release artifact validation 會檢查 app version、Windows version metadata、portable zip 檔名、`.sha256` 內容、zip 內 EXE metadata、必要 onedir 檔案、可選 tag 與可選 Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
+- SHA256 只驗證下載完整性，不驗證發布者身分；尚未加入 signed manifest 或 detached signature。Authenticode signer validation hook 已存在，但實際簽章需要正式 code signing 憑證。
 
 ## Persistence
 

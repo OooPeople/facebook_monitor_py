@@ -13,8 +13,10 @@ from contextlib import contextmanager
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+import re
 import shutil
 import time
+import uuid
 import zipfile
 
 from facebook_monitor.runtime.instance_lock import AppInstanceLockError
@@ -31,6 +33,7 @@ STAGING_DIR_NAME = "update_staging"
 BACKUP_DIR_NAME = "update_backups"
 APP_EXE_NAME = "facebook-monitor.exe"
 UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
+BACKUP_RETENTION_COUNT = 3
 MAX_ZIP_ENTRIES = 50_000
 MAX_ZIP_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
@@ -92,7 +95,14 @@ def apply_loaded_pending_update_file(
     )
     cleanup_warnings: tuple[str, ...] = ()
     if result.applied:
-        cleanup_warnings = _cleanup_applied_update(path, pending)
+        cleanup_warnings = (
+            *_cleanup_applied_update(path, pending),
+            *_cleanup_old_backup_dirs(
+                pending.runtime_dir / BACKUP_DIR_NAME,
+                keep_count=BACKUP_RETENTION_COUNT,
+                preserve=result.backup_dir,
+            ),
+        )
     _append_updater_log(log_path, result)
     _append_cleanup_warning_log(log_path, cleanup_warnings)
     return result
@@ -335,8 +345,8 @@ def _backup_folder_name(version: str) -> str:
     """建立可排序且檔名安全的 backup folder name。"""
 
     safe_version = sanitize_release_asset_name(version)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{safe_version}-{timestamp}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{safe_version}-{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
 def _is_protected_data_path(path: Path, data_dir: Path) -> bool:
@@ -455,6 +465,164 @@ def _cleanup_file(path: Path, *, label: str, warnings: list[str]) -> None:
         path.unlink(missing_ok=True)
     except OSError as exc:
         warnings.append(_cleanup_warning(label, path, exc))
+
+
+def _cleanup_old_backup_dirs(
+    backup_root: Path,
+    *,
+    keep_count: int,
+    preserve: Path | None,
+) -> tuple[str, ...]:
+    """保留最近 backup，清除舊 backup；失敗只回傳 warning。"""
+
+    warnings: list[str] = []
+    if keep_count < 1:
+        keep_count = 1
+    if not backup_root.exists():
+        return ()
+    try:
+        resolved_root = backup_root.resolve()
+        resolved_parent = backup_root.parent.resolve()
+    except OSError as exc:
+        return (_cleanup_warning("backup_root_resolve", backup_root, exc),)
+    if _is_reparse_or_symlink(backup_root):
+        return (
+            _cleanup_warning(
+                "backup_root_unsafe",
+                backup_root,
+                OSError("backup root is symlink or junction"),
+            ),
+        )
+    if resolved_root == resolved_parent or not resolved_root.is_relative_to(
+        resolved_parent
+    ):
+        return (
+            _cleanup_warning(
+                "backup_root_unsafe",
+                backup_root,
+                OSError("backup root escaped runtime directory"),
+            ),
+        )
+    try:
+        backup_dirs = [path for path in backup_root.iterdir() if path.is_dir()]
+    except OSError as exc:
+        return (_cleanup_warning("backup_list", backup_root, exc),)
+
+    sortable_dirs: list[tuple[float, str, Path]] = []
+    for backup_dir in backup_dirs:
+        timestamp = _backup_timestamp(backup_dir)
+        if timestamp is None:
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unknown",
+                    backup_dir,
+                    OSError("backup directory name is not managed by updater"),
+                )
+            )
+            continue
+        sortable_dirs.append((timestamp, backup_dir.name, backup_dir))
+
+    keep: set[Path] = set()
+    if preserve is not None:
+        keep.add(preserve.resolve())
+    for _, _, backup_dir in sorted(sortable_dirs, reverse=True):
+        if len(keep) >= keep_count:
+            break
+        if _is_reparse_or_symlink(backup_dir):
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unsafe",
+                    backup_dir,
+                    OSError("backup directory is symlink or junction"),
+                )
+            )
+            continue
+        try:
+            resolved = backup_dir.resolve()
+        except OSError as exc:
+            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
+            continue
+        if not resolved.is_relative_to(resolved_root):
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unsafe",
+                    backup_dir,
+                    OSError("backup directory escaped backup root"),
+                )
+            )
+            continue
+        keep.add(resolved)
+    for _, _, backup_dir in sortable_dirs:
+        if _is_reparse_or_symlink(backup_dir):
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unsafe",
+                    backup_dir,
+                    OSError("backup directory is symlink or junction"),
+                )
+            )
+            continue
+        try:
+            resolved = backup_dir.resolve()
+        except OSError as exc:
+            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
+            continue
+        if not resolved.is_relative_to(resolved_root):
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unsafe",
+                    backup_dir,
+                    OSError("backup directory escaped backup root"),
+                )
+            )
+            continue
+        if resolved in keep:
+            continue
+        try:
+            resolved = backup_dir.resolve()
+        except OSError as exc:
+            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
+            continue
+        if not resolved.is_relative_to(resolved_root):
+            warnings.append(
+                _cleanup_warning(
+                    "backup_unsafe",
+                    backup_dir,
+                    OSError("backup directory escaped backup root"),
+                )
+            )
+            continue
+        try:
+            shutil.rmtree(backup_dir)
+        except OSError as exc:
+            warnings.append(_cleanup_warning("backup", backup_dir, exc))
+    return tuple(warnings)
+
+
+def _backup_timestamp(path: Path) -> float | None:
+    """解析 updater backup folder timestamp；未知格式不自動刪除。"""
+
+    match = re.fullmatch(
+        r".+-(\d{8}T\d{6}(?:\d{6})?Z)(?:-[0-9a-f]{8})?",
+        path.name,
+    )
+    if match is None:
+        return None
+    value = match.group(1)
+    fmt = "%Y%m%dT%H%M%S%fZ" if len(value) == 22 else "%Y%m%dT%H%M%SZ"
+    try:
+        return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _is_reparse_or_symlink(path: Path) -> bool:
+    """Windows junction / symlink 不作為 backup cleanup 對象。"""
+
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
 
 
 def _cleanup_warning(label: str, path: Path, exc: OSError) -> str:

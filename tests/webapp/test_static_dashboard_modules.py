@@ -129,6 +129,8 @@ def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     assert "[data-keyword-tabs]" in tabs_js
     assert "[data-keyword-panel]" in tabs_js
     assert "setupKeywordTabs();" in main_js
+    assert "[data-include-keyword-help-button]" in modals_js
+    assert "[data-include-keyword-help-modal]" in modals_js
     assert "[data-keyword-help-button]" in modals_js
     assert "[data-keyword-help-modal]" in modals_js
 
@@ -299,6 +301,14 @@ def test_modal_close_controls_use_one_visible_dismiss_pattern() -> None:
     assert target_card.count("data-close-keyword-help") == 1
     assert 'class="button--icon" type="button" data-close-keyword-help' in target_card
     assert '<button type="button" data-close-keyword-help>關閉</button>' not in target_card
+    assert target_card.count("data-close-include-keyword-help") == 1
+    assert (
+        'class="button--icon" type="button" data-close-include-keyword-help'
+        in target_card
+    )
+    assert '<button type="button" data-close-include-keyword-help>關閉</button>' not in (
+        target_card
+    )
 
     assert target_card.count("data-close-scan-diagnostics") == 1
     assert 'class="button--icon" type="button" data-close-scan-diagnostics' in target_card
@@ -929,6 +939,42 @@ def test_keyword_ignore_phrase_help_uses_short_examples_without_footer_note() ->
     assert "預設忽略片語" not in card_template
     assert "用來避免排除字誤傷" not in card_template
     assert ".keyword-help-body ul" in modals_css
+
+
+def test_include_keyword_help_matches_userscript_keyword_rule_copy() -> None:
+    """包含關鍵字說明沿用 userscript 的分號 OR / 空格 AND 語義。"""
+
+    card_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_card.html"
+    ).read_text(encoding="utf-8")
+    target_card_css = Path(
+        "src/facebook_monitor/webapp/static/styles/target-card.css"
+    ).read_text(encoding="utf-8")
+    modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "data-include-keyword-help-button" in card_template
+    assert "data-include-keyword-help-modal" in card_template
+    assert "include-keywords-{{ row.target.id }}" in card_template
+    assert "關鍵字輸入規則" in card_template
+    assert '<div class="keyword-help-rule-list">' in card_template
+    assert '<section class="modal-section-card keyword-help-rule-list">' not in (
+        card_template
+    )
+    assert "<code>;</code> 表示 <strong>OR</strong>" in card_template
+    assert "空格表示 <strong>AND</strong>" in card_template
+    assert "<code>搖滾;6880;5880</code>" in card_template
+    assert "只要出現 <code>搖滾</code> 或 <code>6880</code> 或 <code>5880</code> 就通知。" in (
+        card_template
+    )
+    assert "<code>搖滾 6880;搖滾 5880</code>" in card_template
+    assert "代表 <code>搖滾</code> 且 <code>6880</code>，或 <code>搖滾</code> 且 <code>5880</code> 才通知。" in (
+        card_template
+    )
+    assert "排除關鍵字也使用同樣規則。" in card_template
+    assert ".keyword-field-header" in target_card_css
+    assert ".keyword-help-example" in modals_css
 
 
 def test_button_variants_use_shared_button_modifier_classes() -> None:

@@ -85,10 +85,18 @@
             <h3>關鍵字與設定</h3>
             <span class="inline-feedback form-status" data-dirty-status aria-live="polite">尚未儲存</span>
           </div>
-          <label>
-            包含關鍵字
-            <textarea name="include_keywords" rows="2">{{ row.include_text }}</textarea>
-          </label>
+          <div class="keyword-field">
+            <div class="keyword-field-header">
+              <label for="include-keywords-{{ row.target.id }}">包含關鍵字</label>
+              <button class="keyword-help-button" type="button" aria-label="查看關鍵字輸入規則" aria-controls="include-keyword-help-{{ row.target.id }}" data-include-keyword-help-button>
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M9.5 9a2.7 2.7 0 1 1 4.4 2.1c-1.3.9-1.9 1.5-1.9 2.9"/>
+                  <path d="M12 18h.01"/>
+                </svg>
+              </button>
+            </div>
+            <textarea id="include-keywords-{{ row.target.id }}" name="include_keywords" rows="2">{{ row.include_text }}</textarea>
+          </div>
           <div class="keyword-rule-tabs" data-keyword-tabs>
             <div class="keyword-rule-tab-row">
               <div class="preview-tab-list keyword-rule-tab-list" role="tablist" aria-label="排除規則">
@@ -250,6 +258,39 @@
         </div>
       </footer>
     </form>
+  </dialog>
+  <dialog class="settings-modal keyword-help-modal" id="include-keyword-help-{{ row.target.id }}" data-include-keyword-help-modal aria-labelledby="include-keyword-help-title-{{ row.target.id }}">
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h3 id="include-keyword-help-title-{{ row.target.id }}">關鍵字輸入規則</h3>
+          <p>分號與空格會組合不同的比對規則。</p>
+        </div>
+        <button class="button--icon" type="button" data-close-include-keyword-help aria-label="關閉關鍵字輸入規則說明">
+          <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div class="modal-body keyword-help-body">
+        <div class="keyword-help-rule-list">
+          <p><code>;</code> 表示 <strong>OR</strong></p>
+          <p>空格表示 <strong>AND</strong></p>
+        </div>
+        <section class="modal-section-card keyword-help-example">
+          <h4>示例 1</h4>
+          <p><code>搖滾;6880;5880</code></p>
+          <p>只要出現 <code>搖滾</code> 或 <code>6880</code> 或 <code>5880</code> 就通知。</p>
+        </section>
+        <section class="modal-section-card keyword-help-example">
+          <h4>示例 2</h4>
+          <p><code>搖滾 6880;搖滾 5880</code></p>
+          <p>代表 <code>搖滾</code> 且 <code>6880</code>，或 <code>搖滾</code> 且 <code>5880</code> 才通知。</p>
+        </section>
+        <p>排除關鍵字也使用同樣規則。</p>
+      </div>
+    </div>
   </dialog>
   <dialog class="settings-modal keyword-help-modal" id="keyword-help-{{ row.target.id }}" data-keyword-help-modal aria-labelledby="keyword-help-title-{{ row.target.id }}">
     <div class="modal-shell">

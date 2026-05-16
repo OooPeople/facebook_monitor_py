@@ -122,7 +122,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "app": "Facebook Monitor",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "asset_version": ASSET_VERSION,
         "python_version": payload["python_version"],
         "packaging_mode": "source",
@@ -217,6 +217,8 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "Runtime diagnostics" in response.text
     assert response.text.index("通知預設值") < response.text.index("Runtime diagnostics")
+    assert response.text.index("通知預設值") < response.text.index("程式更新")
+    assert response.text.index("程式更新") < response.text.index("Runtime diagnostics")
     assert '<details class="target settings-card runtime-diagnostics-card">' in response.text
     assert '<summary class="runtime-diagnostics-summary">' in response.text
     assert str(paths.db_path) in response.text
@@ -250,6 +252,12 @@ def test_settings_page_shows_idle_update_check(tmp_path: Path) -> None:
     assert "程式更新" in response.text
     assert "尚未檢查更新" in response.text
     assert 'name="update_check" value="1"' in response.text
+    assert "data-update-section" in response.text
+    assert "data-update-check-form" in response.text
+    assert "data-update-progress-help" in response.text
+    assert "當自動跳出新頁面時，這個分頁就可以關閉。" in response.text
+    assert "下載完成後會自動套用更新並重啟程式" not in response.text
+    assert "請不要手動關閉程式" not in response.text
     assert "GitHub repo" not in response.text
     assert "Preview" not in response.text
 
@@ -265,7 +273,7 @@ def test_settings_update_check_uses_github_release_presenter(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.1.0"
+        assert current_version == "0.2.0"
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -353,8 +361,8 @@ def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
     response = client.get("/settings?update_check=1")
 
     assert response.status_code == 200
-    assert 'action="/settings/updates/download"' in response.text
-    assert "下載更新" in response.text
+    assert 'action="/settings/updates/download-and-apply"' in response.text
+    assert "下載新版並套用更新" in response.text
 
 
 def test_settings_download_update_verifies_asset_and_opens_folder(
@@ -373,7 +381,7 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.1.0"
+        assert current_version == "0.2.0"
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -449,6 +457,111 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
     assert opened_paths == [
         paths.updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
     ]
+
+
+def test_settings_download_and_apply_update_returns_modal_json_and_requests_shutdown(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """設定頁主流程會下載驗證、建立 handoff、啟動 updater，並回 JSON 給 modal。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    checked_update: dict[str, object] = {}
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        assert current_version == "0.2.0"
+        assert channel == "stable"
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    async def fake_download_and_verify_update(
+        *,
+        update_check: UpdateCheckResult,
+        updates_dir: Path,
+    ) -> UpdateDownloadResult:
+        checked_update["asset_name"] = update_check.asset_name
+        checked_update["updates_dir"] = updates_dir
+        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"verified zip")
+        return UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=file_path,
+            sha256_path=file_path.with_name(file_path.name + ".sha256"),
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+        )
+
+    launched_paths: list[Path] = []
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        launched_paths.append(paths.runtime_dir)
+        from facebook_monitor.updates.launcher import UpdaterLaunchResult
+
+        return UpdaterLaunchResult(
+            launched=True,
+            status="launched",
+            message="updater launched",
+            pid=123,
+        )
+
+    shutdown_requested: list[bool] = []
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    app.state.request_shutdown = lambda: shutdown_requested.append(True)
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/download-and-apply")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "stage": "launched",
+        "message": "更新器已啟動，程式即將關閉並套用更新",
+        "latest_version": "0.1.1",
+        "shutdown_requested": True,
+    }
+    assert checked_update["asset_name"] == "facebook-monitor-0.1.1-windows-portable.zip"
+    assert checked_update["updates_dir"] == paths.updates_dir
+    assert (paths.runtime_dir / "pending_update.json").is_file()
+    assert launched_paths == [paths.runtime_dir]
+    assert shutdown_requested == [True]
 
 
 def test_settings_download_update_rejects_source_mode(tmp_path: Path) -> None:
@@ -733,6 +846,7 @@ def test_target_card_panels_share_preview_height_contract() -> None:
     assert ".section-title .form-status" in styles
     assert "overflow-y: auto;" in styles
     assert ".compact-config-form .keyword-rule-tabs" in styles
+    assert ".keyword-field-header" in styles
     assert ".keyword-rule-tab-row" in styles
     assert ".compact-config-form .keyword-rule-tab" in styles
     assert ".keyword-help-button" in styles
@@ -2154,12 +2268,29 @@ def test_target_settings_modal_can_test_notifications_without_saving(
         },
         follow_redirects=True,
     )
+    json_test_response = client.post(
+        f"/targets/{target.id}/notifications/test",
+        data={
+            "enable_desktop_notification": "on",
+            "enable_ntfy": "on",
+            "ntfy_topic": "modal-topic-json",
+        },
+        headers={"Accept": "application/json"},
+    )
 
     assert index_response.status_code == 200
     assert "掃描設定" in index_response.text
     assert "刷新設定" in index_response.text
     assert "通知設定" in index_response.text
-    assert "測試通知" not in index_response.text
+    assert "測試通知" in index_response.text
+    assert f'data-notification-test-action="/targets/{target.id}/notifications/test"' in (
+        index_response.text
+    )
+    assert f'data-notification-test-form-id="config-{target.id}"' in index_response.text
+    assert f'formaction="/targets/{target.id}/notifications/test"' not in index_response.text
+    assert f'data-dirty-status-for="config-{target.id}"' in index_response.text
+    assert "data-notification-test" in index_response.text
+    assert "data-notification-test-status" in index_response.text
     assert f'form="config-{target.id}"' in index_response.text
     assert (
         index_response.text.index(
@@ -2181,6 +2312,9 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     )
     assert test_response.status_code == 200
     assert "desktop_sent / ntfy_sent / discord_sent" in test_response.text
+    assert json_test_response.status_code == 200
+    assert json_test_response.json()["ok"] is True
+    assert json_test_response.json()["results"] == ["desktop_sent", "ntfy_sent"]
     assert any(item.startswith("desktop:") for item in notifications.sent)
     assert any(item.startswith("ntfy:modal-topic:") for item in notifications.sent)
     assert any(

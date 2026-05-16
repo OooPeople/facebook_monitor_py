@@ -36,6 +36,8 @@
 - Startup runtime cleanup 保留 `notification_outbox`；不要用重置 debug data 來清 pending/failed 通知。
 - Dashboard 更新維持短生命週期 revision event stream + batch partial update；不要描述成真正長連線 SSE。
 - keyword highlight 由 `webapp/highlight.py` 產生 text segments；template / JS 不應改回 `innerHTML` 字串替換。
+- Windows updater 穩定邊界看 `docs/ARCHITECTURE.md#windows-updater`；release artifact、frozen smoke 與打包規則看 `packaging/README.md`。
+- 若修改 updater 或 release asset 命名，至少跑 `tests\updates`、settings route 測試、`node --check`、release artifact validation 與 frozen updater smoke，並確認 GitHub tag、zip 檔名與 `.sha256` 內容完全對齊。
 - Python 預設值集中於 `core/defaults.py`。
 - 不要啟動 Web UI、background worker 或 browser 實測，除非使用者明確同意。
 - UI 小修維持現有拆分邊界，不要把互動塞回 `index.html` inline script、`style.css` 單一大檔或胖 ViewModel。

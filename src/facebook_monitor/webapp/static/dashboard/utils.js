@@ -10,12 +10,17 @@ export const getFormControls = (form) => {
 export const setupDirtyFormStatus = ({
   form,
   statusElement,
+  statusElements = [],
   dirtyText = "尚未儲存",
   onDirtyChange = () => {},
 }) => {
   if (!form) return;
 
   const formId = form.id || "";
+  const allStatusElements = Array.from(new Set([
+    statusElement,
+    ...statusElements,
+  ].filter(Boolean)));
   const submitButtons = () => [
     ...Array.from(form.querySelectorAll("[data-dirty-submit]")),
     ...(
@@ -43,10 +48,16 @@ export const setupDirtyFormStatus = ({
     });
     onDirtyChange(dirty);
     if (dirty) {
-      showInlineStatus(statusElement, dirtyText, "dirty");
-    } else if (statusElement?.dataset.statusKind === "dirty") {
-      statusElement.classList.remove("is-visible");
-      delete statusElement.dataset.statusKind;
+      allStatusElements.forEach((node) => {
+        showInlineStatus(node, dirtyText, "dirty");
+      });
+    } else {
+      allStatusElements.forEach((node) => {
+        if (node.dataset.statusKind === "dirty") {
+          node.classList.remove("is-visible");
+          delete node.dataset.statusKind;
+        }
+      });
     }
   };
   getFormControls(form).forEach((node) => {
@@ -130,4 +141,34 @@ export const clearFeedbackParams = (pageFeedback) => {
   url.searchParams.delete("message");
   url.searchParams.delete("error");
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+};
+
+export const setupScrollRestoration = ({
+  storageKey = `scroll:${window.location.pathname}`,
+  formSelector = "form",
+  maxAgeMs = 30_000,
+} = {}) => {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(storageKey) || "null");
+    if (saved && Date.now() - Number(saved.at || 0) <= maxAgeMs) {
+      window.sessionStorage.removeItem(storageKey);
+      window.requestAnimationFrame(() => {
+        window.scrollTo(Number(saved.x || 0), Number(saved.y || 0));
+      });
+    }
+  } catch (error) {
+    window.sessionStorage.removeItem(storageKey);
+  }
+
+  document.addEventListener("submit", (event) => {
+    if (!event.target.matches?.(formSelector)) return;
+    window.sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        x: window.scrollX,
+        y: window.scrollY,
+        at: Date.now(),
+      }),
+    );
+  });
 };

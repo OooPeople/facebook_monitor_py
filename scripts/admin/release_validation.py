@@ -45,6 +45,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also run pip-audit; this may require network access or advisory DB access.",
     )
+    parser.add_argument(
+        "--include-artifacts",
+        action="store_true",
+        help="Also validate Windows portable release zip, SHA256, and EXE metadata.",
+    )
+    parser.add_argument(
+        "--expected-signer-subject",
+        default="",
+        help="Optional Authenticode signer subject substring expected for EXEs.",
+    )
+    parser.add_argument(
+        "--expected-tag",
+        default="",
+        help="Optional GitHub tag expected for the app version, for example v0.2.0.",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +131,9 @@ def validation_steps(
     skip_sync: bool,
     git_checkout: bool,
     include_audit: bool = False,
+    include_artifacts: bool = False,
+    expected_signer_subject: str = "",
+    expected_tag: str = "",
 ) -> list[ValidationStep]:
     """建立 release validation command 清單。"""
 
@@ -142,6 +160,26 @@ def validation_steps(
     ]
     if include_audit:
         steps.append(ValidationStep("pip-audit", uv_command("run", "pip-audit")))
+    if include_artifacts:
+        artifact_command = [
+            *uv_command(
+                "run",
+                "python",
+                "scripts/admin/release_artifact_validation.py",
+            )
+        ]
+        if expected_signer_subject:
+            artifact_command.extend(
+                ["--expected-signer-subject", expected_signer_subject]
+            )
+        if expected_tag:
+            artifact_command.extend(["--expected-tag", expected_tag])
+        steps.append(
+            ValidationStep(
+                "release artifacts",
+                artifact_command,
+            )
+        )
     if git_checkout:
         steps.append(ValidationStep("git diff --check", ["git", "diff", "--check"]))
     if skip_sync:
@@ -176,20 +214,39 @@ def validation_env() -> dict[str, str]:
     return env
 
 
+def validate_cli_args(args: argparse.Namespace) -> str | None:
+    """驗證跨參數組合，避免 release validation 靜默忽略安全檢查。"""
+
+    if args.expected_signer_subject and not args.include_artifacts:
+        return "--expected-signer-subject requires --include-artifacts"
+    if args.expected_tag and not args.include_artifacts:
+        return "--expected-tag requires --include-artifacts"
+    return None
+
+
 def main() -> int:
     """CLI entrypoint：依序執行 release validation。"""
 
     args = parse_args()
+    args_error = validate_cli_args(args)
+    if args_error is not None:
+        print(args_error)
+        return 2
     print_environment()
     git_checkout = is_git_checkout()
     if not git_checkout:
         print("非 Git checkout，已跳過 git diff --check。")
     if args.include_audit:
         print("已啟用 pip-audit；此步驟可能需要網路或 advisory DB。")
+    if args.include_artifacts:
+        print("已啟用 Windows release artifact 一致性檢查。")
     for step in validation_steps(
         skip_sync=args.skip_sync,
         git_checkout=git_checkout,
         include_audit=args.include_audit,
+        include_artifacts=args.include_artifacts,
+        expected_signer_subject=args.expected_signer_subject,
+        expected_tag=args.expected_tag,
     ):
         return_code = run_step(step)
         if return_code != 0:

@@ -98,6 +98,26 @@ def test_evaluate_release_reports_current_when_remote_is_not_newer() -> None:
 
     assert result.status == "current"
     assert not result.update_available
+    assert result.latest_version == "0.1.0"
+
+
+def test_evaluate_release_does_not_show_older_rc_as_latest_version() -> None:
+    """目前 stable 版本高於遠端 rc 時，不可把 rc 顯示成最新版本。"""
+
+    result = evaluate_release(
+        current_version="0.1.0",
+        channel="stable",
+        repository="OooPeople/facebook_monitor_py",
+        release=release_payload(
+            tag_name="v0.1.0-rc1",
+            assets=[asset("facebook-monitor-0.1.0-rc1-windows-portable.zip")],
+        ),
+    )
+
+    assert result.status == "current"
+    assert not result.update_available
+    assert result.latest_version == "0.1.0"
+    assert result.summary == "目前已是最新版本"
 
 
 def test_evaluate_release_reports_asset_missing_for_newer_release_without_zip() -> None:
@@ -115,6 +135,27 @@ def test_evaluate_release_reports_asset_missing_for_newer_release_without_zip() 
     assert result.failure_reason == "asset_missing"
 
 
+def test_evaluate_release_rejects_portable_asset_for_different_version() -> None:
+    """新版 release 不能使用其他版本的 portable zip。"""
+
+    result = evaluate_release(
+        current_version="0.1.0",
+        channel="stable",
+        repository="OooPeople/facebook_monitor_py",
+        release=release_payload(
+            tag_name="v0.1.1",
+            assets=[
+                asset("facebook-monitor-0.1.0-windows-portable.zip"),
+                asset("facebook-monitor-0.1.0-windows-portable.zip.sha256"),
+            ],
+        ),
+    )
+
+    assert result.status == "asset_version_mismatch"
+    assert not result.update_available
+    assert result.failure_reason == "asset_version_mismatch"
+
+
 def test_find_windows_portable_asset_prefers_exact_version_filename() -> None:
     """多個 portable zip 存在時先選與 release tag 相符的檔名。"""
 
@@ -129,3 +170,13 @@ def test_find_windows_portable_asset_prefers_exact_version_filename() -> None:
 
     assert selected is not None
     assert selected.name == "facebook-monitor-0.1.0-windows-portable.zip"
+
+
+def test_find_windows_portable_asset_returns_none_for_mismatched_version() -> None:
+    """沒有精確版本檔名時不 fallback 到其他 portable zip。"""
+
+    assets = parse_release_assets(
+        [asset("facebook-monitor-0.1.0-windows-portable.zip")]
+    )
+
+    assert find_windows_portable_asset(assets, latest_version="0.1.1") is None

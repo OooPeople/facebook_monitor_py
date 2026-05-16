@@ -23,7 +23,12 @@
         {% include "_refresh_settings_fields.html" %}
       </section>
       <section class="modal-section modal-section-card">
-        <h4>通知設定</h4>
+        <div class="modal-section-header">
+          <h4>通知設定</h4>
+          {% set notification_test_action = "/targets/" ~ row.target.id ~ "/notifications/test" %}
+          {% set notification_test_form_id = config_form_id %}
+          {% include "_notification_test_button.html" %}
+        </div>
         {% set notification_source = row.config %}
         {% set notification_form_id = config_form_id %}
         {% include "_notification_settings_fields.html" %}
@@ -36,6 +41,11 @@
         <button class="button target-metadata-refresh-button" type="submit">重新抓取名稱與封面</button>
       </form>
       <div class="modal-footer-actions settings-actions settings-actions--right">
+        <span
+          class="inline-feedback form-status"
+          data-dirty-status-for="{{ config_form_id }}"
+          aria-live="polite"
+        >尚未儲存</span>
         <button type="button" data-close-settings>取消</button>
         <button class="button button--primary" type="submit" form="{{ config_form_id }}" data-dirty-submit>儲存設定</button>
       </div>

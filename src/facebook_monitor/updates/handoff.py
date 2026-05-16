@@ -139,6 +139,8 @@ def validate_pending_update_paths(
         raise ValueError("pending_update_path_dangerous")
     if app_base_dir == data_dir:
         raise ValueError("pending_update_app_data_overlap")
+    if data_dir.is_relative_to(app_base_dir) and data_dir != app_base_dir / "data":
+        raise ValueError("pending_update_data_dir_must_be_app_data")
     if runtime_dir != data_dir / "runtime":
         raise ValueError("pending_update_runtime_dir_mismatch")
     if not zip_path.is_relative_to(updates_dir):

@@ -10,9 +10,13 @@ import {
 export const setupConfigForms = (state) => {
   document.querySelectorAll(".config-form").forEach((form) => {
     const status = form.querySelector("[data-dirty-status]");
+    const externalStatuses = form.id
+      ? Array.from(document.querySelectorAll(`[data-dirty-status-for="${CSS.escape(form.id)}"]`))
+      : [];
     setupDirtyFormStatus({
       form,
       statusElement: status,
+      statusElements: externalStatuses,
       onDirtyChange: (dirty) => (
         setFormDirty(state, form.dataset.targetId || form.id || "", dirty)
       ),

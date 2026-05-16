@@ -4,7 +4,7 @@
 避免多個 template 或 JS import 各自手動維護版本字串。
 """
 
-ASSET_VERSION = "0.1.0"
+ASSET_VERSION = "0.2.0"
 
 DASHBOARD_MODULE_FILENAMES = (
     "api.js",
@@ -18,6 +18,8 @@ DASHBOARD_MODULE_FILENAMES = (
     "modals.js",
     "new_target.js",
     "next_refresh_countdown.js",
+    "notification_help.js",
+    "notification_test.js",
     "partial_updates.js",
     "revision_client.js",
     "settings.js",

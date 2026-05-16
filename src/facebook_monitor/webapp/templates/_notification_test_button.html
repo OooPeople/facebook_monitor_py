@@ -1,0 +1,14 @@
+{% set notification_test_action = notification_test_action|default("") %}
+{% set notification_test_form_id = notification_test_form_id|default(notification_form_id|default("")) %}
+{% if notification_test_action and notification_test_form_id %}
+<div class="notification-test-actions">
+  <span class="inline-feedback form-status notification-test-status" data-notification-test-status aria-live="polite"></span>
+  <button
+    class="button notification-test-button"
+    type="button"
+    data-notification-test
+    data-notification-test-action="{{ notification_test_action }}"
+    data-notification-test-form-id="{{ notification_test_form_id }}"
+  >測試通知</button>
+</div>
+{% endif %}

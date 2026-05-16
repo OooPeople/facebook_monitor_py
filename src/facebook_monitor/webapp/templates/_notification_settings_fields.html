@@ -7,25 +7,95 @@
 {% set discord_checked = notification_source and notification_source.enable_discord_notification %}
 {% set ntfy_topic_value = notification_source.ntfy_topic if notification_source else "" %}
 {% set discord_webhook_value = notification_source.discord_webhook if notification_source else "" %}
+<div class="notification-help-scope" data-notification-help-scope>
 <div class="{{ notification_stack_class }}">
   <label class="checkbox">
     <input name="enable_desktop_notification" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if desktop_checked %}checked{% endif %}>
     桌面通知
   </label>
-  <label class="checkbox">
-    <input name="enable_ntfy" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if ntfy_checked %}checked{% endif %}>
-    ntfy
-  </label>
+  <div class="notification-channel-row">
+    <label class="checkbox">
+      <input name="enable_ntfy" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if ntfy_checked %}checked{% endif %}>
+      ntfy
+    </label>
+    <button class="notification-help-button" type="button" aria-label="查看 ntfy 設定說明" data-notification-help-button="ntfy">?</button>
+  </div>
   <label>
     ntfy topic
     <input name="ntfy_topic" type="text" value="{{ ntfy_topic_value }}" autocomplete="off" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
   </label>
-  <label class="checkbox">
-    <input name="enable_discord_notification" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if discord_checked %}checked{% endif %}>
-    Discord webhook
-  </label>
+  <div class="notification-channel-row">
+    <label class="checkbox">
+      <input name="enable_discord_notification" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if discord_checked %}checked{% endif %}>
+      Discord webhook
+    </label>
+    <button class="notification-help-button" type="button" aria-label="查看 Discord Webhook 設定說明" data-notification-help-button="discord">?</button>
+  </div>
   <label>
     Discord webhook URL
     <input name="discord_webhook" type="text" value="{{ discord_webhook_value }}" autocomplete="off" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
   </label>
+</div>
+<dialog class="settings-modal notification-help-modal" data-notification-help-modal="ntfy" aria-label="ntfy 說明">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3>ntfy 說明</h3>
+        <p>手機同步通知設定。</p>
+      </div>
+      <button class="button--icon" type="button" data-close-notification-help aria-label="關閉 ntfy 說明">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M18 6 6 18"/>
+          <path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </header>
+    <div class="modal-body notification-help-body">
+      <section class="modal-section-card notification-help-steps">
+        <p>ntfy 是一個簡單能讓手機收到通知訊息的 app。</p>
+        <h4>建議步驟</h4>
+        <ol>
+          <li>在手機上安裝 ntfy App。</li>
+          <li>在 App 內按 <code>+</code>，輸入 topic，例如 <code>my-facebook-alerts</code>。</li>
+          <li>建議使用英文字母、數字、減號或底線。</li>
+          <li>回到 Facebook Monitor 的通知設定。</li>
+          <li>勾選 ntfy 通道。</li>
+          <li>在 <code>ntfy topic</code> 輸入完全相同的 topic。</li>
+          <li>保存設定後，下一次符合關鍵字的新項目會透過 ntfy 通知。</li>
+        </ol>
+      </section>
+    </div>
+  </div>
+</dialog>
+<dialog class="settings-modal notification-help-modal" data-notification-help-modal="discord" aria-label="Discord Webhook 說明">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3>Discord Webhook 說明</h3>
+        <p>Discord 頻道通知設定。</p>
+      </div>
+      <button class="button--icon" type="button" data-close-notification-help aria-label="關閉 Discord Webhook 說明">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M18 6 6 18"/>
+          <path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </header>
+    <div class="modal-body notification-help-body">
+      <section class="modal-section-card notification-help-steps">
+        <p>這個設定可以讓通知訊息發送到 Discord 的頻道。</p>
+        <h4>建議步驟</h4>
+        <ol>
+          <li>在 Discord 選擇目標頻道，進入「編輯頻道」。</li>
+          <li>點選「整合」→「Webhooks」→「新 Webhook」。</li>
+          <li>複製 Webhook URL。</li>
+          <li>回到 Facebook Monitor 的通知設定。</li>
+          <li>勾選 Discord Webhook 通道。</li>
+          <li>在 <code>Discord Webhook URL</code> 貼上剛剛複製的網址。</li>
+          <li>保存設定後，下一次符合關鍵字的新項目會透過 Discord 通知。</li>
+        </ol>
+      </section>
+    </div>
+  </div>
+</dialog>
 </div>

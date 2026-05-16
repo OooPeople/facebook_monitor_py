@@ -1,9 +1,11 @@
-const getSidebarLinks = () => Array.from(document.querySelectorAll("[data-sidebar-target]"));
+import {
+  getSidebarLinks,
+  getTargetCards,
+} from "/static/dashboard/sidebar_dom.js";
+
 let activeSidebarAnchorId = "";
 let sidebarJumpLock = null;
 let sidebarIntersectionObserver = null;
-
-const getTargetCards = () => Array.from(document.querySelectorAll("[data-target-card][id]"));
 
 const sidebarModuleVersion = (() => {
   try {

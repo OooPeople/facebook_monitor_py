@@ -79,6 +79,7 @@ const createCloseIcon = () => {
 export const confirmDialog = ({
   title,
   message,
+  details = [],
   confirmLabel = "確認",
   cancelLabel = "取消",
   danger = false,
@@ -88,6 +89,16 @@ export const confirmDialog = ({
     const messageNode = document.createElement("p");
     messageNode.textContent = message;
     body.appendChild(messageNode);
+  }
+  if (details.length) {
+    const detailList = document.createElement("ul");
+    detailList.className = "app-dialog-detail-list";
+    details.forEach((detail) => {
+      const item = document.createElement("li");
+      item.textContent = String(detail);
+      detailList.appendChild(item);
+    });
+    body.appendChild(detailList);
   }
 
   const cancelButton = document.createElement("button");

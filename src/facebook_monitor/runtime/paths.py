@@ -29,6 +29,7 @@ class RuntimePaths:
     logs_dir: Path
     runtime_dir: Path
     exports_dir: Path
+    updates_dir: Path
     templates_dir: Path
     static_dir: Path
 
@@ -43,11 +44,16 @@ class RuntimePaths:
             self.logs_dir,
             self.runtime_dir,
             self.exports_dir,
+            self.updates_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
 
-def add_runtime_path_arguments(parser: argparse.ArgumentParser) -> None:
+def add_runtime_path_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_unsafe_profile_dir: bool = False,
+) -> None:
     """替 CLI parser 加入正式入口共用的 runtime path 參數。"""
 
     parser.add_argument(
@@ -71,15 +77,16 @@ def add_runtime_path_arguments(parser: argparse.ArgumentParser) -> None:
             "Overrides --profile-name."
         ),
     )
-    parser.add_argument(
-        "--unsafe-profile-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Debug/test only: external Playwright profile directory. "
-            "Common browser profiles are rejected."
-        ),
-    )
+    if include_unsafe_profile_dir:
+        parser.add_argument(
+            "--unsafe-profile-dir",
+            type=Path,
+            default=None,
+            help=(
+                "Debug/test only: external Playwright profile directory. "
+                "Common browser profiles are rejected."
+            ),
+        )
     parser.add_argument(
         "--profile-name",
         default=DEFAULT_PROFILE_NAME,
@@ -181,6 +188,7 @@ def resolve_runtime_paths(
         logs_dir=resolved_logs_dir,
         runtime_dir=resolved_data_dir / "runtime",
         exports_dir=resolved_data_dir / "exports",
+        updates_dir=resolved_data_dir / "updates",
         templates_dir=package_dir / "webapp" / "templates",
         static_dir=package_dir / "webapp" / "static",
     )
@@ -225,7 +233,7 @@ def _resource_package_dir() -> Path:
 def _default_data_dir(*, project_root: Path | None, app_base_dir: Path, portable: bool) -> Path:
     """取得未指定 data-dir 時的可寫資料根目錄。"""
 
-    if portable or project_root is None:
+    if portable:
         return app_base_dir / "data"
     return Path.home() / DEFAULT_HOME_DATA_DIR_NAME
 

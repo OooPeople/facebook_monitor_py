@@ -18,6 +18,7 @@ from facebook_monitor.application.target_route_service import DetectedCommentsTa
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
+from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
@@ -84,30 +85,33 @@ def _build_target_config_form(
     )
 
 
-async def _resolve_group_name_if_needed(
+async def _resolve_group_metadata_if_needed(
     request: Request,
     *,
     custom_name: str,
     canonical_url: str,
-) -> str:
-    """未提供自訂名稱時，視 profile 可用狀態嘗試解析 Facebook group name。"""
+) -> GroupMetadata:
+    """未提供自訂名稱時，視 profile 可用狀態嘗試解析 Facebook group metadata。"""
 
     if custom_name:
-        return ""
+        return GroupMetadata()
     scheduler_state = get_scheduler_manager(request).state()
     if scheduler_state.running:
         logger.info(
             "skip group name resolver because scheduler lifecycle is %s",
             scheduler_state.lifecycle_state,
         )
-        return ""
-    return await run_with_temporary_profile_access(
+        return GroupMetadata()
+    resolved = await run_with_temporary_profile_access(
         request,
         lambda: get_group_name_resolver(request)(
             get_profile_dir(request),
             canonical_url,
         ),
     )
+    if isinstance(resolved, GroupMetadata):
+        return resolved
+    return GroupMetadata(group_name=str(resolved or ""))
 
 
 def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -140,7 +144,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         include_keywords: Annotated[str, Form()] = "",
         exclude_keywords: Annotated[str | None, Form()] = None,
         exclude_ignore_phrases: Annotated[str | None, Form()] = None,
-        refresh_mode: Annotated[str, Form()] = "fixed",
+        refresh_mode: Annotated[str, Form()] = "floating",
         fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
         min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
         max_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
@@ -189,7 +193,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             scheduler_running = get_scheduler_manager(request).state().running
             route = detect_target_route_from_url(group_url.strip())
             if isinstance(route, DetectedCommentsTargetRoute):
-                resolved_group_name = await _resolve_group_name_if_needed(
+                resolved_metadata = await _resolve_group_metadata_if_needed(
                     request,
                     custom_name=custom_name,
                     canonical_url=route.group_canonical_url,
@@ -201,7 +205,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             parent_post_id=route.parent_post_id,
                             canonical_url=route.canonical_url,
                             name=custom_name,
-                            group_name=resolved_group_name,
+                            group_name=resolved_metadata.group_name,
+                            group_cover_image_url=resolved_metadata.group_cover_image_url,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -211,7 +216,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 if scheduler_running and not custom_name:
                     get_scheduler_manager(request).request_metadata_refresh(target.id)
             else:
-                resolved_group_name = await _resolve_group_name_if_needed(
+                resolved_metadata = await _resolve_group_metadata_if_needed(
                     request,
                     custom_name=custom_name,
                     canonical_url=route.canonical_url,
@@ -222,7 +227,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             group_id=route.group_id,
                             canonical_url=route.canonical_url,
                             name=custom_name,
-                            group_name=resolved_group_name,
+                            group_name=resolved_metadata.group_name,
+                            group_cover_image_url=resolved_metadata.group_cover_image_url,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -249,7 +255,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         include_keywords: Annotated[str, Form()] = "",
         exclude_keywords: Annotated[str, Form()] = "",
         exclude_ignore_phrases: Annotated[str, Form()] = "",
-        refresh_mode: Annotated[str, Form()] = "fixed",
+        refresh_mode: Annotated[str, Form()] = "floating",
         fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
         min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
         max_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
@@ -309,6 +315,29 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_with_error(f"名稱更新失敗: {exc}", return_to=return_to)
         return redirect_with_message("名稱已更新", return_to=return_to)
 
+    @app.post("/targets/{target_id}/metadata/refresh")
+    async def refresh_target_metadata_route(
+        request: Request,
+        target_id: str,
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """手動要求 resident worker 重新抓取 target 名稱與封面。"""
+
+        try:
+            with SqliteApplicationContext(get_db_path(request)) as app_context:
+                target = app_context.repositories.targets.get(target_id)
+                if target is None:
+                    return redirect_with_error("重新抓取失敗: target 不存在", return_to=return_to)
+                app_context.services.targets.mark_target_metadata_refresh_pending(target_id)
+            get_scheduler_manager(request).request_metadata_refresh(target_id)
+            start_resident_scheduler_if_needed(request)
+        except Exception as exc:
+            return redirect_with_error(f"重新抓取失敗: {exc}", return_to=return_to)
+        return redirect_with_message(
+            "已加入排程，會在下一次啟動時抓取名稱與封面",
+            return_to=return_to,
+        )
+
     @app.post("/targets/{target_id}/notifications/test")
     async def test_target_notifications(
         request: Request,
@@ -355,7 +384,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         target_id: str,
         return_to: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
-        """重新開始單一 target，清 seen scope 並要求立即掃描。"""
+        """重新開始單一 target，清 seen/outbox 去重並要求立即掃描。"""
 
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:

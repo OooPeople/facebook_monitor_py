@@ -11,6 +11,8 @@ from facebook_monitor.persistence.row_mappers import notification_event_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
+NOTIFICATION_EVENTS_PER_TARGET_LIMIT = 500
+
 
 class NotificationEventRepository:
     """保存通知事件。"""
@@ -37,7 +39,33 @@ class NotificationEventRepository:
                 encode_datetime(event.created_at),
             ),
         )
-        return require_lastrowid(cursor.lastrowid, table_name="notification_events")
+        event_id = require_lastrowid(cursor.lastrowid, table_name="notification_events")
+        self.prune_by_target(event.target_id)
+        return event_id
+
+    def prune_by_target(
+        self,
+        target_id: str,
+        limit: int = NOTIFICATION_EVENTS_PER_TARGET_LIMIT,
+    ) -> int:
+        """保留單一 target 最近 N 筆 notification events，避免長跑無限制成長。"""
+
+        bounded_limit = max(int(limit), 1)
+        cursor = self.connection.execute(
+            """
+            DELETE FROM notification_events
+            WHERE target_id = ?
+              AND id NOT IN (
+                  SELECT id
+                  FROM notification_events
+                  WHERE target_id = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (target_id, target_id, bounded_limit),
+        )
+        return int(cursor.rowcount or 0)
 
     def list_by_target(self, target_id: str, limit: int = 50) -> list[NotificationEvent]:
         """依 target id 查詢最近 notification events。"""

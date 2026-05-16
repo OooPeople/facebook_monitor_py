@@ -30,7 +30,7 @@ export const setupRefreshFields = () => {
     if (!refreshContainer) return;
     const syncRefreshFields = () => {
       const mode = refreshContainer.querySelector('input[name="refresh_mode"]:checked')?.value
-        || "fixed";
+        || "floating";
       refreshContainer.querySelectorAll("[data-refresh-fixed]").forEach((node) => {
         node.hidden = mode === "floating";
       });

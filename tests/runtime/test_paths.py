@@ -22,6 +22,22 @@ def test_default_data_dir_uses_home_directory(monkeypatch, tmp_path) -> None:
     assert paths.profile_dir == paths.data_dir / "profiles" / "automation_default"
 
 
+def test_frozen_default_data_dir_uses_home_unless_portable(monkeypatch, tmp_path) -> None:
+    """frozen 安裝型預設仍使用 home，只有 portable 才寫在 EXE 旁。"""
+
+    home_dir = tmp_path / "home"
+    executable = tmp_path / "Program Files" / "Facebook Monitor" / "facebook-monitor.exe"
+    monkeypatch.setattr("pathlib.Path.home", lambda: home_dir)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    installed_paths = resolve_runtime_paths()
+    portable_paths = resolve_runtime_paths(portable=True)
+
+    assert installed_paths.data_dir == (home_dir / DEFAULT_HOME_DATA_DIR_NAME).resolve()
+    assert portable_paths.data_dir == (executable.parent / "data").resolve()
+
+
 def test_data_dir_drives_db_profile_and_logs(tmp_path) -> None:
     """`--data-dir` 會讓 Web UI 與 setup login 推導同一組 runtime paths。"""
 
@@ -36,6 +52,7 @@ def test_data_dir_drives_db_profile_and_logs(tmp_path) -> None:
     assert paths.logs_dir == data_dir.resolve() / "logs"
     assert paths.runtime_dir == data_dir.resolve() / "runtime"
     assert paths.exports_dir == data_dir.resolve() / "exports"
+    assert paths.updates_dir == data_dir.resolve() / "updates"
 
 
 def test_explicit_paths_override_data_dir(tmp_path) -> None:

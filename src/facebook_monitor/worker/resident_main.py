@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
+from datetime import datetime
 import logging
+from pathlib import Path
 from typing import Any
 
 from playwright.async_api import async_playwright
@@ -22,12 +24,9 @@ from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
-from facebook_monitor.core.models import is_generated_group_comments_name
-from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
-from facebook_monitor.facebook.group_metadata import resolve_group_name_with_context
+from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -99,7 +98,9 @@ async def run_resident_main_loop(
 
     summaries: list[ResidentCycleSummary] = []
     cycle_index = 0
-    schedule_planner = TargetSchedulePlanner()
+    schedule_planner = TargetSchedulePlanner(
+        on_display_next_due_changed=_publish_display_next_due_at(options.db_path)
+    )
     target_queue = TargetQueue()
     stop_requested = should_stop or (lambda: False)
     sleep = sleep_fn or asyncio.sleep
@@ -167,9 +168,10 @@ async def run_resident_main_loop(
                                 ):
                                     break
                                 await sleep(max(options.scheduler_tick_seconds, 0))
-                            await target_queue.join()
+                            if not stop_requested():
+                                await target_queue.join()
                         finally:
-                            await executor.stop()
+                            await executor.stop(cancel_running=stop_requested())
                             await page_pool.close_all()
                     finally:
                         await browser_context.close()
@@ -179,6 +181,20 @@ async def run_resident_main_loop(
         restore_playwright_exception_handler()
 
     return summaries
+
+
+def _publish_display_next_due_at(
+    db_path: Path,
+) -> Callable[[str, datetime | None], None]:
+    """建立 scheduler due time 發布器；DB 欄位只供 dashboard 顯示。"""
+
+    def publish(target_id: str, due_at: datetime | None) -> None:
+        """將 planner 已決定的 next due 寫入 read model。"""
+
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.set_target_display_next_due_at(target_id, due_at)
+
+    return publish
 
 
 async def run_resident_main_scheduler_tick(
@@ -193,7 +209,10 @@ async def run_resident_main_scheduler_tick(
 ) -> ResidentCycleSummary:
     """producer-only scheduler tick：只負責發現 due targets 並 enqueue。"""
 
-    recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
+    recovered_runtime_count = recover_stale_runtime_targets(
+        options.db_path,
+        options.stale_running_after_seconds,
+    )
     metadata_refresh_count = await refresh_requested_target_metadata(
         options=options,
         browser_context=browser_context,
@@ -223,7 +242,9 @@ async def run_resident_main_scheduler_tick(
         queued_target_ids=queued_ids,
         worker_ids=executor.worker_ids,
         page_pool_size=await page_pool.size(),
-        resident_browser_alive=True,
+        resident_browser_alive=executor.worker_health_ok(),
+        recovered_runtime_count=recovered_runtime_count,
+        worker_health_ok=executor.worker_health_ok(),
     )
 
 
@@ -297,29 +318,15 @@ async def refresh_target_group_name_from_context(
     """用 resident browser context 補齊 target group name。"""
 
     group_id = ""
-    should_refresh = False
     with SqliteApplicationContext(options.db_path) as app:
         target = app.repositories.targets.get(target_id)
         if target is None:
             return False
         group_id = target.group_id
-        should_refresh = (
-            target.target_kind == TargetKind.POSTS
-            and is_generated_group_posts_name(target.name, target.group_id)
-        ) or (
-            target.target_kind == TargetKind.COMMENTS
-            and is_generated_group_comments_name(
-                target.name,
-                target.group_id,
-                target.parent_post_id,
-            )
-        )
-        if target.group_name and not should_refresh:
-            return False
     if not group_id:
         return False
     try:
-        group_name = await resolve_group_name_with_context(
+        metadata = await resolve_group_metadata_with_context(
             browser_context,
             canonical_url=f"https://www.facebook.com/groups/{group_id}",
         )
@@ -333,7 +340,12 @@ async def refresh_target_group_name_from_context(
     with SqliteApplicationContext(options.db_path) as app:
         if app.repositories.targets.get(target_id) is None:
             return False
-        app.services.targets.refresh_target_group_name(target_id, group_name)
+        app.services.targets.refresh_target_group_metadata(
+            target_id,
+            group_name=metadata.group_name,
+            group_cover_image_url=metadata.group_cover_image_url,
+            overwrite_name=True,
+        )
     return True
 
 
@@ -385,7 +397,9 @@ async def run_resident_main_cycle(
             queued_target_ids=queued_ids,
             worker_ids=executor.worker_ids,
             page_pool_size=await page_pool.size(),
-            resident_browser_alive=True,
+            resident_browser_alive=executor.worker_health_ok(),
+            recovered_runtime_count=summary.recovered_runtime_count,
+            worker_health_ok=executor.worker_health_ok(),
         )
     finally:
         await executor.stop()

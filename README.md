@@ -74,6 +74,7 @@ uv run facebook-monitor
 常用完整驗證：
 
 ```powershell
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py
 .\scripts\uv.ps1 run pytest -q
 .\scripts\uv.ps1 run python -m compileall -q src scripts tests
 .\scripts\uv.ps1 run ruff check src scripts tests

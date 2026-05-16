@@ -7,7 +7,7 @@ import sqlite3
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 25
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -38,6 +38,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             target_kind TEXT NOT NULL,
             group_id TEXT NOT NULL,
             group_name TEXT NOT NULL,
+            group_cover_image_url TEXT NOT NULL DEFAULT '',
             parent_post_id TEXT NOT NULL,
             scope_id TEXT NOT NULL,
             canonical_url TEXT NOT NULL,
@@ -78,6 +79,12 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
             PRIMARY KEY (scope_id, item_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS scan_scope_state (
+            scope_id TEXT PRIMARY KEY,
+            initialized INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS match_history (
@@ -190,6 +197,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             active_page_id TEXT NOT NULL DEFAULT '',
             last_page_reloaded_at TEXT NOT NULL DEFAULT '',
             scan_guard_count INTEGER NOT NULL DEFAULT 0,
+            display_next_due_at TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         );
 
@@ -256,8 +264,16 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_scan_runs_target_created
             ON scan_runs(target_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_id_desc
+            ON scan_runs(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_status_id_desc
+            ON scan_runs(target_id, status, id DESC);
         CREATE INDEX IF NOT EXISTS idx_notification_events_target_created
             ON notification_events(target_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_id_desc
+            ON notification_events(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_channel_id_desc
+            ON notification_events(target_id, channel, id DESC);
         CREATE INDEX IF NOT EXISTS idx_latest_scan_items_target_index
             ON latest_scan_items(target_id, item_index);
         CREATE INDEX IF NOT EXISTS idx_latest_scan_item_matches_target_item
@@ -312,10 +328,10 @@ DASHBOARD_REVISION_TABLES = (
     "target_runtime_state",
     "scan_runs",
     "notification_events",
+    "notification_outbox",
     "latest_scan_items",
-    "latest_scan_item_matches",
     "match_history",
-    "match_history_matches",
+    "app_settings",
     "sidebar_groups",
     "sidebar_target_placements",
     "sidebar_group_config_templates",
@@ -325,10 +341,21 @@ DASHBOARD_REVISION_TABLES = (
 def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
     """建立 dashboard revision bump triggers，讓 polling query 固定成本。"""
 
+    stale_triggers = connection.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND name LIKE 'trg_dashboard_revision_%'
+        """
+    ).fetchall()
+    for row in stale_triggers:
+        trigger_name = str(row[0]).replace('"', '""')
+        connection.execute(f'DROP TRIGGER IF EXISTS "{trigger_name}"')
+
     for table_name in DASHBOARD_REVISION_TABLES:
         for operation in ("INSERT", "UPDATE", "DELETE"):
             trigger_name = f"trg_dashboard_revision_{table_name}_{operation.lower()}"
-            connection.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
             connection.execute(
                 f"""
                 CREATE TRIGGER {trigger_name}

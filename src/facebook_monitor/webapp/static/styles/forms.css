@@ -40,3 +40,103 @@ select:focus {
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
+
+.settings-form-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-form-grid {
+  display: grid;
+  gap: 14px 18px;
+}
+
+.settings-form-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-toggle-grid {
+  display: grid;
+  gap: 12px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-toggle-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-toggle-grid .checkbox {
+  align-items: center;
+  min-height: 38px;
+}
+
+.settings-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-actions--right {
+  justify-content: flex-end;
+}
+
+.settings-actions--left {
+  justify-content: flex-start;
+}
+
+.refresh-settings {
+  align-self: start;
+  display: grid;
+  gap: 6px;
+}
+
+.refresh-mode-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.option-card {
+  align-items: center;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  min-height: 66px;
+  padding: 12px;
+}
+
+.option-card strong,
+.option-card small {
+  display: block;
+}
+
+.option-card strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.option-card small {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.checkbox {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.radio {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.field-caption {
+  color: var(--text-soft);
+  font-size: 13px;
+}

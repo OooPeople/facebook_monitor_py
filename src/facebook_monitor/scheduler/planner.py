@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
@@ -39,8 +40,10 @@ class TargetSchedulePlanner:
         self,
         *,
         scannable_target_kinds: frozenset[TargetKind] = RESIDENT_SCANNABLE_TARGET_KINDS,
+        on_display_next_due_changed: Callable[[str, datetime | None], None] | None = None,
     ) -> None:
         self.scannable_target_kinds = scannable_target_kinds
+        self.on_display_next_due_changed = on_display_next_due_changed
         self._next_due_at_by_target: dict[str, datetime] = {}
         self._last_started_at_by_target: dict[str, datetime] = {}
         self._last_finished_at_by_target: dict[str, datetime] = {}
@@ -58,6 +61,7 @@ class TargetSchedulePlanner:
         current_time = now or datetime.now(timezone.utc)
         selected: list[DueTarget] = []
         active_target_ids: set[str] = set()
+        initialized_due_times: list[tuple[str, datetime]] = []
         with SqliteApplicationContext(db_path) as app:
             for target in app.repositories.targets.list_enabled():
                 if target.target_kind not in self.scannable_target_kinds:
@@ -100,6 +104,7 @@ class TargetSchedulePlanner:
                         now=current_time,
                     )
                     self._next_due_at_by_target[target.id] = due_at
+                    initialized_due_times.append((target.id, due_at))
                 if current_time >= due_at:
                     selected.append(
                         DueTarget(
@@ -109,6 +114,8 @@ class TargetSchedulePlanner:
                         )
                     )
 
+        for target_id, due_at in initialized_due_times:
+            self._publish_display_next_due_at(target_id, due_at)
         self.prune_inactive(active_target_ids)
         sorted_targets = tuple(sorted(selected, key=lambda item: item.due_at))
         if max_count is None:
@@ -121,9 +128,11 @@ class TargetSchedulePlanner:
 
         current_time = now or datetime.now(timezone.utc)
         self._last_started_at_by_target[due_target.target_id] = current_time
-        self._next_due_at_by_target[due_target.target_id] = current_time + timedelta(
+        next_due_at = current_time + timedelta(
             seconds=max(due_target.interval_seconds, 1)
         )
+        self._next_due_at_by_target[due_target.target_id] = next_due_at
+        self._publish_display_next_due_at(due_target.target_id, next_due_at)
 
     def mark_finished(self, target_id: str, *, now: datetime | None = None) -> None:
         """記錄 target 掃描完成時間，供 diagnostics 或後續策略使用。"""
@@ -139,6 +148,18 @@ class TargetSchedulePlanner:
             self._next_due_at_by_target.pop(target_id, None)
             self._last_started_at_by_target.pop(target_id, None)
             self._last_finished_at_by_target.pop(target_id, None)
+            self._publish_display_next_due_at(target_id, None)
+
+    def _publish_display_next_due_at(
+        self,
+        target_id: str,
+        due_at: datetime | None,
+    ) -> None:
+        """發布 UI 顯示用 due time；排程判斷仍只讀 planner 記憶體。"""
+
+        if self.on_display_next_due_changed is None:
+            return
+        self.on_display_next_due_changed(target_id, due_at)
 
     @staticmethod
     def _initial_due_at(

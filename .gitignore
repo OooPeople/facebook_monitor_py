@@ -3,6 +3,10 @@
 !/data/profiles/.gitkeep
 /data/runtime/*
 !/data/runtime/.gitkeep
+/data/exports/*
+!/data/exports/.gitkeep
+/data/logs/*
+!/data/logs/.gitkeep
 
 # Runtime logs
 /logs/*
@@ -28,8 +32,11 @@ venv/
 .coverage
 *.log
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 secrets.key
 *.local
 coverage.xml

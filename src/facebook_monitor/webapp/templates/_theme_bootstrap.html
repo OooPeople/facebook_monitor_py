@@ -1,9 +1,9 @@
 <script>
 (() => {
   const allowedThemes = new Set(["light", "dark"]);
-  let theme = {{ initial_theme | default("light") | tojson }};
+  let theme = {{ initial_theme | default("dark") | tojson }};
   if (!allowedThemes.has(theme)) {
-    theme = "light";
+    theme = "dark";
   }
   document.documentElement.dataset.theme = theme;
 })();

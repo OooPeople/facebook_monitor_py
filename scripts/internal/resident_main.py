@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     """解析 internal resident main worker CLI 參數。"""
 
     parser = argparse.ArgumentParser(description="Run the resident main worker.")
-    add_runtime_path_arguments(parser)
+    add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
     parser.add_argument("--interval-seconds", type=float, default=60)
     parser.add_argument("--scheduler-tick-seconds", type=float, default=2)
     parser.add_argument("--max-concurrent-scans", type=int, default=2)

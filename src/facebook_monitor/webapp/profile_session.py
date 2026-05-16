@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Full
 from queue import Queue
 from threading import Event
 from threading import Lock
 from threading import Thread
 from typing import Any
+from typing import Callable
 from typing import Protocol
 
 from playwright.sync_api import sync_playwright
@@ -36,6 +38,7 @@ class ProfileSessionOptions:
 
     profile_dir: Path
     start_url: str = DEFAULT_START_URL
+    on_close: Callable[[], None] | None = None
 
 
 class ProfileManagerLike(Protocol):
@@ -87,7 +90,7 @@ class ProfileSessionManager:
 
         with self._lock:
             if self._active_session is not None and self._active_session.thread.is_alive():
-                raise ProfileSessionError("Facebook 設定視窗已開啟")
+                return
             thread = Thread(
                 target=self._run_worker,
                 args=(options, ready_queue, stop_event),
@@ -130,6 +133,7 @@ class ProfileSessionManager:
         """在專用 thread 中持有同步 Playwright context。"""
 
         context: Any | None = None
+        ready_sent = False
         try:
             with acquire_profile_lease(options.profile_dir, "Facebook 設定視窗"):
                 with sync_playwright() as playwright:
@@ -142,7 +146,8 @@ class ProfileSessionManager:
                     )
                     page = get_start_page(context)
                     page.goto(options.start_url, wait_until="domcontentloaded")
-                    ready_queue.put(None)
+                    _put_ready_result(ready_queue, None)
+                    ready_sent = True
 
                     while not stop_event.wait(1):
                         open_pages = [
@@ -153,7 +158,9 @@ class ProfileSessionManager:
                         if not open_pages:
                             break
         except Exception as exc:
-            ready_queue.put(exc)
+            if not ready_sent:
+                result: object = None if _is_browser_closed_error(exc) else exc
+                _put_ready_result(ready_queue, result)
         finally:
             if context is not None:
                 try:
@@ -161,3 +168,27 @@ class ProfileSessionManager:
                 except Exception:
                     pass
             self._clear_active_session()
+            if options.on_close is not None:
+                try:
+                    options.on_close()
+                except Exception:
+                    pass
+
+
+def _put_ready_result(ready_queue: Queue[object], result: object) -> None:
+    """回報 browser thread 啟動結果；route 已離開時避免阻塞背景 thread。"""
+
+    try:
+        ready_queue.put_nowait(result)
+    except Full:
+        pass
+
+
+def _is_browser_closed_error(exc: Exception) -> bool:
+    """辨識使用者手動關閉視窗造成的 Playwright 關閉訊息。"""
+
+    message = str(exc).lower()
+    return (
+        "target page, context or browser has been closed" in message
+        or "browser has been closed" in message
+    )

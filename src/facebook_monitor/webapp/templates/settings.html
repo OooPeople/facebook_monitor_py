@@ -32,19 +32,53 @@
           <h2>Facebook automation profile</h2>
           <p>{{ profile_dir }}</p>
         </div>
-        <span class="status {% if profile_active %}enabled{% else %}muted{% endif %}">
-          {% if profile_active %}視窗開啟中{% else %}未開啟{% endif %}
-        </span>
       </div>
 
-      <div class="settings-action-row">
+      <div class="settings-card-actions settings-actions settings-actions--right">
         <form method="post" action="/settings/facebook/open">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit">開啟登入視窗</button>
         </form>
-        <form method="post" action="/settings/facebook/close">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit">關閉視窗</button>
+      </div>
+    </section>
+
+    <section class="target settings-card">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <h2>程式更新</h2>
+          <p>{{ update_check.summary }}</p>
+        </div>
+      </div>
+
+      <dl class="field-grid update-check-grid">
+        <div class="field-grid-cell">
+          <dt>目前版本</dt>
+          <dd>{{ update_check.current_version }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>最新版本</dt>
+          <dd>{{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}</dd>
+        </div>
+      </dl>
+
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        {% if update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
+          <form method="post" action="/settings/updates/download">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button" type="submit">下載更新</button>
+          </form>
+        {% elif not update_download_supported %}
+          <span class="inline-feedback form-status is-visible">Source mode 僅支援檢查更新</span>
+        {% endif %}
+        {% if update_download_supported and pending_update_available %}
+          <form method="post" action="/settings/updates/apply">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button--primary" type="submit">套用已驗證更新</button>
+          </form>
+        {% endif %}
+        <form class="settings-inline-form" method="get" action="/settings">
+          <input type="hidden" name="update_check" value="1">
+          <button class="button button--primary" type="submit">檢查更新</button>
         </form>
       </div>
     </section>
@@ -59,7 +93,7 @@
 
       <form id="target-keyword-defaults-form" class="config-form settings-keyword-form" method="post" action="/settings/target-keywords">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="settings-keyword-stack">
+        <div class="settings-form-grid settings-form-grid--two">
           <label>
             排除關鍵字
             <textarea name="exclude_keywords" rows="2">{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
@@ -71,7 +105,7 @@
         </div>
       </form>
 
-      <div class="settings-keyword-actions">
+      <div class="settings-card-actions settings-actions settings-actions--right">
         <span
           class="inline-feedback form-status"
           data-dirty-status="target-keyword-defaults-form"
@@ -85,62 +119,23 @@
       <div class="settings-card-head">
         <div class="settings-card-title">
           <h2>通知預設值</h2>
-          <p>未填寫也不影響功能；各 target 仍以自己的通知設定為準。此區塊只作為新增 target 預設值、測試通知與批次套用來源。</p>
+          <p>未填寫也不影響功能；各 target 仍以自己的通知設定為準。此區塊只作為新增 target 預設值來源。</p>
         </div>
       </div>
 
       <form id="notification-defaults-form" class="config-form settings-notification-form" method="post" action="/settings/notifications">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="settings-notification-stack">
-          <label class="checkbox">
-            <input name="enable_desktop_notification" type="checkbox" {% if notification_settings.enable_desktop_notification %}checked{% endif %}>
-            桌面通知
-          </label>
-          <label class="checkbox">
-            <input name="enable_ntfy" type="checkbox" {% if notification_settings.enable_ntfy %}checked{% endif %}>
-            ntfy
-          </label>
-          <label>
-            ntfy topic
-            <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}" autocomplete="off">
-          </label>
-          <label class="checkbox">
-            <input name="enable_discord_notification" type="checkbox" {% if notification_settings.enable_discord_notification %}checked{% endif %}>
-            Discord webhook
-          </label>
-          <label>
-            Discord webhook URL
-            <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}" autocomplete="off">
-          </label>
-        </div>
+        {% set notification_source = notification_settings %}
+        {% include "_notification_settings_fields.html" %}
       </form>
 
-      <div class="settings-notification-actions">
-        <button
-          type="submit"
-          form="notification-defaults-form"
-          formaction="/settings/notifications/test"
-          formmethod="post"
-        >發送測試通知</button>
-        <div class="settings-action-cluster">
-          <span
-            class="inline-feedback form-status"
-            data-dirty-status="notification-defaults-form"
-            aria-live="polite"
-          >尚未儲存</span>
-          <form
-            method="post"
-            action="/settings/notifications/apply-to-targets"
-            data-confirm-submit
-            data-confirm-title="套用通知預設值"
-            data-confirm-message="這會覆蓋所有 target 的通知設定。關鍵字與掃描設定不會改變。"
-            data-confirm-label="套用"
-          >
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">套用到所有 target</button>
-          </form>
-          <button class="button button--primary" type="submit" form="notification-defaults-form" data-dirty-submit>保存通知預設值</button>
-        </div>
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        <span
+          class="inline-feedback form-status"
+          data-dirty-status="notification-defaults-form"
+          aria-live="polite"
+        >尚未儲存</span>
+        <button class="button button--primary" type="submit" form="notification-defaults-form" data-dirty-submit>保存通知預設值</button>
       </div>
     </section>
 
@@ -162,7 +157,7 @@
           {% endfor %}
         </dl>
         <textarea id="runtime-diagnostics-copy-source" class="debug-copy-source" readonly rows="8">{{ runtime_diagnostics.copy_text }}</textarea>
-        <div class="settings-action-row">
+        <div class="settings-card-actions settings-actions settings-actions--left settings-card-actions--compact">
           <button type="button" data-copy-runtime-diagnostics>複製診斷資訊</button>
           <span class="inline-feedback form-status" data-runtime-diagnostics-status aria-live="polite"></span>
         </div>

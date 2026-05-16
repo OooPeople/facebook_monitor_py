@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,6 +17,7 @@ from typing import Any
 DEFAULT_VIEWPORT_WIDTH = 1366
 DEFAULT_VIEWPORT_HEIGHT = 900
 DEFAULT_TIMEOUT_SECONDS = 120.0
+BROWSER_EXECUTABLE_ENV = "FACEBOOK_MONITOR_BROWSER_EXECUTABLE"
 
 
 class BrowserMode(StrEnum):
@@ -48,8 +51,9 @@ def build_persistent_context_kwargs(options: BrowserRuntimeOptions) -> dict[str,
     """建立 `launch_persistent_context` 共用 kwargs。"""
 
     _validate_supported_mode(options)
+    executable_path = _resolve_executable_path(options)
     timeout_seconds = max(float(options.timeout_seconds), 0.0)
-    return {
+    kwargs: dict[str, Any] = {
         "user_data_dir": str(options.profile_dir),
         "headless": options.headless,
         "viewport": {
@@ -58,6 +62,9 @@ def build_persistent_context_kwargs(options: BrowserRuntimeOptions) -> dict[str,
         },
         "timeout": timeout_seconds * 1000,
     }
+    if executable_path is not None:
+        kwargs["executable_path"] = str(executable_path)
+    return kwargs
 
 
 async def launch_persistent_context_async(
@@ -90,10 +97,48 @@ def _select_browser_type(playwright: Any, options: BrowserRuntimeOptions) -> Any
 
 
 def _validate_supported_mode(options: BrowserRuntimeOptions) -> None:
-    """目前正式支援 Playwright bundled Chromium；其他 backend 先保留介面。"""
+    """目前正式支援 Playwright Chromium，可選擇 Playwright 預設或指定 executable。"""
 
-    if options.mode == BrowserMode.PLAYWRIGHT_CHROMIUM and options.executable_path is None:
+    if options.mode == BrowserMode.PLAYWRIGHT_CHROMIUM:
         return
     raise BrowserRuntimeError(
-        "Only browser_mode=playwright_chromium without executable_path is supported for now."
+        "Only browser_mode=playwright_chromium is supported for now."
     )
+
+
+def _resolve_executable_path(options: BrowserRuntimeOptions) -> Path | None:
+    """解析可選 Chromium executable path，供 EXE 使用外部或隨附 browser。"""
+
+    configured_path = options.executable_path
+    if configured_path is None:
+        env_value = os.environ.get(BROWSER_EXECUTABLE_ENV, "").strip()
+        if env_value:
+            configured_path = Path(env_value)
+        else:
+            configured_path = _bundled_browser_executable_path()
+            if configured_path is None:
+                return None
+    resolved_path = configured_path.expanduser().resolve()
+    if not resolved_path.is_file():
+        raise BrowserRuntimeError(
+            f"Browser executable does not exist: {resolved_path}"
+        )
+    return resolved_path
+
+
+def _bundled_browser_executable_path() -> Path | None:
+    """在 frozen portable folder 中尋找隨附 Chromium executable。"""
+
+    if not getattr(sys, "frozen", False):
+        return None
+    app_base_dir = Path(sys.executable).resolve().parent
+    candidates = (
+        app_base_dir / "browser" / "chrome.exe",
+        app_base_dir / "_internal" / "browser" / "chrome.exe",
+        app_base_dir / "browser" / "chrome-win64" / "chrome.exe",
+        app_base_dir / "_internal" / "browser" / "chrome-win64" / "chrome.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None

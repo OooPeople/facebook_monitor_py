@@ -31,6 +31,7 @@ from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -47,12 +48,14 @@ class TargetApplicationService:
         configs: TargetConfigRepository,
         runtime_states: TargetRuntimeStateRepository,
         seen_items: SeenItemRepository,
+        scan_scope_state: ScanScopeStateRepository,
         notification_outbox: NotificationOutboxRepository,
     ) -> None:
         self.targets = targets
         self.configs = configs
         self.runtime_states = runtime_states
         self.seen_items = seen_items
+        self.scan_scope_state = scan_scope_state
         self.notification_outbox = notification_outbox
         self.config_service = TargetConfigService(targets=targets, configs=configs)
         self.runtime_service = TargetRuntimeService(
@@ -68,6 +71,7 @@ class TargetApplicationService:
             targets=targets,
             runtime_states=runtime_states,
             seen_items=seen_items,
+            scan_scope_state=scan_scope_state,
             notification_outbox=notification_outbox,
             registry=self.registry_service,
             configs=self.config_service,
@@ -88,6 +92,23 @@ class TargetApplicationService:
         """以 scheduler metadata refresh 結果補齊 target 顯示名稱。"""
 
         return self.registry_service.refresh_target_group_name(target_id, group_name)
+
+    def refresh_target_group_metadata(
+        self,
+        target_id: str,
+        *,
+        group_name: str,
+        group_cover_image_url: str = "",
+        overwrite_name: bool = False,
+    ) -> TargetDescriptor:
+        """以 scheduler metadata refresh 結果補齊 target 顯示名稱與封面圖。"""
+
+        return self.registry_service.refresh_target_group_metadata(
+            target_id,
+            group_name=group_name,
+            group_cover_image_url=group_cover_image_url,
+            overwrite_name=overwrite_name,
+        )
 
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
         """標記 target 正等待 resident worker 補齊 metadata。"""
@@ -202,10 +223,34 @@ class TargetApplicationService:
             reloaded_at=reloaded_at,
         )
 
+    def record_target_heartbeat(
+        self,
+        target_id: str,
+        *,
+        worker_id: str = "",
+        page_id: str = "",
+    ) -> TargetRuntimeState:
+        """刷新 running target heartbeat，供長掃描與 stale recovery 區分。"""
+
+        return self.runtime_service.record_target_heartbeat(
+            target_id,
+            worker_id=worker_id,
+            page_id=page_id,
+        )
+
     def record_scan_guard_skip(self, target_id: str, reason: str) -> TargetRuntimeState:
         """記錄 target 被 queue/executor guard 擋下的原因。"""
 
         return self.runtime_service.record_scan_guard_skip(target_id, reason)
+
+    def set_target_display_next_due_at(
+        self,
+        target_id: str,
+        due_at: datetime | None,
+    ) -> TargetRuntimeState | None:
+        """更新 UI 顯示用 next due；不作為 scheduler 排程來源。"""
+
+        return self.runtime_service.set_target_display_next_due_at(target_id, due_at)
 
     def mark_target_idle(self, target_id: str) -> TargetRuntimeState:
         """標記單一 target 已完成本輪掃描並回到 idle。"""

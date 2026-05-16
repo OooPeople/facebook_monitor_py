@@ -157,29 +157,6 @@ class SidebarLayoutRepository:
         ).fetchall()
         return tuple(str(row["target_id"]) for row in rows)
 
-    def ensure_default_placements(self, target_ids: list[str]) -> None:
-        """為尚未有 placement 的 target 建立未分組尾端位置。"""
-
-        normalized_ids = [target_id for target_id in dict.fromkeys(target_ids) if target_id]
-        if not normalized_ids:
-            return
-        existing = set(self.list_placements())
-        missing = [target_id for target_id in normalized_ids if target_id not in existing]
-        if not missing:
-            return
-        row = self.connection.execute(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM sidebar_target_placements"
-        ).fetchone()
-        next_order = int(row["next_order"]) if row else 0
-        for offset, target_id in enumerate(missing):
-            self.save_placement(
-                SidebarTargetPlacement(
-                    target_id=target_id,
-                    sidebar_group_id=None,
-                    sort_order=next_order + offset,
-                )
-            )
-
     def save_placement(self, placement: SidebarTargetPlacement) -> SidebarTargetPlacement:
         """新增或更新單一 target placement。"""
 

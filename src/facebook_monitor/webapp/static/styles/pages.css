@@ -46,11 +46,6 @@
   line-height: 1.45;
 }
 
-.new-target-stack {
-  display: grid;
-  gap: 14px;
-}
-
 .new-target-two-column {
   display: grid;
   gap: 14px 18px;
@@ -68,22 +63,7 @@
   grid-column: 1 / -1;
 }
 
-.new-target-notification-stack {
-  display: grid;
-  gap: 14px;
-}
-
-.new-target-notification-toggles {
-  display: grid;
-  gap: 12px 18px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .new-target-actions {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
   padding: 16px 20px;
 }
 
@@ -120,62 +100,49 @@
   overflow-wrap: anywhere;
 }
 
-.settings-card-head .status {
-  align-self: flex-start;
-  display: inline-flex;
-  justify-self: start;
-  width: max-content;
-}
-
-.settings-action-row,
-.settings-notification-actions,
-.settings-action-cluster {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .settings-keyword-form,
 .settings-notification-form {
   gap: 14px;
 }
 
-.settings-keyword-stack,
-.settings-notification-stack {
-  display: grid;
-  gap: 14px;
-}
-
-.settings-keyword-stack {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.settings-keyword-actions,
-.settings-notification-actions {
+.settings-card-actions {
   border-top: 1px solid var(--border-soft);
   margin-top: 18px;
   padding-top: 16px;
 }
 
-.settings-keyword-actions {
+.settings-card-actions--compact {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.settings-card-actions .inline-feedback:not(.is-visible) {
+  display: none;
+}
+
+.update-check-grid .field-grid-cell dd {
+  overflow-wrap: anywhere;
+}
+
+.settings-inline-form {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
 }
 
-.settings-notification-actions {
-  justify-content: space-between;
+.compact-select-label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
 }
 
-.settings-action-cluster {
-  justify-content: flex-end;
-}
-
-.settings-keyword-actions .inline-feedback:not(.is-visible),
-.settings-action-cluster .inline-feedback:not(.is-visible) {
-  display: none;
+.compact-select-label select {
+  min-height: 36px;
 }
 
 .runtime-diagnostics-card {
@@ -258,9 +225,8 @@
 
 @media (max-width: 720px) {
   .new-target-two-column,
-  .new-target-notification-toggles,
   .new-target-scan-row,
-  .settings-keyword-stack {
+  .settings-form-grid--two {
     grid-template-columns: 1fr;
   }
 
@@ -276,11 +242,12 @@
 
   .settings-card-head,
   .runtime-diagnostics-summary,
-  .settings-action-row,
-  .settings-keyword-actions,
-  .settings-notification-actions,
-  .settings-action-cluster {
+  .settings-actions {
     align-items: stretch;
     display: grid;
+  }
+
+  .settings-inline-form {
+    justify-content: stretch;
   }
 }

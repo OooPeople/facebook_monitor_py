@@ -2,22 +2,36 @@
 <article class="target target-card" id="{{ row.anchor_id }}" tabindex="-1" data-target-card data-target-id="{{ row.target.id }}">
   <div class="target-header">
     <div class="target-title-block">
-      <div class="target-avatar thumb" aria-hidden="true" data-target-avatar>{{ row.display_name[:1] or "?" }}</div>
+      <div class="target-avatar thumb{% if row.thumbnail_url %} has-image{% endif %}" aria-hidden="true" data-target-avatar>
+        {% if row.thumbnail_url %}
+          <img src="{{ row.thumbnail_url }}" alt="" referrerpolicy="origin-when-cross-origin" loading="lazy">
+        {% else %}
+          {{ row.display_name[:1] or "?" }}
+        {% endif %}
+      </div>
       <div>
         <div class="target-title-line">
           <h2 data-target-title>{{ row.display_name }}</h2>
-          <span class="status {{ row.status_class }}" data-card-status>{{ row.status_label }}</span>
         </div>
-        <p class="target-subtitle" data-header-summary>{{ row.header_summary_label }}</p>
+        <p class="target-subtitle" data-header-summary>
+          <span class="status {{ row.status_class }}" data-card-status>{{ row.status_label }}</span>
+          <span class="target-mode-chip {{ row.mode_class }}" data-target-mode>{{ row.mode_label }}</span>
+          <span class="target-subtitle-separator" aria-hidden="true">·</span>
+          <span data-latest-scan-header>最近掃描 {{ row.latest_scan_header_time_label }}</span>
+          <span class="target-subtitle-separator" aria-hidden="true">·</span>
+          <span data-next-refresh data-next-refresh-seconds="{{ row.next_refresh_seconds if row.next_refresh_seconds is not none else '' }}">下次刷新：{{ row.next_refresh_label }}</span>
+          <span class="target-subtitle-separator" aria-hidden="true" data-latest-error-separator {% if not row.latest_failed_scan_run %}hidden{% endif %}>·</span>
+          <span data-latest-error-indicator {% if not row.latest_failed_scan_run %}hidden{% endif %}>最近有錯誤</span>
+        </p>
       </div>
     </div>
     <div class="target-actions">
       <span class="inline-feedback action-status" data-action-status aria-live="polite">已更新</span>
       {% if row.scanning_supported %}
-        <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}">
+        <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}" data-monitoring-form>
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="return_to" value="">
-          <button class="button button--toolbar" type="submit">{{ row.monitoring_button_label }}</button>
+          <button class="button button--toolbar" type="submit" data-monitoring-button>{{ row.monitoring_button_label }}</button>
         </form>
       {% else %}
         <span class="muted-text">尚未接上掃描流程</span>
@@ -53,12 +67,8 @@
       </details>
     </div>
   </div>
-  {% if row.runtime_error %}
-    <div class="runtime-error">{{ row.runtime_error }}</div>
-  {% endif %}
-  {% if row.runtime_skip_reason %}
-    <div class="runtime-note">{{ row.runtime_skip_reason }}</div>
-  {% endif %}
+  <div class="runtime-error" data-runtime-error {% if not row.runtime_error %}hidden{% endif %}>{{ row.runtime_error }}</div>
+  <div class="runtime-note" data-runtime-skip-reason {% if not row.runtime_skip_reason %}hidden{% endif %}>{{ row.runtime_skip_reason }}</div>
 
   <dl class="target-collapsed-summary field-grid field-grid--summary" data-collapsed-summary hidden>
     {% set summary_sections = row.card_summary.sections %}
@@ -154,9 +164,12 @@
       </aside>
 
       <aside class="match-panel panel" data-preview-tabs data-target-id="{{ row.target.id }}">
-        <div class="preview-tab-list" role="tablist" aria-label="Target 結果預覽">
-          <button class="preview-tab active" type="button" role="tab" aria-selected="true" data-preview-tab="latest">最近掃描</button>
-          <button class="preview-tab" type="button" role="tab" aria-selected="false" data-preview-tab="hits">命中紀錄 <span data-hit-count="{{ row.target.id }}">{{ row.hit_record_total_count }}</span></button>
+        <div class="match-panel-header">
+          <div class="preview-tab-list" role="tablist" aria-label="Target 結果預覽">
+            <button class="preview-tab active" type="button" role="tab" aria-selected="true" data-preview-tab="latest">最近掃描</button>
+            <button class="preview-tab" type="button" role="tab" aria-selected="false" data-preview-tab="hits">命中紀錄 <span data-hit-count="{{ row.target.id }}">{{ row.hit_record_total_count }}</span></button>
+          </div>
+          <span class="scan-cycle-result" data-scan-cycle-result title="{{ row.scan_cycle_result_label }}">{{ row.scan_cycle_result_label }}</span>
         </div>
         <div class="preview-tab-panel" data-preview-panel="latest">
           {{ preview_rows(row.latest_scan_preview_rows, "尚無掃描紀錄") }}

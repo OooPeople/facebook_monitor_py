@@ -14,7 +14,7 @@ from facebook_monitor.persistence.row_mappers import match_history_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
-MATCH_HISTORY_GLOBAL_LIMIT = 10
+MATCH_HISTORY_TARGET_LIMIT = 10
 
 
 class MatchHistoryRepository:
@@ -24,7 +24,7 @@ class MatchHistoryRepository:
         self.connection = connection
 
     def add(self, entry: MatchHistoryEntry) -> int:
-        """新增或刷新 match history，對齊 JS 版最近 10 筆通知歷史語義。"""
+        """新增或刷新 target-scoped match history，保留該 target 最近 N 筆。"""
 
         notified_at = entry.notified_at or utc_now()
         created_at = entry.created_at or notified_at
@@ -78,24 +78,25 @@ class MatchHistoryRepository:
         )
         history_id = require_lastrowid(cursor.lastrowid, table_name="match_history")
         self._save_match_rules(history_id, _include_rules_for_entry(entry))
-        self.prune_global_limit()
+        self.prune_target_limit(entry.target_id)
         return history_id
 
-    def prune_global_limit(self, limit: int = MATCH_HISTORY_GLOBAL_LIMIT) -> int:
-        """裁切全域 match history，只保留最近 N 筆，對齊 userscript。"""
+    def prune_target_limit(self, target_id: str, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
+        """裁切單一 target 的 match history，只保留最近 N 筆。"""
 
         bounded_limit = max(int(limit), 1)
         keep_rows = self.connection.execute(
             """
             SELECT id
             FROM match_history
+            WHERE target_id = ?
             ORDER BY
                 CASE WHEN notified_at = '' THEN 1 ELSE 0 END,
                 notified_at DESC,
                 id DESC
             LIMIT ?
             """,
-            (bounded_limit,),
+            (target_id, bounded_limit),
         ).fetchall()
         keep_ids = [int(row["id"]) for row in keep_rows]
         if keep_ids:
@@ -103,18 +104,32 @@ class MatchHistoryRepository:
             self.connection.execute(
                 f"""
                 DELETE FROM match_history_matches
-                WHERE history_id NOT IN ({placeholders})
+                WHERE history_id IN (
+                    SELECT id FROM match_history
+                    WHERE target_id = ?
+                      AND id NOT IN ({placeholders})
+                )
                 """,
-                tuple(keep_ids),
+                (target_id, *keep_ids),
             )
         else:
-            self.connection.execute("DELETE FROM match_history_matches")
+            self.connection.execute(
+                """
+                DELETE FROM match_history_matches
+                WHERE history_id IN (
+                    SELECT id FROM match_history WHERE target_id = ?
+                )
+                """,
+                (target_id,),
+            )
         cursor = self.connection.execute(
             """
             DELETE FROM match_history
-            WHERE id NOT IN (
+            WHERE target_id = ?
+              AND id NOT IN (
                 SELECT id
                 FROM match_history
+                WHERE target_id = ?
                 ORDER BY
                     CASE WHEN notified_at = '' THEN 1 ELSE 0 END,
                     notified_at DESC,
@@ -122,9 +137,20 @@ class MatchHistoryRepository:
                 LIMIT ?
             )
             """,
-            (bounded_limit,),
+            (target_id, target_id, bounded_limit),
         )
         return int(cursor.rowcount)
+
+    def prune_global_limit(self, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
+        """相容舊呼叫：對所有 target 執行 target-scoped retention。"""
+
+        target_rows = self.connection.execute(
+            "SELECT DISTINCT target_id FROM match_history"
+        ).fetchall()
+        return sum(
+            self.prune_target_limit(str(row["target_id"]), limit=limit)
+            for row in target_rows
+        )
 
     def list_by_target(
         self,

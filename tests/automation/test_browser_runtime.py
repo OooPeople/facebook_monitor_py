@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from facebook_monitor.automation.browser_runtime import BrowserMode
+from facebook_monitor.automation.browser_runtime import BROWSER_EXECUTABLE_ENV
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeError
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import build_persistent_context_kwargs
@@ -60,6 +61,72 @@ def test_launch_persistent_context_sync_uses_chromium(tmp_path: Path) -> None:
     assert playwright.chromium.kwargs is not None
     assert playwright.chromium.kwargs["headless"] is False
     assert playwright.chromium.kwargs["user_data_dir"] == str(tmp_path / "profile")
+
+
+def test_build_persistent_context_kwargs_accepts_executable_path(tmp_path: Path) -> None:
+    """EXE 可指定外部或隨附 Chromium executable。"""
+
+    browser_exe = tmp_path / "chrome.exe"
+    browser_exe.write_text("", encoding="utf-8")
+    options = BrowserRuntimeOptions(
+        profile_dir=tmp_path / "profile",
+        executable_path=browser_exe,
+    )
+
+    kwargs = build_persistent_context_kwargs(options)
+
+    assert kwargs["executable_path"] == str(browser_exe.resolve())
+
+
+def test_build_persistent_context_kwargs_reads_browser_executable_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未直接傳入 executable_path 時可由環境變數提供。"""
+
+    browser_exe = tmp_path / "chrome.exe"
+    browser_exe.write_text("", encoding="utf-8")
+    monkeypatch.setenv(BROWSER_EXECUTABLE_ENV, str(browser_exe))
+    options = BrowserRuntimeOptions(profile_dir=tmp_path / "profile")
+
+    kwargs = build_persistent_context_kwargs(options)
+
+    assert kwargs["executable_path"] == str(browser_exe.resolve())
+
+
+def test_frozen_runtime_uses_bundled_browser_when_env_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """frozen portable folder 可自動使用 EXE 旁的 bundled Chromium。"""
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    exe = app_dir / "facebook-monitor.exe"
+    exe.write_text("", encoding="utf-8")
+    browser_exe = app_dir / "browser" / "chrome.exe"
+    browser_exe.parent.mkdir()
+    browser_exe.write_text("", encoding="utf-8")
+    monkeypatch.delenv(BROWSER_EXECUTABLE_ENV, raising=False)
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(exe))
+    options = BrowserRuntimeOptions(profile_dir=tmp_path / "profile")
+
+    kwargs = build_persistent_context_kwargs(options)
+
+    assert kwargs["executable_path"] == str(browser_exe.resolve())
+
+
+def test_missing_browser_executable_path_fails_explicitly(tmp_path: Path) -> None:
+    """browser executable path 指到不存在檔案時先給明確錯誤。"""
+
+    options = BrowserRuntimeOptions(
+        profile_dir=tmp_path / "profile",
+        executable_path=tmp_path / "missing.exe",
+    )
+
+    with pytest.raises(BrowserRuntimeError, match="Browser executable does not exist"):
+        build_persistent_context_kwargs(options)
 
 
 def test_unsupported_browser_mode_fails_explicitly(tmp_path: Path) -> None:

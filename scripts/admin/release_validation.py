@@ -1,0 +1,202 @@
+"""Admin tool：執行 release 前可重現的本機驗證流程。"""
+
+# ruff: noqa: E402
+
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from facebook_monitor.webapp.assets import ASSET_VERSION
+
+
+@dataclass(frozen=True)
+class ValidationStep:
+    """保存單一 release validation command。"""
+
+    label: str
+    command: list[str]
+
+
+def parse_args() -> argparse.Namespace:
+    """解析 release validation CLI 參數。"""
+
+    parser = argparse.ArgumentParser(
+        description="Run reproducible release validation commands."
+    )
+    parser.add_argument(
+        "--skip-sync",
+        action="store_true",
+        help="Skip uv sync --locked when the environment is already prepared.",
+    )
+    parser.add_argument(
+        "--include-audit",
+        action="store_true",
+        help="Also run pip-audit; this may require network access or advisory DB access.",
+    )
+    return parser.parse_args()
+
+
+def uv_command(*args: str) -> list[str]:
+    """回傳 uv command；cache 由 run_step 固定在專案目錄。"""
+
+    return ["uv", *args]
+
+
+def git_commit() -> str:
+    """讀取目前 commit hash；非 git checkout 時回傳 unknown。"""
+
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def is_git_checkout() -> bool:
+    """回傳 ROOT 是否位於 Git checkout 內。"""
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=validation_env(),
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def print_environment() -> None:
+    """列印 release validation 可追溯環境資訊。"""
+
+    print("Release validation environment")
+    print("==============================")
+    print(f"Root: {ROOT}")
+    print(f"OS: {platform.platform()}")
+    print(f"Python: {platform.python_version()} ({sys.executable})")
+    print(f"Commit: {git_commit()}")
+    print(f"Asset version: {ASSET_VERSION}")
+    try:
+        uv_version = subprocess.check_output(
+            uv_command("--version"),
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.STDOUT,
+            env=validation_env(),
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        uv_version = f"unavailable ({exc})"
+    print(f"uv: {uv_version}")
+    print("Manual smoke still required: Facebook login, metadata resolver, posts/comments scan, notifications.")
+    print()
+    sys.stdout.flush()
+
+
+def validation_steps(
+    *,
+    skip_sync: bool,
+    git_checkout: bool,
+    include_audit: bool = False,
+) -> list[ValidationStep]:
+    """建立 release validation command 清單。"""
+
+    steps = [
+        ValidationStep("pytest", uv_command("run", "pytest", "-q")),
+        ValidationStep("mypy", uv_command("run", "mypy", "src", "scripts", "tests")),
+        ValidationStep(
+            "ruff",
+            uv_command("run", "ruff", "check", "src", "scripts", "tests"),
+        ),
+        ValidationStep(
+            "compileall",
+            uv_command(
+                "run",
+                "python",
+                "-m",
+                "compileall",
+                "-q",
+                "src",
+                "scripts",
+                "tests",
+            ),
+        ),
+    ]
+    if include_audit:
+        steps.append(ValidationStep("pip-audit", uv_command("run", "pip-audit")))
+    if git_checkout:
+        steps.append(ValidationStep("git diff --check", ["git", "diff", "--check"]))
+    if skip_sync:
+        return steps
+    return [
+        ValidationStep("uv sync", uv_command("sync", "--locked", "--all-extras", "--dev")),
+        *steps,
+    ]
+
+
+def run_step(step: ValidationStep) -> int:
+    """執行單一 validation step 並回傳 process return code。"""
+
+    print(f"\n==> {step.label}")
+    print(" ".join(step.command))
+    sys.stdout.flush()
+    completed = subprocess.run(step.command, cwd=ROOT, check=False, env=validation_env())
+    if completed.returncode != 0:
+        print()
+        print(f"FAILED: {step.label} exited with {completed.returncode}")
+        if step.label != "uv sync":
+            print("若錯誤是缺少依賴，請先執行本腳本的預設流程或手動執行 uv sync --locked。")
+        return completed.returncode
+    return 0
+
+
+def validation_env() -> dict[str, str]:
+    """建立 validation subprocess environment，固定 uv cache 位置。"""
+
+    env = os.environ.copy()
+    env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
+    return env
+
+
+def main() -> int:
+    """CLI entrypoint：依序執行 release validation。"""
+
+    args = parse_args()
+    print_environment()
+    git_checkout = is_git_checkout()
+    if not git_checkout:
+        print("非 Git checkout，已跳過 git diff --check。")
+    if args.include_audit:
+        print("已啟用 pip-audit；此步驟可能需要網路或 advisory DB。")
+    for step in validation_steps(
+        skip_sync=args.skip_sync,
+        git_checkout=git_checkout,
+        include_audit=args.include_audit,
+    ):
+        return_code = run_step(step)
+        if return_code != 0:
+            return return_code
+    print("\nRelease validation passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,84 +1,57 @@
 # 任務狀態
 
-本文件只記活狀態、下一步、風險與最近驗證。穩定架構事實看 `docs/ARCHITECTURE.md`；操作方式看 `docs/USAGE.md`；接手摘要看 `docs/HANDOFF.md`；歷史推導看 `docs/archive/` 或 git history。
+本文件只記活狀態、下一步、風險與最近驗證。穩定架構事實看 `docs/ARCHITECTURE.md`；操作方式看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`；接手摘要看 `docs/HANDOFF.md`；歷史推導看 `docs/archive/` 或 git history。
 
 ## 目前狀態
 
 - Web UI 是正式日常入口；背景 scheduler / resident main 隨 Web UI 啟動。
-- target 卡片「開始 / 停止」是日常主操作；posts / comments target 均可透過 Facebook URL 建立。
-- target-scoped config、seen、latest scan、runtime、history 與 notification outbox boundary 已落地。
-- posts/comments scan 走正式 resident main queue；Web UI scan-once 只排入 resident request。
-- dashboard read model、target card、設定 modal、命中紀錄 modal、collapsed summary、revision event stream 與 batch partial update 已完成。
-- sidebar group、排序與 group template 已接上；layout 保存走 application service 單一 transaction，read model 不寫入 placement。
-- group template 只在使用者明確套用時批次複製到 `target_configs[target_id]`，不作為 target config fallback owner。
-- Web UI 確認/輸入彈窗與內容型 modal 已收斂為共用 helper；不使用瀏覽器原生 `confirm/prompt/alert`。
-- posts/comments extractor 保留各自 DOM、permalink、sort、load-more 與 target scope 邏輯。
-- comments extractor 已加入非破壞性 DOM settle 觀察；settle 失敗只寫入診斷，不阻斷原本留言抽取。
-- posts feed 已加入保守 seen-stop：僅在排序確認為「新貼文」時，從最上方開始連續 4 篇 seen 即停止深度掃描。
-- seen-stop 提早停止時，最近掃描 snapshot 會沿用上一輪項目補足可檢視清單，但 scan 診斷仍保留本輪實際掃描數。
-- keyword matcher 使用 compiled Aho-Corasick 多模式比對；同一內容命中多組 include keywords 時會全部保存並高亮。
-- Web UI mutating route 有 CSRF token，target kind/scope 由 DB unique index 保護，notification 失敗診斷不回填 endpoint。
-- target metadata refresh 已有 pending / resolved / failed 狀態；新增 target 時可先顯示抓取中，成功後回填名稱，失敗後提示手動改名。
-
-## 近期重點
-
-- Scheduler 執行中新增 target 不搶 profile；DB 會記錄 pending metadata job，由 resident metadata refresh 消化。
-- Secret storage 已接上 `cryptography` Fernet；SQLite 內加密保存 notification secrets，UI 與 application model 維持明文。
-- Quality tooling 已接上 `mypy`、`hypothesis`、`pytest-cov`、`ruff`、`pip-audit` 與 GitHub Actions CI。
-- 最近通知摘要可依通道顯示各自最新狀態，沿用既有 outbox / notification_events，不新增直接 dispatch path。
-- dashboard row 與 sidebar 順序依 sidebar placement 顯示；`TargetRepository.list_all()` 維持 created_at 語義，scheduler 掃描順序不受 UI layout 影響。
-- Web UI 控制圖示已收斂為 inline SVG；按鈕外觀以共用 button modifier 為基礎，局部 class 只保留尺寸、位置或狀態差異。
-- sidebar 排序模式使用 vendored SortableJS；拖曳把手只在排序模式顯示，確認後才保存。
-- Web UI 預設啟動重置 runtime data 時會清除可重建 scan/debug 資料與 `seen_items`，但保留 `notification_outbox`。
-- target 卡片「開始」會清該 target 的 `seen_items` scope 與 `notification_outbox` 去重 rows，確保停止後再開始可重新通知同一命中。
-- 文件職責已收斂：README 作為專案首頁，`USAGE` 承接操作，`ARCHITECTURE` 保留穩定語義，`TASK_BREAKDOWN` 只保留活狀態。
-
-## 使用者已確認
-
-- queue / running 顯示正常，未觀察到 stale queued / running。
-- posts auto load more diagnostics 可判讀，且能穩定取得 10 篇貼文。
-- 通知預設值與通知功能正常。
-- `auto_adjust_sort` 功能正常。
-- comments target 可用真實 Facebook 單篇貼文 URL 建立並掃描留言。
-- Dashboard 更新策略維持短生命週期 revision event stream + batch partial update；不升級成真正長連線 SSE。
-- sidebar group 與排序功能目前實測正常；SortableJS 的交換門檻受套件 hit-testing 行為限制，暫時維持現狀。
+- posts / comments target、target-scoped config/state、match history、notification outbox、dashboard partial update 與 sidebar group/order/template 主路徑已落地。
+- target 卡片「開始」會清該 target 的 `seen_items` scope 與 `notification_outbox` 去重 rows；停止後再開始會重新通知同一命中。`match_history` 持久保留。
+- 新增 target 與空白 group template 預設使用浮動刷新；設定頁刷新模式 radio 顯示順序為浮動刷新在左、固定刷新在右。
+- Target metadata refresh 已接上 resident worker，可重新抓取名稱與封面；成功後會覆蓋 target 標題，comments target 標題只使用社團名稱。
+- Sidebar group template 只在使用者明確套用時覆蓋群組內 target configs，不作為 config fallback owner；套用前有批次影響確認，套用後保留 scroll。
+- Sidebar layout 缺失 placement 採 read-model lazy fallback 顯示在未分組區；排序保存才寫入 placement。
+- Source/dev smoke test 已完成。Windows PyInstaller onedir portable 正在準備正式 `0.1.0`，包含 bundled Chromium、GUI subsystem、system tray、Windows version metadata、正式 icon、portable zip 與 `.sha256`；真實 profile / 引導登入 / posts-comments scan / desktop / ntfy / Discord smoke 已完成。Code signing 本輪不做；frozen CI 尚未封口。
+- Windows EXE updater 程式碼路徑已落地：設定頁可手動查 GitHub stable Release metadata，使用者 UI 不提供 Preview / Stable 選擇；Windows frozen / PyInstaller build 且 bundled updater 存在時，若新版含 `.sha256` asset，可下載 Windows portable zip 到 `<data-dir>/updates/<version>/`、驗證 SHA256，並寫出 `<data-dir>/runtime/pending_update.json`。`facebook-monitor-updater` / `facebook-monitor-updater.exe` 可在主程式關閉後重驗、staging、備份、替換並保留 `data/`；Web UI 可啟動 temp updater，launcher/tray path 會提供 shutdown hook，套用成功後會用原 data/db/profile/logs 路徑重啟新版 app。已補 pending path 邊界、下載/解壓容量上限、app root 驗證、`--restart` 錯誤處理、temp updater onedir runtime 複製與 PyInstaller multi-entry spec。非互動 frozen updater smoke 已通過；尚未做 Web UI + tray 手動更新 UX smoke。
 
 ## 下一步
 
-1. 回歸 GitHub Actions：`pytest -q`、`mypy`、`ruff`、`pip-audit`。
-2. 以瀏覽器實測 sidebar 排序模式、group CRUD、group template 儲存與分區套用。
-3. 持續回歸 posts/comments extractor、通知內容與 dashboard partial update。
-4. 遇到 JS 已有成熟語義的功能，先依 `docs/REFERENCE_MAP.md` 對照 `reference/src/facebook_group_refresh.user.js`。
-5. 若 posts/comments extractor 繼續擴大，再拆 DOM script 片段內部 helper；不要把 posts 與 comments DOM 邏輯硬合併。
+1. 若準備 release tag，保存 `scripts/admin/release_validation.py --skip-sync` 與 frozen smoke 輸出摘要。
+2. 發佈 Windows 版時使用整包 `dist/facebook-monitor-0.1.0-windows-portable.zip` 與 `dist/facebook-monitor-0.1.0-windows-portable.zip.sha256`；不要只發佈單一 EXE。
+3. Updater 下一步由使用者跑 Web UI + tray 手動更新 UX smoke：按下載/套用、觀察 tray 退出、確認重啟新版 app、檢查 `updater.log` 與資料保留；通過後再決定是否補 signed manifest / detached signature。
+4. 若後續補 frozen CI，至少覆蓋 onedir 啟動、`/health`、bundled Chromium lookup、instance lock、zip artifact 與 SHA256 檢查。
+5. 遇到 JS 已有成熟語義的功能，先依 `docs/REFERENCE_MAP.md` 對照 `reference/src/facebook_group_refresh.user.js`。
 
 ## 目前不做
 
+- 不在本輪做 Windows code signing。
 - 不做多 profile orchestration。
-- 不做 EXE 打包。
 - 不搬 userscript 的頁內 panel UI。
-- 不實作 top-item early-skip。
-- 不把置頂/管理員貼文情境下可能漏掃的 top-item shortcut 移植到 Python 版。
-- 內建操作說明小視窗暫緩；目前只保留排除字忽略片語旁的 `?` 說明。
-- 不宣稱 mutation relevance 已接上即時觸發；目前 Python resident main worker 仍是 polling。
-- 不新增新的 `phase_*` script。
 - 不把 one-shot / sync resident fallback 包裝成正式產品 parity。
 - 不把 notification outbox 改成獨立常駐 dispatcher。
+- 不宣稱 mutation relevance 已接上即時觸發；目前 Python resident main worker 仍是 polling。
+- 不新增新的 `phase_*` script。
+- 不在 updater 目前版本做背景靜默更新、主程式 hot swap、差分更新、Velopack 導入或 signed manifest。
 
 ## 主要風險
 
-- Facebook 可能要求重新登入、checkpoint 或其他驗證。
+- Facebook 可能要求重新登入、checkpoint 或改版造成 selector / extractor 不穩。
 - headless / headed DOM 可能不一致。
-- selector / extractor 可能因 Facebook DOM 變動而不穩。
-- resident worker、設定視窗、debug tool 不能同時持有同一 automation profile。
+- resident worker、登入視窗與 debug tool 不能同時持有同一 automation profile。
+- Windows 未簽章 EXE 可能觸發 SmartScreen / Defender 提示；release note 需明講。
+- 更新流程若處理 app base dir 不嚴謹，可能誤刪 portable 模式下的 `data/`；目前已補 pending path、app root、staging、容量限制與「不覆蓋 data dir」測試，且非互動 frozen updater smoke 已驗證 app files 可替換、`data/` 可保留。
+- SHA256 只能證明下載內容完整，不能證明發布者身分；尚未加入 signed manifest / detached signature / Authenticode signer 驗證。
 - notification topic / webhook 在 UI 明文顯示；SQLite 內已加密保存，但 DB 與 `secrets.key` 同時外流時仍可解密。
 - notification outbox 仍是 commit-after immediate dispatch，尚未拆成獨立常駐 background dispatcher。
-- sidebar group template 是破壞性批次覆蓋操作；目前以前端確認視窗與 application transaction 防止誤套用與半套用。
+- target stop 會取消正在執行的 resident scan；若外部 Playwright/OS 層阻塞無法及時響應 cancellation，仍需依 runtime diagnostics 與下輪 stale recovery 判讀。
+- sidebar group template 是破壞性批次覆蓋操作；目前以前端批次影響確認視窗與 application transaction 防止誤套用與半套用。
 
 ## 驗證
 
 常用完整驗證指令：
 
 ```powershell
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py
 .\scripts\uv.ps1 run pytest -q
 .\scripts\uv.ps1 run mypy
 .\scripts\uv.ps1 run python -m compileall -q src scripts tests
@@ -87,9 +60,36 @@
 git diff --check
 ```
 
-最近驗證（2026-05-14）：
+最近驗證（2026-05-17）：
 
-- `.\scripts\uv.ps1 run pytest tests/application/test_sidebar_layout.py tests/webapp/test_static_dashboard_modules.py tests/webapp/test_app.py -q`，`97 passed`
-- `.\scripts\uv.ps1 run pytest tests/persistence/test_sqlite.py -q`，`22 passed`
-- `.\scripts\uv.ps1 run ruff check src/facebook_monitor/application/sidebar_layout_service.py src/facebook_monitor/webapp/query_service.py src/facebook_monitor/webapp/routes/sidebar.py tests/application/test_sidebar_layout.py tests/webapp/test_app.py tests/webapp/test_static_dashboard_modules.py`，通過
-- `node --check`：`api.js`、`dialogs.js`、`main.js`、`sidebar_layout.js`、`sidebar_sorting.js`，通過
+- `uv sync --locked --all-extras --dev`，通過。
+- `uv run ruff check src scripts tests`，通過。
+- `uv run mypy`，通過；`230 source files`。
+- `uv run pytest -q`，通過；`473 passed`。
+- `uv run pip-audit`，通過；`facebook-monitor-py` 因本機專案不在 PyPI 會 skip，其他套件無已知漏洞。
+- `uv run python -m compileall -q src scripts tests`，通過。
+- `git diff --check`，通過（僅 Git 換行提示）。
+- `.\scripts\uv.ps1 run pytest tests\updates tests\webapp\test_app.py -q`，通過；`107 passed`，覆蓋 updater release check、下載驗證、pending handoff、apply core、CLI restart 錯誤路徑、temp updater launch 與 settings 更新入口。
+- `.\scripts\uv.ps1 run mypy src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\webapp\routes\settings.py`，通過。
+- `.\scripts\uv.ps1 run ruff check src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\webapp\routes\settings.py tests\updates tests\webapp\test_app.py`，通過。
+- `.\scripts\uv.ps1 run python -m compileall -q src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\webapp\routes\settings.py tests\updates`，通過。
+- `git diff --check`，通過（僅 Git 換行提示）。
+- `.\scripts\uv.ps1 run pytest tests\updates tests\runtime\test_paths.py tests\runtime\test_build_metadata.py tests\runtime\test_windows_tray.py tests\cli\test_launcher_instance.py tests\webapp\test_app.py -q`，通過；`150 passed`，覆蓋 updates dir、下載驗證 service、pending handoff、updater apply core、updater CLI restart 錯誤路徑、temp updater launch、重啟新版 app、PyInstaller updater EXE 設定、launcher shutdown hook 與設定頁更新入口。
+- `.\scripts\uv.ps1 run python -m PyInstaller packaging\pyinstaller\facebook_monitor.spec --clean --noconfirm`，通過；產出 `dist\facebook-monitor\facebook-monitor.exe` 與 `facebook-monitor-updater.exe`。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File build\updater_smoke_runner.ps1`，通過；updater exit code `0`，marker 從 `old-app-files` 變成 `new-app-files`，`data/app.db` 與 profile marker 保留，`updater.log` 寫入 `status=applied applied=true message=updated`。
+- `.\scripts\uv.ps1 run pytest tests\webapp\test_app.py -q`，通過；`79 passed`，覆蓋設定頁更新區塊精簡為正式 release 檢查，不暴露 Preview / Stable 選擇、repo、asset 與 SHA256 檔名。
+- `.\scripts\uv.ps1 run mypy src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\launcher.py src\facebook_monitor\runtime\windows_integration.py src\facebook_monitor\runtime\paths.py src\facebook_monitor\webapp\dependencies.py src\facebook_monitor\webapp\runtime_diagnostics.py src\facebook_monitor\webapp\routes\settings.py`，通過。
+- `.\scripts\uv.ps1 run ruff check src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\launcher.py src\facebook_monitor\runtime\windows_integration.py src\facebook_monitor\runtime\paths.py src\facebook_monitor\webapp\dependencies.py src\facebook_monitor\webapp\runtime_diagnostics.py src\facebook_monitor\webapp\routes\settings.py tests\updates tests\runtime\test_paths.py tests\runtime\test_build_metadata.py tests\runtime\test_windows_tray.py tests\cli\test_launcher_instance.py tests\webapp\test_app.py`，通過。
+- `.\scripts\uv.ps1 run python -m compileall -q src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\launcher.py src\facebook_monitor\runtime\windows_integration.py src\facebook_monitor\runtime\paths.py src\facebook_monitor\webapp\dependencies.py src\facebook_monitor\webapp\runtime_diagnostics.py src\facebook_monitor\webapp\routes\settings.py tests\updates`，通過。
+- `.\scripts\uv.ps1 run facebook-monitor-updater --help`，通過。
+- 無 token GitHub Release API smoke 前次通過；當時 `OooPeople/facebook_monitor_py` 回報 `0.1.0-rc1` 與 `facebook-monitor-0.1.0-rc1-windows-portable.zip`。
+- `git diff --check`，通過（僅 Git 換行提示）。
+
+前次驗證（2026-05-16）：
+
+- `.\scripts\uv.ps1 run python scripts\admin\release_validation.py --skip-sync`，通過；`434 passed`，mypy / ruff / compileall / `git diff --check` 通過。
+- `.\scripts\uv.ps1 run pytest tests\webapp\test_app.py tests\webapp\test_static_dashboard_modules.py tests\webapp\test_dashboard_rendering.py -q`，通過；`119 passed`，包含 settings/new target/target modal/sidebar 共用設定表單 partial。
+- `.\scripts\uv.ps1 run pytest tests\automation\test_browser_runtime.py tests\runtime\test_build_metadata.py tests\runtime\test_windows_tray.py tests\runtime\test_csrf_token.py tests\cli\test_launcher_instance.py -q`，通過；覆蓋 bundled Chromium lookup、PyInstaller metadata、Windows tray、GUI stream 修補與 runtime CSRF token。
+- `.\scripts\uv.ps1 run python -m PyInstaller packaging\pyinstaller\facebook_monitor.spec --clean --noconfirm`，通過；產出 `dist\facebook-monitor\facebook-monitor.exe`、`dist\facebook-monitor-0.1.0-windows-portable.zip` 與 `.sha256`。
+- frozen manual smoke 通過：isolated Web layer、既有真實 profile、guided login、metadata refresh、posts/comments scan、desktop / ntfy / Discord notification、bundled Chromium、GUI subsystem、system tray 與 instance lock。
+- `git diff --check`，通過（僅 Git 換行提示）。

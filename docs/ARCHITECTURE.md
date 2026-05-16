@@ -17,9 +17,11 @@
 - 預設 data dir：`~/facebook_monitor_data`
 - 預設 automation profile：`<data-dir>/profiles/automation_default`
 - runtime path 由 `facebook_monitor.runtime.paths.RuntimePaths` 集中解析，Web UI、登入工具、admin/debug scripts 共享同一套 data/profile/logs 解析規則。
+- launcher 啟動 Web UI 前會做本機 profile gate：若 `app_settings.profile_session_status` 是 `needs_login`，或專用 profile 內找不到 Facebook `c_user` + `xs` cookie，會先開 Facebook 首頁登入視窗；登入完成後才啟動 Web UI。
+- launcher 不做每次啟動的網路 session check；session 失效、checkpoint 或 login page 由 worker 掃描 guard 標記為 `needs_login`，並透過 dashboard 警告提示使用者重啟。
 - `--profile-dir` 必須落在 `<data-dir>/profiles/` 底下；外部測試 profile 只能使用 debug-only `--unsafe-profile-dir`，且不得指向日常 Chrome / Edge / Chromium profile。
 - app-level single-instance lock 與 DB/profile resource locks 避免同一 runtime、DB 或 automation profile 被多個 process 同時使用。
-- Web UI 預設只綁 loopback；mutating routes 由 CSRF token 保護。
+- Web UI 預設只綁 loopback；mutating routes 由 CSRF token 保護。同一個 runtime dir 會沿用本機 CSRF token，避免瀏覽器舊分頁在程式重啟後第一次送出表單時被誤擋。
 - runtime logs 與 startup diagnostics 只記啟動語義與環境資訊，不記 cookies、tokens 或 session dump。
 
 ## 模組邊界
@@ -40,7 +42,8 @@
 - comments target 代表單篇社團貼文留言監視。
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
 - keyword、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
-- seen、baseline、latest scan、match history、notification events、runtime state 都是 target-scoped state。
+- seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
+- 使用者按下「開始」會清該 target 的 seen/outbox 去重狀態；即使同一內容之前已通知過，本次重新掃描命中仍會再次發送通知。`match_history` / 查看紀錄持久保留，除非使用者在查看紀錄中明確清空。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
@@ -74,7 +77,7 @@
 - 既有 DB 必須有有效 `schema_metadata.version`；缺失、無效或高於目前 app 支援版本時 fail fast。
 - 新欄位或資料轉換必須進 `persistence/migrations.py`，不得把既有 DB repair 塞回 current schema bootstrap。
 - dashboard revision 使用單列 revision table + SQLite triggers，支援 Web UI partial update。
-- Web UI theme 是 app-level preference，正式來源是 `app_settings['theme']`。
+- Web UI theme 是 app-level preference，正式來源是 `app_settings['theme']`；尚未保存偏好時預設為 `dark`。
 - Runtime data maintenance 只清可重建 scan/debug 資料與可選的 `seen_items`；不得清除 `notification_outbox`。
 
 ## Web UI 語義
@@ -84,6 +87,10 @@
 - Web UI 不註冊全域 scheduler start/stop 日常 route。
 - 「開始」會清該 target seen scope 與 notification outbox 去重 rows、要求立即掃描並喚醒 scheduler。
 - 「停止」只暫停排程，保留 seen/history。
+- target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
+- 貼文 / 留言模式 chip 是 target kind 分類標籤，不是執行狀態 badge，也不得與 `已啟用` / `已停止` 混淆。
+- 右側結果 panel header 可顯示最近一輪 scan cycle result；這是掃描結果摘要，不是錯誤或使用者停止狀態。
+- 最近通知摘要不放在 target card header；通知狀態由 notification events、outbox diagnostics 與相關 read model 承接。
 - dashboard partial update 以 revision change detection 觸發，再用 batch payload 更新 sidebar 與 target cards。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API 暫留 `notified_at` legacy key 作相容。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
@@ -93,10 +100,10 @@
 - Sidebar layout 是 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
 - Sidebar group、target placement 與 group template 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
 - 排序保存必須用單一 layout command 同時更新 group order 與 target placements，避免只保存一半狀態。
-- Dashboard read model 可以依 placement 排列 rows，但不得為缺失 placement 寫入 DB；補寫必須留在 application command 或 migration。
+- Dashboard read model 可以依 placement 排列 rows，但不得為缺失 placement 寫入 DB；缺失 placement 採 lazy fallback 顯示在未分組區，補寫只可由明確排序保存 command 或 migration 進行。
 - 舊平面 target order API 只能用在沒有 grouped placement 的相容情境；已有 grouped placement 時不得打平 sidebar 狀態。
 - Group template 只是批次套用工具，不是 config fallback owner；正式 target config 仍只讀寫 `target_configs[target_id]`。
-- 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；既有 group template 不跟著全域設定靜默覆蓋。
+- 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；通知設定使用系統預設，不自動繼承全域通知或任一 target，既有 group template 不跟著全域設定靜默覆蓋。
 - Group template 套用是破壞性批次覆蓋操作，必須經使用者確認並在 application transaction 內完成。
 
 ## Web UI 共用互動元件

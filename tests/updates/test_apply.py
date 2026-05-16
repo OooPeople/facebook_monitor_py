@@ -1,0 +1,213 @@
+"""獨立 updater 套用流程測試。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import zipfile
+
+from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
+from facebook_monitor.updates.apply import apply_pending_update_file
+from facebook_monitor.updates.apply import apply_pending_update
+from facebook_monitor.updates.apply import safe_extract_zip
+from facebook_monitor.updates.handoff import PendingUpdate
+
+
+def make_app_root(root: Path, *, exe_text: str) -> None:
+    """建立最小 PyInstaller onedir 目錄。"""
+
+    (root / "_internal" / "browser").mkdir(parents=True)
+    (root / "_internal" / "assets").mkdir(parents=True)
+    (root / "_internal" / "browser" / "chrome.exe").write_text("chrome", encoding="utf-8")
+    (root / "_internal" / "assets" / "facebook-monitor.ico").write_text(
+        "icon",
+        encoding="utf-8",
+    )
+    (root / "_internal" / "assets" / "facebook-monitor-tray.ico").write_text(
+        "tray",
+        encoding="utf-8",
+    )
+    (root / "facebook-monitor.exe").write_text(exe_text, encoding="utf-8")
+    (root / "facebook-monitor-updater.exe").write_text("updater", encoding="utf-8")
+
+
+def make_update_zip(zip_path: Path, *, exe_text: str) -> str:
+    """建立含單層 facebook-monitor 目錄的 update zip，回傳 SHA256。"""
+
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_app_root(source_root, exe_text=exe_text)
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_file():
+                archive.write(file_path, file_path.relative_to(source_root.parent))
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    return digest
+
+
+def pending_update(tmp_path: Path, *, zip_path: Path, digest: str) -> PendingUpdate:
+    """建立測試用 pending update。"""
+
+    return PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name=zip_path.name,
+        zip_path=zip_path,
+        expected_sha256=digest,
+        actual_sha256=digest,
+        app_base_dir=tmp_path / "app",
+        data_dir=tmp_path / "app" / "data",
+        db_path=tmp_path / "app" / "data" / "app.db",
+        profile_dir=tmp_path / "app" / "data" / "profiles" / "automation_default",
+        logs_dir=tmp_path / "app" / "data" / "logs",
+        runtime_dir=tmp_path / "app" / "data" / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+
+
+def test_apply_pending_update_replaces_app_files_but_preserves_data(tmp_path: Path) -> None:
+    """updater 會替換 app files，並保留 portable data dir。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    (data_dir / "app.db").write_text("user data", encoding="utf-8")
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "applied"
+    assert result.applied
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "new"
+    assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
+    assert result.backup_dir is not None
+    assert (result.backup_dir / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> None:
+    """主程式仍持有 app lock 時，updater 不替換檔案。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest=digest)
+
+    with acquire_app_instance_lock(pending.runtime_dir, "test"):
+        result = apply_pending_update(pending)
+
+    assert result.status == "app_running"
+    assert not result.applied
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_file_writes_result_log(tmp_path: Path) -> None:
+    """updater CLI path 會把套用結果寫進 updater log。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    data_dir = app_root / "data"
+    runtime_dir = data_dir / "runtime"
+    runtime_dir.mkdir(parents=True)
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+    pending_path = runtime_dir / "pending_update.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "0.1.0",
+                "asset_name": zip_path.name,
+                "zip_path": str(zip_path),
+                "expected_sha256": digest,
+                "actual_sha256": digest,
+                "app_base_dir": str(app_root),
+                "data_dir": str(data_dir),
+                "db_path": str(data_dir / "app.db"),
+                "profile_dir": str(data_dir / "profiles" / "automation_default"),
+                "logs_dir": str(data_dir / "logs"),
+                "runtime_dir": str(runtime_dir),
+                "created_at": "2026-05-17T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    log_path = data_dir / "logs" / "updater.log"
+
+    result = apply_pending_update_file(pending_path, log_path=log_path)
+
+    assert result.status == "applied"
+    assert "status=applied applied=true message=updated" in log_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_apply_pending_update_rejects_hash_changed_after_handoff(tmp_path: Path) -> None:
+    """handoff 後 zip 被替換時，updater 會重算 SHA256 並拒絕套用。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+    zip_path.write_bytes(b"changed")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "pending_zip_sha256_mismatch"
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_safe_extract_zip_rejects_path_traversal(tmp_path: Path) -> None:
+    """zip 不能含有會逃出 staging dir 的 member path。"""
+
+    zip_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("../evil.txt", "bad")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_member_path_unsafe"
+    else:
+        raise AssertionError("expected unsafe zip member to fail")
+
+
+def test_apply_pending_update_rejects_zip_outside_updates_dir(tmp_path: Path) -> None:
+    """pending update 不能指向 data updates 目錄外的 zip。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    zip_path = tmp_path / "update.zip"
+    digest = make_update_zip(zip_path, exe_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "pending_update_zip_outside_updates_dir"
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_safe_extract_zip_rejects_oversized_archive(tmp_path: Path) -> None:
+    """解壓前會檢查展開後大小，避免異常 zip 耗盡磁碟。"""
+
+    zip_path = tmp_path / "big.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("large.bin", "12345")
+
+    try:
+        safe_extract_zip(
+            zip_path,
+            tmp_path / "staging",
+            max_uncompressed_bytes=4,
+        )
+    except ValueError as exc:
+        assert str(exc) == "zip_uncompressed_too_large"
+    else:
+        raise AssertionError("expected oversized zip to fail")

@@ -16,7 +16,7 @@
         </summary>
         <div class="sidebar-menu-panel menu-panel">
           <button class="sidebar-menu-action menu-action" type="button" data-sidebar-create-group>新增群組</button>
-          <button class="sidebar-menu-action menu-action" type="button" data-sidebar-start-sort>排序</button>
+          <button class="sidebar-menu-action menu-action" type="button" data-sidebar-start-sort>調整順序</button>
           <button class="sidebar-menu-action menu-action" type="button" data-sidebar-cancel-sort hidden>取消排序</button>
         </div>
       </details>
@@ -76,7 +76,13 @@
             {% for item in group.items %}
               <li class="sidebar-list-item" data-sidebar-item data-target-id="{{ item.target_id }}">
                 <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
-                  <span class="sidebar-avatar" aria-hidden="true">{{ item.display_name[:1] or "?" }}</span>
+                  <span class="sidebar-avatar{% if item.thumbnail_url %} has-image{% endif %}" aria-hidden="true">
+                    {% if item.thumbnail_url %}
+                      <img src="{{ item.thumbnail_url }}" alt="" referrerpolicy="origin-when-cross-origin" loading="lazy">
+                    {% else %}
+                      {{ item.display_name[:1] or "?" }}
+                    {% endif %}
+                  </span>
                   <span class="sidebar-copy">
                     <span class="sidebar-name">{{ item.display_name }}</span>
                     <span
@@ -86,8 +92,11 @@
                       data-sidebar-status-class="{{ item.status_class }}"
                       data-sidebar-status-detail="{{ item.status_detail }}"
                       data-sidebar-default-detail="{{ item.status_detail }}"
+                      data-sidebar-mode-label="{{ item.mode_label }}"
+                      data-sidebar-mode-class="{{ item.mode_class }}"
                     >
-                      <span class="sidebar-status-pill {{ item.status_class }}">{{ item.base_status_summary }}</span>
+                      <span class="sidebar-status-token sidebar-status-pill {{ item.status_class }}">{{ item.base_status_summary }}</span>
+                      <span class="sidebar-status-token target-mode-chip sidebar-mode-chip {{ item.mode_class }}">{{ item.mode_label }}</span>
                       {% if item.status_detail %}
                         <span class="sidebar-status-detail">{{ item.status_detail }}</span>
                       {% endif %}

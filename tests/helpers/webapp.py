@@ -27,6 +27,7 @@ class FakeProfileManager:
 
     def __init__(self) -> None:
         self.active = False
+        self.close_count = 0
         self.options: ProfileSessionOptions | None = None
 
     def is_active(self) -> bool:
@@ -43,6 +44,8 @@ class FakeProfileManager:
     def close(self) -> None:
         """關閉 fake profile 視窗。"""
 
+        if self.active:
+            self.close_count += 1
         self.active = False
 
 

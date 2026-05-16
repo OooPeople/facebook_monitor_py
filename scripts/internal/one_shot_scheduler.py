@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     """解析 internal one-shot scheduler CLI 參數。"""
 
     parser = argparse.ArgumentParser(description="Run the one-shot fallback scheduler loop.")
-    add_runtime_path_arguments(parser)
+    add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
     parser.add_argument("--interval-seconds", type=float, default=300)
     parser.add_argument("--scheduler-tick-seconds", type=float, default=2)
     parser.add_argument("--max-concurrent-scans", type=int, default=2)

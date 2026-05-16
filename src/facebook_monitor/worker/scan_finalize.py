@@ -64,6 +64,7 @@ class ScanMatchResult:
     exclude_rule: str
     eligible_for_notify: bool
     matched_keyword: str
+    baseline_mode: bool = False
     matched_keywords: tuple[str, ...] = ()
 
 
@@ -103,6 +104,12 @@ class ScanFinalizeResult:
         """回傳本輪符合 keyword 規則的項目數。"""
 
         return len(self.matched_items)
+
+    @property
+    def baseline_mode(self) -> bool:
+        """回傳本輪是否只建立 scope baseline、不送通知。"""
+
+        return bool(self.scan_summary.get("baseline_mode"))
 
 
 def normalize_extracted_scan_items(
@@ -151,6 +158,7 @@ def finalize_scan_items(
 ) -> ScanFinalizeResult:
     """完成 target-kind-independent 的 scan 後處理與持久化。"""
 
+    app.repositories.app_settings.mark_profile_ok(source="scan_success")
     match_results: list[ScanMatchResult] = []
     new_items: list[NormalizedScanItem] = []
     matched_items: list[NormalizedScanItem] = []
@@ -161,6 +169,7 @@ def finalize_scan_items(
         exclude_keywords=config.exclude_keywords,
         exclude_ignore_phrases=config.exclude_ignore_phrases,
     )
+    baseline_mode = not app.repositories.scan_scope_state.is_initialized(target.scope_id)
 
     for item in items:
         is_new = app.repositories.seen_items.mark_seen_aliases(
@@ -178,6 +187,7 @@ def finalize_scan_items(
             item=item,
             is_new=is_new,
             keyword_evaluation=keyword_evaluation,
+            baseline_mode=baseline_mode,
         )
         match_results.append(result)
         if result.is_new:
@@ -233,6 +243,8 @@ def finalize_scan_items(
         notification_payloads.append(notification_payload)
 
     scan_metadata = dict(metadata)
+    scan_metadata["baseline_mode"] = baseline_mode
+    scan_metadata["scope_id"] = target.scope_id
     scan_metadata["new_count"] = len(new_items)
     scan_metadata["matched_count"] = len(matched_items)
     scan_run_id = app.services.scans.record_scan(
@@ -257,6 +269,8 @@ def finalize_scan_items(
         carry_over_previous_items=should_carry_over_previous_latest_items(scan_metadata),
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, latest_items)
+    if not baseline_mode or match_results:
+        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
 
     return ScanFinalizeResult(
         scan_run_id=scan_run_id,
@@ -275,6 +289,7 @@ def build_scan_match_result(
     item: NormalizedScanItem,
     is_new: bool,
     keyword_evaluation: KeywordEvaluation,
+    baseline_mode: bool = False,
 ) -> ScanMatchResult:
     """建立單一 item 的 shared classification 結果。"""
 
@@ -284,8 +299,9 @@ def build_scan_match_result(
         is_matched=keyword_evaluation.eligible,
         include_rule=keyword_evaluation.include_rule,
         exclude_rule=keyword_evaluation.exclude_rule,
-        eligible_for_notify=is_new and keyword_evaluation.eligible,
+        eligible_for_notify=(not baseline_mode) and is_new and keyword_evaluation.eligible,
         matched_keyword=keyword_evaluation.display_rule,
+        baseline_mode=baseline_mode,
         matched_keywords=keyword_evaluation.include_rules if keyword_evaluation.eligible else (),
     )
 
@@ -313,7 +329,18 @@ def build_latest_scan_items(
             permalink=result.item.permalink,
             matched_keyword=result.matched_keyword,
             matched_keywords=result.matched_keywords,
-            debug_metadata=result.item.metadata or {},
+            debug_metadata={
+                **(result.item.metadata or {}),
+                "classification": {
+                    "is_new": result.is_new,
+                    "is_matched": result.is_matched,
+                    "include_rule": result.include_rule,
+                    "include_rules": list(result.matched_keywords),
+                    "exclude_rule": result.exclude_rule,
+                    "eligible_for_notify": result.eligible_for_notify,
+                    "baseline_mode": result.baseline_mode,
+                },
+            },
         )
         for item_index, result in enumerate(match_results)
     ]

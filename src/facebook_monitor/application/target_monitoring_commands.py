@@ -20,6 +20,7 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
+from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -36,6 +37,7 @@ class TargetMonitoringCommands:
         targets: TargetRepository,
         runtime_states: TargetRuntimeStateRepository,
         seen_items: SeenItemRepository,
+        scan_scope_state: ScanScopeStateRepository,
         notification_outbox: NotificationOutboxRepository,
         registry: TargetRegistryService,
         configs: TargetConfigService,
@@ -44,6 +46,7 @@ class TargetMonitoringCommands:
         self.targets = targets
         self.runtime_states = runtime_states
         self.seen_items = seen_items
+        self.scan_scope_state = scan_scope_state
         self.notification_outbox = notification_outbox
         self.registry = registry
         self.configs = configs
@@ -72,6 +75,7 @@ class TargetMonitoringCommands:
                     else TargetDesiredState.STOPPED
                 ),
                 runtime_status=TargetRuntimeStatus.IDLE,
+                display_next_due_at=None,
             )
         )
         return updated_target
@@ -87,6 +91,7 @@ class TargetMonitoringCommands:
         target = self.registry.normalize_target_names(target)
 
         self.seen_items.clear_scope(target.scope_id)
+        self.scan_scope_state.mark_initialized(target.scope_id)
         self.notification_outbox.clear_by_target(target.id)
         updated_target = replace(
             target,
@@ -111,6 +116,7 @@ class TargetMonitoringCommands:
                 enqueue_reason="",
                 active_worker_id="",
                 active_page_id="",
+                display_next_due_at=None,
                 updated_at=utc_now(),
             )
         )

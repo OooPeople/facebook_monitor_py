@@ -48,7 +48,10 @@ def test_index_renders_latest_preview_hits_and_highlights(tmp_path: Path) -> Non
     text, _target_id = render_seeded_index(tmp_path)
 
     assert "最近掃描貼文" not in text
-    assert "最近通知" in text
+    assert "貼文模式" in text
+    assert "下次刷新：未排程" in text
+    assert "本輪：已完成深度掃描" in text
+    assert "最近通知" not in text
     assert "ntfy: sent" not in text
     assert "王小明" in text
     assert "命中: 票券" in text
@@ -60,8 +63,8 @@ def test_index_renders_latest_preview_hits_and_highlights(tmp_path: Path) -> Non
     assert "開啟連結" in text
 
 
-def test_index_renders_latest_notification_status_by_channel(tmp_path: Path) -> None:
-    """首頁最近通知會顯示各通道最新狀態，不只顯示最後一筆事件。"""
+def test_index_header_omits_latest_notification_status_by_channel(tmp_path: Path) -> None:
+    """首頁 header 不顯示最近通知，避免擠壓模式與刷新資訊。"""
 
     db_path = tmp_path / "app.db"
     target = seed_dashboard_index_target(db_path)
@@ -95,7 +98,10 @@ def test_index_renders_latest_notification_status_by_channel(tmp_path: Path) -> 
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "最近通知 桌面 failed / ntfy sent / Discord sent" in response.text
+    assert "最近通知 桌面 failed / ntfy sent / Discord sent" not in response.text
+    assert "貼文模式" in response.text
+    assert "最近掃描" in response.text
+    assert "下次刷新：未排程" in response.text
 
 
 def test_index_renders_scan_diagnostics_without_legacy_debug_json(

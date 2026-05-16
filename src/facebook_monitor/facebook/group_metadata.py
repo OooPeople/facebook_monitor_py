@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -25,6 +26,14 @@ from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 
 class GroupMetadataError(RuntimeError):
     """表示無法從 Facebook 頁面解析 group metadata。"""
+
+
+@dataclass(frozen=True)
+class GroupMetadata:
+    """保存 Facebook 社團 metadata resolver 的最小結果。"""
+
+    group_name: str = ""
+    group_cover_image_url: str = ""
 
 
 class AsyncLocatorLike(Protocol):
@@ -68,6 +77,23 @@ async def resolve_group_name_with_context(
 ) -> str:
     """使用既有 async browser context 解析 Facebook group name。"""
 
+    return (
+        await resolve_group_metadata_with_context(
+            context,
+            canonical_url=canonical_url,
+            wait_ms=wait_ms,
+        )
+    ).group_name
+
+
+async def resolve_group_metadata_with_context(
+    context: AsyncBrowserContextLike,
+    *,
+    canonical_url: str,
+    wait_ms: int = 3000,
+) -> GroupMetadata:
+    """使用既有 async browser context 解析 Facebook group name 與 cover image URL。"""
+
     try:
         page = await context.new_page()
         try:
@@ -77,6 +103,7 @@ async def resolve_group_name_with_context(
             if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                 raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
             group_name = clean_facebook_page_title(await page.title())
+            cover_image_url = await _extract_cover_image_url_async(page)
         finally:
             await page.close()
     except GroupMetadataError:
@@ -86,7 +113,10 @@ async def resolve_group_name_with_context(
 
     if not group_name:
         raise GroupMetadataError("無法自動抓取社團名稱，請稍後重試或填入自訂顯示名稱")
-    return group_name
+    return GroupMetadata(
+        group_name=group_name,
+        group_cover_image_url=cover_image_url,
+    )
 
 
 def resolve_group_name_with_profile(
@@ -96,6 +126,21 @@ def resolve_group_name_with_profile(
     wait_ms: int = 3000,
 ) -> str:
     """使用 automation profile 開啟 group URL 並回傳清理後的社團名稱。"""
+
+    return resolve_group_metadata_with_profile(
+        profile_dir=profile_dir,
+        canonical_url=canonical_url,
+        wait_ms=wait_ms,
+    ).group_name
+
+
+def resolve_group_metadata_with_profile(
+    *,
+    profile_dir: Path,
+    canonical_url: str,
+    wait_ms: int = 3000,
+) -> GroupMetadata:
+    """使用 automation profile 開啟 group URL 並回傳社團名稱與 cover image URL。"""
 
     if not profile_dir.exists():
         raise GroupMetadataError("automation profile 不存在，請先到設定頁開啟 Facebook 登入視窗並登入")
@@ -115,6 +160,7 @@ def resolve_group_name_with_profile(
                     if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                         raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
                     group_name = clean_facebook_page_title(page.title())
+                    cover_image_url = _extract_cover_image_url_sync(page)
                 finally:
                     context.close()
     except GroupMetadataError:
@@ -129,4 +175,63 @@ def resolve_group_name_with_profile(
 
     if not group_name:
         raise GroupMetadataError("無法自動抓取社團名稱，請稍後重試或填入自訂顯示名稱")
-    return group_name
+    return GroupMetadata(
+        group_name=group_name,
+        group_cover_image_url=cover_image_url,
+    )
+
+
+async def _extract_cover_image_url_async(page: object) -> str:
+    """從 Facebook group header 抽取 cover image URL；失敗時回傳空字串。"""
+
+    if not hasattr(page, "evaluate"):
+        return ""
+    try:
+        return _normalize_cover_image_url(
+            await page.evaluate(_COVER_IMAGE_EXTRACTOR_SCRIPT)
+        )
+    except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError, TypeError):
+        return ""
+
+
+def _extract_cover_image_url_sync(page: object) -> str:
+    """同步版 cover image URL 抽取，供 Web UI 短期 profile 工作使用。"""
+
+    if not hasattr(page, "evaluate"):
+        return ""
+    try:
+        return _normalize_cover_image_url(page.evaluate(_COVER_IMAGE_EXTRACTOR_SCRIPT))
+    except (PlaywrightTimeoutError, PlaywrightError, TypeError):
+        return ""
+
+
+def _normalize_cover_image_url(value: object) -> str:
+    """整理 extractor 回傳值，避免非 URL 內容進入 metadata。"""
+
+    url = str(value or "").strip()
+    if not url.startswith(("https://", "http://")):
+        return ""
+    return url
+
+
+_COVER_IMAGE_EXTRACTOR_SCRIPT = """
+() => {
+  const direct = document.querySelector('img[data-imgperflogname="profileCoverPhoto"]');
+  if (direct) return direct.currentSrc || direct.getAttribute("src") || "";
+
+  const candidates = [];
+  for (const img of Array.from(document.images || [])) {
+    const src = img.currentSrc || img.getAttribute("src") || "";
+    if (!src) continue;
+    const rect = img.getBoundingClientRect();
+    let score = 0;
+    if (/fbcdn\\.net|scontent\\./i.test(src)) score += 80;
+    if (rect.width >= 300 && rect.height >= 120) score += 70;
+    if (img.naturalWidth >= 500 && img.naturalHeight >= 180) score += 50;
+    if (rect.top >= -80 && rect.top <= 650) score += 30;
+    if (score > 0) candidates.push({ src, score });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0]?.src || "";
+}
+"""

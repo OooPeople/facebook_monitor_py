@@ -57,7 +57,10 @@ class TargetConfigService:
         return TargetConfig(
             target_id=target_id,
             include_keywords=provided_or_default(patch.include_keywords, ()),
-            exclude_keywords=provided_or_default(patch.exclude_keywords, ()),
+            exclude_keywords=provided_or_default(
+                patch.exclude_keywords,
+                PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords,
+            ),
             exclude_ignore_phrases=provided_or_default(
                 patch.exclude_ignore_phrases,
                 PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases,

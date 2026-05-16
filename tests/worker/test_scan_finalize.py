@@ -9,6 +9,7 @@ from typing import cast
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
+from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
@@ -17,6 +18,7 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
@@ -27,6 +29,7 @@ from facebook_monitor.notifications.outbox_service import dispatch_new_pending_n
 from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
+from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 
 
 def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) -> None:
@@ -101,7 +104,16 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert result.matched_count == 1
         assert result.scan_run_id > 0
         assert result.latest_items[0].matched_keyword == "票券"
-        assert result.latest_items[0].debug_metadata == {"source": "test"}
+        assert result.latest_items[0].debug_metadata["source"] == "test"
+        assert result.latest_items[0].debug_metadata["classification"] == {
+            "is_new": True,
+            "is_matched": True,
+            "include_rule": "票券",
+            "include_rules": ["票券"],
+            "exclude_rule": "",
+            "eligible_for_notify": True,
+            "baseline_mode": False,
+        }
         history = app.repositories.match_history.list_by_target(target.id)
         assert len(history) == 1
         assert history[0].include_rule == "票券"
@@ -152,6 +164,204 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         }
         assert all(event.status == NotificationStatus.SENT for event in events)
         assert app.repositories.notification_outbox.list_pending() == []
+
+
+def test_restart_monitoring_re_notifies_previously_seen_match(
+    tmp_path: Path,
+) -> None:
+    """按下開始會清 seen/outbox 去重，讓同一命中可重新通知。"""
+
+    sent_ntfy: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_ntfy.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+
+        first_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert first_result.new_count == 1
+        assert first_result.matched_count == 1
+        assert not first_result.baseline_mode
+        assert len(app.repositories.notification_outbox.list_pending()) == 1
+        assert len(app.repositories.match_history.list_by_target(target.id)) == 1
+        target_id = target.id
+
+    assert sent_ntfy == ["phase0test"]
+
+    with SqliteApplicationContext(db_path) as app:
+        reloaded_target = app.repositories.targets.get(target_id)
+        assert reloaded_target is not None
+        app.services.targets.pause_target_monitoring(reloaded_target.id)
+        app.services.targets.restart_target_monitoring(reloaded_target.id)
+        config = app.services.targets.get_config_for_target(reloaded_target)
+        second_result = finalize_scan_items(
+            app=app,
+            target=reloaded_target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert second_result.new_count == 1
+        assert second_result.matched_count == 1
+        assert not second_result.baseline_mode
+        assert second_result.latest_items[0].debug_metadata["classification"][
+            "eligible_for_notify"
+        ] is True
+        assert len(app.repositories.notification_outbox.list_pending()) == 1
+        assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
+
+    assert sent_ntfy == ["phase0test", "phase0test"]
+
+
+def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:
+    """baseline 空結果不應解除抑制，避免下一輪通知既有項目。"""
+
+    sent_ntfy: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_ntfy.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.scan_scope_state.clear_scope(target.scope_id)
+        config = app.services.targets.get_config_for_target(target)
+
+        empty_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[],
+            item_count=0,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert empty_result.baseline_mode
+        assert not app.repositories.scan_scope_state.is_initialized(target.scope_id)
+
+        baseline_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:existing",
+                    alias_keys=("post:existing",),
+                    group_id="123",
+                    text="既有票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert baseline_result.baseline_mode
+        assert baseline_result.latest_items[0].debug_metadata["classification"][
+            "eligible_for_notify"
+        ] is False
+        assert app.repositories.notification_outbox.list_pending() == []
+        assert app.repositories.scan_scope_state.is_initialized(target.scope_id)
+
+    assert sent_ntfy == []
+
+
+def test_scan_failure_marks_profile_needs_login_and_success_clears_it(
+    tmp_path: Path,
+) -> None:
+    """session failure 會觸發全域重新登入警告，下一次成功掃描會清除。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        record_scan_failure(
+            app=app,
+            target=target,
+            reason="login_required",
+            message="Facebook login is required.",
+            worker_path="resident_main",
+        )
+        needs_login = app.repositories.app_settings.get_profile_session_status()
+
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=app.services.targets.get_config_for_target(target),
+            items=[],
+            item_count=0,
+            metadata={"worker": "test_worker"},
+        )
+        ok_status = app.repositories.app_settings.get_profile_session_status()
+
+    assert needs_login.state == ProfileSessionState.NEEDS_LOGIN
+    assert needs_login.reason == "login_required"
+    assert ok_status.state == ProfileSessionState.OK
 
 
 def test_finalize_scan_items_uses_exclude_ignore_phrase_masking(tmp_path: Path) -> None:
@@ -752,3 +962,104 @@ def test_outbox_dispatch_is_idempotent_for_sent_event(tmp_path: Path) -> None:
         dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert len(sent_ntfy) == 1
+
+
+def test_outbox_pending_dispatch_drains_all_default_batches(tmp_path: Path) -> None:
+    """pending dispatch 會分批 claim 直到本輪 pending outbox 清空。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="topic"),
+            )
+        )
+        for index in range(11):
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:item-{index}:ntfy",
+                    target_id=target.id,
+                    item_key=f"item-{index}",
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                    endpoint="topic",
+                )
+            )
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        pending = app.repositories.notification_outbox.list_pending(limit=20)
+
+    assert sent_count == 11
+    assert len(sent_topics) == 11
+    assert len(pending) == 0
+
+
+def test_failed_outbox_retry_refreshes_current_target_endpoint(tmp_path: Path) -> None:
+    """failed retry 會套用目前 target config，避免重打舊 endpoint。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="old-topic"),
+            )
+        )
+        entry = app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-1:ntfy",
+                target_id=target.id,
+                item_key="item-1",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+                endpoint="old-topic",
+            )
+        )
+        app.repositories.notification_outbox.mark_result(
+            entry_id=entry.id or 0,
+            status=NotificationOutboxStatus.FAILED,
+            attempts=1,
+            message="first_down",
+        )
+        app.services.targets.update_target_config(
+            UpdateTargetConfigRequest(
+                target_id=target.id,
+                config=TargetConfigPatch(ntfy_topic="new-topic"),
+            )
+        )
+
+        sent_count = retry_failed_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        updated = app.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:item-1:ntfy"
+        )
+
+    assert sent_count == 1
+    assert sent_topics == ["new-topic"]
+    assert updated is not None
+    assert updated.endpoint == "new-topic"
+    assert updated.status == NotificationOutboxStatus.SENT

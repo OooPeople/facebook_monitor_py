@@ -27,6 +27,15 @@ def test_resolve_refresh_interval_prefers_fixed_seconds() -> None:
     ) == 30
 
 
+def test_target_config_default_uses_floating_refresh_mode() -> None:
+    """新增 target config 預設不寫固定秒數，讓 scheduler 使用浮動刷新。"""
+
+    config = TargetConfig(target_id="target-1")
+
+    assert config.fixed_refresh_sec is None
+    assert config.jitter_enabled
+
+
 def test_resolve_refresh_interval_uses_deterministic_jitter_range() -> None:
     """未設定固定秒數時，jitter 會在 min/max 之間穩定取值。"""
 

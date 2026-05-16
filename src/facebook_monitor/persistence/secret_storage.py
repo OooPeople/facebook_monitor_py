@@ -7,6 +7,7 @@ DB-at-rest 加解密，讓 application、worker 與 Web UI 仍只看見明文值
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 from cryptography.fernet import Fernet
 from cryptography.fernet import InvalidToken
@@ -81,3 +82,62 @@ def load_or_create_secret_codec(db_path: Path) -> SecretCodec:
         return SecretCodec(Fernet(key))
     except ValueError as exc:
         raise ValueError(f"invalid notification secret key file: {key_path}") from exc
+
+
+def reencrypt_plaintext_secrets(
+    connection: sqlite3.Connection,
+    secret_codec: SecretCodec,
+) -> int:
+    """將 legacy plaintext notification secrets 原地改寫為 enc:v1 密文。"""
+
+    updated_count = 0
+    for table_name, column_name in (
+        ("target_configs", "ntfy_topic"),
+        ("target_configs", "discord_webhook"),
+        ("global_notification_settings", "ntfy_topic"),
+        ("global_notification_settings", "discord_webhook"),
+        ("notification_outbox", "endpoint"),
+        ("sidebar_group_config_templates", "ntfy_topic"),
+        ("sidebar_group_config_templates", "discord_webhook"),
+    ):
+        if not _table_has_column(connection, table_name, column_name):
+            continue
+        rows = connection.execute(
+            f"""
+            SELECT rowid AS secret_rowid, {column_name}
+            FROM {table_name}
+            WHERE {column_name} <> ''
+              AND {column_name} NOT LIKE ?
+            """,
+            (f"{ENCRYPTED_SECRET_PREFIX}%",),
+        ).fetchall()
+        for row in rows:
+            connection.execute(
+                f"UPDATE {table_name} SET {column_name} = ? WHERE rowid = ?",
+                (secret_codec.encrypt(str(row[column_name])), row["secret_rowid"]),
+            )
+            updated_count += 1
+    return updated_count
+
+
+def _table_has_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    """回傳 SQLite table 是否存在指定欄位。"""
+
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        LIMIT 1
+        """,
+        (table_name,),
+    ).fetchone()
+    if row is None:
+        return False
+    columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(str(column["name"]) == column_name for column in columns)

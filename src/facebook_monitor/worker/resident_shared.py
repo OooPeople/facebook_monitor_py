@@ -38,6 +38,7 @@ class ResidentRuntimeOptions:
     scroll_wait_ms: int = 2500
     scan_timeout_seconds: float = 120
     stale_running_after_seconds: float = 180
+    heartbeat_interval_seconds: float = 30
     headed_compat: bool = False
     max_cycles: int | None = None
     metadata_refresh_provider: Callable[[], tuple[str, ...]] | None = None
@@ -62,6 +63,8 @@ class ResidentCycleSummary:
     worker_ids: tuple[str, ...] = ()
     page_pool_size: int = 0
     resident_browser_alive: bool = False
+    recovered_runtime_count: int = 0
+    worker_health_ok: bool = True
 
 
 @dataclass(frozen=True)

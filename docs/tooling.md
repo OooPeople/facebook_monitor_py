@@ -20,6 +20,8 @@
 | Setup Login | `facebook-monitor-login` | Start | 開啟專用 automation profile，供登入與檢查 session | 是，維運入口 |
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
+| Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
+| Relogin Flow Smoke | `scripts/admin/smoke_relogin_flow.py` | Admin smoke | 使用隔離暫存資料驗證重新登入警告與 launcher login gate | 否 |
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
 | One-shot Scan | `scripts/debug/one_shot_scan.py` | Debug | 對已保存 target 執行一次 one-shot 掃描 | 否 |
 | Worker Probe | `scripts/debug/worker_probe.py` | Debug | 使用專用 profile 執行背景掃描可行性 probe | 否 |
@@ -47,6 +49,8 @@
 ```powershell
 .\scripts\uv.ps1 run python .\scripts\admin\console.py
 .\scripts\uv.ps1 run python .\scripts\admin\manage_targets.py
+.\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
+.\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
 .\scripts\uv.ps1 run python .\scripts\debug\one_shot_scan.py --group-id "<group_id>" --scroll-rounds 3
 .\scripts\uv.ps1 run python .\scripts\internal\resident_main.py --max-cycles 2 --interval-seconds 1
 .\scripts\uv.ps1 run python .\scripts\admin\console.py --data-dir "D:\fb_monitor_data"
@@ -64,6 +68,16 @@
 git diff --check
 ```
 
+Release tag 前建議執行：
+
+```powershell
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py
+```
+
+腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
+
+若這次 release 改過 `webapp/static` 或 template 入口，確認 `src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 已更新；release validation 會印出目前值，避免瀏覽器吃到舊 module graph。
+
 ## 啟動診斷位置
 
 - runtime info：`<data-dir>\runtime\server.json`
@@ -72,3 +86,20 @@ git diff --check
 - error log：`<data-dir>\logs\error.log`
 
 詳細 launcher / resource lock / startup semantics 看 `docs/ARCHITECTURE.md#正式入口`。
+
+## Browser-level Manual QA
+
+Sidebar 調整順序 / grouping 不能只靠 unit test 判斷；release 前至少用一般 Chrome 視窗檢查一次：
+
+- 建立 4 個以上 targets，包含 posts、comments 與未分組 target。
+- 進入「調整順序」模式，拖曳 target，確認 sidebar 與中央卡片順序一致，重新整理後仍保留。
+- 取消調整順序時，不保存暫時拖曳結果。
+- 建立、重新命名、刪除空群組；嘗試刪除非空群組時 target 不被移出。
+- 將 target 拖入群組與移回未分組，重新整理後仍正確。
+- 套用群組設定模板時，確認影響 target 數、套用區段、覆蓋提示與不可自動復原提示都有顯示。
+- 等待 dashboard partial update，確認 sidebar 狀態更新後排序、分組、收合狀態不被打亂。
+- 開第二個瀏覽器視窗觀察同一 Web UI；重新整理後不得出現錯誤順序或 JS error。
+
+## Packaging
+
+EXE 打包前置、PyInstaller spec 與 frozen smoke checklist 看 `packaging/README.md`。

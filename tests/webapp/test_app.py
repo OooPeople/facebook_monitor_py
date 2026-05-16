@@ -28,6 +28,8 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
+from facebook_monitor.facebook.group_metadata import GroupMetadata
+from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
@@ -39,6 +41,8 @@ from facebook_monitor.webapp.query_service import get_dashboard_view
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.webapp.assets import ASSET_VERSION
@@ -52,6 +56,18 @@ def create_app(**kwargs):
 
     kwargs.setdefault("enforce_csrf", False)
     return create_production_app(**kwargs)
+
+
+def make_supported_update_paths(tmp_path: Path):
+    """建立 settings 更新 route 測試用的 PyInstaller-like app root。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.app_base_dir.mkdir(parents=True, exist_ok=True)
+    (paths.app_base_dir / "facebook-monitor-updater.exe").write_text(
+        "updater",
+        encoding="utf-8",
+    )
+    return paths
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
@@ -106,7 +122,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "app": "Facebook Monitor",
-        "version": "0.0.0",
+        "version": "0.1.0",
         "asset_version": ASSET_VERSION,
         "python_version": payload["python_version"],
         "packaging_mode": "source",
@@ -180,7 +196,7 @@ def test_pages_render_csrf_token_for_forms_and_fetch_headers(tmp_path: Path) -> 
 
     assert response.status_code == 200
     assert '<meta name="csrf-token" content="known-token">' in response.text
-    assert response.text.count('name="csrf_token" value="known-token"') >= 4
+    assert response.text.count('name="csrf_token" value="known-token"') >= 3
     assert re.search(r'name="csrf_token" value="known-token"', response.text)
 
 
@@ -206,6 +222,7 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert str(paths.db_path) in response.text
     assert str(paths.profile_dir) in response.text
     assert str(paths.logs_dir) in response.text
+    assert str(paths.updates_dir) in response.text
     assert "Browser mode" in response.text
     assert "playwright_chromium" in response.text
     assert "Asset version" in response.text
@@ -220,6 +237,283 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert "runtime-diagnostics-copy-source" in response.text
     assert "data-secret-input" not in response.text
     assert "data-dirty-submit" in response.text
+
+
+def test_settings_page_shows_idle_update_check(tmp_path: Path) -> None:
+    """設定頁預設只顯示更新檢查入口，不主動查 GitHub。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "程式更新" in response.text
+    assert "尚未檢查更新" in response.text
+    assert 'name="update_check" value="1"' in response.text
+    assert "GitHub repo" not in response.text
+    assert "Preview" not in response.text
+
+
+def test_settings_update_check_uses_github_release_presenter(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """按下更新檢查時，設定頁顯示 release metadata，不下載 asset。"""
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        assert current_version == "0.1.0"
+        assert channel == "stable"
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="目前只提供檢查，不會下載或套用更新。",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url=(
+                "https://github.com/OooPeople/facebook_monitor_py/releases/download/"
+                "v0.1.1/facebook-monitor-0.1.1-windows-portable.zip"
+            ),
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url=(
+                "https://github.com/OooPeople/facebook_monitor_py/releases/download/"
+                "v0.1.1/facebook-monitor-0.1.1-windows-portable.zip.sha256"
+            ),
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert "有新版 0.1.1" in response.text
+    assert "最新版本" in response.text
+    assert "0.1.1" in response.text
+    assert "Release asset" not in response.text
+    assert "SHA256" not in response.text
+    assert "開啟 Release" not in response.text
+    assert "下載更新" not in response.text
+
+
+def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """有新版且有 SHA256 asset 時才顯示下載更新入口。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert 'action="/settings/updates/download"' in response.text
+    assert "下載更新" in response.text
+
+
+def test_settings_download_update_verifies_asset_and_opens_folder(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """下載更新 route 重新查 metadata，下載到 runtime updates dir，驗證後開資料夾。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    checked_update: dict[str, object] = {}
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        assert current_version == "0.1.0"
+        assert channel == "stable"
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    async def fake_download_and_verify_update(
+        *,
+        update_check: UpdateCheckResult,
+        updates_dir: Path,
+    ) -> UpdateDownloadResult:
+        checked_update["asset_name"] = update_check.asset_name
+        checked_update["updates_dir"] = updates_dir
+        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"verified zip")
+        return UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=file_path,
+            sha256_path=file_path.with_name(file_path.name + ".sha256"),
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+        )
+
+    opened_paths: list[Path] = []
+
+    def fake_reveal_in_file_manager(path: Path) -> bool:
+        opened_paths.append(path)
+        return True
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.reveal_in_file_manager",
+        fake_reveal_in_file_manager,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.post(
+        "/settings/updates/download",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "message=" in response.headers["location"]
+    assert checked_update["asset_name"] == "facebook-monitor-0.1.1-windows-portable.zip"
+    assert checked_update["updates_dir"] == paths.updates_dir
+    assert (paths.runtime_dir / "pending_update.json").is_file()
+    assert opened_paths == [
+        paths.updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+    ]
+
+
+def test_settings_download_update_rejects_source_mode(tmp_path: Path) -> None:
+    """source mode 不可建立會指向 repo app_base_dir 的 pending update。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post(
+        "/settings/updates/download",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+
+def test_settings_apply_update_launches_updater_and_requests_shutdown(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """套用更新 route 啟動 temp updater，並呼叫 launcher 提供的 shutdown hook。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    launched_paths: list[Path] = []
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        launched_paths.append(paths.runtime_dir)
+        from facebook_monitor.updates.launcher import UpdaterLaunchResult
+
+        return UpdaterLaunchResult(
+            launched=True,
+            status="launched",
+            message="updater launched",
+            pid=123,
+        )
+
+    shutdown_requested: list[bool] = []
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    app.state.request_shutdown = lambda: shutdown_requested.append(True)
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/apply", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "message=" in response.headers["location"]
+    assert launched_paths == [paths.runtime_dir]
+    assert shutdown_requested == [True]
+
+
+def test_settings_apply_update_rejects_source_mode(tmp_path: Path) -> None:
+    """source mode 不可啟動 updater 套用流程。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post("/settings/updates/apply", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
 
 
 def test_settings_page_updates_target_keyword_defaults(tmp_path: Path) -> None:
@@ -307,6 +601,45 @@ def test_create_target_route_uses_saved_keyword_defaults_when_fields_are_omitted
     assert config.exclude_ignore_phrases == ("全收", "回收")
 
 
+def test_create_target_route_stores_and_renders_group_cover_thumbnail(tmp_path: Path) -> None:
+    """新增 target 時 metadata resolver 會一併保存並顯示社團封面縮圖。"""
+
+    db_path = tmp_path / "app.db"
+    cover_url = "https://scontent.example.test/group-cover.jpg"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=lambda _profile_dir, _url: GroupMetadata(
+                group_name="測試社團",
+                group_cover_image_url=cover_url,
+            ),
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+    index_response = client.get("/")
+
+    assert response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+    assert target is not None
+    assert target.group_cover_image_url == cover_url
+    assert index_response.status_code == 200
+    assert f'<img src="{cover_url}" alt=""' in index_response.text
+
+
 def test_theme_preference_is_stored_in_database_for_all_pages(tmp_path: Path) -> None:
     """主題偏好必須存進 app DB，避免 auto-port 或瀏覽器狀態遺失。"""
 
@@ -320,7 +653,7 @@ def test_theme_preference_is_stored_in_database_for_all_pages(tmp_path: Path) ->
     new_target_response = client.get("/targets/new")
 
     assert initial_response.status_code == 200
-    assert 'let theme = "light";' in initial_response.text
+    assert 'let theme = "dark";' in initial_response.text
     assert save_response.status_code == 200
     assert save_response.json() == {"theme": "dark"}
     assert 'let theme = "dark";' in index_response.text
@@ -338,6 +671,32 @@ def test_theme_preference_rejects_unknown_value(tmp_path: Path) -> None:
     response = client.post("/settings/theme", json={"theme": "system"})
 
     assert response.status_code == 400
+
+
+def test_index_and_partial_payload_show_profile_needs_login_warning(
+    tmp_path: Path,
+) -> None:
+    """Facebook session 失效時，首頁與 partial update 都帶右上角警告。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        status = app_context.repositories.app_settings.mark_profile_needs_login(
+            reason="login_required",
+            source="resident_main",
+        )
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+
+    assert status.state == ProfileSessionState.NEEDS_LOGIN
+    assert index_response.status_code == 200
+    assert "Facebook 需要重新登入" in index_response.text
+    payload = cards_response.json()
+    warning = payload["profile_session_warning"]
+    assert warning["needs_login"] is True
+    assert warning["reason"] == "login_required"
+    assert "重新開啟程式" in warning["message"]
 
 
 def test_dashboard_import_map_versions_sidebar_module(tmp_path: Path) -> None:
@@ -404,8 +763,10 @@ def test_settings_keyword_defaults_use_compact_two_column_layout() -> None:
     )
 
     assert "textarea {\n  resize: none;\n}" in forms_css
-    assert ".settings-keyword-stack {\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n}" in pages_css
-    assert "  .settings-keyword-stack {\n    grid-template-columns: 1fr;\n  }" in pages_css
+    assert ".settings-form-grid--two {\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n}" in forms_css
+    assert ".settings-actions--right" in forms_css
+    assert ".settings-actions--left" in forms_css
+    assert "  .settings-form-grid--two {\n    grid-template-columns: 1fr;\n  }" in pages_css
     assert ".debug-copy-source {\n  min-height: 150px;\n  resize: none;" in diagnostics_css
 
 
@@ -419,8 +780,12 @@ def test_hit_records_modal_matches_preview_typography_and_link_style() -> None:
         encoding="utf-8"
     )
 
-    assert ".hit-record-fields .field-grid-cell dt" in modal_styles
-    assert ".hit-record-fields .field-grid-cell dd" in modal_styles
+    assert ".hit-record-summary-list" in modal_styles
+    assert ".hit-record-summary-item dt::after" in modal_styles
+    assert 'content: "：";' in modal_styles
+    assert "grid-template-columns: 5em minmax(0, 1fr);" in modal_styles
+    assert "item.className = \"hit-record-summary-item\";" in hit_records_js
+    assert "fields.className = \"hit-record-fields hit-record-summary-list\";" in hit_records_js
     assert modal_styles.count("font-size: 14px;") >= 4
     assert ".hit-record-row a" in modal_styles
     assert "border-radius: 999px;" in modal_styles
@@ -896,6 +1261,8 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     hit_preview = row.hit_record_preview_rows[0]
 
     assert dashboard.sidebar_items[0].display_name == "測試社團"
+    assert dashboard.sidebar_items[0].mode_label == "貼文"
+    assert dashboard.sidebar_items[0].mode_class == "posts"
     assert dashboard.sidebar_items[0].hit_count == 1
     assert "命中 1 筆" in dashboard.sidebar_items[0].status_summary
     assert row.hit_record_total_count == 1
@@ -970,6 +1337,7 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
             "include_keywords": "票,交換",
             "exclude_keywords": "售完",
             "exclude_ignore_phrases": "全收,回收",
+            "refresh_mode": "fixed",
             "fixed_refresh_sec": "90",
             "max_items_per_scan": "30",
             "auto_adjust_sort": "on",
@@ -1090,7 +1458,8 @@ def test_update_config_route_rejects_invalid_floating_refresh_range(
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
-    assert config.fixed_refresh_sec == 60
+    assert config.fixed_refresh_sec is None
+    assert config.jitter_enabled
 
 
 def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
@@ -1138,7 +1507,17 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert "data-secret-input" not in form_response.text
     assert 'name="ntfy_topic" type="text"' in form_response.text
     assert 'name="discord_webhook" type="text"' in form_response.text
-    assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec}"' in form_response.text
+    assert (
+        form_response.text.index('name="refresh_mode" type="radio" value="floating"')
+        < form_response.text.index('name="refresh_mode" type="radio" value="fixed"')
+    )
+    assert re.search(
+        r'name="refresh_mode" type="radio" value="floating"[^>]*checked',
+        form_response.text,
+    )
+    assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec}"' in (
+        form_response.text
+    )
     assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan}"' in form_response.text
     assert 'name="auto_adjust_sort" type="hidden" value="on"' in form_response.text
     assert "Target kind" not in form_response.text
@@ -1156,7 +1535,10 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.include_keywords == ("票",)
     assert config.exclude_keywords == ("售完",)
     assert config.exclude_ignore_phrases == ("全收", "回收")
-    assert config.fixed_refresh_sec == 75
+    assert config.fixed_refresh_sec is None
+    assert config.jitter_enabled
+    assert config.min_refresh_sec == PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+    assert config.max_refresh_sec == PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
     assert config.max_items_per_scan == 10
     assert config.auto_load_more
     assert config.auto_adjust_sort
@@ -1575,7 +1957,8 @@ def test_create_target_route_adds_comments_target_and_resolves_group_name(
     index_response = client.get("/")
     assert index_response.status_code == 200
     assert "留言測試社團" in index_response.text
-    assert "社團留言" in index_response.text
+    assert "留言模式" in index_response.text
+    assert "下次刷新：未排程" in index_response.text
     assert "comments · group=222518561920110" not in index_response.text
     assert "parent_post=2187454285426518" not in index_response.text
     assert "scope=222518561920110:post:2187454285426518:comments" not in index_response.text
@@ -1643,16 +2026,19 @@ def test_settings_routes_control_profile_window(tmp_path: Path) -> None:
 
     assert settings_response.status_code == 200
     assert "Facebook automation profile" in settings_response.text
+    assert "未開啟" not in settings_response.text
+    assert "視窗開啟中" not in settings_response.text
+    assert "關閉視窗" not in settings_response.text
     assert open_response.status_code == 303
     assert profile_manager.active
-    assert "設定 · 開啟中" in active_index_response.text
+    assert "設定 · 開啟中" not in active_index_response.text
     close_response = client.post("/settings/facebook/close", follow_redirects=False)
     assert close_response.status_code == 303
     assert not profile_manager.active
 
 
 def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path) -> None:
-    """設定頁可保存通知預設值、送測試通知，並批次套用到 target。"""
+    """設定頁可保存通知預設值；測試通知 route 保留給診斷使用。"""
 
     db_path = tmp_path / "app.db"
     notifications = NotificationRecorder()
@@ -1706,6 +2092,9 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     assert save_response.status_code == 303
     assert "通知預設值" in settings_page.text
     assert "未填寫也不影響功能" in settings_page.text
+    assert "批次套用來源" not in settings_page.text
+    assert "套用到所有 target" not in settings_page.text
+    assert "發送測試通知" not in settings_page.text
     assert form_response.status_code == 200
     assert "value=\"phase0test\"" in form_response.text
     assert "https://discord.com/api/webhooks/example" in form_response.text
@@ -1770,8 +2159,20 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert "掃描設定" in index_response.text
     assert "刷新設定" in index_response.text
     assert "通知設定" in index_response.text
-    assert "測試通知" in index_response.text
+    assert "測試通知" not in index_response.text
     assert f'form="config-{target.id}"' in index_response.text
+    assert (
+        index_response.text.index(
+            f'name="refresh_mode" type="radio" value="floating" form="config-{target.id}"'
+        )
+        < index_response.text.index(
+            f'name="refresh_mode" type="radio" value="fixed" form="config-{target.id}"'
+        )
+    )
+    assert re.search(
+        rf'name="refresh_mode" type="radio" value="floating"[^>]*form="config-{target.id}"[^>]*checked',
+        index_response.text,
+    )
     assert f'name="refresh_mode" type="radio" value="fixed" form="config-{target.id}"' in (
         index_response.text
     )
@@ -1872,8 +2273,8 @@ def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
     assert "private-token" not in response.text
 
 
-def test_settings_open_pauses_scheduler_until_profile_closes(tmp_path: Path) -> None:
-    """設定頁開 profile 時會由 Web UI 內部暫停並在關閉後恢復 scheduler。"""
+def test_settings_open_pauses_scheduler_until_profile_window_ends(tmp_path: Path) -> None:
+    """設定頁開 profile 時暫停 scheduler；視窗自行結束後會自動恢復。"""
 
     db_path = tmp_path / "app.db"
     profile_manager = FakeProfileManager()
@@ -1895,11 +2296,37 @@ def test_settings_open_pauses_scheduler_until_profile_closes(tmp_path: Path) -> 
     assert scheduler_manager.stopped_count == 1
     assert not scheduler_manager.running
 
-    close_response = client.post("/settings/facebook/close", follow_redirects=False)
+    profile_manager.active = False
+    assert profile_manager.options is not None
+    assert profile_manager.options.on_close is not None
+    profile_manager.options.on_close()
 
-    assert close_response.status_code == 303
     assert scheduler_manager.started_count == 1
     assert scheduler_manager.running
+
+
+def test_webui_shutdown_closes_active_profile_window(tmp_path: Path) -> None:
+    """Web UI 關閉時會先收掉設定頁開出的 profile 視窗。"""
+
+    db_path = tmp_path / "app.db"
+    profile_manager = FakeProfileManager()
+    scheduler_manager = FakeSchedulerManager()
+
+    with TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            profile_manager=profile_manager,
+            scheduler_manager=scheduler_manager,
+        )
+    ) as client:
+        response = client.post("/settings/facebook/open", follow_redirects=False)
+        assert response.status_code == 303
+        assert profile_manager.active
+
+    assert not profile_manager.active
+    assert profile_manager.close_count == 1
+    assert scheduler_manager.stopped_count == 1
 
 
 def test_create_target_uses_fallback_name_when_scheduler_running(
@@ -1950,6 +2377,124 @@ def test_create_target_uses_fallback_name_when_scheduler_running(
     assert target.name == "group:222518561920110:posts"
     assert target.metadata_status == TargetMetadataStatus.PENDING
     assert scheduler_manager.metadata_refresh_target_ids == [target.id]
+
+
+def test_manual_metadata_refresh_marks_pending_and_wakes_scheduler(
+    tmp_path: Path,
+) -> None:
+    """設定 modal 的重新抓取會排入 resident metadata refresh，不直接搶 profile。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = FakeSchedulerManager()
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="舊名稱",
+            )
+        )
+        app_context.services.targets.mark_target_metadata_refresh_failed(
+            target.id,
+            "Facebook 尚未登入",
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+    response = client.post(
+        f"/targets/{target.id}/metadata/refresh",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert (
+        "%E5%B7%B2%E5%8A%A0%E5%85%A5%E6%8E%92%E7%A8%8B"
+        in response.headers["location"]
+    )
+    assert scheduler_manager.metadata_refresh_target_ids == [target.id]
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.woken_count == 1
+    with SqliteApplicationContext(db_path) as app_context:
+        updated = app_context.repositories.targets.get(target.id)
+    assert updated is not None
+    assert updated.metadata_status == TargetMetadataStatus.PENDING
+    assert updated.metadata_error == ""
+
+
+def test_settings_modal_keeps_metadata_refresh_entry_hidden_for_later_placement(
+    tmp_path: Path,
+) -> None:
+    """metadata refresh 入口放在設定 modal footer，不佔用設定內容區塊。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app_context.services.targets.mark_target_metadata_refresh_failed(
+            target.id,
+            "Facebook 尚未登入",
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Target 資訊" not in response.text
+    assert "重新抓取名稱與封面" in response.text
+    assert f"/targets/{target.id}/metadata/refresh" in response.text
+
+
+def test_sidebar_status_shows_target_mode_chip(tmp_path: Path) -> None:
+    """sidebar 副行在狀態與掃描摘要中間顯示貼文/留言 mode chip。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        comments = app_context.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="1370511589953459",
+                parent_post_id="2772468963091041",
+                canonical_url=(
+                    "https://www.facebook.com/groups/1370511589953459/"
+                    "posts/2772468963091041"
+                ),
+                group_name="測試社團",
+            )
+        )
+        posts = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="貼文社團",
+            )
+        )
+        app_context.services.targets.pause_target_monitoring(comments.id)
+        app_context.services.targets.pause_target_monitoring(posts.id)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-sidebar-mode-label="留言"' in response.text
+    assert 'data-sidebar-mode-class="comments"' in response.text
+    assert (
+        'class="sidebar-status-token target-mode-chip sidebar-mode-chip comments">留言</span>'
+        in response.text
+    )
+    assert 'data-sidebar-mode-label="貼文"' in response.text
+    assert 'data-sidebar-mode-class="posts"' in response.text
+    assert (
+        'class="sidebar-status-token target-mode-chip sidebar-mode-chip posts">貼文</span>'
+        in response.text
+    )
 
 
 def test_scheduler_routes_are_not_public_daily_controls(tmp_path: Path) -> None:
@@ -2475,6 +3020,96 @@ def test_sidebar_layout_api_saves_group_order_and_placements_atomically(tmp_path
     assert placements[second.id].sidebar_group_id == second_group.id
 
 
+def test_sidebar_group_order_api_rejects_duplicate_group_ids(tmp_path: Path) -> None:
+    """sidebar group order API 不接受重複 group id。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first_group = app_context.services.sidebar_layout.create_group("第一群")
+        second_group = app_context.services.sidebar_layout.create_group("第二群")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        "/api/sidebar/groups/order",
+        json={"group_ids": [first_group.id, second_group.id, first_group.id]},
+    )
+
+    assert response.status_code == 400
+    assert "重複群組" in response.json()["detail"]
+    with SqliteApplicationContext(db_path) as app_context:
+        groups = app_context.repositories.sidebar_layout.list_groups()
+    assert [group.id for group in groups] == [first_group.id, second_group.id]
+
+
+def test_sidebar_layout_api_rejects_duplicate_group_sections(tmp_path: Path) -> None:
+    """sidebar layout API 不接受重複 group section。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("重複群組")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        "/api/sidebar/layout",
+        json={
+            "group_ids": [group.id],
+            "groups": [
+                {"group_id": group.id, "target_ids": [first.id]},
+                {"group_id": group.id, "target_ids": [second.id]},
+                {"group_id": None, "target_ids": []},
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "排序資料不可包含重複群組區塊"
+
+
+def test_sidebar_placements_api_rejects_duplicate_ungrouped_sections(tmp_path: Path) -> None:
+    """sidebar placements API 不接受多個未分組 section。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        "/api/sidebar/placements",
+        json={
+            "groups": [
+                {"group_id": None, "target_ids": [first.id]},
+                {"group_id": None, "target_ids": [second.id]},
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "排序資料不可包含重複群組區塊"
+
+
 def test_flat_sidebar_order_api_rejects_when_targets_are_grouped(tmp_path: Path) -> None:
     """舊平面排序 API 不可在已有 group placement 時打平 sidebar 狀態。"""
 
@@ -2504,10 +3139,58 @@ def test_flat_sidebar_order_api_rejects_when_targets_are_grouped(tmp_path: Path)
     )
 
     assert response.status_code == 400
-    assert "grouped placement" in response.json()["detail"]
+    assert "已有群組排序狀態" in response.json()["detail"]
     with SqliteApplicationContext(db_path) as app_context:
         placements = app_context.repositories.sidebar_layout.list_placements()
     assert placements[first.id].sidebar_group_id == group.id
+
+
+def test_sidebar_api_errors_use_safe_traditional_chinese_messages(
+    tmp_path: Path,
+) -> None:
+    """sidebar API 錯誤回應不得暴露英文內部錯誤或 repository 細節。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("已分組")
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id]), (None, [second.id])]
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    invalid_json = client.post(
+        "/api/sidebar/groups",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+    grouped_order = client.post(
+        "/api/sidebar/order",
+        json={"target_ids": [second.id, first.id]},
+    )
+    missing_group = client.patch(
+        "/api/sidebar/groups/missing",
+        json={"name": "新名稱"},
+    )
+
+    assert invalid_json.status_code == 400
+    assert invalid_json.json()["detail"] == "JSON 格式不正確"
+    assert grouped_order.status_code == 400
+    assert grouped_order.json()["detail"] == "已有群組排序狀態，請使用調整順序後的確認保存"
+    assert missing_group.status_code == 404
+    assert missing_group.json()["detail"] == "找不到指定的 sidebar 群組"
 
 
 def test_dashboard_events_streams_revision_event(tmp_path: Path) -> None:

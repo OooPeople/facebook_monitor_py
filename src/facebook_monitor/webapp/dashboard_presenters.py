@@ -253,7 +253,10 @@ class TargetSettingsPresenter:
     def fixed_refresh_value(self) -> int:
         """回傳表單使用的固定掃描間隔秒數。"""
 
-        return self.config.fixed_refresh_sec or PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
+        return (
+            self.config.fixed_refresh_sec
+            or PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
+        )
 
     @property
     def min_refresh_value(self) -> int:

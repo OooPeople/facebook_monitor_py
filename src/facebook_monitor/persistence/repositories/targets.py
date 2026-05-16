@@ -24,10 +24,10 @@ class TargetRepository:
             """
             INSERT INTO targets (
                 id, name, target_kind, group_id, group_name, parent_post_id,
-                scope_id, canonical_url, metadata_status, metadata_error,
-                enabled, paused, worker_mode, created_at, updated_at
+                scope_id, canonical_url, group_cover_image_url, metadata_status,
+                metadata_error, enabled, paused, worker_mode, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 target_kind=excluded.target_kind,
@@ -36,6 +36,7 @@ class TargetRepository:
                 parent_post_id=excluded.parent_post_id,
                 scope_id=excluded.scope_id,
                 canonical_url=excluded.canonical_url,
+                group_cover_image_url=excluded.group_cover_image_url,
                 metadata_status=excluded.metadata_status,
                 metadata_error=excluded.metadata_error,
                 enabled=excluded.enabled,
@@ -52,6 +53,7 @@ class TargetRepository:
                 target.parent_post_id,
                 target.scope_id,
                 target.canonical_url,
+                target.group_cover_image_url,
                 target.metadata_status.value,
                 target.metadata_error,
                 int(target.enabled),

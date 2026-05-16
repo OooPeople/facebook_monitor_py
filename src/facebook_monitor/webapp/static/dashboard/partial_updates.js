@@ -3,6 +3,7 @@ import {
   isTargetDirty,
   markTargetUpdatePending,
 } from "/static/dashboard/state.js";
+import { syncNextRefreshCountdown } from "/static/dashboard/next_refresh_countdown.js";
 import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
 import { showInlineStatus } from "/static/dashboard/utils.js";
 
@@ -21,11 +22,97 @@ const updateText = (root, selector, value) => {
   }
 };
 
+const updateProfileSessionWarning = (payload) => {
+  const warning = document.querySelector("[data-profile-session-warning]");
+  if (!warning) return;
+  const needsLogin = Boolean(payload?.needs_login);
+  warning.textContent = needsLogin ? (payload.message || "") : "";
+  warning.toggleAttribute("hidden", !needsLogin);
+};
+
+const updateAvatar = (avatar, thumbnailUrl, displayName) => {
+  if (!avatar) return;
+  const normalizedUrl = String(thumbnailUrl || "").trim();
+  if (!normalizedUrl) {
+    avatar.classList.remove("has-image");
+    avatar.textContent = (displayName || "?").slice(0, 1) || "?";
+    return;
+  }
+  avatar.classList.add("has-image");
+  let image = avatar.querySelector("img");
+  if (!image) {
+    avatar.textContent = "";
+    image = document.createElement("img");
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "origin-when-cross-origin";
+    avatar.append(image);
+  }
+  if (image.getAttribute("src") !== normalizedUrl) {
+    image.src = normalizedUrl;
+  }
+};
+
 const updateStatusBadge = (card, payload) => {
   const status = card.querySelector("[data-card-status]");
   if (!status) return;
   status.className = `status ${payload.status_class || ""}`.trim();
   status.textContent = payload.status_label || "";
+};
+
+const updateHeaderRuntimeSummary = (card, payload) => {
+  const mode = card.querySelector("[data-target-mode]");
+  if (mode) {
+    mode.className = `target-mode-chip ${payload.mode_class || ""}`.trim();
+    mode.textContent = payload.mode_label || "";
+  }
+  updateText(card, "[data-latest-scan-header]", payload.latest_scan_header_label || "");
+  syncNextRefreshCountdown(
+    card.querySelector("[data-next-refresh]"),
+    payload.next_refresh_seconds,
+    payload.next_refresh_label || "",
+  );
+  const showLatestError = Boolean(payload.has_latest_failed_scan);
+  card.querySelector("[data-latest-error-separator]")?.toggleAttribute(
+    "hidden",
+    !showLatestError,
+  );
+  card.querySelector("[data-latest-error-indicator]")?.toggleAttribute(
+    "hidden",
+    !showLatestError,
+  );
+};
+
+const updateMonitoringAction = (card, payload) => {
+  const form = card.querySelector("[data-monitoring-form]");
+  if (form && payload.monitoring_action) {
+    form.action = `/targets/${encodeURIComponent(payload.target_id)}/${payload.monitoring_action}`;
+  }
+  const button = card.querySelector("[data-monitoring-button]");
+  if (button) {
+    button.textContent = payload.monitoring_button_label || "";
+  }
+};
+
+const updateRuntimeMessage = (card, selector, value) => {
+  const node = card.querySelector(selector);
+  if (!node) return;
+  const text = String(value || "");
+  node.textContent = text;
+  node.hidden = !text;
+};
+
+const updateRuntimeMessages = (card, payload) => {
+  updateRuntimeMessage(card, "[data-runtime-error]", payload.runtime_error);
+  updateRuntimeMessage(card, "[data-runtime-skip-reason]", payload.runtime_skip_reason);
+};
+
+const updateScanCycleResult = (card, payload) => {
+  const result = card.querySelector("[data-scan-cycle-result]");
+  if (!result) return;
+  const label = payload.scan_cycle_result_label || "";
+  result.textContent = label;
+  result.title = label;
 };
 
 const updateCollapsedSummary = (card, payload) => {
@@ -75,14 +162,14 @@ const updateSidebar = (payload) => {
     if (name) {
       name.textContent = item.display_name || "";
     }
-    if (avatar) {
-      avatar.textContent = (item.display_name || "?").slice(0, 1) || "?";
-    }
+    updateAvatar(avatar, item.thumbnail_url, item.display_name);
     renderSidebarStatus(status, {
       baseStatus: item.base_status_summary || "",
       statusClass: item.status_class || "",
       statusDetail: item.status_detail || "",
       defaultDetail: item.status_detail || "",
+      modeLabel: item.mode_label || "",
+      modeClass: item.mode_class || "",
     });
   });
   return allItemsMatched;
@@ -94,9 +181,16 @@ const updateTargetCard = (state, payload) => {
 
   updateStatusBadge(card, payload);
   updateText(card, "[data-target-title]", payload.display_name || "");
-  updateText(card, "[data-target-avatar]", (payload.display_name || "?").slice(0, 1) || "?");
+  updateAvatar(
+    card.querySelector("[data-target-avatar]"),
+    payload.thumbnail_url,
+    payload.display_name,
+  );
   updateRenameInput(card, payload);
-  updateText(card, "[data-header-summary]", payload.header_summary_label);
+  updateHeaderRuntimeSummary(card, payload);
+  updateMonitoringAction(card, payload);
+  updateRuntimeMessages(card, payload);
+  updateScanCycleResult(card, payload);
   updateCollapsedSummary(card, payload);
   updateText(card, `[data-hit-count="${payload.target_id}"]`, payload.hit_record_total_count);
   updateScanDiagnostics(card, payload);
@@ -138,6 +232,7 @@ export const applyDashboardPartialUpdate = async (state) => {
   try {
     const dashboardPayload = await fetchJson("/api/dashboard-cards");
     if (sequence !== state.partialUpdateSeq) return;
+    updateProfileSessionWarning(dashboardPayload.profile_session_warning || {});
     const targetCards = Array.from(document.querySelectorAll("[data-target-card][data-target-id]"));
     const sidebarPayload = dashboardPayload.sidebar || {};
     if (

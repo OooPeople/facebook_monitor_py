@@ -1,6 +1,7 @@
 /* 06 settings modal / 07 hit records modal */
 .settings-modal,
 .keyword-help-modal,
+.notification-help-modal,
 .hit-records-modal {
   border: 0;
   border-radius: var(--radius-md);
@@ -40,6 +41,7 @@
 
 .settings-modal::backdrop,
 .keyword-help-modal::backdrop,
+.notification-help-modal::backdrop,
 .hit-records-modal::backdrop {
   background: var(--modal-backdrop);
 }
@@ -277,6 +279,13 @@
   gap: 12px;
 }
 
+.modal-section-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
 .modal-section-card {
   background: var(--surface);
   border: 1px solid var(--border-soft);
@@ -310,6 +319,43 @@
   border-radius: 4px;
   color: var(--text);
   padding: 1px 5px;
+}
+
+.notification-help-body {
+  gap: 12px;
+}
+
+.notification-help-body p {
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.notification-help-body code {
+  background: var(--surface-muted);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 1px 5px;
+}
+
+.notification-help-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.notification-help-steps ol {
+  color: var(--text-soft);
+  display: grid;
+  font-size: 14px;
+  gap: 6px;
+  line-height: 1.55;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.notification-help-note {
+  font-size: 12px;
 }
 
 .modal-section h4 {
@@ -374,6 +420,24 @@
 .target-metadata-refresh-button {
   color: var(--text-soft);
   font-weight: 600;
+}
+
+.notification-test-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.notification-test-button {
+  color: var(--text-soft);
+  font-weight: 600;
+  min-height: 34px;
+}
+
+.notification-test-status {
+  min-width: 0;
 }
 
 .actions {

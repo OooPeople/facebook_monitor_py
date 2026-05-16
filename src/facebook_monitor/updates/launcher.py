@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -15,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.handoff import PendingUpdate
@@ -23,6 +25,7 @@ from facebook_monitor.updates.handoff import pending_update_path
 
 UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
 APP_EXE_NAME = "facebook-monitor.exe"
+TEMP_UPDATER_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -122,17 +125,17 @@ def find_bundled_updater(app_base_dir: Path) -> Path | None:
 def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
     """複製 updater onedir runtime 到 temp，避免 updater 鎖住 app base dir。"""
 
+    root = temp_updater_root()
+    cleanup_old_temp_updaters(root)
+    root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     runtime_hash = hashlib.sha256(str(runtime_dir.resolve()).encode("utf-8")).hexdigest()[:12]
-    temp_dir = (
-        Path(tempfile.gettempdir())
-        / "facebook-monitor"
-        / "updater"
-        / f"{timestamp}-{runtime_hash}"
+    temp_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"{timestamp}-{runtime_hash}-",
+            dir=str(root),
+        )
     )
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
     destination = temp_dir / UPDATER_EXE_NAME
     shutil.copy2(source, destination)
     source_internal = source.parent / "_internal"
@@ -140,6 +143,31 @@ def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
         raise ValueError("updater_internal_dir_missing")
     shutil.copytree(source_internal, temp_dir / "_internal")
     return destination
+
+
+def temp_updater_root() -> Path:
+    """回傳 temp updater runtime copy 的根目錄。"""
+
+    return Path(tempfile.gettempdir()) / "facebook-monitor" / "updater"
+
+
+def cleanup_old_temp_updaters(
+    root: Path,
+    *,
+    max_age_seconds: int = TEMP_UPDATER_MAX_AGE_SECONDS,
+) -> None:
+    """清除過舊 temp updater runtime copy；清理失敗不影響本次更新。"""
+
+    cutoff = time.time() - max_age_seconds
+    if not root.exists():
+        return
+    with suppress(OSError):
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            with suppress(OSError):
+                if child.stat().st_mtime < cutoff:
+                    shutil.rmtree(child)
 
 
 def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:

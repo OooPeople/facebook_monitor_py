@@ -49,6 +49,26 @@ def mock_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport
     return httpx.MockTransport(handler)
 
 
+def redirect_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport:
+    """模擬 GitHub release asset 下載會先回 302 redirect。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://downloads.example.test/app.zip":
+            return httpx.Response(302, headers={"location": "https://objects.example.test/app.zip"})
+        if str(request.url) == "https://downloads.example.test/app.zip.sha256":
+            return httpx.Response(
+                302,
+                headers={"location": "https://objects.example.test/app.zip.sha256"},
+            )
+        if str(request.url) == "https://objects.example.test/app.zip":
+            return httpx.Response(200, content=zip_bytes)
+        if str(request.url) == "https://objects.example.test/app.zip.sha256":
+            return httpx.Response(200, text=sha256_text)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
 def test_download_and_verify_update_stores_verified_zip_under_updates_dir(
     tmp_path: Path,
 ) -> None:
@@ -75,6 +95,30 @@ def test_download_and_verify_update_stores_verified_zip_under_updates_dir(
     assert result.file_path.is_relative_to((tmp_path / "updates").resolve())
     assert result.expected_sha256 == digest
     assert result.actual_sha256 == digest
+
+
+def test_download_and_verify_update_follows_github_asset_redirects(
+    tmp_path: Path,
+) -> None:
+    """GitHub Release asset 下載會經過 302，下載器必須跟隨 redirect。"""
+
+    zip_bytes = b"redirected portable zip"
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=tmp_path / "updates",
+            transport=redirect_transport(
+                zip_bytes=zip_bytes,
+                sha256_text=f"{digest}  facebook-monitor-0.1.0-windows-portable.zip\n",
+            ),
+        )
+    )
+
+    assert result.status == "verified"
+    assert result.verified
+    assert result.file_path is not None
+    assert result.file_path.read_bytes() == zip_bytes
 
 
 def test_download_and_verify_update_rejects_sha256_mismatch(tmp_path: Path) -> None:

@@ -190,18 +190,41 @@ def evaluate_release(
             channel=channel,
             repository=repository,
             current_version=current_version,
-            latest_version=latest_version,
+            latest_version=current_version,
             update_available=False,
             summary="目前已是最新版本",
-            detail="",
+            detail="" if latest_version == current_version else (
+                f"GitHub 最新 release 是 {latest_version}，不高於目前版本。"
+            ),
             release_url=release_url,
-            asset_name=portable_asset.name if portable_asset else "",
-            asset_download_url=portable_asset.download_url if portable_asset else "",
-            sha256_asset_name=sha256_asset.name if sha256_asset else "",
-            sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
+            asset_name="",
+            asset_download_url="",
+            sha256_asset_name="",
+            sha256_asset_download_url="",
             failure_reason="",
         )
     if portable_asset is None:
+        if has_version_mismatched_windows_portable_asset(
+            assets,
+            latest_version=latest_version,
+        ):
+            return UpdateCheckResult(
+                checked=True,
+                status="asset_version_mismatch",
+                channel=channel,
+                repository=repository,
+                current_version=current_version,
+                latest_version=latest_version,
+                update_available=False,
+                summary="找到新版，但 Windows portable zip 版本不符",
+                detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
+                release_url=release_url,
+                asset_name="",
+                asset_download_url="",
+                sha256_asset_name="",
+                sha256_asset_download_url="",
+                failure_reason="asset_version_mismatch",
+            )
         return UpdateCheckResult(
             checked=True,
             status="asset_missing",
@@ -303,18 +326,29 @@ def find_windows_portable_asset(
     *,
     latest_version: str,
 ) -> ReleaseAsset | None:
-    """尋找 Windows portable zip；優先使用符合版本的精確檔名。"""
+    """尋找 Windows portable zip；只接受符合 release version 的精確檔名。"""
 
     expected_name = f"facebook-monitor-{latest_version}{WINDOWS_PORTABLE_SUFFIX}"
     for asset in assets:
         if asset.name == expected_name:
             return asset
+    return None
+
+
+def has_version_mismatched_windows_portable_asset(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+) -> bool:
+    """判斷 release 是否含有 portable zip，但檔名版本未對齊 tag。"""
+
+    expected_name = f"facebook-monitor-{latest_version}{WINDOWS_PORTABLE_SUFFIX}"
     for asset in assets:
         if asset.name.startswith("facebook-monitor-") and asset.name.endswith(
             WINDOWS_PORTABLE_SUFFIX
         ):
-            return asset
-    return None
+            return asset.name != expected_name
+    return False
 
 
 def find_sha256_asset(

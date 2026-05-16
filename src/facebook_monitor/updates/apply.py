@@ -66,12 +66,35 @@ def apply_pending_update_file(
         )
         _append_updater_log(log_path, result)
         return result
+    return apply_loaded_pending_update_file(
+        pending,
+        path,
+        wait_for_lock_seconds=wait_for_lock_seconds,
+        poll_seconds=poll_seconds,
+        log_path=log_path,
+    )
+
+
+def apply_loaded_pending_update_file(
+    pending: PendingUpdate,
+    path: Path,
+    *,
+    wait_for_lock_seconds: float = 0,
+    poll_seconds: float = 1,
+    log_path: Path | None = None,
+) -> UpdaterApplyResult:
+    """使用已讀取的 pending update 套用更新並處理 handoff cleanup。"""
+
     result = apply_pending_update(
         pending,
         wait_for_lock_seconds=wait_for_lock_seconds,
         poll_seconds=poll_seconds,
     )
+    cleanup_warnings: tuple[str, ...] = ()
+    if result.applied:
+        cleanup_warnings = _cleanup_applied_update(path, pending)
     _append_updater_log(log_path, result)
+    _append_cleanup_warning_log(log_path, cleanup_warnings)
     return result
 
 
@@ -371,3 +394,73 @@ def _append_updater_log(log_path: Path | None, result: UpdaterApplyResult) -> No
         log_path.open("a", encoding="utf-8").write(line)
     except OSError:
         return
+
+
+def _append_cleanup_warning_log(log_path: Path | None, warnings: tuple[str, ...]) -> None:
+    """寫入 cleanup warning；清理失敗不應遮蔽套用結果。"""
+
+    if log_path is None or not warnings:
+        return
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as file:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            for warning in warnings:
+                file.write(f"{timestamp} cleanup_warning={warning}\n")
+    except OSError:
+        return
+
+
+def _cleanup_applied_update(
+    pending_path: Path,
+    pending: PendingUpdate,
+) -> tuple[str, ...]:
+    """成功套用後清除本次下載與 handoff 檔，失敗時保留供診斷。"""
+
+    warnings: list[str] = []
+    updates_dir = pending.data_dir / "updates"
+    _cleanup_file(pending.zip_path, label="zip", warnings=warnings)
+    _cleanup_file(
+        pending.zip_path.with_name(pending.zip_path.name + ".sha256"),
+        label="sha256",
+        warnings=warnings,
+    )
+    parent = pending.zip_path.parent
+    try:
+        resolved_parent = parent.resolve()
+        resolved_updates_dir = updates_dir.resolve()
+        if (
+            resolved_parent != resolved_updates_dir
+            and resolved_parent.is_relative_to(resolved_updates_dir)
+        ):
+            parent.rmdir()
+    except OSError as exc:
+        warnings.append(_cleanup_warning("updates_parent", parent, exc))
+    _cleanup_file(pending_path, label="pending", warnings=warnings)
+    staging_dir = pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(
+        pending.version
+    )
+    try:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+    except OSError as exc:
+        warnings.append(_cleanup_warning("staging", staging_dir, exc))
+    return tuple(warnings)
+
+
+def _cleanup_file(path: Path, *, label: str, warnings: list[str]) -> None:
+    """刪除 cleanup 檔案並收集失敗原因。"""
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        warnings.append(_cleanup_warning(label, path, exc))
+
+
+def _cleanup_warning(label: str, path: Path, exc: OSError) -> str:
+    """整理 cleanup warning，避免 updater log 只剩模糊失敗。"""
+
+    return (
+        f"{label}:{path}:"
+        f"{exc.__class__.__name__}:{exc}"
+    )

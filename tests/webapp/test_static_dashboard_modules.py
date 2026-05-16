@@ -42,9 +42,14 @@ def test_dirty_form_helper_uses_form_elements_for_external_form_controls() -> No
     assert "export const getFormControls" in utils_js
     assert "form.elements" in utils_js
     assert "getFormControls(form).forEach" in utils_js
+    assert "statusElements = []" in utils_js
+    assert "allStatusElements.forEach" in utils_js
     assert "controlSignature" in utils_js
     assert "onDirtyChange(dirty)" in utils_js
     assert "[data-dirty-submit]" in utils_js
+    assert "data-dirty-status-for" in Path(
+        "src/facebook_monitor/webapp/static/dashboard/forms.js"
+    ).read_text(encoding="utf-8")
 
 
 def test_theme_toggle_contract_is_loaded_by_all_page_entrypoints() -> None:
@@ -126,6 +131,69 @@ def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     assert "setupKeywordTabs();" in main_js
     assert "[data-keyword-help-button]" in modals_js
     assert "[data-keyword-help-modal]" in modals_js
+
+
+def test_notification_help_is_loaded_by_formal_page_entrypoints() -> None:
+    """ntfy / Discord 說明按鈕需在首頁、設定頁與新增 target 頁可用。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    help_js = (dashboard_dir / "notification_help.js").read_text(encoding="utf-8")
+    notification_fields = Path(
+        "src/facebook_monitor/webapp/templates/_notification_settings_fields.html"
+    ).read_text(encoding="utf-8")
+    modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export const setupNotificationHelp" in help_js
+    assert "[data-notification-help-button]" in help_js
+    assert "[data-notification-help-modal]" in help_js
+    assert "bindDialogDismiss({" in help_js
+    assert "data-notification-help-button=\"ntfy\"" in notification_fields
+    assert "data-notification-help-button=\"discord\"" in notification_fields
+    assert "ntfy 說明" in notification_fields
+    assert "Discord Webhook 說明" in notification_fields
+    assert "ntfy 是一個簡單能讓手機收到通知訊息的 app。" in notification_fields
+    assert "這個設定可以讓通知訊息發送到 Discord 的頻道。" in notification_fields
+    assert "未勾選 <code>ntfy</code>" not in notification_fields
+    assert "未勾選 Discord Webhook" not in notification_fields
+    assert "未勾選通道或留空 URL" not in notification_fields
+    assert "測試通知" not in notification_fields
+    assert ".notification-help-modal" in modals_css
+    assert ".notification-help-steps ol" in modals_css
+    for filename in ("main.js", "settings.js", "new_target.js"):
+        text = (dashboard_dir / filename).read_text(encoding="utf-8")
+        assert '"/static/dashboard/notification_help.js"' in text
+        assert "setupNotificationHelp();" in text
+
+
+def test_notification_test_uses_async_route_without_reloading_dashboard() -> None:
+    """Target 測試通知按鈕需沿用既有 route，但由前端攔截避免關閉設定 modal。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    notification_test_js = (dashboard_dir / "notification_test.js").read_text(
+        encoding="utf-8"
+    )
+    main_js = (dashboard_dir / "main.js").read_text(encoding="utf-8")
+    route = Path("src/facebook_monitor/webapp/routes/targets.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export const setupNotificationTest" in notification_test_js
+    assert "[data-notification-test]" in notification_test_js
+    assert "event.preventDefault();" in notification_test_js
+    assert "event.stopImmediatePropagation();" not in notification_test_js
+    assert 'document.addEventListener("click"' in notification_test_js
+    assert "document.getElementById(button.dataset.notificationTestFormId" in (
+        notification_test_js
+    )
+    assert "button.dataset.notificationTestAction" in notification_test_js
+    assert "new FormData(form)" in notification_test_js
+    assert 'Accept: "application/json"' in notification_test_js
+    assert '"/static/dashboard/notification_test.js"' in main_js
+    assert "setupNotificationTest();" in main_js
+    assert "def _wants_json_response" in route
+    assert "JSONResponse({\"ok\": True" in route
 
 
 def test_unsafe_dashboard_fetches_use_shared_csrf_helper() -> None:
@@ -761,6 +829,9 @@ def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> No
     template = Path(
         "src/facebook_monitor/webapp/templates/_target_settings_modal.html"
     ).read_text(encoding="utf-8")
+    notification_test_button = Path(
+        "src/facebook_monitor/webapp/templates/_notification_test_button.html"
+    ).read_text(encoding="utf-8")
     modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
         encoding="utf-8"
     )
@@ -776,6 +847,27 @@ def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> No
     assert ".target-settings-modal .modal-footer-actions" in modals_css
     assert ".target-metadata-refresh-button" in modals_css
     assert "margin-left: auto;" in modals_css
+    assert "modal-section-header" in template
+    assert 'data-dirty-status-for="{{ config_form_id }}"' in template
+    assert '" ~ row.target.id ~ "/notifications/test"' in template
+    assert '{% include "_notification_test_button.html" %}' in template
+    assert "formaction" not in notification_test_button
+    assert "formmethod" not in notification_test_button
+    assert 'type="submit"' not in notification_test_button
+    assert 'type="button"' in notification_test_button
+    assert 'data-notification-test-action="{{ notification_test_action }}"' in (
+        notification_test_button
+    )
+    assert 'data-notification-test-form-id="{{ notification_test_form_id }}"' in (
+        notification_test_button
+    )
+    assert notification_test_button.index("data-notification-test-status") < (
+        notification_test_button.index("data-notification-test\n")
+    )
+    assert "data-notification-test" in notification_test_button
+    assert "data-notification-test-status" in notification_test_button
+    assert "測試通知" in notification_test_button
+    assert ".notification-test-button" in modals_css
 
 
 def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:

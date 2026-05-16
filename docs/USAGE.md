@@ -121,6 +121,25 @@ target 可啟用：
 
 desktop notification 目前偏 Windows 使用情境。在不支援的平台上，sender 會回傳結構化失敗結果，而不是讓 scan crash。
 
+## 程式更新
+
+Windows portable EXE 版本可在設定頁的「程式更新」區塊手動檢查 GitHub stable Release。source mode 只提供檢查資訊，不提供自動套用更新。
+
+一般使用流程：
+
+1. 在設定頁按「檢查更新」。
+2. 若有新版，按「下載新版並套用更新」。
+3. 彈窗會顯示下載、驗證與準備更新狀態；進入重啟階段後，目前分頁短暫失效是正常現象。
+4. 當新版 app 自動開出新頁面後，舊分頁可以關閉。
+
+更新流程會保留 `data/` 內的 DB、profile、secrets 與 logs。下載檔會放在 `<data-dir>/updates/<version>/`，套用成功後會清除本次下載 zip、同名 `.sha256` 與 pending handoff。若套用或清理失敗，先看 `<logs-dir>/updater.log`。
+
+若更新後沒有自動重啟：
+
+- 確認 Windows tray 內的舊程式是否仍在執行，必要時從 tray 選單 Exit 後再重試。
+- 查看 `<logs-dir>/updater.log` 是否有 `status=applied`、`restart_status=launched` 或 `cleanup_warning`。
+- 確認 GitHub Release asset 是整包 `facebook-monitor-{version}-windows-portable.zip` 與同名 `.sha256`，不是單一 EXE。
+
 ## 資料路徑
 
 預設 data directory：

@@ -18,6 +18,8 @@ DASHBOARD_MODULE_FILENAMES = (
     "modals.js",
     "new_target.js",
     "next_refresh_countdown.js",
+    "notification_help.js",
+    "notification_test.js",
     "partial_updates.js",
     "revision_client.js",
     "settings.js",

@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import FastAPI
 from fastapi import Form
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -44,6 +45,12 @@ from facebook_monitor.webapp.profile_session import ProfileSessionError
 
 
 logger = logging.getLogger(__name__)
+
+
+def _wants_json_response(request: Request) -> bool:
+    """判斷前端是否要求保留目前頁面並以 JSON 接收操作結果。"""
+
+    return "application/json" in request.headers.get("accept", "").lower()
 
 
 def _build_target_config_form(
@@ -348,13 +355,18 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         ntfy_topic: Annotated[str, Form()] = "",
         enable_discord_notification: Annotated[str | None, Form()] = None,
         discord_webhook: Annotated[str, Form()] = "",
-    ) -> RedirectResponse:
+    ) -> object:
         """依 target 設定 modal 目前欄位送出一則測試通知，不保存設定。"""
 
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 target = app_context.repositories.targets.get(target_id)
                 if target is None:
+                    if _wants_json_response(request):
+                        return JSONResponse(
+                            {"ok": False, "error": "測試通知失敗: target 不存在"},
+                            status_code=404,
+                        )
                     return redirect_with_error("測試通知失敗: target 不存在", return_to=return_to)
             config = NotificationConfigForm(
                 enable_desktop_notification=enable_desktop_notification,
@@ -371,12 +383,23 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 discord_sender=get_discord_sender(request),
             )
         except Exception as exc:
-            return redirect_with_error(
+            error_message = (
                 "測試通知失敗: "
-                + safe_exception_message("notification_test_failed", exc),
+                + safe_exception_message("notification_test_failed", exc)
+            )
+            if _wants_json_response(request):
+                return JSONResponse(
+                    {"ok": False, "error": error_message},
+                    status_code=400,
+                )
+            return redirect_with_error(
+                error_message,
                 return_to=return_to,
             )
-        return redirect_with_message("測試通知結果：" + " / ".join(results), return_to=return_to)
+        message = "測試通知結果：" + " / ".join(results)
+        if _wants_json_response(request):
+            return JSONResponse({"ok": True, "message": message, "results": results})
+        return redirect_with_message(message, return_to=return_to)
 
     @app.post("/targets/{target_id}/start")
     async def restart_target_monitoring_route(

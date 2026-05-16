@@ -14,7 +14,7 @@
 | `docs/HANDOFF.md` | 新對話或下一位 agent 接手的最小摘要 | README/tooling 可查的完整命令、ARCHITECTURE 可查的完整架構 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、功能進度 |
 | `docs/REFERENCE_MAP.md` | `reference/` 內 JS userscript 參考資料索引 | Python 架構進度、任務狀態 |
-| `docs/UPDATER_PLAN.md` | Windows EXE 更新功能開發期間的暫時計畫；功能封口後刪除或歸檔 | 已封口的穩定使用說明、逐次驗證紀錄 |
+| `docs/UPDATER_PLAN.md` | Windows EXE updater 尚未封口前的剩餘計畫、開放風險與 Velopack 評估門檻；功能封口後刪除或歸檔 | 已落地穩定架構、正式使用說明、逐次驗證紀錄 |
 | `packaging/README.md` | EXE 打包前置、PyInstaller 與 frozen smoke checklist | source-mode 日常操作、目前進度 |
 
 ## 歷史文件
@@ -28,7 +28,9 @@
 - 安裝與日常操作：更新 README 的摘要與 `docs/USAGE.md` 的詳細步驟。
 - scripts / CLI 搬移或新增：更新 `docs/tooling.md`。
 - JS 參考來源或重要語義對照：更新 `docs/REFERENCE_MAP.md`。
-- Windows EXE updater 尚未封口前的階段規劃、安全邊界與替代方案：更新 `docs/UPDATER_PLAN.md`。
+- Windows EXE updater 已落地的架構邊界：更新 `docs/ARCHITECTURE.md#windows-updater`。
+- Windows EXE updater 使用者操作：更新 `docs/USAGE.md#程式更新`。
+- Windows EXE updater 尚未封口前的剩餘計畫、開放風險與替代方案：更新 `docs/UPDATER_PLAN.md`。
 - release 驗證流程、scripts 指令或 sidebar 瀏覽器層手動 QA：更新 `docs/tooling.md`。
 - EXE 打包、frozen app smoke 或 distribution 前置：更新 `packaging/README.md`。
 - secret 保存欄位、安全邊界或 key 行為：更新 `docs/ARCHITECTURE.md#notification-與-secret`。

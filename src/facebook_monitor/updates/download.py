@@ -69,7 +69,11 @@ async def download_and_verify_update(
     file_path = destination_dir / asset_name
     sha256_path = destination_dir / sha256_name
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, transport=transport) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout_seconds,
+            transport=transport,
+            follow_redirects=True,
+        ) as client:
             await _download_file(
                 client=client,
                 url=update_check.asset_download_url,

@@ -45,47 +45,6 @@
     <section class="target settings-card">
       <div class="settings-card-head">
         <div class="settings-card-title">
-          <h2>程式更新</h2>
-          <p>{{ update_check.summary }}</p>
-        </div>
-      </div>
-
-      <dl class="field-grid update-check-grid">
-        <div class="field-grid-cell">
-          <dt>目前版本</dt>
-          <dd>{{ update_check.current_version }}</dd>
-        </div>
-        <div class="field-grid-cell">
-          <dt>最新版本</dt>
-          <dd>{{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}</dd>
-        </div>
-      </dl>
-
-      <div class="settings-card-actions settings-actions settings-actions--right">
-        {% if update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
-          <form method="post" action="/settings/updates/download">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button" type="submit">下載更新</button>
-          </form>
-        {% elif not update_download_supported %}
-          <span class="inline-feedback form-status is-visible">Source mode 僅支援檢查更新</span>
-        {% endif %}
-        {% if update_download_supported and pending_update_available %}
-          <form method="post" action="/settings/updates/apply">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button button--primary" type="submit">套用已驗證更新</button>
-          </form>
-        {% endif %}
-        <form class="settings-inline-form" method="get" action="/settings">
-          <input type="hidden" name="update_check" value="1">
-          <button class="button button--primary" type="submit">檢查更新</button>
-        </form>
-      </div>
-    </section>
-
-    <section class="target settings-card">
-      <div class="settings-card-head">
-        <div class="settings-card-title">
           <h2>關鍵字預設值</h2>
           <p>新增 target 時會套用這裡的預設值；既有 target 仍保留自己的關鍵字設定。</p>
         </div>
@@ -139,6 +98,41 @@
       </div>
     </section>
 
+    <section class="target settings-card" data-update-section>
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <h2>程式更新</h2>
+          <p data-update-summary>{{ update_check.summary }}</p>
+        </div>
+      </div>
+
+      <dl class="field-grid update-check-grid" aria-label="程式版本">
+        <div class="field-grid-cell">
+          <dt>目前版本</dt>
+          <dd data-update-current-version>{{ update_check.current_version }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>最新版本</dt>
+          <dd data-update-latest-version>{{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}</dd>
+        </div>
+      </dl>
+
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        {% if update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
+          <form method="post" action="/settings/updates/download-and-apply" data-update-install-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button--primary" type="submit">下載新版並套用更新</button>
+          </form>
+        {% elif not update_download_supported %}
+          <span class="inline-feedback form-status is-visible">Source mode 僅支援檢查更新</span>
+        {% endif %}
+        <form class="settings-inline-form" method="get" action="/settings" data-update-check-form>
+          <input type="hidden" name="update_check" value="1">
+          <button class="button button--primary" type="submit">檢查更新</button>
+        </form>
+      </div>
+    </section>
+
     <details class="target settings-card runtime-diagnostics-card">
       <summary class="runtime-diagnostics-summary">
         <span class="settings-card-title">
@@ -164,6 +158,25 @@
       </div>
     </details>
   </main>
+  <dialog class="settings-modal app-dialog update-progress-modal" data-update-progress-modal>
+    <div class="modal-shell">
+      <header class="modal-header">
+        <div>
+          <h3>正在更新程式</h3>
+        </div>
+      </header>
+      <div class="modal-body app-dialog-body">
+        <p data-update-progress-text>正在下載新版...</p>
+        <p class="update-progress-help" data-update-progress-help hidden>當自動跳出新頁面時，這個分頁就可以關閉。</p>
+        <p class="update-progress-error" data-update-progress-error hidden></p>
+      </div>
+      <footer class="modal-footer" data-update-progress-footer hidden>
+        <div class="modal-footer-actions">
+          <button type="button" data-update-progress-close hidden>關閉</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
   <script id="page-feedback" type="application/json">{{ {"message": message, "error": error} | tojson }}</script>
   {% include "_dashboard_importmap.html" %}
   <script type="module" src="/static/dashboard/settings.js?v={{ asset_version }}"></script>

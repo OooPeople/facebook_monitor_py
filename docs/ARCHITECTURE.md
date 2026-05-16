@@ -71,6 +71,20 @@
 - encryption key 放在 DB 同層的 `secrets.key`，正式 application context 依 DB 路徑載入或建立 key。
 - DB 檔案單獨外流時，notification topic / webhook 不再直接裸露；DB 與 `secrets.key` 同時外流時仍可解密，這是本機 DB-at-rest 加密的安全邊界，不是 OS keychain 等級保護。
 
+## Windows Updater
+
+- 目前正式更新目標只支援 Windows PyInstaller onedir portable zip；source mode 只提供 GitHub Release 檢查，不把原始碼更新包裝成正式功能。
+- 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
+- Release asset 檔名必須精確對齊 GitHub tag version：`facebook-monitor-{version}-windows-portable.zip` 與同名 `.sha256`。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
+- Web UI 只負責下載、驗證 SHA256、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
+- `facebook-monitor-updater.exe` 是獨立 PyInstaller onedir entrypoint。從 Web UI 啟動時會複製 updater exe 與同層 `_internal/` 到唯一 temp 目錄，避免 updater 鎖住原 app base dir；舊 temp updater runtime copy 會依保留時間清理。
+- updater 在主程式釋放 app instance lock 後，會重驗 SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、備份目前 app files、替換 app files，並保留 `data/`。
+- pending update path 必須受 runtime path resolver 管理；`zip_path` 必須位於 `<data-dir>/updates/`，`runtime_dir` 必須是 `<data-dir>/runtime`，DB/profile/logs 路徑必須留在 data tree 內。
+- 成功套用後 updater 會清除本次下載 zip、`.sha256`、pending handoff 與 staging；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
+- 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
+- updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
+- SHA256 只驗證下載完整性，不驗證發布者身分；尚未加入 signed manifest、detached signature 或 Authenticode signer 驗證。
+
 ## Persistence
 
 - SQLite schema 使用明確版本與 migration chain。

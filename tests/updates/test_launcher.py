@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.updates.launcher import cleanup_old_temp_updaters
 from facebook_monitor.updates.launcher import copy_updater_to_temp
 from facebook_monitor.updates.launcher import find_bundled_updater
 from facebook_monitor.updates.launcher import launch_restarted_app
@@ -22,9 +24,13 @@ def test_find_bundled_updater_returns_root_exe(tmp_path: Path) -> None:
     assert find_bundled_updater(updater.parent) == updater.resolve()
 
 
-def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path) -> None:
+def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path, monkeypatch) -> None:
     """updater 會被複製到 temp，避免鎖住 app base dir。"""
 
+    monkeypatch.setattr(
+        "facebook_monitor.updates.launcher.tempfile.gettempdir",
+        lambda: str(tmp_path / "temp"),
+    )
     source = tmp_path / "app" / "facebook-monitor-updater.exe"
     source.parent.mkdir()
     source.write_text("exe", encoding="utf-8")
@@ -41,12 +47,56 @@ def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path) -> None:
     assert not copied.is_relative_to(source.parent)
 
 
+def test_copy_updater_to_temp_uses_unique_directories(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """連續啟動 updater 時不可覆蓋前一次 temp runtime copy。"""
+
+    monkeypatch.setattr(
+        "facebook_monitor.updates.launcher.tempfile.gettempdir",
+        lambda: str(tmp_path / "temp"),
+    )
+    source = tmp_path / "app" / "facebook-monitor-updater.exe"
+    source.parent.mkdir()
+    source.write_text("exe", encoding="utf-8")
+    (source.parent / "_internal").mkdir()
+    (source.parent / "_internal" / "python313.dll").write_text("dll", encoding="utf-8")
+
+    first = copy_updater_to_temp(source, tmp_path / "data" / "runtime")
+    second = copy_updater_to_temp(source, tmp_path / "data" / "runtime")
+
+    assert first.parent != second.parent
+    assert first.is_file()
+    assert second.is_file()
+
+
+def test_cleanup_old_temp_updaters_removes_stale_directories(tmp_path: Path) -> None:
+    """temp updater root 會清掉過舊目錄並保留近期目錄。"""
+
+    root = tmp_path / "updater"
+    old_dir = root / "old"
+    recent_dir = root / "recent"
+    old_dir.mkdir(parents=True)
+    recent_dir.mkdir()
+    os.utime(old_dir, (0, 0))
+
+    cleanup_old_temp_updaters(root, max_age_seconds=1)
+
+    assert not old_dir.exists()
+    assert recent_dir.exists()
+
+
 def test_launch_temp_updater_builds_detached_command(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     """啟動 updater 時使用 temp copy、pending_update 與 wait seconds。"""
 
+    monkeypatch.setattr(
+        "facebook_monitor.updates.launcher.tempfile.gettempdir",
+        lambda: str(tmp_path / "temp"),
+    )
     paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
     paths.app_base_dir.mkdir(parents=True)
     (paths.app_base_dir / "facebook-monitor-updater.exe").write_text("exe", encoding="utf-8")

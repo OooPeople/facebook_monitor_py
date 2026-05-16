@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -210,6 +211,65 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             "更新器已啟動；請從右下角 tray 選單完整退出程式後套用更新"
         )
 
+    @app.post("/settings/updates/download-and-apply")
+    async def download_and_apply_update(request: Request) -> JSONResponse:
+        """下載、驗證並啟動 updater；供 settings 頁 modal 流程使用。"""
+
+        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
+        paths = get_runtime_paths(request)
+        if not _update_download_supported(
+            packaging_mode=metadata.packaging_mode,
+            frozen=metadata.frozen,
+            app_base_dir=paths.app_base_dir,
+        ):
+            return _update_json_error(
+                "目前執行環境不是 Windows PyInstaller 打包版，僅支援檢查更新",
+                stage="environment",
+            )
+        update_check = await check_github_release_updates(
+            current_version=metadata.app_version,
+            channel="stable",
+        )
+        if not update_check.update_available:
+            reason = update_check.failure_reason or update_check.status
+            return _update_json_error(f"沒有可下載的更新：{reason}", stage="check")
+        result = await download_and_verify_update(
+            update_check=update_check,
+            updates_dir=paths.updates_dir,
+        )
+        if not result.verified:
+            return _update_json_error(
+                f"更新下載或驗證失敗：{result.failure_reason}",
+                stage="download",
+            )
+        try:
+            write_pending_update(
+                update_check=update_check,
+                download_result=result,
+                paths=paths,
+            )
+        except ValueError as exc:
+            return _update_json_error(f"更新交接檔建立失敗：{exc}", stage="handoff")
+        launch_result = launch_temp_updater(paths=paths)
+        if not launch_result.launched:
+            return _update_json_error(
+                f"無法啟動更新器：{launch_result.message}",
+                stage="launch",
+            )
+        shutdown_requested = _request_app_shutdown(request)
+        message = "更新器已啟動，程式即將關閉並套用更新"
+        if not shutdown_requested:
+            message = "更新器已啟動；請從右下角 tray 選單完整退出程式後套用更新"
+        return JSONResponse(
+            {
+                "ok": True,
+                "stage": "launched",
+                "message": message,
+                "latest_version": update_check.latest_version,
+                "shutdown_requested": shutdown_requested,
+            }
+        )
+
     @app.post("/settings/notifications/apply-to-targets")
     async def apply_global_notifications_to_targets(request: Request) -> RedirectResponse:
         """將通知預設值套用到所有 target 設定。"""
@@ -309,3 +369,16 @@ def _request_app_shutdown(request: Request) -> bool:
         return False
     shutdown()
     return True
+
+
+def _update_json_error(message: str, *, stage: str) -> JSONResponse:
+    """回傳 settings updater modal 可直接顯示的錯誤。"""
+
+    return JSONResponse(
+        {
+            "ok": False,
+            "stage": stage,
+            "error": message,
+        },
+        status_code=400,
+    )

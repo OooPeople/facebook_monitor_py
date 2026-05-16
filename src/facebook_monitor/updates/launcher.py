@@ -1,0 +1,194 @@
+"""啟動獨立 updater process。
+
+職責：從 frozen app 目錄找到 `facebook-monitor-updater.exe`，複製到 temp
+後以 detached process 執行，讓原 app 目錄可在主程式退出後被替換。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
+import hashlib
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from facebook_monitor.runtime.paths import RuntimePaths
+from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.handoff import pending_update_path
+
+
+UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
+APP_EXE_NAME = "facebook-monitor.exe"
+
+
+@dataclass(frozen=True)
+class UpdaterLaunchResult:
+    """獨立 updater process 啟動結果。"""
+
+    launched: bool
+    status: str
+    message: str
+    updater_path: Path | None = None
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class AppRestartResult:
+    """新版 app 重啟結果。"""
+
+    launched: bool
+    status: str
+    message: str
+    pid: int | None = None
+
+
+def launch_temp_updater(
+    *,
+    paths: RuntimePaths,
+    wait_seconds: int = 300,
+    restart: bool = True,
+) -> UpdaterLaunchResult:
+    """複製 updater 到 temp 並啟動，讓它等待主程式退出後套用更新。"""
+
+    source = find_bundled_updater(paths.app_base_dir)
+    if source is None:
+        return UpdaterLaunchResult(
+            launched=False,
+            status="updater_missing",
+            message="facebook-monitor-updater.exe not found",
+        )
+    pending_path = pending_update_path(paths.runtime_dir)
+    if not pending_path.is_file():
+        return UpdaterLaunchResult(
+            launched=False,
+            status="pending_update_missing",
+            message=str(pending_path),
+        )
+    try:
+        temp_updater = copy_updater_to_temp(source, paths.runtime_dir)
+    except (OSError, ValueError) as exc:
+        return UpdaterLaunchResult(
+            launched=False,
+            status="launch_failed",
+            message=str(exc),
+        )
+    command = [
+        str(temp_updater),
+        "--pending-update",
+        str(pending_path),
+        "--data-dir",
+        str(paths.data_dir),
+        "--wait-seconds",
+        str(wait_seconds),
+    ]
+    if restart:
+        command.append("--restart")
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            close_fds=True,
+            creationflags=_detached_creation_flags(),
+            cwd=str(temp_updater.parent),
+        )
+    except OSError as exc:
+        return UpdaterLaunchResult(
+            launched=False,
+            status="launch_failed",
+            message=str(exc),
+            updater_path=temp_updater,
+        )
+    return UpdaterLaunchResult(
+        launched=True,
+        status="launched",
+        message="updater launched",
+        updater_path=temp_updater,
+        pid=process.pid,
+    )
+
+
+def find_bundled_updater(app_base_dir: Path) -> Path | None:
+    """尋找 frozen onedir 旁的 updater EXE。"""
+
+    candidate = app_base_dir / UPDATER_EXE_NAME
+    if candidate.is_file():
+        return candidate.resolve()
+    return None
+
+
+def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
+    """複製 updater onedir runtime 到 temp，避免 updater 鎖住 app base dir。"""
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    runtime_hash = hashlib.sha256(str(runtime_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    temp_dir = (
+        Path(tempfile.gettempdir())
+        / "facebook-monitor"
+        / "updater"
+        / f"{timestamp}-{runtime_hash}"
+    )
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    destination = temp_dir / UPDATER_EXE_NAME
+    shutil.copy2(source, destination)
+    source_internal = source.parent / "_internal"
+    if not source_internal.is_dir():
+        raise ValueError("updater_internal_dir_missing")
+    shutil.copytree(source_internal, temp_dir / "_internal")
+    return destination
+
+
+def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:
+    """套用更新後啟動新版 app，並保留原 runtime path 覆寫。"""
+
+    executable = pending.app_base_dir / APP_EXE_NAME
+    if not executable.is_file():
+        return AppRestartResult(
+            launched=False,
+            status="app_exe_missing",
+            message=str(executable),
+        )
+    command = [
+        str(executable),
+        "--data-dir",
+        str(pending.data_dir),
+        "--db-path",
+        str(pending.db_path),
+        "--profile-dir",
+        str(pending.profile_dir),
+        "--logs-dir",
+        str(pending.logs_dir),
+    ]
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            command,
+            close_fds=True,
+            creationflags=_detached_creation_flags(),
+            cwd=str(pending.app_base_dir),
+        )
+    except OSError as exc:
+        return AppRestartResult(
+            launched=False,
+            status="restart_failed",
+            message=str(exc),
+        )
+    return AppRestartResult(
+        launched=True,
+        status="launched",
+        message="app launched",
+        pid=process.pid,
+    )
+
+
+def _detached_creation_flags() -> int:
+    """Windows 使用 detached process；其他平台保持 0。"""
+
+    if sys.platform != "win32":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+    )

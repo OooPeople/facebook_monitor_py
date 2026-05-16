@@ -42,6 +42,7 @@
 
 - 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
+- 每次打包 Windows portable zip 時，必須同時產生同名 `.sha256` 檔，並確認 zip 檔名、GitHub tag、`APP_VERSION`、PyInstaller version resource 與 SHA256 檔內容互相對齊。
 - 正式日常入口是 package entrypoint：`facebook-monitor`；profile 登入 / 檢查入口是 `facebook-monitor-login`。
 - scripts 已依角色分層：低頻管理在 `scripts/admin/`，除錯工具在 `scripts/debug/`，內部工具在 `scripts/internal/`。
 - 不得新增新的 `phase_*` script；檔名必須反映角色與用途。

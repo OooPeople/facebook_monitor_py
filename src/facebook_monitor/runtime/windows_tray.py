@@ -47,11 +47,22 @@ TPM_RIGHTBUTTON = 0x0002
 TPM_RETURNCMD = 0x0100
 TPM_NONOTIFY = 0x0080
 
+_WinDLL = getattr(ctypes, "WinDLL", ctypes.CDLL)
+_WINFUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+
+
+def _raise_last_win_error() -> None:
+    """拋出 Win32 last-error；非 Windows 型別檢查環境使用 OSError fallback。"""
+
+    get_last_error = getattr(ctypes, "get_last_error", lambda: 0)
+    win_error = getattr(ctypes, "WinError", OSError)
+    raise win_error(get_last_error())
+
 
 def _load_user32() -> Any:
     """載入 user32 並宣告本模組會用到的 Win32 API prototype。"""
 
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32 = _WinDLL("user32", use_last_error=True)
     user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
     user32.RegisterClassW.restype = wintypes.ATOM
     user32.CreateWindowExW.argtypes = [
@@ -139,7 +150,7 @@ def _load_user32() -> Any:
 def _load_shell32() -> Any:
     """載入 shell32 並宣告 Shell_NotifyIconW prototype。"""
 
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32 = _WinDLL("shell32", use_last_error=True)
     shell32.Shell_NotifyIconW.argtypes = [
         wintypes.DWORD,
         ctypes.POINTER(NOTIFYICONDATAW),
@@ -151,7 +162,7 @@ def _load_shell32() -> Any:
 def _load_kernel32() -> Any:
     """載入 kernel32 並宣告 module handle API prototype。"""
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _WinDLL("kernel32", use_last_error=True)
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
     return kernel32
@@ -179,7 +190,7 @@ class NOTIFYICONDATAW(ctypes.Structure):
     ]
 
 
-WNDPROC = ctypes.WINFUNCTYPE(
+WNDPROC = _WINFUNCTYPE(
     wintypes.LPARAM,
     wintypes.HWND,
     wintypes.UINT,
@@ -298,7 +309,7 @@ class WindowsTrayIcon:
             None,
         )
         if not hwnd:
-            raise ctypes.WinError(ctypes.get_last_error())
+            _raise_last_win_error()
         self._hwnd = int(hwnd)
         icon_handle = self._load_icon_handle(user32)
         self._icon_handle = icon_handle or None
@@ -312,7 +323,7 @@ class WindowsTrayIcon:
         notify_data.szTip = "Facebook Monitor"
         self._notify_data = notify_data
         if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(notify_data)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            _raise_last_win_error()
         self._ready.set()
 
     def _load_icon_handle(self, user32: ctypes.CDLL) -> int:

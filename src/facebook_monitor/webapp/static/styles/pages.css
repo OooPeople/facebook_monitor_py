@@ -121,6 +121,30 @@
   display: none;
 }
 
+.update-check-grid .field-grid-cell dd {
+  overflow-wrap: anywhere;
+}
+
+.settings-inline-form {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.compact-select-label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.compact-select-label select {
+  min-height: 36px;
+}
+
 .runtime-diagnostics-card {
   overflow: hidden;
   padding: 0;
@@ -221,5 +245,9 @@
   .settings-actions {
     align-items: stretch;
     display: grid;
+  }
+
+  .settings-inline-form {
+    justify-content: stretch;
   }
 }

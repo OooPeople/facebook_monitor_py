@@ -52,6 +52,7 @@ def test_data_dir_drives_db_profile_and_logs(tmp_path) -> None:
     assert paths.logs_dir == data_dir.resolve() / "logs"
     assert paths.runtime_dir == data_dir.resolve() / "runtime"
     assert paths.exports_dir == data_dir.resolve() / "exports"
+    assert paths.updates_dir == data_dir.resolve() / "updates"
 
 
 def test_explicit_paths_override_data_dir(tmp_path) -> None:

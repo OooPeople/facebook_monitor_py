@@ -45,6 +45,47 @@
     <section class="target settings-card">
       <div class="settings-card-head">
         <div class="settings-card-title">
+          <h2>程式更新</h2>
+          <p>{{ update_check.summary }}</p>
+        </div>
+      </div>
+
+      <dl class="field-grid update-check-grid">
+        <div class="field-grid-cell">
+          <dt>目前版本</dt>
+          <dd>{{ update_check.current_version }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>最新版本</dt>
+          <dd>{{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}</dd>
+        </div>
+      </dl>
+
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        {% if update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
+          <form method="post" action="/settings/updates/download">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button" type="submit">下載更新</button>
+          </form>
+        {% elif not update_download_supported %}
+          <span class="inline-feedback form-status is-visible">Source mode 僅支援檢查更新</span>
+        {% endif %}
+        {% if update_download_supported and pending_update_available %}
+          <form method="post" action="/settings/updates/apply">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button--primary" type="submit">套用已驗證更新</button>
+          </form>
+        {% endif %}
+        <form class="settings-inline-form" method="get" action="/settings">
+          <input type="hidden" name="update_check" value="1">
+          <button class="button button--primary" type="submit">檢查更新</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="target settings-card">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
           <h2>關鍵字預設值</h2>
           <p>新增 target 時會套用這裡的預設值；既有 target 仍保留自己的關鍵字設定。</p>
         </div>

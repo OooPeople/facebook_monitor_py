@@ -19,12 +19,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'Facebook Monitor contributors'),
         StringStruct('FileDescription', 'Facebook Monitor'),
-        StringStruct('FileVersion', '0.1.0.1'),
+        StringStruct('FileVersion', '0.1.0.0'),
         StringStruct('InternalName', 'facebook-monitor'),
         StringStruct('LegalCopyright', 'Copyright 2026 Facebook Monitor contributors'),
         StringStruct('OriginalFilename', 'facebook-monitor.exe'),
         StringStruct('ProductName', 'Facebook Monitor'),
-        StringStruct('ProductVersion', '0.1.0-rc1')])
+        StringStruct('ProductVersion', '0.1.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]

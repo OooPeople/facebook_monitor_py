@@ -41,6 +41,8 @@ from facebook_monitor.webapp.query_service import get_dashboard_view
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.webapp.assets import ASSET_VERSION
@@ -54,6 +56,18 @@ def create_app(**kwargs):
 
     kwargs.setdefault("enforce_csrf", False)
     return create_production_app(**kwargs)
+
+
+def make_supported_update_paths(tmp_path: Path):
+    """建立 settings 更新 route 測試用的 PyInstaller-like app root。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.app_base_dir.mkdir(parents=True, exist_ok=True)
+    (paths.app_base_dir / "facebook-monitor-updater.exe").write_text(
+        "updater",
+        encoding="utf-8",
+    )
+    return paths
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
@@ -108,7 +122,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "app": "Facebook Monitor",
-        "version": "0.1.0-rc1",
+        "version": "0.1.0",
         "asset_version": ASSET_VERSION,
         "python_version": payload["python_version"],
         "packaging_mode": "source",
@@ -208,6 +222,7 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert str(paths.db_path) in response.text
     assert str(paths.profile_dir) in response.text
     assert str(paths.logs_dir) in response.text
+    assert str(paths.updates_dir) in response.text
     assert "Browser mode" in response.text
     assert "playwright_chromium" in response.text
     assert "Asset version" in response.text
@@ -222,6 +237,283 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert "runtime-diagnostics-copy-source" in response.text
     assert "data-secret-input" not in response.text
     assert "data-dirty-submit" in response.text
+
+
+def test_settings_page_shows_idle_update_check(tmp_path: Path) -> None:
+    """設定頁預設只顯示更新檢查入口，不主動查 GitHub。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert "程式更新" in response.text
+    assert "尚未檢查更新" in response.text
+    assert 'name="update_check" value="1"' in response.text
+    assert "GitHub repo" not in response.text
+    assert "Preview" not in response.text
+
+
+def test_settings_update_check_uses_github_release_presenter(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """按下更新檢查時，設定頁顯示 release metadata，不下載 asset。"""
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        assert current_version == "0.1.0"
+        assert channel == "stable"
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="目前只提供檢查，不會下載或套用更新。",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url=(
+                "https://github.com/OooPeople/facebook_monitor_py/releases/download/"
+                "v0.1.1/facebook-monitor-0.1.1-windows-portable.zip"
+            ),
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url=(
+                "https://github.com/OooPeople/facebook_monitor_py/releases/download/"
+                "v0.1.1/facebook-monitor-0.1.1-windows-portable.zip.sha256"
+            ),
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert "有新版 0.1.1" in response.text
+    assert "最新版本" in response.text
+    assert "0.1.1" in response.text
+    assert "Release asset" not in response.text
+    assert "SHA256" not in response.text
+    assert "開啟 Release" not in response.text
+    assert "下載更新" not in response.text
+
+
+def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """有新版且有 SHA256 asset 時才顯示下載更新入口。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert 'action="/settings/updates/download"' in response.text
+    assert "下載更新" in response.text
+
+
+def test_settings_download_update_verifies_asset_and_opens_folder(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """下載更新 route 重新查 metadata，下載到 runtime updates dir，驗證後開資料夾。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    checked_update: dict[str, object] = {}
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        assert current_version == "0.1.0"
+        assert channel == "stable"
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    async def fake_download_and_verify_update(
+        *,
+        update_check: UpdateCheckResult,
+        updates_dir: Path,
+    ) -> UpdateDownloadResult:
+        checked_update["asset_name"] = update_check.asset_name
+        checked_update["updates_dir"] = updates_dir
+        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"verified zip")
+        return UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=file_path,
+            sha256_path=file_path.with_name(file_path.name + ".sha256"),
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+        )
+
+    opened_paths: list[Path] = []
+
+    def fake_reveal_in_file_manager(path: Path) -> bool:
+        opened_paths.append(path)
+        return True
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.reveal_in_file_manager",
+        fake_reveal_in_file_manager,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.post(
+        "/settings/updates/download",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "message=" in response.headers["location"]
+    assert checked_update["asset_name"] == "facebook-monitor-0.1.1-windows-portable.zip"
+    assert checked_update["updates_dir"] == paths.updates_dir
+    assert (paths.runtime_dir / "pending_update.json").is_file()
+    assert opened_paths == [
+        paths.updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+    ]
+
+
+def test_settings_download_update_rejects_source_mode(tmp_path: Path) -> None:
+    """source mode 不可建立會指向 repo app_base_dir 的 pending update。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post(
+        "/settings/updates/download",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+
+
+def test_settings_apply_update_launches_updater_and_requests_shutdown(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """套用更新 route 啟動 temp updater，並呼叫 launcher 提供的 shutdown hook。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    launched_paths: list[Path] = []
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        launched_paths.append(paths.runtime_dir)
+        from facebook_monitor.updates.launcher import UpdaterLaunchResult
+
+        return UpdaterLaunchResult(
+            launched=True,
+            status="launched",
+            message="updater launched",
+            pid=123,
+        )
+
+    shutdown_requested: list[bool] = []
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    app.state.request_shutdown = lambda: shutdown_requested.append(True)
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/apply", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "message=" in response.headers["location"]
+    assert launched_paths == [paths.runtime_dir]
+    assert shutdown_requested == [True]
+
+
+def test_settings_apply_update_rejects_source_mode(tmp_path: Path) -> None:
+    """source mode 不可啟動 updater 套用流程。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post("/settings/updates/apply", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
 
 
 def test_settings_page_updates_target_keyword_defaults(tmp_path: Path) -> None:

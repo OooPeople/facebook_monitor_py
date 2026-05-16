@@ -66,6 +66,7 @@ def build_runtime_diagnostics_view(app_state: Any) -> RuntimeDiagnosticsView:
         RuntimeDiagnosticField("Data dir", str(paths.data_dir)),
         RuntimeDiagnosticField("Logs dir", str(paths.logs_dir)),
         RuntimeDiagnosticField("Runtime dir", str(paths.runtime_dir)),
+        RuntimeDiagnosticField("Updates dir", str(paths.updates_dir)),
         RuntimeDiagnosticField("Templates dir", str(templates_dir)),
         RuntimeDiagnosticField("Static dir", str(static_dir)),
         RuntimeDiagnosticField("Browser mode", "playwright_chromium"),

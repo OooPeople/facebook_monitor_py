@@ -273,6 +273,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     url=url,
                                     icon_path=find_windows_tray_icon(paths),
                                     uvicorn_kwargs=uvicorn_kwargs,
+                                    configure_server=lambda server: setattr(
+                                        app.state,
+                                        "request_shutdown",
+                                        lambda: setattr(server, "should_exit", True),
+                                    ),
                                 )
                             else:
                                 uvicorn.run(

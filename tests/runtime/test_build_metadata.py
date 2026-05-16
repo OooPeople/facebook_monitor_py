@@ -16,7 +16,7 @@ def test_collect_build_metadata_uses_source_defaults() -> None:
     metadata = collect_build_metadata(asset_version="asset-test")
 
     assert metadata.app_name == "Facebook Monitor"
-    assert metadata.app_version == "0.1.0-rc1"
+    assert metadata.app_version == "0.1.0"
     assert metadata.asset_version == "asset-test"
     assert metadata.python_version
     assert metadata.executable.exists()
@@ -48,6 +48,7 @@ def test_pyinstaller_spec_uses_formal_launcher_and_web_assets() -> None:
 
     assert "Windows-only PyInstaller spec" in spec_text
     assert '"launcher.py"' in spec_text
+    assert '"updater.py"' in spec_text
     assert "webapp/templates/**/*.html" in spec_text
     assert "webapp/static/**/*" in spec_text
     assert "FACEBOOK_MONITOR_BUILD_DATE" in spec_text
@@ -58,6 +59,7 @@ def test_pyinstaller_spec_uses_formal_launcher_and_web_assets() -> None:
     assert 'collect_data_files("playwright")' in spec_text
     assert 'collect_submodules("playwright")' in spec_text
     assert 'name="facebook-monitor"' in spec_text
+    assert 'name="facebook-monitor-updater"' in spec_text
     assert 'datas.append((ICON_PATH, "assets"))' in spec_text
     assert 'datas.append((TRAY_ICON_PATH, "assets"))' in spec_text
     assert "console=False" in spec_text

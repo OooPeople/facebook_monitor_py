@@ -29,6 +29,7 @@ class RuntimePaths:
     logs_dir: Path
     runtime_dir: Path
     exports_dir: Path
+    updates_dir: Path
     templates_dir: Path
     static_dir: Path
 
@@ -43,6 +44,7 @@ class RuntimePaths:
             self.logs_dir,
             self.runtime_dir,
             self.exports_dir,
+            self.updates_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -186,6 +188,7 @@ def resolve_runtime_paths(
         logs_dir=resolved_logs_dir,
         runtime_dir=resolved_data_dir / "runtime",
         exports_dir=resolved_data_dir / "exports",
+        updates_dir=resolved_data_dir / "updates",
         templates_dir=package_dir / "webapp" / "templates",
         static_dir=package_dir / "webapp" / "static",
     )

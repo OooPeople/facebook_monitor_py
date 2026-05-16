@@ -16,11 +16,13 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.building.datastruct import TOC
 
 
 ROOT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
 ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "launcher.py")
+UPDATER_ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "updater.py")
 GENERATED_DIR = os.path.join(ROOT_DIR, "build", "pyinstaller_generated")
 BUILD_METADATA_HOOK = os.path.join(GENERATED_DIR, "facebook_monitor_build_metadata.py")
 VERSION_INFO_FILE = os.path.join(SPECPATH, "version_info.txt")
@@ -91,7 +93,7 @@ if os.path.exists(TRAY_ICON_PATH):
 browser_datas = Tree(bundled_chromium_dir(), prefix="browser")
 
 hiddenimports = (
-    ["facebook_monitor.launcher"]
+    ["facebook_monitor.launcher", "facebook_monitor.updater"]
     + collect_submodules("uvicorn.lifespan")
     + collect_submodules("uvicorn.loops")
     + collect_submodules("uvicorn.protocols")
@@ -99,7 +101,7 @@ hiddenimports = (
 )
 
 a = Analysis(
-    [ENTRYPOINT],
+    [ENTRYPOINT, UPDATER_ENTRYPOINT],
     pathex=[SRC_DIR],
     binaries=[],
     datas=datas,
@@ -113,9 +115,17 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+runtime_script_entries = [
+    entry
+    for entry in a.scripts
+    if entry[0].startswith("pyi_rth_") or entry[0] == "facebook_monitor_build_metadata"
+]
+launcher_script_entry = next(entry for entry in a.scripts if entry[0] == "launcher")
+updater_script_entry = next(entry for entry in a.scripts if entry[0] == "updater")
+
 exe = EXE(
     pyz,
-    a.scripts,
+    TOC(runtime_script_entries + [launcher_script_entry]),
     [],
     exclude_binaries=True,
     name="facebook-monitor",
@@ -134,8 +144,30 @@ exe = EXE(
     icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
     version=VERSION_INFO_FILE,
 )
+updater_exe = EXE(
+    pyz,
+    TOC(runtime_script_entries + [updater_script_entry]),
+    [],
+    exclude_binaries=True,
+    name="facebook-monitor-updater",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
+    version=VERSION_INFO_FILE,
+)
 coll = COLLECT(
     exe,
+    updater_exe,
     a.binaries,
     a.datas,
     browser_datas,

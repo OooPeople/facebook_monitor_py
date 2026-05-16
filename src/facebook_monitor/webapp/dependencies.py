@@ -27,6 +27,7 @@ from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
 from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionOptions
 from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
@@ -47,6 +48,13 @@ def get_db_path(request: Request) -> Path:
     """從 app state 取得 SQLite DB path。"""
 
     return Path(getattr(request.app.state, "db_path", DEFAULT_DB_PATH))
+
+
+def get_runtime_paths(request: Request) -> RuntimePaths:
+    """從 app state 取得 runtime path resolver 結果。"""
+
+    paths = getattr(request.app.state, "runtime_paths", None)
+    return paths if isinstance(paths, RuntimePaths) else DEFAULT_RUNTIME_PATHS
 
 
 def get_profile_dir(request: Request) -> Path:

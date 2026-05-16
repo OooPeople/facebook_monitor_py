@@ -1,6 +1,6 @@
 [project]
 name = "facebook-monitor-py"
-version = "0.1.0rc1"
+version = "0.1.0"
 description = "Python + Playwright Facebook posts and comments monitor."
 requires-python = ">=3.13,<3.14"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
 [project.scripts]
 facebook-monitor = "facebook_monitor.launcher:main"
 facebook-monitor-login = "facebook_monitor.profile_setup:main"
+facebook-monitor-updater = "facebook_monitor.updater:main"
 
 [build-system]
 requires = ["uv_build>=0.9.0,<0.10.0"]

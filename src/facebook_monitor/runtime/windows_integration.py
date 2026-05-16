@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -82,6 +83,7 @@ def run_uvicorn_with_windows_tray(
     url: str,
     icon_path: Path | None,
     uvicorn_kwargs: dict[str, Any],
+    configure_server: Callable[[uvicorn.Server], None] | None = None,
 ) -> None:
     """以可由 system tray 觸發關閉的方式執行 uvicorn server。"""
 
@@ -89,6 +91,8 @@ def run_uvicorn_with_windows_tray(
 
     config = uvicorn.Config(app, **uvicorn_kwargs)
     server = uvicorn.Server(config)
+    if configure_server is not None:
+        configure_server(server)
     tray_icon = start_windows_tray_icon(
         url=url,
         icon_path=icon_path,

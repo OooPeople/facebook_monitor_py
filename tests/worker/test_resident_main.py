@@ -121,6 +121,11 @@ class FakeMetadataPage:
 
         return "(2) 測試社團 | Facebook"
 
+    async def evaluate(self, script: str) -> str:
+        """回傳 metadata resolver 抽到的 cover image URL。"""
+
+        return "https://scontent.example.test/group-cover.jpg"
+
     async def close(self) -> None:
         """標記 metadata page 已關閉。"""
 
@@ -162,6 +167,18 @@ class FakeLoggedOutMetadataBrowserContext:
         page = FakeLoggedOutMetadataPage()
         self.pages.append(page)
         return page
+
+
+class RecordingSchedulePlanner(TargetSchedulePlanner):
+    """記錄 dispatch 時機，避免 async resident 在 queue 階段推進 next_due_at。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dispatched_target_ids: list[str] = []
+
+    def mark_dispatched(self, due_target: DueTarget, *, now: Any = None) -> None:
+        self.dispatched_target_ids.append(due_target.target_id)
+        super().mark_dispatched(due_target, now=now)
 
 
 def test_playwright_driver_shutdown_exception_is_classified() -> None:
@@ -233,6 +250,79 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated is not None
     assert updated.name == "測試社團"
     assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert updated.metadata_error == ""
+
+
+def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
+    tmp_path: Path,
+) -> None:
+    """手動 metadata refresh 不因已有名稱而跳過封面抓取。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="1370511589953459",
+                parent_post_id="2772468963091041",
+                canonical_url=(
+                    "https://www.facebook.com/groups/1370511589953459/"
+                    "posts/2772468963091041"
+                ),
+                name="自訂留言 target",
+                group_name="既有社團名稱",
+            )
+        )
+        app.services.targets.mark_target_metadata_refresh_pending(target.id)
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("metadata refresh should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 1
+        assert len(metadata_context.pages) == 1
+        assert metadata_context.pages[0].url == "https://www.facebook.com/groups/1370511589953459"
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+    assert updated is not None
+    assert updated.name == "測試社團"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
 
@@ -323,6 +413,66 @@ def test_target_queue_snapshot_keeps_enqueue_order() -> None:
         assert queued_count == 3
         assert running_count == 0
         assert queued_ids == ("target-a", "target-b", "target-c")
+
+    asyncio.run(run_test())
+
+
+def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -> None:
+    """async resident 進 queue 時不推進 next_due_at，取得 running lock 後才推進。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = RecordingSchedulePlanner()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=fake_scan_page,
+        )
+        due_target = DueTarget(
+            target_id=target.id,
+            interval_seconds=60,
+            due_at=utc_now(),
+        )
+        enqueued_count = await executor.enqueue_due_targets((due_target,))
+        assert enqueued_count == 1
+        assert planner.dispatched_target_ids == []
+        with SqliteApplicationContext(db_path) as app:
+            queued_state = app.repositories.runtime_states.get(target.id)
+        assert queued_state is not None
+        assert queued_state.runtime_status == TargetRuntimeStatus.QUEUED
+
+        item = await target_queue.get()
+        assert item is not None
+        result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
+        assert result.success
+        assert planner.dispatched_target_ids == [target.id]
 
     asyncio.run(run_test())
 
@@ -695,3 +845,112 @@ def test_resident_main_executor_keeps_third_target_queued(
             await executor.stop()
 
     asyncio.run(run_test())
+
+
+def test_resident_main_scan_timeout_marks_target_error(tmp_path: Path) -> None:
+    """scan_timeout_seconds 會包住整個 scan callable，避免 worker slot 永久卡住。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def slow_scan_page(**kwargs: Any) -> PostsScanSummary:
+        await asyncio.sleep(0.2)
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        summary = await run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                scan_timeout_seconds=0.01,
+                heartbeat_interval_seconds=0.01,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            scan_page=slow_scan_page,
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+        assert summary.failure_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.ERROR
+    assert "scan_timeout" in state.last_error
+
+
+def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> None:
+    """target 停止後，正在跑的 resident scan 會被 watchdog 取消並回到 idle。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    started = asyncio.Event()
+
+    async def blocking_scan_page(**kwargs: Any) -> PostsScanSummary:
+        started.set()
+        await asyncio.sleep(10)
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        task = asyncio.create_task(
+            run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                    scan_timeout_seconds=5,
+                    heartbeat_interval_seconds=0.01,
+                ),
+                page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+                scan_page=blocking_scan_page,
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=1,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.pause_target_monitoring(target.id)
+        summary = await asyncio.wait_for(task, timeout=1)
+        assert summary.failure_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.last_error == ""

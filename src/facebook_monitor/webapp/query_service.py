@@ -16,9 +16,11 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
+from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
@@ -49,11 +51,21 @@ class DashboardReadUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ProfileSessionWarning:
+    """保存首頁右上角 Facebook 重新登入警告。"""
+
+    needs_login: bool = False
+    message: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class DashboardViewModel:
     """保存 dashboard template 所需 read model。"""
 
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...] = ()
+    profile_session_warning: ProfileSessionWarning = ProfileSessionWarning()
 
     @property
     def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
@@ -84,6 +96,7 @@ class _DashboardReadResult:
 
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...]
+    profile_session_status: ProfileSessionStatus
 
 
 def _read_dashboard_model(
@@ -147,6 +160,9 @@ def _list_target_rows(
                 target_ids
             )
         )
+        outbox_summaries = app_context.repositories.notification_outbox.summarize_by_targets(
+            target_ids
+        )
         max_items_limit = max(
             (config.max_items_per_scan for config in configs_by_target.values()),
             default=1,
@@ -182,6 +198,7 @@ def _list_target_rows(
                 latest_notification_events=tuple(
                     latest_notification_events_by_channel.get(target.id, {}).values()
                 ),
+                notification_outbox_summary=outbox_summaries.get(target.id),
                 hit_record_total_count=hit_record_counts.get(target.id, 0),
             )
             for target in targets
@@ -198,7 +215,12 @@ def _list_target_rows(
                 for group in groups
             },
         )
-        return _DashboardReadResult(rows=rows, sidebar_groups=sidebar_groups)
+        return _DashboardReadResult(
+            rows=rows,
+            sidebar_groups=sidebar_groups,
+            profile_session_status=app_context.repositories.app_settings
+            .get_profile_session_status(),
+        )
 
 
 def get_dashboard_view(
@@ -216,6 +238,26 @@ def get_dashboard_view(
     return DashboardViewModel(
         rows=result.rows,
         sidebar_groups=result.sidebar_groups,
+        profile_session_warning=_build_profile_session_warning(
+            result.profile_session_status
+        ),
+    )
+
+
+def _build_profile_session_warning(
+    status: ProfileSessionStatus,
+) -> ProfileSessionWarning:
+    """將 repository 狀態轉成首頁顯示用警告文案。"""
+
+    if not status.needs_login:
+        return ProfileSessionWarning()
+    return ProfileSessionWarning(
+        needs_login=True,
+        reason=status.reason,
+        message=(
+            "Facebook 需要重新登入。請關閉並重新開啟程式，"
+            "系統會先開啟 Facebook 登入視窗；完成登入後會自動進入 Web UI。"
+        ),
     )
 
 
@@ -271,6 +313,11 @@ def get_target_card(
                     app_context.repositories.notification_events.latest_by_target_channels(
                         target.id
                     ).values()
+                ),
+                notification_outbox_summary=(
+                    app_context.repositories.notification_outbox
+                    .summarize_by_targets([target.id])
+                    .get(target.id)
                 ),
                 hit_record_total_count=app_context.repositories.match_history.count_by_target(
                     target.id,
@@ -373,6 +420,7 @@ def _build_target_row(
     latest_failed_scan_run: ScanRun | None,
     latest_notification_event: NotificationEvent | None,
     latest_notification_events: tuple[NotificationEvent, ...],
+    notification_outbox_summary: NotificationOutboxSummary | None,
     hit_record_total_count: int,
 ) -> TargetRow:
     """將 repository raw models 組成 dashboard target row。"""
@@ -385,6 +433,7 @@ def _build_target_row(
         latest_failed_scan_run=latest_failed_scan_run,
         latest_notification_event=latest_notification_event,
         latest_notification_events=latest_notification_events,
+        notification_outbox_summary=notification_outbox_summary,
         latest_scan_items=tuple(LatestScanItemRow(item=item) for item in latest_scan_items),
         hit_record_preview_items=tuple(
             HitRecordPreviewRow(entry=entry) for entry in hit_record_preview_items

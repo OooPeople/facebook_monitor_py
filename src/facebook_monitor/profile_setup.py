@@ -17,9 +17,10 @@ from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
+from facebook_monitor.profile_login import FACEBOOK_HOME_URL
 
 
-START_URL = "https://www.facebook.com/groups/"
+START_URL = FACEBOOK_HOME_URL
 
 
 def build_parser() -> argparse.ArgumentParser:

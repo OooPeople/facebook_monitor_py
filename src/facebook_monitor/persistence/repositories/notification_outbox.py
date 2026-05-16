@@ -7,12 +7,14 @@ from dataclasses import replace
 from datetime import timedelta
 
 from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import notification_outbox_from_row
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+from facebook_monitor.persistence.sqlite_codec import decode_datetime
 
 
 class NotificationOutboxRepository:
@@ -173,6 +175,50 @@ class NotificationOutboxRepository:
             self.connection.commit()
         return recovered_count
 
+    def touch_processing(
+        self,
+        *,
+        entry_id: int,
+        status: NotificationOutboxStatus,
+    ) -> None:
+        """刷新 processing row heartbeat，避免長批次發送時被誤回收。"""
+
+        if status not in {
+            NotificationOutboxStatus.PROCESSING_PENDING,
+            NotificationOutboxStatus.PROCESSING_FAILED,
+        }:
+            return
+        self.connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = ?
+            WHERE id = ?
+              AND status = ?
+            """,
+            (
+                encode_datetime(utc_now()),
+                entry_id,
+                status.value,
+            ),
+        )
+
+    def update_delivery_endpoint(self, *, entry_id: int, endpoint: str) -> None:
+        """更新 dispatch 前使用的 endpoint，讓 retry 可套用目前 target 設定。"""
+
+        self.connection.execute(
+            """
+            UPDATE notification_outbox
+            SET endpoint = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                self.secret_codec.encrypt(endpoint),
+                encode_datetime(utc_now()),
+                entry_id,
+            ),
+        )
+
     def mark_result(
         self,
         *,
@@ -258,6 +304,64 @@ class NotificationOutboxRepository:
             tuple(claimed_ids),
         ).fetchall()
         return [self._decrypt_entry(notification_outbox_from_row(row)) for row in claimed_rows]
+
+    def summarize_by_targets(
+        self,
+        target_ids: list[str],
+    ) -> dict[str, NotificationOutboxSummary]:
+        """回傳多個 target 的 outbox backlog 診斷摘要。"""
+
+        unique_target_ids = list(dict.fromkeys(target_id for target_id in target_ids if target_id))
+        if not unique_target_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_target_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                target_id,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END) AS processing_count,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END) AS terminal_count,
+                MIN(CASE WHEN status IN (?, ?, ?) THEN updated_at ELSE NULL END)
+                    AS oldest_pending_updated_at,
+                MAX(attempts) AS max_attempts
+            FROM notification_outbox
+            WHERE target_id IN ({placeholders})
+            GROUP BY target_id
+            """,
+            (
+                NotificationOutboxStatus.PENDING.value,
+                NotificationOutboxStatus.PROCESSING_PENDING.value,
+                NotificationOutboxStatus.PROCESSING_FAILED.value,
+                NotificationOutboxStatus.FAILED.value,
+                NotificationOutboxStatus.SENT.value,
+                NotificationOutboxStatus.SKIPPED.value,
+                NotificationOutboxStatus.PENDING.value,
+                NotificationOutboxStatus.PROCESSING_PENDING.value,
+                NotificationOutboxStatus.PROCESSING_FAILED.value,
+                *unique_target_ids,
+            ),
+        ).fetchall()
+        summaries = {
+            target_id: NotificationOutboxSummary(target_id=target_id)
+            for target_id in unique_target_ids
+        }
+        for row in rows:
+            oldest_text = str(row["oldest_pending_updated_at"] or "")
+            summary = NotificationOutboxSummary(
+                target_id=str(row["target_id"]),
+                pending_count=int(row["pending_count"] or 0),
+                processing_count=int(row["processing_count"] or 0),
+                failed_count=int(row["failed_count"] or 0),
+                terminal_count=int(row["terminal_count"] or 0),
+                oldest_pending_updated_at=decode_datetime(oldest_text)
+                if oldest_text
+                else None,
+                max_attempts=int(row["max_attempts"] or 0),
+            )
+            summaries[summary.target_id] = summary
+        return summaries
 
     def _decrypt_entry(self, entry: NotificationOutboxEntry) -> NotificationOutboxEntry:
         """還原 repository 對外回傳的 notification endpoint。"""

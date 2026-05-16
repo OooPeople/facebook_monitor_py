@@ -2,13 +2,167 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from facebook_monitor import launcher
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import ServerInfo
 from facebook_monitor.runtime.instance_lock import acquire_resource_identity_lock
 from facebook_monitor.runtime.logging_setup import reset_app_logging
+from facebook_monitor.runtime import windows_integration
+
+
+@pytest.fixture(autouse=True)
+def assume_existing_profile_session(monkeypatch) -> None:
+    """launcher 行為測試預設不進 first-run login gate。"""
+
+    monkeypatch.setattr(launcher, "profile_has_facebook_session_cookies", lambda _path: True)
+
+
+def test_formal_launcher_parser_does_not_expose_unsafe_profile_dir() -> None:
+    """正式 launcher 不再暴露可指到外部 profile 的 debug-only 參數。"""
+
+    parser = launcher.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--unsafe-profile-dir", "profile"])
+
+
+def test_windows_tray_defaults_only_for_frozen_windows(monkeypatch) -> None:
+    """source mode 預設不啟用 tray，避免影響 uv run 使用者。"""
+
+    monkeypatch.setattr(windows_integration.sys, "platform", "win32")
+    monkeypatch.delattr(windows_integration.sys, "frozen", raising=False)
+    assert not windows_integration.resolve_windows_tray_decision(None).enabled
+
+    monkeypatch.setattr(windows_integration.sys, "frozen", True, raising=False)
+    assert windows_integration.resolve_windows_tray_decision(None).enabled
+    assert not windows_integration.resolve_windows_tray_decision(False).enabled
+    assert windows_integration.resolve_windows_tray_decision(True).enabled
+
+
+def test_explicit_windows_tray_on_non_windows_falls_back_to_plain_server(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """非 Windows 平台明確傳 tray 也不應 import Windows-only tray module 崩潰。"""
+
+    uvicorn_kwargs: list[dict[str, object]] = []
+
+    def fake_uvicorn_run(*args: object, **kwargs: object) -> None:
+        uvicorn_kwargs.append(kwargs)
+
+    def fail_if_tray_runner_is_used(*args: object, **kwargs: object) -> None:
+        raise AssertionError("tray runner should not be used on non-Windows")
+
+    monkeypatch.setattr(windows_integration.sys, "platform", "linux")
+    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(
+        launcher,
+        "run_uvicorn_with_windows_tray",
+        fail_if_tray_runner_is_used,
+    )
+
+    try:
+        exit_code = launcher.main(
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "--port",
+                "8766",
+                "--no-open-browser",
+                "--windows-tray",
+            ]
+        )
+    finally:
+        reset_app_logging()
+
+    assert exit_code == 0
+    assert uvicorn_kwargs[0]["port"] == 8766
+    assert "only supported on Windows" in capsys.readouterr().out
+
+
+def test_launcher_reuses_runtime_csrf_token_between_restarts(tmp_path, monkeypatch) -> None:
+    """同一 data-dir 重新啟動後，舊 dashboard form token 仍可通過 CSRF 驗證。"""
+
+    data_dir = tmp_path / "data"
+    csrf_tokens: list[str] = []
+
+    def fake_uvicorn_run(app, *args: object, **kwargs: object) -> None:
+        csrf_tokens.append(str(app.state.csrf_token))
+
+    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+
+    try:
+        first_exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--port", "8767", "--no-open-browser"]
+        )
+        second_exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--port", "8767", "--no-open-browser"]
+        )
+    finally:
+        reset_app_logging()
+
+    assert first_exit_code == 0
+    assert second_exit_code == 0
+    assert len(csrf_tokens) == 2
+    assert csrf_tokens[1] == csrf_tokens[0]
+    assert (data_dir / "runtime" / "csrf_token.txt").read_text(
+        encoding="utf-8"
+    ).strip() == csrf_tokens[0]
+
+
+def test_launcher_repairs_missing_standard_streams_for_gui_subsystem(
+    monkeypatch,
+) -> None:
+    """Windows GUI EXE 沒有 console 時，uvicorn logging 仍需要可用 stream。"""
+
+    class FakeDevNull:
+        def write(self, value: str) -> int:
+            return len(value)
+
+        def flush(self) -> None:
+            return None
+
+        def isatty(self) -> bool:
+            return False
+
+    opened_paths: list[str] = []
+
+    def fake_open(path: str, *args: object, **kwargs: object) -> FakeDevNull:
+        opened_paths.append(path)
+        return FakeDevNull()
+
+    monkeypatch.setattr(windows_integration.sys, "stdout", None)
+    monkeypatch.setattr(windows_integration.sys, "stderr", None)
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    windows_integration.ensure_standard_streams_for_gui_subsystem()
+
+    assert opened_paths == [windows_integration.os.devnull, windows_integration.os.devnull]
+    assert windows_integration.sys.stdout is not None
+    assert windows_integration.sys.stderr is not None
+    assert not windows_integration.sys.stderr.isatty()
+
+
+def test_launcher_rejects_non_loopback_host(tmp_path, monkeypatch) -> None:
+    """正式管理 UI 不允許綁到非 loopback host。"""
+
+    monkeypatch.setattr(
+        launcher.uvicorn,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
+    )
+
+    with pytest.raises(SystemExit):
+        launcher.main(["--data-dir", str(tmp_path / "data"), "--host", "0.0.0.0"])
 
 
 def test_launcher_opens_existing_healthy_instance(
@@ -144,6 +298,85 @@ def test_launcher_writes_startup_and_app_logs(tmp_path, monkeypatch, capsys) -> 
     assert "Resource lock paths:" not in output
 
 
+def test_launcher_runs_guided_login_when_profile_status_needs_login(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """needs_login 狀態下，launcher 先完成引導登入再啟動 Web UI。"""
+
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "app.db"
+    profile_dir = data_dir / "profiles" / "automation_default"
+    with SqliteApplicationContext(db_path) as app:
+        app.repositories.app_settings.mark_profile_needs_login(
+            reason="login_required",
+            source="resident_main",
+        )
+    login_profile_dirs: list[Path] = []
+    uvicorn_ports: list[int] = []
+
+    def fake_guided_login(options: launcher.GuidedLoginOptions) -> bool:
+        login_profile_dirs.append(options.profile_dir)
+        return True
+
+    monkeypatch.setattr(launcher, "run_guided_facebook_login", fake_guided_login)
+    monkeypatch.setattr(
+        launcher.uvicorn,
+        "run",
+        lambda *args, **kwargs: uvicorn_ports.append(int(kwargs["port"])),
+    )
+
+    try:
+        exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--no-open-browser", "--port", "8765"]
+        )
+    finally:
+        reset_app_logging()
+
+    with SqliteApplicationContext(db_path) as app:
+        status = app.repositories.app_settings.get_profile_session_status()
+    assert exit_code == 0
+    assert login_profile_dirs == [profile_dir]
+    assert uvicorn_ports == [8765]
+    assert status.state == ProfileSessionState.OK
+
+
+def test_launcher_runs_guided_login_when_profile_has_no_cookie_session(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """沒有 Facebook cookie session 的全新 profile，launcher 先引導登入。"""
+
+    data_dir = tmp_path / "data"
+    profile_dir = data_dir / "profiles" / "automation_default"
+    login_profile_dirs: list[Path] = []
+    uvicorn_ports: list[int] = []
+
+    monkeypatch.setattr(launcher, "profile_has_facebook_session_cookies", lambda _path: False)
+
+    def fake_guided_login(options: launcher.GuidedLoginOptions) -> bool:
+        login_profile_dirs.append(options.profile_dir)
+        return True
+
+    monkeypatch.setattr(launcher, "run_guided_facebook_login", fake_guided_login)
+    monkeypatch.setattr(
+        launcher.uvicorn,
+        "run",
+        lambda *args, **kwargs: uvicorn_ports.append(int(kwargs["port"])),
+    )
+
+    try:
+        exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--no-open-browser", "--port", "8765"]
+        )
+    finally:
+        reset_app_logging()
+
+    assert exit_code == 0
+    assert login_profile_dirs == [profile_dir]
+    assert uvicorn_ports == [8765]
+
+
 def test_launcher_default_uses_home_data_default_port_and_opens_browser(
     tmp_path,
     monkeypatch,
@@ -267,6 +500,35 @@ def test_launcher_access_log_keeps_uvicorn_info_level(tmp_path, monkeypatch) -> 
     assert exit_code == 0
     assert uvicorn_kwargs[0]["access_log"] is True
     assert uvicorn_kwargs[0]["log_level"] == "info"
+
+
+def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
+    monkeypatch,
+    capsys,
+) -> None:
+    """收到中斷訊號時應立即提示，並保留 uvicorn 原本關閉流程。"""
+
+    handled_signals: list[int] = []
+
+    def fake_handle_exit(server: object, sig: int, frame: object | None) -> None:
+        handled_signals.append(sig)
+
+    monkeypatch.setattr(launcher.uvicorn.server.Server, "handle_exit", fake_handle_exit)
+    original_handle_exit = launcher.uvicorn.server.Server.handle_exit
+
+    with launcher._print_shutdown_feedback_on_signal():
+        wrapped_handle_exit = cast(
+            Callable[[object, int, object | None], None],
+            launcher.uvicorn.server.Server.handle_exit,
+        )
+        assert wrapped_handle_exit is not original_handle_exit
+        wrapped_handle_exit(object(), 2, None)
+        wrapped_handle_exit(object(), 2, None)
+
+    assert launcher.uvicorn.server.Server.handle_exit is original_handle_exit
+    assert handled_signals == [2, 2]
+    output = capsys.readouterr().out
+    assert output.count("已收到停止指令，正在結束 Web UI...") == 1
 
 
 def test_launcher_filters_windows_proactor_connection_lost_noise(monkeypatch) -> None:
@@ -422,10 +684,10 @@ def test_launcher_rejects_shared_db_profile_across_data_dirs(
     """不同 data-dir 只要共用實際 DB/profile，也不能同時啟動。"""
 
     shared_db = tmp_path / "shared" / "app.db"
-    shared_profile = tmp_path / "shared" / "profile"
-    shared_db.parent.mkdir()
-    shared_profile.mkdir()
     second_data_dir = tmp_path / "second"
+    shared_profile = second_data_dir / "profiles" / "shared"
+    shared_db.parent.mkdir()
+    shared_profile.mkdir(parents=True)
     monkeypatch.setattr(
         launcher.uvicorn,
         "run",
@@ -444,7 +706,7 @@ def test_launcher_rejects_shared_db_profile_across_data_dirs(
                     str(second_data_dir),
                     "--db-path",
                     str(shared_db),
-                    "--unsafe-profile-dir",
+                    "--profile-dir",
                     str(shared_profile),
                 ]
             )
@@ -467,11 +729,11 @@ def test_launcher_rejects_shared_db_with_different_profile(
 
     shared_db = tmp_path / "shared" / "app.db"
     first_profile = tmp_path / "profiles" / "first"
-    second_profile = tmp_path / "profiles" / "second"
+    second_data_dir = tmp_path / "second-data"
+    second_profile = second_data_dir / "profiles" / "second"
     shared_db.parent.mkdir()
     first_profile.mkdir(parents=True)
-    second_profile.mkdir()
-    second_data_dir = tmp_path / "second-data"
+    second_profile.mkdir(parents=True)
     monkeypatch.setattr(
         launcher.uvicorn,
         "run",
@@ -490,7 +752,7 @@ def test_launcher_rejects_shared_db_with_different_profile(
                     str(second_data_dir),
                     "--db-path",
                     str(shared_db),
-                    "--unsafe-profile-dir",
+                    "--profile-dir",
                     str(second_profile),
                 ]
             )
@@ -511,12 +773,12 @@ def test_launcher_rejects_shared_profile_with_different_db(
     """同一 browser profile 即使搭配不同 DB，也不能由兩個 app instance 共用。"""
 
     first_db = tmp_path / "first" / "app.db"
-    second_db = tmp_path / "second" / "app.db"
-    shared_profile = tmp_path / "shared" / "profile"
+    second_data_dir = tmp_path / "second-data"
+    second_db = second_data_dir / "app.db"
+    shared_profile = second_data_dir / "profiles" / "shared"
     first_db.parent.mkdir()
     second_db.parent.mkdir()
     shared_profile.mkdir(parents=True)
-    second_data_dir = tmp_path / "second-data"
     monkeypatch.setattr(
         launcher.uvicorn,
         "run",
@@ -535,7 +797,7 @@ def test_launcher_rejects_shared_profile_with_different_db(
                     str(second_data_dir),
                     "--db-path",
                     str(second_db),
-                    "--unsafe-profile-dir",
+                    "--profile-dir",
                     str(shared_profile),
                 ]
             )
@@ -553,13 +815,14 @@ def test_launcher_allows_different_db_and_different_profile(tmp_path, monkeypatc
 
     seen_ports: list[int] = []
     first_db = tmp_path / "first" / "app.db"
-    second_db = tmp_path / "second" / "app.db"
+    second_data_dir = tmp_path / "second-data"
+    second_db = second_data_dir / "app.db"
     first_profile = tmp_path / "profiles" / "first"
-    second_profile = tmp_path / "profiles" / "second"
+    second_profile = second_data_dir / "profiles" / "second"
     first_db.parent.mkdir()
     second_db.parent.mkdir()
     first_profile.mkdir(parents=True)
-    second_profile.mkdir()
+    second_profile.mkdir(parents=True)
 
     monkeypatch.setattr(
         launcher.uvicorn,
@@ -577,10 +840,10 @@ def test_launcher_allows_different_db_and_different_profile(tmp_path, monkeypatc
             exit_code = launcher.main(
                 [
                     "--data-dir",
-                    str(tmp_path / "second-data"),
+                    str(second_data_dir),
                     "--db-path",
                     str(second_db),
-                    "--unsafe-profile-dir",
+                    "--profile-dir",
                     str(second_profile),
                     "--auto-port",
                 ]

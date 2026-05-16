@@ -25,6 +25,9 @@
 - `--profile-dir` 只能指向 `<data-dir>/profiles/` 底下；外部測試 profile 才使用 `--unsafe-profile-dir`，不可指向日常 Chrome / Edge profile。
 - target 卡片「開始 / 停止」是主操作；scheduler 是背景服務，不是第二個主開關。
 - Web UI 啟動時預設停止 targets，不自動恢復上次掃描。
+- Web UI 未保存主題偏好時預設深色模式；使用者切換後保存於 app database。
+- launcher 收到 CTRL+C 會先印出 `已收到停止指令，正在結束 Web UI...`，再進入原本 graceful shutdown。
+- target header 左側圓形需保留給未來社團縮圖；runtime header 與本輪結果語義以 `docs/ARCHITECTURE.md#web-ui-語義` 為準。
 - scheduler running 時新增 target 不同步搶 profile；名稱解析交給 resident metadata refresh。
 - 正式 config 路徑只讀寫 `target_configs[target_id]`；`group_configs` 只保留為 migration 來源。
 - Sidebar layout 只影響 Web UI 順序，不影響 scheduler 掃描順序；排序保存走單一 layout command。

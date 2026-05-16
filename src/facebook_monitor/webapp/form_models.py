@@ -100,8 +100,8 @@ class TargetConfigForm:
     include_keywords: str = ""
     exclude_keywords: str = ""
     exclude_ignore_phrases: str = ""
-    refresh_mode: str = FIXED_REFRESH_MODE
-    fixed_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
+    refresh_mode: str = FLOATING_REFRESH_MODE
+    fixed_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
     max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
     max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
@@ -146,7 +146,7 @@ class TargetConfigForm:
 
         return normalize_refresh_seconds(
             self.fixed_refresh_sec,
-            PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec,
+            PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
         )
 
     @property
@@ -255,6 +255,7 @@ class TargetConfigForm:
         canonical_url: str,
         name: str,
         group_name: str,
+        group_cover_image_url: str = "",
     ) -> UpsertGroupPostsTargetRequest:
         """轉成 posts target upsert request。"""
 
@@ -263,6 +264,7 @@ class TargetConfigForm:
             canonical_url=canonical_url,
             name=name,
             group_name=group_name,
+            group_cover_image_url=group_cover_image_url,
             config=self.to_config_patch(),
         )
 
@@ -274,6 +276,7 @@ class TargetConfigForm:
         canonical_url: str,
         name: str,
         group_name: str,
+        group_cover_image_url: str = "",
     ) -> UpsertCommentsTargetRequest:
         """轉成 comments target upsert request。"""
 
@@ -283,5 +286,6 @@ class TargetConfigForm:
             canonical_url=canonical_url,
             name=name,
             group_name=group_name,
+            group_cover_image_url=group_cover_image_url,
             config=self.to_config_patch(),
         )

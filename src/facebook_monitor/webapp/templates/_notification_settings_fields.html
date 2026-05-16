@@ -1,0 +1,31 @@
+{% set notification_source = notification_source if notification_source is defined else none %}
+{% set notification_form_id = notification_form_id|default("") %}
+{% set notification_input_attrs = notification_input_attrs|default("") %}
+{% set notification_stack_class = notification_stack_class|default("settings-form-stack") %}
+{% set desktop_checked = notification_source and notification_source.enable_desktop_notification %}
+{% set ntfy_checked = notification_source and notification_source.enable_ntfy %}
+{% set discord_checked = notification_source and notification_source.enable_discord_notification %}
+{% set ntfy_topic_value = notification_source.ntfy_topic if notification_source else "" %}
+{% set discord_webhook_value = notification_source.discord_webhook if notification_source else "" %}
+<div class="{{ notification_stack_class }}">
+  <label class="checkbox">
+    <input name="enable_desktop_notification" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if desktop_checked %}checked{% endif %}>
+    桌面通知
+  </label>
+  <label class="checkbox">
+    <input name="enable_ntfy" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if ntfy_checked %}checked{% endif %}>
+    ntfy
+  </label>
+  <label>
+    ntfy topic
+    <input name="ntfy_topic" type="text" value="{{ ntfy_topic_value }}" autocomplete="off" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+  </label>
+  <label class="checkbox">
+    <input name="enable_discord_notification" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }} {% if discord_checked %}checked{% endif %}>
+    Discord webhook
+  </label>
+  <label>
+    Discord webhook URL
+    <input name="discord_webhook" type="text" value="{{ discord_webhook_value }}" autocomplete="off" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+  </label>
+</div>

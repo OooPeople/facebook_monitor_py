@@ -7,7 +7,6 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
@@ -15,6 +14,9 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
+from facebook_monitor.runtime.paths import add_runtime_path_arguments
+from facebook_monitor.runtime.paths import default_runtime_paths
+from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -31,11 +33,10 @@ else:
     from extractors_probe import make_item_key
     from notifications_probe import NtfyConfig, send_ntfy_notification
 
-ROOT = Path(__file__).resolve().parents[2]
-
-PROFILE_DIR = ROOT / "data" / "profiles" / "automation_default"
-LOG_PATH = ROOT / "logs" / "worker_probe.log"
-SEEN_PATH = ROOT / "data" / "runtime" / "worker_probe_seen_keys.json"
+DEFAULT_RUNTIME_PATHS = default_runtime_paths()
+PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
+LOG_PATH = DEFAULT_RUNTIME_PATHS.logs_dir / "worker_probe.log"
+SEEN_PATH = DEFAULT_RUNTIME_PATHS.runtime_dir / "worker_probe_seen_keys.json"
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,9 @@ def log(message: str) -> None:
 def parse_args() -> argparse.Namespace:
     """解析 worker probe 的最小 CLI 參數。"""
 
+    global LOG_PATH, PROFILE_DIR, SEEN_PATH
     parser = argparse.ArgumentParser(description="Run a minimal headless Facebook probe.")
+    add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
     parser.add_argument(
         "target_url",
         nargs="?",
@@ -141,7 +144,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Send ntfy summary when new item hashes are detected.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    paths = resolve_runtime_paths_from_args(args)
+    paths.ensure_writable_dirs()
+    PROFILE_DIR = paths.profile_dir
+    LOG_PATH = paths.logs_dir / "worker_probe.log"
+    SEEN_PATH = paths.runtime_dir / "worker_probe_seen_keys.json"
+    return args
 
 
 def normalize_keywords(raw_keywords: list[str]) -> list[str]:

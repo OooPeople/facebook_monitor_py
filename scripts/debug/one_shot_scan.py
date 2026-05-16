@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     """解析 one-shot worker CLI 參數。"""
 
     parser = argparse.ArgumentParser(description="Run one persisted group posts target scan.")
-    add_runtime_path_arguments(parser)
+    add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
     parser.add_argument(
         "--target-id",
         default="",

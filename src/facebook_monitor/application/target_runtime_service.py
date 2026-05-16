@@ -137,6 +137,31 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
+    def record_target_heartbeat(
+        self,
+        target_id: str,
+        *,
+        worker_id: str = "",
+        page_id: str = "",
+    ) -> TargetRuntimeState:
+        """刷新 running target heartbeat，供長掃描與 stale recovery 區分。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        if existing_state.runtime_status != TargetRuntimeStatus.RUNNING:
+            return existing_state
+        if worker_id and existing_state.active_worker_id != worker_id:
+            return existing_state
+        now = utc_now()
+        state = replace(
+            existing_state,
+            active_page_id=page_id or existing_state.active_page_id,
+            last_heartbeat_at=now,
+            updated_at=now,
+        )
+        self.runtime_states.save(state)
+        return state
+
     def record_scan_guard_skip(self, target_id: str, reason: str) -> TargetRuntimeState:
         """記錄 target 被 queue/executor guard 擋下的原因。"""
 
@@ -146,6 +171,26 @@ class TargetRuntimeService:
             existing_state,
             last_skip_reason=reason,
             scan_guard_count=existing_state.scan_guard_count + 1,
+            updated_at=utc_now(),
+        )
+        self.runtime_states.save(state)
+        return state
+
+    def set_target_display_next_due_at(
+        self,
+        target_id: str,
+        due_at: datetime | None,
+    ) -> TargetRuntimeState | None:
+        """更新 UI 顯示用 next due；不作為 scheduler 排程來源。"""
+
+        if self.targets.get(target_id) is None:
+            return None
+        existing_state = self.ensure_runtime_state(target_id)
+        if existing_state.display_next_due_at == due_at:
+            return existing_state
+        state = replace(
+            existing_state,
+            display_next_due_at=due_at,
             updated_at=utc_now(),
         )
         self.runtime_states.save(state)

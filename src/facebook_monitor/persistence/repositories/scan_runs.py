@@ -11,6 +11,8 @@ from facebook_monitor.persistence.row_mappers import scan_run_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
+SCAN_RUNS_PER_TARGET_LIMIT = 500
+
 
 class ScanRunRepository:
     """保存 scan run 結果。"""
@@ -41,7 +43,29 @@ class ScanRunRepository:
                 json.dumps(run.metadata, ensure_ascii=False),
             ),
         )
-        return require_lastrowid(cursor.lastrowid, table_name="scan_runs")
+        scan_run_id = require_lastrowid(cursor.lastrowid, table_name="scan_runs")
+        self.prune_by_target(run.target_id)
+        return scan_run_id
+
+    def prune_by_target(self, target_id: str, limit: int = SCAN_RUNS_PER_TARGET_LIMIT) -> int:
+        """保留單一 target 最近 N 筆 scan runs，避免長跑無限制成長。"""
+
+        bounded_limit = max(int(limit), 1)
+        cursor = self.connection.execute(
+            """
+            DELETE FROM scan_runs
+            WHERE target_id = ?
+              AND id NOT IN (
+                  SELECT id
+                  FROM scan_runs
+                  WHERE target_id = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (target_id, target_id, bounded_limit),
+        )
+        return int(cursor.rowcount or 0)
 
     def latest_by_target(
         self,

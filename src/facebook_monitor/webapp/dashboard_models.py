@@ -6,15 +6,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
+from functools import cached_property
+from math import ceil
 
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
@@ -23,6 +31,7 @@ from facebook_monitor.webapp.dashboard_presenters import TargetIdentityPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
+from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
@@ -41,6 +50,8 @@ class SidebarTargetItem:
     status_class: str
     status_detail: str
     status_summary: str
+    mode_label: str
+    mode_class: str
     hit_count: int
     latest_error_summary: str = ""
     thumbnail_url: str = ""
@@ -104,28 +115,48 @@ class SidebarGroupSection:
         """回傳 template refresh mode。"""
 
         presenter = self.template_presenter
-        return presenter.refresh_mode if presenter else "fixed"
+        return presenter.refresh_mode if presenter else "floating"
 
     @property
     def fixed_refresh_value(self) -> int:
         """回傳 template 固定刷新秒數。"""
 
         presenter = self.template_presenter
-        return presenter.fixed_refresh_value if presenter else 60
+        return (
+            presenter.fixed_refresh_value
+            if presenter
+            else PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
+        )
 
     @property
     def min_refresh_value(self) -> int:
         """回傳 template 浮動刷新最小秒數。"""
 
         presenter = self.template_presenter
-        return presenter.min_refresh_value if presenter else 60
+        return (
+            presenter.min_refresh_value
+            if presenter
+            else PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+        )
 
     @property
     def max_refresh_value(self) -> int:
         """回傳 template 浮動刷新最大秒數。"""
 
         presenter = self.template_presenter
-        return presenter.max_refresh_value if presenter else 120
+        return (
+            presenter.max_refresh_value
+            if presenter
+            else PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+        )
+
+
+@dataclass(frozen=True)
+class NextRefreshDisplay:
+    """保存下一次刷新在 UI 顯示與前端倒數校準所需資料。"""
+
+    label: str
+    seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +170,7 @@ class TargetRow:
     latest_failed_scan_run: ScanRun | None = None
     latest_notification_event: NotificationEvent | None = None
     latest_notification_events: tuple[NotificationEvent, ...] = ()
+    notification_outbox_summary: NotificationOutboxSummary | None = None
     latest_scan_items: tuple[LatestScanItemRow, ...] = ()
     hit_record_preview_items: tuple[HitRecordPreviewRow, ...] = ()
     hit_record_total_count: int = 0
@@ -214,6 +246,24 @@ class TargetRow:
         return TargetIdentityPresenter(self.target).target_type_label
 
     @property
+    def thumbnail_url(self) -> str:
+        """回傳 target header / sidebar 使用的社團縮圖 URL。"""
+
+        return self.target.group_cover_image_url
+
+    @property
+    def mode_label(self) -> str:
+        """回傳 target card header 使用的掃描模式文字。"""
+
+        return "留言模式" if self.target.target_kind == TargetKind.COMMENTS else "貼文模式"
+
+    @property
+    def mode_class(self) -> str:
+        """回傳掃描模式 chip 對應 CSS class。"""
+
+        return "comments" if self.target.target_kind == TargetKind.COMMENTS else "posts"
+
+    @property
     def scanning_supported(self) -> bool:
         """回傳目前 target 是否已接上 worker 掃描流程。"""
 
@@ -265,18 +315,11 @@ class TargetRow:
     def header_summary_label(self) -> str:
         """回傳 target header 的低干擾摘要，避免主畫面顯示診斷 ID。"""
 
-        parts = [self.target_type_label, f"最近掃描 {self.latest_scan_label}"]
-        notification_events = self._latest_notification_events_for_display()
-        if notification_events:
-            parts.append(
-                "最近通知 "
-                + " / ".join(
-                    f"{format_notification_channel_label(event.channel)} {event.status.value}"
-                    for event in notification_events
-                )
-            )
-        else:
-            parts.append("尚無通知")
+        parts = [
+            self.mode_label,
+            f"最近掃描 {self.latest_scan_header_time_label}",
+            f"下次刷新：{self.next_refresh_label}",
+        ]
         if self.latest_failed_scan_run:
             parts.append("最近有錯誤")
         return " · ".join(parts)
@@ -316,6 +359,90 @@ class TargetRow:
         return format_datetime_for_ui(self.latest_scan_run.finished_at)
 
     @property
+    def latest_scan_header_time_label(self) -> str:
+        """回傳 target header 使用的最近掃描短時間。"""
+
+        if not self.latest_scan_run:
+            return "尚無掃描"
+        return self.latest_scan_run.finished_at.astimezone().strftime("%H:%M:%S")
+
+    @property
+    def next_refresh_label(self) -> str:
+        """回傳 target header 使用的下一次刷新狀態。"""
+
+        return self.next_refresh_display.label
+
+    @property
+    def next_refresh_seconds(self) -> int | None:
+        """回傳前端本地倒數用的剩餘秒數；不可倒數時回傳 None。"""
+
+        return self.next_refresh_display.seconds
+
+    @cached_property
+    def next_refresh_display(self) -> NextRefreshDisplay:
+        """一次產生下一次刷新顯示值，避免同一 row 重複計算倒數。"""
+
+        if (
+            not self.target.enabled
+            or self.target.paused
+            or self.runtime_state.desired_state != TargetDesiredState.ACTIVE
+        ):
+            return NextRefreshDisplay(label="未排程")
+        if self.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
+            return NextRefreshDisplay(label="排隊中")
+        if self.runtime_state.runtime_status == TargetRuntimeStatus.RUNNING:
+            return NextRefreshDisplay(label="掃描中")
+        if self.runtime_state.scan_requested_at is not None:
+            return NextRefreshDisplay(label="即將刷新")
+        remaining_seconds = self._next_refresh_remaining_seconds()
+        if remaining_seconds is None or remaining_seconds <= 0:
+            return NextRefreshDisplay(label="即將刷新")
+        return NextRefreshDisplay(
+            label=_format_countdown_seconds(remaining_seconds),
+            seconds=remaining_seconds,
+        )
+
+    def _next_refresh_remaining_seconds(self) -> int | None:
+        """依後端目前排程狀態計算下一次刷新剩餘秒數。"""
+
+        if self.runtime_state.display_next_due_at is not None:
+            remaining_seconds = ceil(
+                (self.runtime_state.display_next_due_at - utc_now()).total_seconds()
+            )
+            return max(remaining_seconds, 0)
+
+        last_reference_at = self.runtime_state.last_started_at
+        if last_reference_at is None and self.latest_scan_run:
+            last_reference_at = self.latest_scan_run.finished_at
+        if last_reference_at is None:
+            return None
+        interval_seconds = resolve_refresh_interval_seconds(
+            config=self.config,
+            default_interval_seconds=self.settings_presenter.fixed_refresh_value,
+            target_id=self.target_id,
+            latest_finished_at=self.latest_scan_run.finished_at
+            if self.latest_scan_run
+            else None,
+        )
+        due_at = last_reference_at + timedelta(seconds=max(interval_seconds, 1))
+        remaining_seconds = ceil((due_at - utc_now()).total_seconds())
+        if remaining_seconds <= 0:
+            return 0
+        return remaining_seconds
+
+    @property
+    def scan_cycle_result_label(self) -> str:
+        """回傳右側結果 panel 使用的最近一輪結束原因。"""
+
+        if not self.latest_scan_run:
+            return ""
+        metadata = self.latest_scan_run.metadata or {}
+        reason = str(metadata.get("stop_reason") or "")
+        if not reason:
+            return ""
+        return f"本輪：{format_scan_cycle_result_reason(reason)}"
+
+    @property
     def latest_scan_diagnostics_summary(self) -> str:
         """回傳最近成功掃描的診斷短摘要。"""
 
@@ -324,6 +451,7 @@ class TargetRow:
             config=self.config,
             runtime_state=self.runtime_state,
             latest_scan_run=self.latest_scan_run,
+            notification_outbox_summary=self.notification_outbox_summary,
             latest_failed_scan_run=self.latest_failed_scan_run,
         ).summary
 
@@ -337,6 +465,7 @@ class TargetRow:
             runtime_state=self.runtime_state,
             latest_scan_run=self.latest_scan_run,
             latest_scan_items=tuple(row.item for row in self.latest_scan_items),
+            notification_outbox_summary=self.notification_outbox_summary,
             latest_failed_scan_run=self.latest_failed_scan_run,
         ).text
 
@@ -469,8 +598,11 @@ class TargetRow:
             status_class=self.status_class,
             status_detail=status_detail,
             status_summary=status_summary,
+            mode_label="留言" if self.target.target_kind == TargetKind.COMMENTS else "貼文",
+            mode_class=self.mode_class,
             hit_count=self.hit_record_total_count,
             latest_error_summary=latest_error_summary,
+            thumbnail_url=self.thumbnail_url,
         )
 
     @property
@@ -496,3 +628,16 @@ class TargetRow:
         """回傳主操作按鈕文字，對齊 userscript 開始 / 暫停語義。"""
 
         return "開始" if self.monitoring_action == "start" else "停止"
+
+
+def _format_countdown_seconds(seconds: int) -> str:
+    """格式化 header 的下一次刷新倒數。"""
+
+    bounded_seconds = max(int(seconds), 0)
+    if bounded_seconds < 60:
+        return f"{bounded_seconds}s"
+    minutes, remainder = divmod(bounded_seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder}s" if remainder else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"

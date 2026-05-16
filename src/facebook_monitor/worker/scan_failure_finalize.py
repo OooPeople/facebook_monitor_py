@@ -16,6 +16,7 @@ from facebook_monitor.application.scan_recording_service import RecordScanReques
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import WorkerMode
+from facebook_monitor.worker.scan_orchestration import PROFILE_SESSION_FAILURE_REASONS
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,11 @@ def record_scan_failure(
 ) -> int:
     """透過 application context 記錄一筆標準失敗 scan run。"""
 
+    if reason in PROFILE_SESSION_FAILURE_REASONS:
+        app.repositories.app_settings.mark_profile_needs_login(
+            reason=reason,
+            source=worker_path,
+        )
     error_message = format_scan_failure_message(reason, message)
     latest = app.repositories.scan_runs.latest_by_target(target.id)
     if (

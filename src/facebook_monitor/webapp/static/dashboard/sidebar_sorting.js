@@ -1,4 +1,7 @@
-import { closeDialog } from "/static/dashboard/utils.js";
+import {
+  listTargetIds,
+  prefersReducedMotion,
+} from "/static/dashboard/sidebar_dom.js";
 
 const SORTABLE_ANIMATION_MS = 160;
 const SORTABLE_SWAP_THRESHOLD = 0.75;
@@ -16,17 +19,7 @@ const loadSortable = async () => {
   return sortableConstructor;
 };
 
-const prefersReducedMotion = () => (
-  window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
-);
-
 const sortableAnimation = () => (prefersReducedMotion() ? 0 : SORTABLE_ANIMATION_MS);
-
-const listTargetIds = (list) => (
-  Array.from((list || document.createElement("div")).querySelectorAll("[data-sidebar-item]"))
-    .map((item) => item.dataset.targetId || "")
-    .filter(Boolean)
-);
 
 const collectPlacements = (sidebarLists) => ({
   groups: sidebarLists().map((list) => ({
@@ -161,7 +154,11 @@ export const setupSidebarSorting = ({
   };
 
   document.querySelector("[data-sidebar-start-sort]")?.addEventListener("click", async () => {
-    closeDialog(document.querySelector("[data-sidebar-menu]"));
+    const menu = document.querySelector("[data-sidebar-menu]");
+    if (menu) {
+      menu.open = false;
+      menu.querySelector(".sidebar-menu-trigger")?.setAttribute("aria-expanded", "false");
+    }
     try {
       await setupSortables();
       setSortMode(true);

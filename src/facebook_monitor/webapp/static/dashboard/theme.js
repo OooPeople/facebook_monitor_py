@@ -18,11 +18,11 @@ const persistTheme = async (theme) => {
 const currentPageTheme = () => {
   const pageTheme = document.documentElement.dataset.theme || "";
   if (THEMES.has(pageTheme)) return pageTheme;
-  return "light";
+  return "dark";
 };
 
 const applyTheme = (theme) => {
-  const normalizedTheme = THEMES.has(theme) ? theme : "light";
+  const normalizedTheme = THEMES.has(theme) ? theme : "dark";
   document.documentElement.dataset.theme = normalizedTheme;
   document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
     const isDark = normalizedTheme === "dark";

@@ -143,7 +143,7 @@ def is_generated_group_comments_name(name: str, group_id: str, parent_post_id: s
 
 
 def build_group_comments_scope_id(group_id: str, parent_post_id: str) -> str:
-    """建立 comments target 的 target-scoped seen/baseline scope id。"""
+    """建立 comments target 的 target-scoped scan state scope id。"""
 
     normalized_group_id = str(group_id or "").strip()
     normalized_parent_post_id = str(parent_post_id or "").strip()
@@ -163,6 +163,7 @@ class TargetDescriptor:
     scope_id: str
     canonical_url: str
     group_name: str = ""
+    group_cover_image_url: str = ""
     parent_post_id: str = ""
     metadata_status: TargetMetadataStatus = TargetMetadataStatus.RESOLVED
     metadata_error: str = ""
@@ -180,6 +181,7 @@ class TargetDescriptor:
         canonical_url: str,
         name: str = "",
         group_name: str = "",
+        group_cover_image_url: str = "",
     ) -> TargetDescriptor:
         """建立 group feed posts target descriptor。"""
 
@@ -190,6 +192,7 @@ class TargetDescriptor:
             target_kind=TargetKind.POSTS,
             group_id=group_id,
             group_name=group_name,
+            group_cover_image_url=group_cover_image_url,
             scope_id=group_id,
             canonical_url=canonical_url,
             paused=True,
@@ -204,6 +207,7 @@ class TargetDescriptor:
         canonical_url: str,
         name: str = "",
         group_name: str = "",
+        group_cover_image_url: str = "",
     ) -> TargetDescriptor:
         """建立 group post comments target descriptor。"""
 
@@ -221,6 +225,7 @@ class TargetDescriptor:
             target_kind=TargetKind.COMMENTS,
             group_id=group_id,
             group_name=group_name,
+            group_cover_image_url=group_cover_image_url,
             parent_post_id=parent_post_id,
             scope_id=scope_id,
             canonical_url=canonical_url,
@@ -238,8 +243,8 @@ class TargetConfig:
 
     target_id: str
     include_keywords: tuple[str, ...] = ()
-    exclude_keywords: tuple[str, ...] = ()
-    exclude_ignore_phrases: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
+    exclude_ignore_phrases: tuple[str, ...] = PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
     max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
     jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
@@ -329,6 +334,7 @@ class TargetRuntimeState:
     active_page_id: str = ""
     last_page_reloaded_at: datetime | None = None
     scan_guard_count: int = 0
+    display_next_due_at: datetime | None = None
     updated_at: datetime = field(default_factory=utc_now)
 
     @property
@@ -447,3 +453,16 @@ class NotificationOutboxEntry:
     id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
+class NotificationOutboxSummary:
+    """保存 target-scoped outbox backlog 診斷摘要。"""
+
+    target_id: str
+    pending_count: int = 0
+    processing_count: int = 0
+    failed_count: int = 0
+    terminal_count: int = 0
+    oldest_pending_updated_at: datetime | None = None
+    max_attempts: int = 0

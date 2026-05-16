@@ -17,9 +17,9 @@ const hitRecordText = (value) => (
 
 const appendHitRecordField = (container, labelText, value) => {
   const item = document.createElement("div");
-  item.className = "hit-record-field field-grid-cell";
+  item.className = "hit-record-summary-item";
   const label = document.createElement("dt");
-  label.textContent = `${labelText}：`;
+  label.textContent = labelText;
   const detail = document.createElement("dd");
   detail.textContent = hitRecordText(value);
   item.appendChild(label);
@@ -108,7 +108,7 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
     sequence.className = "hit-record-sequence";
     sequence.textContent = `#${hitRecordText(item.sequence_number)}`;
     const fields = document.createElement("dl");
-    fields.className = "hit-record-fields field-grid field-grid--stacked";
+    fields.className = "hit-record-fields hit-record-summary-list";
     appendHitRecordField(fields, "類型", item.item_type);
     appendHitRecordField(fields, "作者", item.author_name);
     appendHitRecordField(fields, "關鍵字", item.matched_keyword);

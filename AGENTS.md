@@ -75,6 +75,7 @@
 - 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
 - 更新進度時，同步維護 `docs/TASK_BREAKDOWN.md`。
 - `docs/TASK_BREAKDOWN.md` 只保留活狀態、下一步、風險與最近驗證摘要；不要累積逐次 focused command 或歷史 passed 數。
+- 使用者說「整理文件」時，意思是刪掉太細節、太瑣碎、容易過期的內容，檢查文件職責是否重疊、邊界是否模糊，並把穩定事實放回正確文件；不是把近期改動補寫到每一份文件。
 - 使用者要求 commit message 時，先遵守 `GIT_COMMIT_RULES.md`。
 - 若本次實作只完成部分語義，commit / handoff / review 中必須清楚寫「已完成」與「未完成」邊界，不得混寫。
 
@@ -243,18 +244,10 @@ UI 重構不得讓已封口的架構邊界回歸：
 - 不得把 failed outbox retry 接回一般 scan commit。
 - 不得把 `group_configs` 重新變成正式設定來源。
 
-### 6. UI 設計參考檔使用規則
-`docs/ui_refactor/reference_ui.html` 是 dashboard 視覺與版面語義參考，不是可直接覆蓋目前專案的實作來源。
+### 6. UI 設計參考檔狀態
+舊版 `docs/ui_refactor/reference_ui.html` 已移除，不再作為 dashboard 視覺參考。
 
-使用這份 HTML 調整 UI 時必須遵守：
-
-- 每次修改 dashboard UI 前，先對照 `docs/ui_refactor/reference_ui.html` 的版面、比例、色彩、陰影與資訊層級。
-- 不得直接整份複製 reference HTML / CSS 覆蓋現有 FastAPI + Jinja template + vanilla CSS/JS 架構。
-- 必須保留既有 endpoint、Jinja partial、partial update、card collapse、hit records modal、sidebar state 與 `data-*` 互動契約。
-- 優先修改 `src/facebook_monitor/webapp/templates/*` 與 `src/facebook_monitor/webapp/static/styles/*`；只有互動契約真的需要時，才小幅修改 `src/facebook_monitor/webapp/static/dashboard/*.js`。
-- reference UI 的主內容中央卡片感、淡冷灰頁面、乾淨白卡、輕陰影、sidebar item 陰影與貼文項目陰影可作為視覺方向。
-- 展開 target 卡片內左右區塊應維持接近黃金比例：左側「關鍵字與設定」約 38%，右側「最近掃描 / 命中紀錄」約 62%。
-- 若刻意偏離 reference UI，handoff 中需說明偏離點與原因。
+後續 dashboard UI 調整必須以目前 FastAPI + Jinja template + vanilla CSS/JS 實作為準，並保留既有 endpoint、Jinja partial、partial update、card collapse、hit records modal、sidebar state 與 `data-*` 互動契約。
 
 ---
 

@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from facebook_monitor.core.models import LatestScanItem
+from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -75,6 +76,7 @@ def build_scan_diagnostics_view(
     runtime_state: TargetRuntimeState,
     latest_scan_run: ScanRun | None,
     latest_scan_items: tuple[LatestScanItem, ...] = (),
+    notification_outbox_summary: NotificationOutboxSummary | None = None,
     latest_failed_scan_run: ScanRun | None = None,
 ) -> ScanDiagnosticsView:
     """建立 target card 使用的 scan diagnostics view。"""
@@ -91,6 +93,7 @@ def build_scan_diagnostics_view(
                     f"scope_id={target.scope_id}",
                     f"runtime_status={runtime_state.runtime_status.value}",
                     "scan_status=(none)",
+                    _format_outbox_summary_line(notification_outbox_summary),
                     "note=尚無掃描診斷",
                 ]
             ),
@@ -108,6 +111,7 @@ def build_scan_diagnostics_view(
             runtime_state=runtime_state,
             scan=latest_scan_run,
             latest_scan_items=latest_scan_items,
+            notification_outbox_summary=notification_outbox_summary,
             latest_failed_scan_run=latest_failed_scan_run,
         ),
     )
@@ -120,6 +124,7 @@ def _build_scan_diagnostics_text(
     runtime_state: TargetRuntimeState,
     scan: ScanRun,
     latest_scan_items: tuple[LatestScanItem, ...],
+    notification_outbox_summary: NotificationOutboxSummary | None,
     latest_failed_scan_run: ScanRun | None,
 ) -> str:
     """建立可複製的 scan-level diagnostics 文字。"""
@@ -143,6 +148,7 @@ def _build_scan_diagnostics_text(
         f"last_finished_at={format_optional_datetime_for_ui(runtime_state.last_finished_at)}",
         f"scan_guard_count={runtime_state.scan_guard_count}",
         f"last_skip_reason={runtime_state.last_skip_reason or '(none)'}",
+        _format_outbox_summary_line(notification_outbox_summary),
         f"scan_status={scan.status.value}",
         f"finished_at={format_datetime_for_ui(scan.finished_at)}",
         f"item_count={scan.item_count}",
@@ -185,6 +191,22 @@ def _build_scan_diagnostics_text(
     _append_latest_scan_items(lines, latest_scan_items)
     lines.append("metadata_json=" + json.dumps(metadata, ensure_ascii=False, sort_keys=True))
     return "\n".join(lines)
+
+
+def _format_outbox_summary_line(summary: NotificationOutboxSummary | None) -> str:
+    """格式化 target-scoped outbox backlog 診斷摘要。"""
+
+    if summary is None:
+        return "outbox=(unavailable)"
+    return (
+        "outbox="
+        f"pending:{summary.pending_count},"
+        f"processing:{summary.processing_count},"
+        f"failed:{summary.failed_count},"
+        f"terminal:{summary.terminal_count},"
+        f"oldest_pending:{format_optional_datetime_for_ui(summary.oldest_pending_updated_at)},"
+        f"max_attempts:{summary.max_attempts}"
+    )
 
 
 def _append_latest_scan_items(lines: list[str], items: tuple[LatestScanItem, ...]) -> None:
@@ -353,6 +375,7 @@ def format_scan_stop_reason(value: str) -> str:
 
     labels = {
         "target_count_reached": "達到目標筆數",
+        "seen_stop_consecutive_seen": "前段內容重複，略過深度掃描",
         "scroll_rounds_completed": "完成捲動輪數",
         "scroll_stalled": "頁面未產生可用捲動",
         "stagnant_windows": "連續多輪沒有新增項目",
@@ -360,6 +383,7 @@ def format_scan_stop_reason(value: str) -> str:
         "no_round_stats": "無輪次資料",
         "visible_window_completed": "完成可見留言抽取",
         "auto_load_more_disabled": "已停用自動載入更多",
+        "no_comment_round_stats": "無留言輪次資料",
         "comment_scroll_stalled": "留言區未產生可用捲動",
         "comment_stagnant_windows": "留言連續多輪沒有新增項目",
         "comment_scroll_rounds_completed": "完成留言捲動輪數",
@@ -367,6 +391,29 @@ def format_scan_stop_reason(value: str) -> str:
         "comment_load_more_guard_active": "留言載入更多 guard 使用中",
     }
     return labels.get(value, value or "(未知)")
+
+
+def format_scan_cycle_result_reason(value: str) -> str:
+    """把最近一輪停止原因轉成 target card 可讀的低干擾文案。"""
+
+    labels = {
+        "target_count_reached": "已達目標項目數",
+        "seen_stop_consecutive_seen": "前段內容重複，略過深度掃描",
+        "scroll_rounds_completed": "已完成深度掃描",
+        "scroll_stalled": "頁面無法繼續捲動",
+        "stagnant_windows": "多輪未找到新項目",
+        "collection_stopped": "抽取流程結束",
+        "no_round_stats": "沒有掃描輪次資料",
+        "visible_window_completed": "已完成可見留言掃描",
+        "auto_load_more_disabled": "未啟用深度掃描",
+        "no_comment_round_stats": "沒有留言掃描輪次資料",
+        "comment_scroll_stalled": "留言區無法繼續捲動",
+        "comment_stagnant_windows": "多輪未找到新留言",
+        "comment_scroll_rounds_completed": "已完成留言深度掃描",
+        "comment_collection_stopped": "留言抽取流程結束",
+        "comment_load_more_guard_active": "留言載入更多正在使用中",
+    }
+    return labels.get(value, value or "未知原因")
 
 
 def format_scan_round_debug(round_item: dict[str, Any]) -> str:

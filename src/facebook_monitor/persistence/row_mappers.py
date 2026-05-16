@@ -42,6 +42,7 @@ def target_from_row(row: sqlite3.Row) -> TargetDescriptor:
         target_kind=TargetKind(row["target_kind"]),
         group_id=row["group_id"],
         group_name=row["group_name"],
+        group_cover_image_url=row["group_cover_image_url"],
         parent_post_id=row["parent_post_id"],
         scope_id=row["scope_id"],
         canonical_url=row["canonical_url"],
@@ -190,6 +191,7 @@ def runtime_state_from_row(row: sqlite3.Row) -> TargetRuntimeState:
         active_page_id=row["active_page_id"],
         last_page_reloaded_at=decode_datetime(row["last_page_reloaded_at"]),
         scan_guard_count=row["scan_guard_count"],
+        display_next_due_at=decode_datetime(row["display_next_due_at"]),
         updated_at=updated_at,
     )
 

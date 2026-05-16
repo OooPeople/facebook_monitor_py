@@ -7,6 +7,7 @@ connection 並發 commit 重複發送同一筆通知。
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
@@ -36,6 +37,7 @@ from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
 DEFAULT_STALE_PROCESSING_SECONDS = 300
+DEFAULT_DISPATCH_BATCH_LIMIT = 10
 
 
 def build_match_notification_message(
@@ -192,19 +194,25 @@ def dispatch_new_pending_notification_outbox(
     desktop_sender: DesktopSender = send_desktop_notification,
     discord_sender: DiscordSender = send_discord_notification,
     stale_processing_seconds: float = DEFAULT_STALE_PROCESSING_SECONDS,
+    batch_limit: int = DEFAULT_DISPATCH_BATCH_LIMIT,
 ) -> int:
-    """Claim 並發送 pending outbox events，不自動重試 failed events。"""
+    """Claim 並發送所有 pending outbox events，不自動重試 failed events。"""
 
     app.repositories.notification_outbox.recover_stale_processing(
         older_than_seconds=stale_processing_seconds,
     )
-    return dispatch_notification_outbox_entries(
-        app=app,
-        entries=app.repositories.notification_outbox.claim_pending(),
-        ntfy_sender=ntfy_sender,
-        desktop_sender=desktop_sender,
-        discord_sender=discord_sender,
-    )
+    dispatched_count = 0
+    while True:
+        entries = app.repositories.notification_outbox.claim_pending(limit=batch_limit)
+        if not entries:
+            return dispatched_count
+        dispatched_count += dispatch_notification_outbox_entries(
+            app=app,
+            entries=entries,
+            ntfy_sender=ntfy_sender,
+            desktop_sender=desktop_sender,
+            discord_sender=discord_sender,
+        )
 
 
 def dispatch_new_pending_notification_outbox_for_db(
@@ -214,6 +222,7 @@ def dispatch_new_pending_notification_outbox_for_db(
     desktop_sender: DesktopSender = send_desktop_notification,
     discord_sender: DiscordSender = send_discord_notification,
     stale_processing_seconds: float = DEFAULT_STALE_PROCESSING_SECONDS,
+    batch_limit: int = DEFAULT_DISPATCH_BATCH_LIMIT,
 ) -> int:
     """用新的 application context 發送 pending outbox，隔離 scan commit lifecycle。"""
 
@@ -224,6 +233,7 @@ def dispatch_new_pending_notification_outbox_for_db(
             desktop_sender=desktop_sender,
             discord_sender=discord_sender,
             stale_processing_seconds=stale_processing_seconds,
+            batch_limit=batch_limit,
         )
 
 
@@ -233,12 +243,13 @@ def retry_failed_notification_outbox(
     ntfy_sender: NtfySender = send_ntfy_notification,
     desktop_sender: DesktopSender = send_desktop_notification,
     discord_sender: DiscordSender = send_discord_notification,
+    batch_limit: int = DEFAULT_DISPATCH_BATCH_LIMIT,
 ) -> int:
     """明確 claim 並重試 failed outbox events；不由一般 scan commit 自動觸發。"""
 
     return dispatch_notification_outbox_entries(
         app=app,
-        entries=app.repositories.notification_outbox.claim_failed(),
+        entries=app.repositories.notification_outbox.claim_failed(limit=batch_limit),
         ntfy_sender=ntfy_sender,
         desktop_sender=desktop_sender,
         discord_sender=discord_sender,
@@ -271,11 +282,21 @@ def dispatch_notification_outbox_entries(
     for entry in entries:
         if entry.id is None:
             continue
+        entry_id = entry.id
         attempts = entry.attempts + 1
         target = app.repositories.targets.get(entry.target_id)
         try:
             if target is None:
                 raise ValueError(f"Target not found: {entry.target_id}")
+            app.repositories.notification_outbox.touch_processing(
+                entry_id=entry_id,
+                status=entry.status,
+            )
+            entry = refresh_outbox_entry_delivery_endpoint(
+                app=app,
+                target=target,
+                entry=entry,
+            )
             event_id, status = dispatch_notification_outbox_entry(
                 app=app,
                 target=target,
@@ -285,7 +306,7 @@ def dispatch_notification_outbox_entries(
                 discord_sender=discord_sender,
             )
             app.repositories.notification_outbox.mark_result(
-                entry_id=entry.id,
+                entry_id=entry_id,
                 status=status,
                 attempts=attempts,
                 notification_event_id=event_id,
@@ -298,7 +319,7 @@ def dispatch_notification_outbox_entries(
                 exc,
             )
             app.repositories.notification_outbox.mark_result(
-                entry_id=entry.id,
+                entry_id=entry_id,
                 status=NotificationOutboxStatus.FAILED,
                 attempts=attempts,
                 message=error_message,
@@ -313,6 +334,42 @@ def dispatch_notification_outbox_entries(
             )
             app.repositories.notification_outbox.connection.commit()
     return dispatched_count
+
+
+def refresh_outbox_entry_delivery_endpoint(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+) -> NotificationOutboxEntry:
+    """dispatch 前套用目前 target config 的 endpoint，避免 retry 打舊設定。"""
+
+    if entry.id is None or entry.channel == NotificationChannel.DESKTOP:
+        return entry
+    definition = next(
+        (
+            channel_definition
+            for channel_definition in NOTIFICATION_CHANNEL_DEFINITIONS
+            if channel_definition.channel == entry.channel
+        ),
+        None,
+    )
+    if definition is None or not definition.endpoint_field:
+        return entry
+    config = app.services.targets.get_config_for_target(target)
+    endpoint = (
+        str(getattr(config, definition.endpoint_field, "") or "")
+        if is_channel_enabled(config, definition)
+        else ""
+    )
+    if endpoint == entry.endpoint:
+        return entry
+    app.repositories.notification_outbox.update_delivery_endpoint(
+        entry_id=entry.id,
+        endpoint=endpoint,
+    )
+    app.repositories.notification_outbox.connection.commit()
+    return replace(entry, endpoint=endpoint)
 
 
 def build_notification_idempotency_key(

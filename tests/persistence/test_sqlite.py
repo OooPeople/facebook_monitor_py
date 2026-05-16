@@ -43,6 +43,7 @@ from facebook_monitor.persistence.sqlite import TargetRuntimeStateRepository
 from facebook_monitor.persistence.sqlite import initialize_schema
 from facebook_monitor.persistence.migrations import ensure_legacy_group_configs_table
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
+from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
@@ -77,6 +78,21 @@ def table_count(connection: sqlite3.Connection, table_name: str) -> int:
     return int(row[0])
 
 
+def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    """回傳指定 table 是否存在。"""
+
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path: Path) -> None:
     """SQLite 連線與 schema 具備 Web UI/background worker 並行所需設定。"""
 
@@ -94,6 +110,17 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             ).fetchall()
         }
+        revision_trigger_tables = {
+            row["tbl_name"]
+            for row in connection.execute(
+                """
+                SELECT tbl_name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name LIKE 'trg_dashboard_revision_%'
+                """
+            ).fetchall()
+        }
 
     assert str(journal_mode).lower() == "wal"
     assert int(busy_timeout) == 5000
@@ -108,6 +135,42 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
         "idx_runtime_state_desired_updated",
     }.issubset(indexes)
     assert "idx_targets_kind_scope" not in indexes
+    assert "latest_scan_item_matches" not in revision_trigger_tables
+    assert "match_history_matches" not in revision_trigger_tables
+
+
+def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
+    """schema 初始化會移除舊版 dashboard revision triggers，避免長時間 UI 更新過密。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute(
+            """
+            CREATE TRIGGER trg_dashboard_revision_legacy_insert
+            AFTER INSERT ON targets
+            BEGIN
+                UPDATE dashboard_revision
+                SET revision = revision + 1
+                WHERE id = 1;
+            END
+            """
+        )
+        initialize_schema(connection)
+        trigger_names = {
+            row["name"]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name LIKE 'trg_dashboard_revision_%'
+                """
+            ).fetchall()
+        }
+
+    assert "trg_dashboard_revision_legacy_insert" not in trigger_names
 
 
 def test_fresh_schema_does_not_create_group_configs_formal_table(tmp_path: Path) -> None:
@@ -353,6 +416,120 @@ def test_initialize_schema_migrates_v20_keyword_match_tables(
     assert latest_items[0].matched_keywords == ("6/5", "6/6")
 
 
+def test_initialize_schema_migrates_v18_sidebar_placements(
+    tmp_path: Path,
+) -> None:
+    """v18 舊 DB 升級後會為既有 targets 建立未分組 sidebar placement。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        second = replace(
+            TargetDescriptor.for_group_posts(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            ),
+            created_at=first.created_at + timedelta(seconds=10),
+        )
+        TargetRepository(connection).save(first)
+        TargetRepository(connection).save(second)
+        connection.execute("DROP TABLE sidebar_group_config_templates")
+        connection.execute("DROP TABLE sidebar_target_placements")
+        connection.execute("DROP TABLE sidebar_groups")
+        connection.execute("UPDATE schema_metadata SET value = '18' WHERE key = 'version'")
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        rows = connection.execute(
+            """
+            SELECT target_id, sidebar_group_id, sort_order
+            FROM sidebar_target_placements
+            ORDER BY sort_order
+            """
+        ).fetchall()
+
+    assert version == str(SCHEMA_VERSION)
+    assert [(row["target_id"], row["sidebar_group_id"], row["sort_order"]) for row in rows] == [
+        (first.id, None, 0),
+        (second.id, None, 1),
+    ]
+
+
+def test_initialize_schema_migrates_v19_group_template_table(
+    tmp_path: Path,
+) -> None:
+    """v19 舊 DB 升級後會建立 group template table，但不建立 target config fallback。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP TABLE sidebar_group_config_templates")
+        connection.execute("UPDATE schema_metadata SET value = '19' WHERE key = 'version'")
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        has_template_table = table_exists(connection, "sidebar_group_config_templates")
+        has_discord_column = table_has_column(
+            connection,
+            "sidebar_group_config_templates",
+            "discord_webhook",
+        )
+        table_names = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_template_table
+    assert has_discord_column
+    assert "group_configs" not in table_names
+
+
+def test_initialize_schema_migrates_v23_scan_scope_state_table(
+    tmp_path: Path,
+) -> None:
+    """v23 舊 DB 升級後會建立 scan_scope_state table。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP TABLE scan_scope_state")
+        connection.execute("UPDATE schema_metadata SET value = '23' WHERE key = 'version'")
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        repo = ScanScopeStateRepository(connection)
+        inserted_count = repo.clear_scope("scope-from-v23")
+        has_scan_scope_state_table = table_exists(connection, "scan_scope_state")
+        is_initialized = ScanScopeStateRepository(connection).is_initialized("scope-from-v23")
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_scan_scope_state_table
+    assert inserted_count == 1
+    assert not is_initialized
+
+
 def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path) -> None:
     """raw v10 DB 會升級 group config、runtime、history 與 latest scan 資料。"""
 
@@ -438,6 +615,11 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
             "target_runtime_state",
             "scan_guard_count",
         )
+        has_runtime_display_due = table_has_column(
+            connection,
+            "target_runtime_state",
+            "display_next_due_at",
+        )
         has_target_discord = table_has_column(
             connection,
             "target_configs",
@@ -469,6 +651,7 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
     assert has_latest_debug
     assert has_runtime_request
     assert has_runtime_guard_count
+    assert has_runtime_display_due
     assert has_target_discord
     assert has_target_exclude_ignore
     assert has_target_metadata_status
@@ -1167,7 +1350,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_settings.enable_discord_notification
         assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/global"
         app_settings = AppSettingsRepository(connection)
-        assert app_settings.get_theme() == "light"
+        assert app_settings.get_theme() == "dark"
         assert app_settings.save_theme("dark") == "dark"
         assert app_settings.get_theme() == "dark"
 
@@ -1175,6 +1358,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             target_id=target.id,
             desired_state=TargetDesiredState.ACTIVE,
             runtime_status=TargetRuntimeStatus.IDLE,
+            display_next_due_at=utc_now() + timedelta(seconds=60),
         )
         TargetRuntimeStateRepository(connection).save(runtime_state)
         loaded_runtime_state = TargetRuntimeStateRepository(connection).get(target.id)
@@ -1183,6 +1367,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_runtime_state.target_id == target.id
         assert loaded_runtime_state.desired_state == TargetDesiredState.ACTIVE
         assert loaded_runtime_state.runtime_status == TargetRuntimeStatus.IDLE
+        assert loaded_runtime_state.display_next_due_at == runtime_state.display_next_due_at
 
         seen_repo = SeenItemRepository(connection)
         seen_item = SeenItem(
@@ -1564,6 +1749,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         SeenItemRepository(connection).mark_seen(
             SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
         )
+        ScanScopeStateRepository(connection).mark_initialized(target.scope_id)
         scan_id = ScanRunRepository(connection).add(
             ScanRun(
                 target_id=target.id,
@@ -1619,6 +1805,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert result.match_history == 0
         assert result.notification_events == 1
         assert result.seen_items == 1
+        assert result.scan_scope_state == 1
         assert result.notification_outbox == 0
         assert result.total_deleted == 4
         assert table_count(connection, "scan_runs") == 0
@@ -1627,6 +1814,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert table_count(connection, "notification_events") == 0
         assert table_count(connection, "notification_outbox") == 1
         assert table_count(connection, "seen_items") == 0
+        assert not ScanScopeStateRepository(connection).is_initialized(target.scope_id)
         assert TargetRepository(connection).get(target.id) is not None
         assert (
             target_config_repository(connection).get_legacy_target_config_for_migration(target.id)
@@ -1655,6 +1843,7 @@ def test_runtime_data_maintenance_keeps_outbox_when_seen_items_are_kept(
         SeenItemRepository(connection).mark_seen(
             SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
         )
+        ScanScopeStateRepository(connection).mark_initialized(target.scope_id)
         notification_outbox_repository(connection).enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:seen-key:ntfy",
@@ -1672,9 +1861,39 @@ def test_runtime_data_maintenance_keeps_outbox_when_seen_items_are_kept(
         )
 
         assert result.seen_items == 0
+        assert result.scan_scope_state == 0
         assert result.notification_outbox == 0
         assert table_count(connection, "seen_items") == 1
         assert table_count(connection, "notification_outbox") == 1
+        assert ScanScopeStateRepository(connection).is_initialized(target.scope_id)
+
+
+def test_runtime_data_maintenance_resets_missing_scope_state_rows(
+    tmp_path: Path,
+) -> None:
+    """清 seen 時會為舊 DB 缺少的 target scope 建 baseline row。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        SeenItemRepository(connection).mark_seen(
+            SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
+        )
+
+        assert ScanScopeStateRepository(connection).is_initialized(target.scope_id)
+
+        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data()
+
+        assert result.seen_items == 1
+        assert result.scan_scope_state == 1
+        assert not ScanScopeStateRepository(connection).is_initialized(target.scope_id)
 
 
 def test_match_history_repository_counts_offsets_and_clears_by_target(

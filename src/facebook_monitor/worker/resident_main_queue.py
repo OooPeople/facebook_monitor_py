@@ -73,6 +73,29 @@ class TargetQueue:
 
         await self._queue.put(None)
 
+    async def cancel_pending(self) -> tuple[str, ...]:
+        """移除尚未被 worker 取出的 queue items，回傳取消的 target ids。"""
+
+        cancelled_ids: list[str] = []
+        async with self._lock:
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._queue.task_done()
+                if item is None:
+                    continue
+                target_id = item.due_target.target_id
+                self._queued_target_ids.discard(target_id)
+                cancelled_ids.append(target_id)
+            self._queued_order = [
+                target_id
+                for target_id in self._queued_order
+                if target_id not in set(cancelled_ids)
+            ]
+        return tuple(cancelled_ids)
+
     async def join(self) -> None:
         """等待所有已排入 queue 的 target 完成。"""
 

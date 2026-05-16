@@ -8,19 +8,30 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 from collections.abc import Sequence
 import ipaddress
 import logging
 from pathlib import Path
 import socket
 import sys
+from types import FrameType
+from typing import Any
 from urllib.parse import urlsplit
 import webbrowser
 
 import httpx
 import uvicorn
+import uvicorn.server
 
+from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
+from facebook_monitor.profile_login import GuidedLoginError
+from facebook_monitor.profile_login import GuidedLoginOptions
+from facebook_monitor.profile_login import profile_has_facebook_session_cookies
+from facebook_monitor.profile_login import run_guided_facebook_login
+from facebook_monitor.runtime.csrf_token import load_or_create_csrf_token
 from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import ServerInfo
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
@@ -31,6 +42,10 @@ from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 from facebook_monitor.runtime.startup_diagnostics import append_startup_log
 from facebook_monitor.runtime.startup_diagnostics import build_startup_diagnostics
 from facebook_monitor.runtime.startup_diagnostics import print_diagnostics
+from facebook_monitor.runtime.windows_integration import ensure_standard_streams_for_gui_subsystem
+from facebook_monitor.runtime.windows_integration import find_windows_tray_icon
+from facebook_monitor.runtime.windows_integration import resolve_windows_tray_decision
+from facebook_monitor.runtime.windows_integration import run_uvicorn_with_windows_tray
 from facebook_monitor.version import APP_NAME
 from facebook_monitor.webapp.app import create_app
 
@@ -43,11 +58,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Run the local Facebook Monitor Web UI.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument(
-        "--allow-non-loopback-host",
-        action="store_true",
-        help="Allow binding the management UI to a non-loopback host. Use only on trusted networks.",
-    )
     parser.add_argument(
         "--port",
         type=int,
@@ -119,25 +129,46 @@ def build_parser() -> argparse.ArgumentParser:
             "when CTRL+C shuts down the local Web UI."
         ),
     )
+    tray_group = parser.add_mutually_exclusive_group()
+    tray_group.add_argument(
+        "--windows-tray",
+        dest="windows_tray",
+        action="store_true",
+        help=(
+            "Show a Windows system tray icon with Open and Exit actions. "
+            "Defaults to enabled only for the frozen Windows EXE."
+        ),
+    )
+    tray_group.add_argument(
+        "--no-windows-tray",
+        dest="windows_tray",
+        action="store_false",
+        help="Disable the Windows system tray icon.",
+    )
+    parser.set_defaults(windows_tray=None)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint：解析 runtime paths 後啟動 uvicorn server。"""
 
+    ensure_standard_streams_for_gui_subsystem()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         paths = resolve_runtime_paths_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    if not args.allow_non_loopback_host and not _is_loopback_host(args.host):
-        parser.error("--host must be loopback unless --allow-non-loopback-host is provided")
+    if not _is_loopback_host(args.host):
+        parser.error("--host must stay loopback for the local management UI")
     requested_port = DEFAULT_WEBUI_PORT if args.port is None else args.port
     explicit_auto_port = args.auto_port is True or requested_port == 0
     default_port_fallback = args.port is None and args.auto_port is None
     open_browser_on_start = True if args.open_browser is None else bool(args.open_browser)
     open_existing_browser = args.open_browser is True
+    windows_tray_decision = resolve_windows_tray_decision(args.windows_tray)
+    if windows_tray_decision.warning:
+        print(windows_tray_decision.warning)
     if not 0 <= requested_port <= 65535:
         parser.error("--port must be between 0 and 65535")
     paths.ensure_writable_dirs()
@@ -178,6 +209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         logger.error(message)
                         print(message)
                         return 2
+                    if not _run_login_gate_if_needed(paths.profile_dir, paths.db_path):
+                        return 2
                     instance_lock.write_server_info(host=args.host, port=port, url=url)
                     try:
                         diagnostics = build_startup_diagnostics(
@@ -214,21 +247,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                             scheduler_interval_seconds=args.scheduler_interval_seconds,
                             reset_targets_on_startup=True,
                             reset_runtime_data_on_startup=not args.keep_runtime_data_on_startup,
+                            csrf_token=load_or_create_csrf_token(paths.runtime_dir),
                         )
                         app.state.runtime_paths = paths
                         if open_browser_on_start:
                             _open_browser(url)
-                        uvicorn.run(
-                            app,
-                            host=args.host,
-                            port=port,
-                            access_log=args.access_log,
-                            loop="facebook_monitor.launcher:create_launcher_event_loop",
-                            log_level=(
-                                "info" if args.verbose_startup or args.access_log else "warning"
-                            ),
-                            timeout_graceful_shutdown=args.graceful_shutdown_timeout_seconds,
-                        )
+                        with _print_shutdown_feedback_on_signal():
+                            uvicorn_kwargs: dict[str, Any] = {
+                                "host": args.host,
+                                "port": port,
+                                "access_log": args.access_log,
+                                "loop": "facebook_monitor.launcher:create_launcher_event_loop",
+                                "log_level": (
+                                    "info"
+                                    if args.verbose_startup or args.access_log
+                                    else "warning"
+                                ),
+                                "timeout_graceful_shutdown": (
+                                    args.graceful_shutdown_timeout_seconds
+                                ),
+                            }
+                            if windows_tray_decision.enabled:
+                                run_uvicorn_with_windows_tray(
+                                    app,
+                                    url=url,
+                                    icon_path=find_windows_tray_icon(paths),
+                                    uvicorn_kwargs=uvicorn_kwargs,
+                                )
+                            else:
+                                uvicorn.run(
+                                    app,
+                                    **uvicorn_kwargs,
+                                )
                     finally:
                         instance_lock.clear_server_info()
             except AppInstanceLockError as exc:
@@ -241,6 +291,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             open_browser=open_existing_browser,
         )
     return 0
+
+
+def _run_login_gate_if_needed(profile_dir: Path, db_path: Path) -> bool:
+    """needs_login 狀態時先開 Facebook 登入視窗，再啟動 Web UI。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        status = app.repositories.app_settings.get_profile_session_status()
+    if status.state != ProfileSessionState.NEEDS_LOGIN and profile_has_facebook_session_cookies(
+        profile_dir
+    ):
+        return True
+    if status.state == ProfileSessionState.NEEDS_LOGIN:
+        print("偵測到 Facebook 需要重新登入；登入完成後才會啟動 Web UI。")
+    else:
+        print("找不到 Facebook 登入資料；登入完成後才會啟動 Web UI。")
+    try:
+        logged_in = run_guided_facebook_login(
+            GuidedLoginOptions(profile_dir=profile_dir),
+        )
+    except GuidedLoginError as exc:
+        logger.error("Guided Facebook login failed: %s", exc)
+        print(f"無法開啟 Facebook 登入視窗：{exc}")
+        return False
+    if not logged_in:
+        print("Facebook 登入尚未完成，Web UI 未啟動。請重新執行程式再試一次。")
+        return False
+    with SqliteApplicationContext(db_path) as app:
+        app.repositories.app_settings.mark_profile_ok(source="launcher_guided_login")
+    return True
 
 
 def _handle_existing_instance(
@@ -314,6 +393,31 @@ def _print_startup_summary(
     print(f"Log 目錄：{logs_dir}")
     print(f"啟動診斷：{startup_log_path}")
     print("按 CTRL+C 停止。")
+
+
+@contextlib.contextmanager
+def _print_shutdown_feedback_on_signal():
+    """在 uvicorn 收到中斷訊號時先輸出使用者可見的關閉提示。"""
+
+    original_handle_exit = uvicorn.server.Server.handle_exit
+    feedback_printed = False
+
+    def handle_exit_with_feedback(
+        server: uvicorn.server.Server,
+        sig: int,
+        frame: FrameType | None,
+    ) -> None:
+        nonlocal feedback_printed
+        if not feedback_printed:
+            feedback_printed = True
+            print("已收到停止指令，正在結束 Web UI...", flush=True)
+        original_handle_exit(server, sig, frame)
+
+    uvicorn.server.Server.handle_exit = handle_exit_with_feedback
+    try:
+        yield
+    finally:
+        uvicorn.server.Server.handle_exit = original_handle_exit
 
 
 def _resolve_server_port(

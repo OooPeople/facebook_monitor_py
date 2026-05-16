@@ -81,6 +81,8 @@ class SchedulerSessionState:
     last_reused_page_count: int = 0
     last_closed_page_count: int = 0
     resident_browser_alive: bool = False
+    recovered_runtime_count: int = 0
+    worker_health_ok: bool = True
 
     @property
     def mode_label(self) -> str:
@@ -143,6 +145,8 @@ class BackgroundSchedulerManager:
         self.last_reused_page_count = 0
         self.last_closed_page_count = 0
         self.resident_browser_alive = False
+        self.recovered_runtime_count = 0
+        self.worker_health_ok = True
         self.metadata_refresh_target_ids: set[str] = set()
         self.metadata_refresh_order: list[str] = []
         self._lock = RLock()
@@ -177,6 +181,8 @@ class BackgroundSchedulerManager:
                 last_reused_page_count=self.last_reused_page_count,
                 last_closed_page_count=self.last_closed_page_count,
                 resident_browser_alive=self.resident_browser_alive,
+                recovered_runtime_count=self.recovered_runtime_count,
+                worker_health_ok=self.worker_health_ok,
             )
 
     def start(self, options: SchedulerSessionOptions) -> None:
@@ -322,6 +328,8 @@ class BackgroundSchedulerManager:
             self.last_reused_page_count = summary.reused_page_count
             self.last_closed_page_count = summary.closed_page_count
             self.resident_browser_alive = summary.resident_browser_alive
+            self.recovered_runtime_count = summary.recovered_runtime_count
+            self.worker_health_ok = summary.worker_health_ok
 
     def _wait_for_next_cycle(self, seconds: float) -> bool:
         """等待下一輪；manual-start wake 可提前結束等待。"""

@@ -5,7 +5,6 @@ import {
   showInlineStatus,
   showToast,
 } from "/static/dashboard/utils.js";
-import { setupConfirmSubmitForms } from "/static/dashboard/dialogs.js";
 import { setupThemeToggle } from "/static/dashboard/theme.js";
 
 const pageFeedback = readJsonScript("page-feedback", {});
@@ -33,7 +32,6 @@ setupDirtyFormStatus({
   form: targetKeywordForm,
   statusElement: targetKeywordStatus,
 });
-setupConfirmSubmitForms();
 
 if (pageFeedback.message === "關鍵字預設值已保存") {
   showInlineStatus(targetKeywordStatus, "設定已更新", "saved", 2500);

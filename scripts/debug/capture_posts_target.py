@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Capture the current Facebook group feed as a persisted target.",
     )
-    add_runtime_path_arguments(parser)
+    add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
     parser.add_argument(
         "--start-url",
         default=DEFAULT_START_URL,

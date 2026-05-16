@@ -17,12 +17,19 @@
       </div>
       <nav class="top-actions">
         {% include "_theme_toggle.html" %}
-        <a class="button" href="/settings">設定{% if profile_active %} · 開啟中{% endif %}</a>
+        <a class="button" href="/settings">設定</a>
         <a class="button button--primary" href="/targets/new">新增</a>
       </nav>
     </header>
 
     <div class="toast-stack" aria-live="polite" aria-atomic="true">
+      <div
+        class="toast error profile-session-warning"
+        data-profile-session-warning
+        {% if not profile_session_warning.needs_login %}hidden{% endif %}
+      >
+        {{ profile_session_warning.message }}
+      </div>
       {% if error %}
         <div class="toast error">{{ error }}</div>
       {% endif %}

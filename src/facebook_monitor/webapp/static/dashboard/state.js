@@ -115,7 +115,7 @@ export const shouldDelayRefresh = (state) => {
   const active = document.activeElement;
   const editing = active && active.matches && active.matches(editableSelector);
   const suppressUntil = Number(sessionStorage.getItem(storageKeys.suppressUntil) || "0");
-  return isFormDirty(state) || editing || Date.now() < suppressUntil;
+  return state.partialUpdateInFlight || isFormDirty(state) || editing || Date.now() < suppressUntil;
 };
 
 export const markSubmittedConfigAnchor = (anchorId) => {

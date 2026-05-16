@@ -1,4 +1,4 @@
-<dialog class="settings-modal" data-settings-modal aria-labelledby="settings-title-{{ row.target.id }}">
+<dialog class="settings-modal target-settings-modal" data-settings-modal aria-labelledby="settings-title-{{ row.target.id }}">
   {% set config_form_id = "config-" ~ row.target.id %}
   <div class="modal-shell">
     <header class="modal-header">
@@ -10,56 +10,32 @@
     <div class="modal-body">
       <section class="modal-section modal-section-card">
         <h4>掃描設定</h4>
-        <div class="setting-stack">
-          <div class="scan-toggle-grid">
-            <label class="checkbox">
-              <input name="auto_load_more" type="checkbox" form="{{ config_form_id }}" {% if row.config.auto_load_more %}checked{% endif %}>
-              自動載入更多項目
-            </label>
-            <label class="checkbox">
-              <input name="auto_adjust_sort" type="checkbox" form="{{ config_form_id }}" {% if row.config.auto_adjust_sort %}checked{% endif %}>
-              開始後自動調整成最新排序
-            </label>
-          </div>
-          <label>
-            目標掃描項目數（最多 10 筆）
-            <input name="max_items_per_scan" type="number" min="1" max="10" value="{{ row.config.max_items_per_scan }}" form="{{ config_form_id }}">
-          </label>
+        <div class="settings-form-stack">
+          {% set scan_source = row.config %}
+          {% set scan_form_id = config_form_id %}
+          {% include "_scan_settings_fields.html" %}
         </div>
       </section>
       <section class="modal-section modal-section-card">
         <h4>刷新設定</h4>
+        {% set refresh_source = row %}
+        {% set refresh_form_id = config_form_id %}
         {% include "_refresh_settings_fields.html" %}
       </section>
       <section class="modal-section modal-section-card">
         <h4>通知設定</h4>
-        <div class="setting-stack">
-          <label class="checkbox">
-            <input name="enable_desktop_notification" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_desktop_notification %}checked{% endif %}>
-            桌面通知
-          </label>
-          <label class="checkbox">
-            <input name="enable_ntfy" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_ntfy %}checked{% endif %}>
-            ntfy
-          </label>
-          <label>
-            ntfy topic
-            <input name="ntfy_topic" type="text" value="{{ row.config.ntfy_topic }}" autocomplete="off" form="{{ config_form_id }}">
-          </label>
-          <label class="checkbox">
-            <input name="enable_discord_notification" type="checkbox" form="{{ config_form_id }}" {% if row.config.enable_discord_notification %}checked{% endif %}>
-            Discord webhook
-          </label>
-          <label>
-            Discord webhook URL
-            <input name="discord_webhook" type="text" value="{{ row.config.discord_webhook }}" autocomplete="off" form="{{ config_form_id }}">
-          </label>
-        </div>
+        {% set notification_source = row.config %}
+        {% set notification_form_id = config_form_id %}
+        {% include "_notification_settings_fields.html" %}
       </section>
     </div>
     <footer class="modal-footer">
-      <button type="submit" form="{{ config_form_id }}" formaction="/targets/{{ row.target.id }}/notifications/test" formmethod="post">測試通知</button>
-      <div class="modal-footer-actions">
+      <form method="post" action="/targets/{{ row.target.id }}/metadata/refresh" data-action-anchor="{{ row.anchor_id }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="">
+        <button class="button target-metadata-refresh-button" type="submit">重新抓取名稱與封面</button>
+      </form>
+      <div class="modal-footer-actions settings-actions settings-actions--right">
         <button type="button" data-close-settings>取消</button>
         <button class="button button--primary" type="submit" form="{{ config_form_id }}" data-dirty-submit>儲存設定</button>
       </div>

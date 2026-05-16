@@ -127,6 +127,14 @@ def migrate_10_to_11(connection: sqlite3.Connection) -> None:
     ensure_legacy_group_configs_table(connection)
     for column in V10_TARGET_CONFIG_NOTIFICATION_COLUMNS:
         add_column_if_missing(connection, column)
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "target_configs",
+            "exclude_ignore_phrases",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+    )
     connection.execute(
         """
         INSERT OR IGNORE INTO group_configs (
@@ -183,6 +191,14 @@ def migrate_13_to_14(connection: sqlite3.Connection) -> None:
     ensure_legacy_group_configs_table(connection)
     for column in V10_TARGET_CONFIG_NOTIFICATION_COLUMNS:
         add_column_if_missing(connection, column)
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "target_configs",
+            "exclude_ignore_phrases",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+    )
     for column in (
         MigrationColumn(
             "group_configs",
@@ -231,6 +247,7 @@ def migrate_13_to_14(connection: sqlite3.Connection) -> None:
         ON CONFLICT(target_id) DO UPDATE SET
             include_keywords=excluded.include_keywords,
             exclude_keywords=excluded.exclude_keywords,
+            exclude_ignore_phrases='[]',
             min_refresh_sec=excluded.min_refresh_sec,
             max_refresh_sec=excluded.max_refresh_sec,
             jitter_enabled=excluded.jitter_enabled,
@@ -469,6 +486,63 @@ def migrate_20_to_21(connection: sqlite3.Connection) -> None:
             )
 
 
+def migrate_21_to_22(connection: sqlite3.Connection) -> None:
+    """新增 dashboard 熱查詢使用的 id 排序索引。"""
+
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_id_desc
+            ON scan_runs(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_status_id_desc
+            ON scan_runs(target_id, status, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_id_desc
+            ON notification_events(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_channel_id_desc
+            ON notification_events(target_id, channel, id DESC);
+        """
+    )
+
+
+def migrate_22_to_23(connection: sqlite3.Connection) -> None:
+    """新增 target 社團封面圖 URL metadata 欄位。"""
+
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "targets",
+            "group_cover_image_url",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    )
+
+
+def migrate_23_to_24(connection: sqlite3.Connection) -> None:
+    """新增 scan scope baseline state，供非使用者 start 的安全清理使用。"""
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scan_scope_state (
+            scope_id TEXT PRIMARY KEY,
+            initialized INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def migrate_24_to_25(connection: sqlite3.Connection) -> None:
+    """新增 UI 顯示用 next due 欄位；scheduler 不以此欄位作排程判斷。"""
+
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "target_runtime_state",
+            "display_next_due_at",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     10: migrate_10_to_11,
     11: migrate_11_to_12,
@@ -481,6 +555,10 @@ MIGRATIONS: dict[int, Migration] = {
     18: migrate_18_to_19,
     19: migrate_19_to_20,
     20: migrate_20_to_21,
+    21: migrate_21_to_22,
+    22: migrate_22_to_23,
+    23: migrate_23_to_24,
+    24: migrate_24_to_25,
 }
 
 
@@ -576,5 +654,9 @@ __all__ = [
     "migrate_18_to_19",
     "migrate_19_to_20",
     "migrate_20_to_21",
+    "migrate_21_to_22",
+    "migrate_22_to_23",
+    "migrate_23_to_24",
+    "migrate_24_to_25",
     "run_known_migrations",
 ]

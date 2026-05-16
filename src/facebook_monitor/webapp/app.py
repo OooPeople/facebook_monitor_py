@@ -53,6 +53,7 @@ from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
+from facebook_monitor.webapp.dependencies import GroupMetadataResolver
 from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_new_target_with_error
 from facebook_monitor.webapp.dependencies import redirect_new_target_with_message
@@ -106,7 +107,7 @@ def create_app(
     templates_dir: Path = TEMPLATES_DIR,
     static_dir: Path = STATIC_DIR,
     profile_manager: ProfileManagerLike | None = None,
-    group_name_resolver: Callable[[Path, str], str] | None = None,
+    group_name_resolver: GroupMetadataResolver | None = None,
     scheduler_manager: SchedulerManagerLike | None = None,
     auto_start_scheduler: bool = False,
     scheduler_interval_seconds: float = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
@@ -152,7 +153,10 @@ def create_app(
         try:
             yield
         finally:
-            app_instance.state.scheduler_manager.stop()
+            try:
+                app_instance.state.profile_manager.close()
+            finally:
+                app_instance.state.scheduler_manager.stop()
 
     app = FastAPI(title="Facebook Monitor Local UI", lifespan=lifespan)
     app.state.db_path = db_path
@@ -259,13 +263,6 @@ def _replay_request_body(request: Request, body: bytes) -> Request:
         return {"type": "http.request", "body": body, "more_body": False}
 
     return Request(request.scope, receive)
-
-
-app = create_app(
-    auto_start_scheduler=True,
-    reset_targets_on_startup=True,
-    reset_runtime_data_on_startup=True,
-)
 
 
 __all__ = [

@@ -58,7 +58,7 @@ def test_theme_toggle_contract_is_loaded_by_all_page_entrypoints() -> None:
     assert "csrfHeaders" in theme_js
     assert 'document.documentElement.dataset.theme' in theme_js
     assert "[data-theme-toggle]" in theme_js
-    assert 'return "light";' in theme_js
+    assert 'return "dark";' in theme_js
     assert 'lightIcon?.toggleAttribute("hidden", isDark)' in theme_js
     assert 'darkIcon?.toggleAttribute("hidden", !isDark)' in theme_js
     assert "prefers-color-scheme" not in theme_js
@@ -70,14 +70,14 @@ def test_theme_toggle_contract_is_loaded_by_all_page_entrypoints() -> None:
         assert "setupThemeToggle();" in text
 
 
-def test_theme_bootstrap_defaults_to_light_mode() -> None:
-    """未保存使用者選擇時，server 注入主題預設必須固定為淺色。"""
+def test_theme_bootstrap_defaults_to_dark_mode() -> None:
+    """未保存使用者選擇時，server 注入主題預設必須固定為深色。"""
 
     bootstrap = Path(
         "src/facebook_monitor/webapp/templates/_theme_bootstrap.html"
     ).read_text(encoding="utf-8")
 
-    assert 'default("light")' in bootstrap
+    assert 'default("dark")' in bootstrap
     assert "initial_theme" in bootstrap
     assert "prefers-color-scheme" not in bootstrap
 
@@ -312,6 +312,9 @@ def test_sidebar_sort_mode_does_not_reserve_drag_column_when_inactive() -> None:
 def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -> None:
     """sidebar 排序互動由 SortableJS 模組統一處理 handle、交換門檻與動畫。"""
 
+    sidebar_dom_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_dom.js"
+    ).read_text(encoding="utf-8")
     sidebar_sorting_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/sidebar_sorting.js"
     ).read_text(encoding="utf-8")
@@ -328,6 +331,11 @@ def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -
         "src/facebook_monitor/webapp/static/vendor/sortablejs/LICENSE"
     ).read_text(encoding="utf-8")
 
+    assert "export const listTargetIds" in sidebar_dom_js
+    assert "export const prefersReducedMotion" in sidebar_dom_js
+    assert "prefers-reduced-motion: reduce" in sidebar_dom_js
+    assert '"/static/dashboard/sidebar_dom.js"' in sidebar_sorting_js
+    assert '"/static/dashboard/sidebar_dom.js"' in sidebar_layout_js
     assert 'import Sortable from "/static/vendor/sortablejs/sortable.esm.js";' not in sidebar_sorting_js
     assert 'const SORTABLE_MODULE_PATH = "/static/vendor/sortablejs/sortable.esm.js";' in (
         sidebar_sorting_js
@@ -337,7 +345,6 @@ def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -
     assert "await setupSortables();" in sidebar_sorting_js
     assert "const SORTABLE_SWAP_THRESHOLD = 0.75;" in sidebar_sorting_js
     assert "animation: sortableAnimation()" in sidebar_sorting_js
-    assert "prefers-reduced-motion: reduce" in sidebar_sorting_js
     assert 'handle: "[data-sidebar-drag-handle]"' in sidebar_sorting_js
     assert 'handle: "[data-sidebar-group-drag-handle]"' in sidebar_sorting_js
     assert 'draggable: "[data-sidebar-item]"' in sidebar_sorting_js
@@ -356,10 +363,13 @@ def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -
     assert "getDragAfterItem" not in sidebar_layout_js
     assert "getDragAfterGroup" not in sidebar_layout_js
     assert 'draggable="true"' not in sidebar_template
+    assert "data-sidebar-move-target" not in sidebar_template
+    assert "data-sidebar-move-group" not in sidebar_template
     assert ".sidebar-sort-ghost" in sidebar_css
     assert ".sidebar-sort-fallback" in sidebar_css
     assert ".sidebar-sort-chosen" in sidebar_css
     assert ".sidebar-sort-drag" in sidebar_css
+    assert ".sidebar-sort-control" not in sidebar_css
     assert "MIT License" in sortable_license
 
 
@@ -393,6 +403,8 @@ def test_sidebar_sort_handle_is_plain_three_line_grip_and_keeps_item_height() ->
     assert "inset-inline-end: 6px;" in sorting_handle_rule
     assert "transform: translateY(-50%);" in sorting_handle_rule
     assert ".target-sidebar.sorting .sidebar-drag-handle:hover" in sidebar_css
+    sorting_target_rule = _css_rule_body(sidebar_css, ".target-sidebar.sorting .sidebar-target")
+    assert "padding-inline-end: 46px;" in sorting_target_rule
 
 
 def test_sidebar_sort_drag_item_stays_opaque_and_placeholder_is_empty() -> None:
@@ -408,6 +420,10 @@ def test_sidebar_sort_drag_item_stays_opaque_and_placeholder_is_empty() -> None:
         sidebar_css,
         ".sidebar-sort-fallback .sidebar-target,\n.sidebar-sort-fallback .sidebar-target.active",
     )
+    drag_title_space_rule = _css_rule_body(
+        sidebar_css,
+        ".sidebar-sort-drag .sidebar-target,\n.sidebar-sort-fallback .sidebar-target,\n.sidebar-sort-fallback .sidebar-target.active",
+    )
     fallback_handle_rule = _css_rule_body(
         sidebar_css,
         ".sidebar-sort-fallback .sidebar-drag-handle",
@@ -419,6 +435,7 @@ def test_sidebar_sort_drag_item_stays_opaque_and_placeholder_is_empty() -> None:
     assert "position: relative;" in fallback_rule
     assert "border-color: transparent;" in fallback_target_rule
     assert "box-shadow: none;" in fallback_target_rule
+    assert "padding-inline-end: 46px;" in drag_title_space_rule
     assert "position: absolute;" in fallback_handle_rule
     assert "transform: translateY(-50%);" in fallback_handle_rule
     assert "opacity: 1;" in drag_rule
@@ -492,6 +509,35 @@ def test_sidebar_group_operation_icons_are_slightly_larger() -> None:
     assert "fill: currentcolor;" in sidebar_css
 
 
+def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> None:
+    """partial update 重繪 sidebar status 時保留貼文/留言 mode chip。"""
+
+    sidebar_status_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_status.js"
+    ).read_text(encoding="utf-8")
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+    sidebar_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_sidebar.html"
+    ).read_text(encoding="utf-8")
+    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "data-sidebar-mode-label" in sidebar_template
+    assert "data-sidebar-mode-class" in sidebar_template
+    assert "sidebar-status-token target-mode-chip sidebar-mode-chip" in sidebar_template
+    assert "modeLabel" in sidebar_status_js
+    assert "modeClass" in sidebar_status_js
+    assert "sidebar-mode-chip" in sidebar_status_js
+    assert "mode_label" in partial_updates_js
+    assert "mode_class" in partial_updates_js
+    assert "sidebar-status-token sidebar-status-pill" in sidebar_status_js
+    assert "sidebar-status-token target-mode-chip sidebar-mode-chip" in sidebar_status_js
+    assert ".sidebar-status .sidebar-status-token" in sidebar_css
+
+
 def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     """sidebar 漢堡選單與卡片更多選單共用卡片系的 panel/action 樣式。"""
 
@@ -521,13 +567,105 @@ def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     assert ".menu-action {" in target_card_css
     assert ".sidebar-menu-action:hover" not in sidebar_css
     assert ".sidebar-menu-panel.menu-panel" not in target_card_css
-    assert ".sidebar-menu-panel" in sidebar_css
-    assert "position: fixed;" in sidebar_css
-    assert "left: var(--sidebar-menu-left" in sidebar_css
-    assert "top: var(--sidebar-menu-top" in sidebar_css
+    sidebar_menu_rule = _css_rule_body(sidebar_css, ".sidebar-menu-panel,\n.sidebar-menu-panel.menu-panel")
+    assert "position: fixed;" in sidebar_menu_rule
+    assert "left: var(--sidebar-menu-left" in sidebar_menu_rule
+    assert "inline-size: max-content;" in sidebar_menu_rule
+    assert "min-inline-size: 108px;" in sidebar_menu_rule
+    assert "max-inline-size: 160px;" in sidebar_menu_rule
+    assert "right: auto;" in sidebar_menu_rule
+    assert "top: var(--sidebar-menu-top" in sidebar_menu_rule
     assert "const positionSidebarMenuPanel" in sidebar_js
     assert "trigger.getBoundingClientRect()" in sidebar_js
+    assert "const setSidebarMenuOpen" in sidebar_js
+    assert "event.preventDefault();" in sidebar_js
+    assert 'trigger?.setAttribute("aria-expanded", String(open));' in sidebar_js
     assert "setupSidebarMenuPosition();" in sidebar_js
+
+
+def test_target_header_status_and_mode_are_grouped_in_subtitle() -> None:
+    """卡片標題只放名稱；狀態與貼文/留言模式一起放在副標題。"""
+
+    card_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_card.html"
+    ).read_text(encoding="utf-8")
+    target_card_css = Path(
+        "src/facebook_monitor/webapp/static/styles/target-card.css"
+    ).read_text(encoding="utf-8")
+
+    heading_rule = _css_rule_body(target_card_css, ".target-header h2")
+    status_rule = _css_rule_body(target_card_css, "\n.status")
+
+    title_line = card_template.split('<div class="target-title-line">', 1)[1].split("</div>", 1)[0]
+    subtitle = card_template.split('<p class="target-subtitle"', 1)[1].split("</p>", 1)[0]
+
+    assert "data-target-title" in title_line
+    assert "data-card-status" not in title_line
+    assert subtitle.index("data-card-status") < subtitle.index("data-target-mode")
+    assert 'class="status {{ row.status_class }}" data-card-status' in subtitle
+    assert 'class="target-mode-chip {{ row.mode_class }}" data-target-mode' in subtitle
+    assert "display: block;" in heading_rule
+    assert "overflow-wrap: anywhere;" in heading_rule
+    assert "display: inline-flex;" in status_rule
+
+
+def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> None:
+    """下次刷新秒數由前端本地倒數，partial update 只在差距超過 1 秒時校準。"""
+
+    card_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_card.html"
+    ).read_text(encoding="utf-8")
+    routes = Path("src/facebook_monitor/webapp/routes/dashboard.py").read_text(
+        encoding="utf-8"
+    )
+    assets = Path("src/facebook_monitor/webapp/assets.py").read_text(encoding="utf-8")
+    dashboard_models = Path(
+        "src/facebook_monitor/webapp/dashboard_models.py"
+    ).read_text(encoding="utf-8")
+    main_js = Path("src/facebook_monitor/webapp/static/dashboard/main.js").read_text(
+        encoding="utf-8"
+    )
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+    countdown_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/next_refresh_countdown.js"
+    ).read_text(encoding="utf-8")
+
+    assert "data-next-refresh-seconds" in card_template
+    assert "row.next_refresh_seconds" in card_template
+    assert '"next_refresh_seconds": row.next_refresh_seconds' in routes
+    assert "class NextRefreshDisplay" in dashboard_models
+    assert "@cached_property\n    def next_refresh_display" in dashboard_models
+    assert "self.runtime_state.display_next_due_at" in dashboard_models
+    assert '"next_refresh_countdown.js"' in assets
+    assert "setupNextRefreshCountdowns" in main_js
+    assert "syncNextRefreshCountdown" in partial_updates_js
+    assert "payload.next_refresh_seconds" in partial_updates_js
+    assert "const SYNC_THRESHOLD_SECONDS = 1;" in countdown_js
+    assert "Math.abs(localSeconds - incomingSeconds) <= SYNC_THRESHOLD_SECONDS" in (
+        countdown_js
+    )
+    assert "window.setInterval(tickCountdowns, 1000)" in countdown_js
+    assert "下次刷新：即將刷新" in countdown_js
+    assert "incomingSeconds <= 0" in countdown_js
+    assert "remainingSeconds <= 0" in countdown_js
+    assert "clearCountdown(node, SOON_LABEL)" in countdown_js
+
+
+def test_dashboard_partial_updates_are_coalesced_while_in_flight() -> None:
+    """revision 更新過密時，前端不應重疊發出 dashboard partial update。"""
+
+    state_js = Path("src/facebook_monitor/webapp/static/dashboard/state.js").read_text(
+        encoding="utf-8"
+    )
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    assert "partialUpdateInFlight: false" in state_js
+    assert "state.partialUpdateInFlight || isFormDirty(state)" in state_js
+    assert "state.pendingRefresh = true;" in revision_client_js
 
 
 def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
@@ -593,12 +731,81 @@ def test_sidebar_template_modal_keeps_shell_background_and_title_note() -> None:
     )
 
     assert "sidebar-template-title-row" in template
-    assert "可以一鍵套用設定到群組內所有 target" in template
+    assert "獨立模板，只在套用時覆蓋群組內 target" in template
+    assert "新群組會帶入系統預設與當下關鍵字預設" not in template
+    assert "通知設定不會自動繼承全域通知或任一 target" not in template
     assert ".sidebar-template-modal,\n.sidebar-template-modal .modal-shell" in modals_css
     assert ".sidebar-template-modal .modal-shell" in modals_css
     assert "grid-template-rows: auto minmax(0, 1fr) auto;" in modals_css
     assert ".sidebar-template-modal .modal-body" in modals_css
     assert "background: var(--surface);" in modals_css
+
+
+def test_sidebar_placement_strategy_stays_lazy_without_repository_backfill_helper() -> None:
+    """缺失 placement 採 read-model lazy fallback，不保留 repository 補寫 helper。"""
+
+    repository = Path(
+        "src/facebook_monitor/persistence/repositories/sidebar_layout.py"
+    ).read_text(encoding="utf-8")
+    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    handoff = Path("docs/HANDOFF.md").read_text(encoding="utf-8")
+
+    assert "ensure_default_placements" not in repository
+    assert "不得為缺失 placement 寫入 DB" in architecture
+    assert "缺失 placement 只能作為未分組顯示" in handoff
+
+
+def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> None:
+    """target 設定 modal footer 常駐底部，取消/儲存按鈕靠右。"""
+
+    template = Path(
+        "src/facebook_monitor/webapp/templates/_target_settings_modal.html"
+    ).read_text(encoding="utf-8")
+    modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'class="settings-modal target-settings-modal"' in template
+    assert "Target 資訊" not in template
+    assert "重新抓取名稱與封面" in template
+    assert "/metadata/refresh" in template
+    assert ".target-settings-modal,\n.target-settings-modal .modal-shell" in modals_css
+    assert ".target-settings-modal .modal-shell" in modals_css
+    assert ".target-settings-modal .modal-body" in modals_css
+    assert ".target-settings-modal .modal-footer" in modals_css
+    assert ".target-settings-modal .modal-footer-actions" in modals_css
+    assert ".target-metadata-refresh-button" in modals_css
+    assert "margin-left: auto;" in modals_css
+
+
+def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:
+    """群組模板套用確認必須列出批次覆蓋範圍與影響 target 摘要。"""
+
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
+    dialogs_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/dialogs.js"
+    ).read_text(encoding="utf-8")
+    modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "套用範圍：" in sidebar_layout_js
+    assert "影響 target：" in sidebar_layout_js
+    assert "會覆蓋這些 target 既有設定。" in sidebar_layout_js
+    assert "不會影響群組外 target。" in sidebar_layout_js
+    assert "此操作沒有自動復原。" in sidebar_layout_js
+    assert "以及另外" in sidebar_layout_js
+    assert "details = []" in dialogs_js
+    assert "app-dialog-detail-list" in dialogs_js
+    assert ".app-dialog-detail-list" in modals_css
+    assert 'import { saveScrollPosition } from "/static/dashboard/state.js";' in (
+        sidebar_layout_js
+    )
+    assert "const reloadDashboardPreservingScroll = () =>" in sidebar_layout_js
+    assert "saveScrollPosition();\n  window.location.reload();" in sidebar_layout_js
+    assert "reloadDashboardPreservingScroll();" in sidebar_layout_js
 
 
 def test_keyword_ignore_phrase_placeholder_uses_semicolon_separator() -> None:
@@ -655,7 +862,10 @@ def test_button_variants_use_shared_button_modifier_classes() -> None:
     assert "min-width: 68px;" in styles
     assert "min-width: 52px;" in styles
     assert 'class="button button--toolbar button--toolbar-icon more-menu-trigger"' in template_text
-    assert 'class="button button--toolbar" type="submit">{{ row.monitoring_button_label }}</button>' in template_text
+    assert (
+        'class="button button--toolbar" type="submit" '
+        'data-monitoring-button>{{ row.monitoring_button_label }}</button>'
+    ) in template_text
     assert 'class="button button--toolbar" type="submit" form="config-{{ row.target.id }}"' in template_text
     assert 'class="button button--toolbar" type="button" data-view-records-button' in template_text
     assert 'class="button button--toolbar" type="button" data-settings-button' in template_text
@@ -676,6 +886,41 @@ def test_button_variants_use_shared_button_modifier_classes() -> None:
             "display:",
         ):
             assert duplicated_button_property not in rule
+
+
+def test_refresh_mode_options_put_floating_before_fixed() -> None:
+    """所有設定頁面的刷新模式 radio 都先顯示浮動刷新，再顯示固定刷新。"""
+
+    target_refresh_template = Path(
+        "src/facebook_monitor/webapp/templates/_refresh_settings_fields.html"
+    ).read_text(encoding="utf-8")
+    sidebar_group_template = Path(
+        "src/facebook_monitor/webapp/templates/_sidebar_group_settings_modal.html"
+    ).read_text(encoding="utf-8")
+    forms_js = Path("src/facebook_monitor/webapp/static/dashboard/forms.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert target_refresh_template.index('value="floating"') < target_refresh_template.index(
+        'value="fixed"'
+    )
+    assert target_refresh_template.index("<strong>浮動刷新</strong>") < target_refresh_template.index(
+        "<strong>固定刷新</strong>"
+    )
+    assert '{% include "_refresh_settings_fields.html" %}' in sidebar_group_template
+    assert '|| "floating"' in forms_js
+
+
+def test_sidebar_template_apply_confirmation_mentions_full_template_save() -> None:
+    """群組模板 section 套用前會明確提示會先儲存整份模板。"""
+
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
+
+    assert "套用前會先儲存目前整份群組模板；本次只會覆蓋所選區段。" in sidebar_layout_js
+    assert "套用前會先儲存目前整份群組模板；本次會覆蓋全部區段。" in sidebar_layout_js
+    assert "section === \"all\"" in sidebar_layout_js
 
 
 def test_hit_records_modal_renders_keyword_segments_without_inner_html() -> None:
@@ -704,3 +949,37 @@ def test_partial_update_syncs_rename_modal_name_without_overwriting_active_input
     assert "payload.rename_display_name" in partial_updates_js
     assert "document.activeElement === input" in partial_updates_js
     assert "input.setAttribute(\"value\", nextValue)" in partial_updates_js
+
+
+def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
+    """背景 partial update 必須同步開始/停止按鈕與 runtime error/skip reason。"""
+
+    card_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_card.html"
+    ).read_text(encoding="utf-8")
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+    dashboard_routes = Path(
+        "src/facebook_monitor/webapp/routes/dashboard.py"
+    ).read_text(encoding="utf-8")
+
+    assert "data-monitoring-form" in card_template
+    assert "data-monitoring-button" in card_template
+    assert "data-runtime-error" in card_template
+    assert "data-runtime-skip-reason" in card_template
+    assert "data-latest-error-indicator" in card_template
+    assert "data-latest-error-separator" in card_template
+    assert "monitoring_action" in dashboard_routes
+    assert "monitoring_button_label" in dashboard_routes
+    assert "runtime_error" in dashboard_routes
+    assert "runtime_skip_reason" in dashboard_routes
+    assert "has_latest_failed_scan" in dashboard_routes
+    assert "const updateMonitoringAction" in partial_updates_js
+    assert "payload.monitoring_action" in partial_updates_js
+    assert "payload.monitoring_button_label" in partial_updates_js
+    assert "const updateRuntimeMessages" in partial_updates_js
+    assert "payload.runtime_error" in partial_updates_js
+    assert "payload.runtime_skip_reason" in partial_updates_js
+    assert "payload.has_latest_failed_scan" in partial_updates_js
+    assert "[data-latest-error-indicator]" in partial_updates_js

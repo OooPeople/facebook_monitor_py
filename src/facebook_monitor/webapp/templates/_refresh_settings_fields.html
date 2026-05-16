@@ -1,25 +1,30 @@
 {% set has_row = row is defined %}
-{% set fixed_checked = (has_row and row.refresh_mode == "fixed") or not has_row %}
-{% set floating_checked = has_row and row.refresh_mode == "floating" %}
-{% set fixed_value = row.fixed_refresh_value if has_row else target_defaults.fixed_refresh_sec %}
-{% set min_value = row.min_refresh_value if has_row else target_defaults.min_refresh_sec %}
-{% set max_value = row.max_refresh_value if has_row else target_defaults.max_refresh_sec %}
-{% set config_form_id = "config-" ~ row.target.id if has_row else "" %}
+{% set refresh_source = refresh_source if refresh_source is defined else (row if has_row else none) %}
+{% set refresh_form_id = refresh_form_id if refresh_form_id is defined else ("config-" ~ row.target.id if has_row else "") %}
+{% set refresh_input_attrs = refresh_input_attrs|default("") %}
+{% set fixed_default = target_defaults.default_fixed_refresh_sec if target_defaults is defined else 60 %}
+{% set min_default = target_defaults.min_refresh_sec if target_defaults is defined else 60 %}
+{% set max_default = target_defaults.max_refresh_sec if target_defaults is defined else 120 %}
+{% set floating_checked = (refresh_source and refresh_source.refresh_mode == "floating") or not refresh_source %}
+{% set fixed_checked = refresh_source and refresh_source.refresh_mode == "fixed" %}
+{% set fixed_value = refresh_source.fixed_refresh_value if refresh_source else fixed_default %}
+{% set min_value = refresh_source.min_refresh_value if refresh_source else min_default %}
+{% set max_value = refresh_source.max_refresh_value if refresh_source else max_default %}
 <div class="refresh-settings" data-refresh-form>
   <div class="field-caption">刷新模式</div>
   <div class="refresh-mode-grid">
     <label class="radio option-card">
-      <input name="refresh_mode" type="radio" value="fixed" {% if config_form_id %}form="{{ config_form_id }}"{% endif %} {% if fixed_checked %}checked{% endif %}>
-      <span>
-        <strong>固定刷新</strong>
-        <small>每固定秒數執行一次掃描</small>
-      </span>
-    </label>
-    <label class="radio option-card">
-      <input name="refresh_mode" type="radio" value="floating" {% if config_form_id %}form="{{ config_form_id }}"{% endif %} {% if floating_checked %}checked{% endif %}>
+      <input name="refresh_mode" type="radio" value="floating" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if floating_checked %}checked{% endif %}>
       <span>
         <strong>浮動刷新</strong>
         <small>在最小與最大秒數之間隨機刷新</small>
+      </span>
+    </label>
+    <label class="radio option-card">
+      <input name="refresh_mode" type="radio" value="fixed" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if fixed_checked %}checked{% endif %}>
+      <span>
+        <strong>固定刷新</strong>
+        <small>每固定秒數執行一次掃描</small>
       </span>
     </label>
   </div>
@@ -27,14 +32,14 @@
 <div class="form-grid">
   <label data-refresh-fixed>
     刷新秒數
-    <input name="fixed_refresh_sec" type="number" min="5" value="{{ fixed_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+    <input name="fixed_refresh_sec" type="number" min="5" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
   <label data-refresh-floating>
     最小刷新秒數
-    <input name="min_refresh_sec" type="number" min="5" value="{{ min_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+    <input name="min_refresh_sec" type="number" min="5" value="{{ min_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
   <label data-refresh-floating>
     最大刷新秒數
-    <input name="max_refresh_sec" type="number" min="5" value="{{ max_value }}" {% if config_form_id %}form="{{ config_form_id }}"{% endif %}>
+    <input name="max_refresh_sec" type="number" min="5" value="{{ max_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
 </div>

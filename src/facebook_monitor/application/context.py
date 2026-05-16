@@ -10,6 +10,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 from facebook_monitor.application.services import ScanApplicationService
 from facebook_monitor.application.services import TargetApplicationService
@@ -25,6 +26,7 @@ from facebook_monitor.persistence.repositories.match_history import MatchHistory
 from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
+from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.sidebar_layout import SidebarLayoutRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
@@ -36,10 +38,13 @@ from facebook_monitor.persistence.schema import initialize_schema
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.secret_storage import load_or_create_secret_codec
+from facebook_monitor.persistence.secret_storage import reencrypt_plaintext_secrets
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 
 
 logger = logging.getLogger(__name__)
+_SCHEMA_INIT_LOCK = RLock()
+_SCHEMA_INITIALIZED_DB_PATHS: set[Path] = set()
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,7 @@ class RepositoryBundle:
     match_history: MatchHistoryRepository
     latest_scan_items: LatestScanItemRepository
     scan_runs: ScanRunRepository
+    scan_scope_state: ScanScopeStateRepository
     notification_events: NotificationEventRepository
     notification_outbox: NotificationOutboxRepository
     global_notification_settings: GlobalNotificationSettingsRepository
@@ -113,6 +119,7 @@ def build_repositories(
         match_history=MatchHistoryRepository(connection),
         latest_scan_items=LatestScanItemRepository(connection),
         scan_runs=ScanRunRepository(connection),
+        scan_scope_state=ScanScopeStateRepository(connection),
         notification_events=NotificationEventRepository(connection),
         notification_outbox=NotificationOutboxRepository(
             connection,
@@ -141,6 +148,7 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
             configs=repositories.configs,
             runtime_states=repositories.runtime_states,
             seen_items=repositories.seen_items,
+            scan_scope_state=repositories.scan_scope_state,
             notification_outbox=repositories.notification_outbox,
         ),
         scans=ScanApplicationService(scan_runs=repositories.scan_runs),
@@ -181,17 +189,29 @@ class SqliteApplicationContext:
         self.context: ApplicationContext | None = None
 
     def __enter__(self) -> ApplicationContext:
-        sqlite_context = self.sqlite.__enter__()
-        connection = sqlite_context.require_connection()
-        if self.initialize_schema_on_enter:
-            initialize_schema(connection)
-            connection.commit()
-        self.context = build_application_context(
-            connection,
-            secret_codec=load_or_create_secret_codec(self.db_path),
-            db_path=self.db_path,
-        )
-        return self.context
+        try:
+            sqlite_context = self.sqlite.__enter__()
+            connection = sqlite_context.require_connection()
+            if self.initialize_schema_on_enter:
+                ensure_schema_initialized_once(connection, self.db_path)
+            secret_codec = load_or_create_secret_codec(self.db_path)
+            reencrypt_plaintext_secrets(connection, secret_codec)
+            self.context = build_application_context(
+                connection,
+                secret_codec=secret_codec,
+                db_path=self.db_path,
+            )
+            return self.context
+        except BaseException:
+            maybe_connection = self.sqlite.connection
+            if maybe_connection is not None:
+                try:
+                    maybe_connection.rollback()
+                finally:
+                    maybe_connection.close()
+                    self.sqlite.connection = None
+            self.context = None
+            raise
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         connection = self.sqlite.connection
@@ -214,3 +234,15 @@ class SqliteApplicationContext:
                 connection.close()
             self.sqlite.connection = None
             self.context = None
+
+
+def ensure_schema_initialized_once(connection: sqlite3.Connection, db_path: Path) -> None:
+    """同一 process 內每個 DB 只執行一次 schema 初始化，降低長跑 DDL contention。"""
+
+    resolved_path = db_path.expanduser().resolve()
+    with _SCHEMA_INIT_LOCK:
+        if resolved_path in _SCHEMA_INITIALIZED_DB_PATHS:
+            return
+        initialize_schema(connection)
+        connection.commit()
+        _SCHEMA_INITIALIZED_DB_PATHS.add(resolved_path)

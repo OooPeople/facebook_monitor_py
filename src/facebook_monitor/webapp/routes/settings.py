@@ -51,7 +51,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "message": message,
                 "error": error,
                 "profile_dir": str(get_profile_dir(request)),
-                "profile_active": get_profile_manager(request).is_active(),
                 "notification_settings": get_global_notification_settings(request),
                 "target_keyword_defaults": get_target_keyword_defaults(request),
                 "runtime_diagnostics": build_runtime_diagnostics_view(request.app.state),

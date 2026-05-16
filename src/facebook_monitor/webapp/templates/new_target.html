@@ -39,7 +39,7 @@
         <input name="exclude_ignore_phrases" type="hidden" value="{{ target_keyword_defaults.exclude_ignore_phrases_text }}">
         <section class="new-target-section">
           <h2>目標來源</h2>
-          <div class="new-target-stack">
+          <div class="settings-form-stack">
             <label>
               Facebook group URL / post URL
               <input name="group_url" type="text" required placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321">
@@ -58,33 +58,11 @@
 
         <section class="new-target-section">
           <h2>通知設定</h2>
-          <div class="new-target-notification-stack">
-            <div class="new-target-notification-toggles">
-              <label class="checkbox">
-                <input name="enable_desktop_notification" type="checkbox" {% if notification_settings.enable_desktop_notification %}checked{% endif %}>
-                啟用桌面通知
-              </label>
-              <label class="checkbox">
-                <input name="enable_ntfy" type="checkbox" {% if notification_settings.enable_ntfy %}checked{% endif %}>
-                啟用 ntfy 通知
-              </label>
-              <label class="checkbox">
-                <input name="enable_discord_notification" type="checkbox" {% if notification_settings.enable_discord_notification %}checked{% endif %}>
-                啟用 Discord 通知
-              </label>
-            </div>
-            <label>
-              ntfy topic
-              <input name="ntfy_topic" type="text" value="{{ notification_settings.ntfy_topic }}" autocomplete="off">
-            </label>
-            <label>
-              Discord webhook URL
-              <input name="discord_webhook" type="text" value="{{ notification_settings.discord_webhook }}" autocomplete="off">
-            </label>
-          </div>
+          {% set notification_source = notification_settings %}
+          {% include "_notification_settings_fields.html" %}
         </section>
 
-        <footer class="new-target-actions">
+        <footer class="new-target-actions settings-actions settings-actions--right">
           <a class="button" href="/">返回</a>
           <button class="button button--primary" type="submit" data-loading-text="建立中...">新增 target</button>
         </footer>

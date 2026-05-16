@@ -1,5 +1,5 @@
-const buildStatusSummary = (baseStatus, detail) => (
-  detail ? `${baseStatus} · ${detail}` : baseStatus
+const buildStatusSummary = (baseStatus, modeLabel, detail) => (
+  [baseStatus, modeLabel, detail].filter(Boolean).join(" · ")
 );
 
 export const renderSidebarStatus = (
@@ -9,6 +9,8 @@ export const renderSidebarStatus = (
     statusClass,
     statusDetail,
     defaultDetail,
+    modeLabel,
+    modeClass,
   },
 ) => {
   if (!node) return;
@@ -17,19 +19,30 @@ export const renderSidebarStatus = (
   const detail = statusDetail ?? node.dataset.sidebarStatusDetail ?? "";
   const baseClass = statusClass ?? node.dataset.sidebarStatusClass ?? "";
   const defaultText = defaultDetail ?? node.dataset.sidebarDefaultDetail ?? detail;
+  const mode = modeLabel ?? node.dataset.sidebarModeLabel ?? "";
+  const modeCssClass = modeClass ?? node.dataset.sidebarModeClass ?? "";
 
   node.dataset.sidebarBaseStatus = base;
   node.dataset.sidebarStatusClass = baseClass;
   node.dataset.sidebarStatusDetail = detail;
   node.dataset.sidebarDefaultDetail = defaultText;
-  node.setAttribute("aria-label", buildStatusSummary(base, detail));
+  node.dataset.sidebarModeLabel = mode;
+  node.dataset.sidebarModeClass = modeCssClass;
+  node.setAttribute("aria-label", buildStatusSummary(base, mode, detail));
 
   node.replaceChildren();
 
   const pill = document.createElement("span");
-  pill.className = `sidebar-status-pill ${baseClass}`.trim();
+  pill.className = `sidebar-status-token sidebar-status-pill ${baseClass}`.trim();
   pill.textContent = base;
   node.appendChild(pill);
+
+  if (mode) {
+    const modeNode = document.createElement("span");
+    modeNode.className = `sidebar-status-token target-mode-chip sidebar-mode-chip ${modeCssClass}`.trim();
+    modeNode.textContent = mode;
+    node.appendChild(modeNode);
+  }
 
   if (detail) {
     const detailNode = document.createElement("span");

@@ -13,7 +13,8 @@ from dataclasses import dataclass
 class TargetConfigDefaults:
     """保存 target config 的 Python 版預設值。"""
 
-    fixed_refresh_sec: int = 60
+    fixed_refresh_sec: int | None = None
+    default_fixed_refresh_sec: int = 60
     min_refresh_sec: int = 50
     max_refresh_sec: int = 70
     jitter_enabled: bool = True

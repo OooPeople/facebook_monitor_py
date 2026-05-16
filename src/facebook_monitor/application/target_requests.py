@@ -13,7 +13,7 @@ from typing import TypeVar
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 
 
-DEFAULT_WEBUI_FIXED_REFRESH_SECONDS = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
+DEFAULT_WEBUI_FIXED_REFRESH_SECONDS = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
 
 
 class UnsetConfigValue:
@@ -74,6 +74,7 @@ class UpsertGroupPostsTargetRequest:
     group_id: str
     canonical_url: str
     group_name: str = ""
+    group_cover_image_url: str = ""
     name: str = ""
     config: TargetConfigPatch = field(default_factory=TargetConfigPatch)
 
@@ -86,6 +87,7 @@ class UpsertCommentsTargetRequest:
     parent_post_id: str
     canonical_url: str
     group_name: str = ""
+    group_cover_image_url: str = ""
     name: str = ""
     config: TargetConfigPatch = field(default_factory=TargetConfigPatch)
 

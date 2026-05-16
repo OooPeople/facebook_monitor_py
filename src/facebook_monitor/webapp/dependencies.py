@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 from urllib.parse import urlencode
 
 from fastapi import Request
@@ -19,7 +20,8 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.facebook.group_metadata import resolve_group_name_with_profile
+from facebook_monitor.facebook.group_metadata import GroupMetadata
+from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_profile
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
@@ -37,6 +39,8 @@ DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
 TEMPLATES_DIR = DEFAULT_RUNTIME_PATHS.templates_dir
 STATIC_DIR = DEFAULT_RUNTIME_PATHS.static_dir
+ProfileActionResult = TypeVar("ProfileActionResult")
+GroupMetadataResolver = Callable[[Path, str], str | GroupMetadata]
 
 
 def get_db_path(request: Request) -> Path:
@@ -57,7 +61,7 @@ def get_profile_manager(request: Request) -> ProfileManagerLike:
     return getattr(request.app.state, "profile_manager")
 
 
-def get_group_name_resolver(request: Request) -> Callable[[Path, str], str]:
+def get_group_name_resolver(request: Request) -> GroupMetadataResolver:
     """從 app state 取得 group name resolver。"""
 
     return getattr(request.app.state, "group_name_resolver")
@@ -150,8 +154,8 @@ def resume_scheduler_after_profile_use(request: Request) -> None:
 
 async def run_with_temporary_profile_access(
     request: Request,
-    action: Callable[[], str],
-) -> str:
+    action: Callable[[], ProfileActionResult],
+) -> ProfileActionResult:
     """暫停 scheduler 執行短期 profile 工作，完成後立即恢復。"""
 
     was_running = get_scheduler_manager(request).is_running()
@@ -164,10 +168,10 @@ async def run_with_temporary_profile_access(
             resume_scheduler_after_profile_use(request)
 
 
-def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> str:
-    """使用 automation profile 自動解析 Facebook group name。"""
+def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupMetadata:
+    """使用 automation profile 自動解析 Facebook group metadata。"""
 
-    return resolve_group_name_with_profile(
+    return resolve_group_metadata_with_profile(
         profile_dir=profile_dir,
         canonical_url=canonical_url,
     )
@@ -251,7 +255,10 @@ def redirect_settings_with_error(error: str) -> RedirectResponse:
 def open_profile_options(request: Request) -> ProfileSessionOptions:
     """建立 profile session open options。"""
 
-    return ProfileSessionOptions(profile_dir=get_profile_dir(request))
+    return ProfileSessionOptions(
+        profile_dir=get_profile_dir(request),
+        on_close=lambda: resume_scheduler_after_profile_use(request),
+    )
 
 
 def start_resident_scheduler_if_needed(request: Request) -> None:

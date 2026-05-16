@@ -161,6 +161,69 @@ def test_save_layout_validates_before_writing_partial_group_order(tmp_path: Path
     assert placements == {}
 
 
+def test_save_group_order_rejects_duplicate_group_ids(tmp_path: Path) -> None:
+    """group order payload 不可用重複 id 迴避完整性驗證。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first_group = app.services.sidebar_layout.create_group("第一群")
+        second_group = app.services.sidebar_layout.create_group("第二群")
+
+        try:
+            app.services.sidebar_layout.save_group_order(
+                [first_group.id, second_group.id, first_group.id]
+            )
+        except ValueError as exc:
+            error = str(exc)
+        else:
+            raise AssertionError("duplicate group order payload should be rejected")
+
+        groups = app.repositories.sidebar_layout.list_groups()
+
+    assert "重複群組" in error
+    assert [group.id for group in groups] == [first_group.id, second_group.id]
+
+
+def test_save_layout_rejects_duplicate_group_sections(tmp_path: Path) -> None:
+    """placement payload 不可把同一群組或未分組區塊拆成多段。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        group = app.services.sidebar_layout.create_group("重複群組")
+
+        for grouped_target_ids in (
+            [(group.id, [first.id]), (group.id, [second.id]), (None, [])],
+            [(group.id, []), (None, [first.id]), (None, [second.id])],
+        ):
+            try:
+                app.services.sidebar_layout.save_layout(
+                    group_ids=[group.id],
+                    grouped_target_ids=grouped_target_ids,
+                )
+            except ValueError as exc:
+                error = str(exc)
+            else:
+                raise AssertionError("duplicate placement sections should be rejected")
+
+            assert "重複群組區塊" in error
+
+        placements = app.repositories.sidebar_layout.list_placements()
+
+    assert placements == {}
+
+
 def test_flat_target_order_rejects_existing_grouped_placements(tmp_path: Path) -> None:
     """已有 grouped placement 時不可使用舊平面排序 API 打平所有 targets。"""
 

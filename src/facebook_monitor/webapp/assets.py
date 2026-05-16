@@ -4,7 +4,7 @@
 避免多個 template 或 JS import 各自手動維護版本字串。
 """
 
-ASSET_VERSION = "ui-refactor-phase31-early-scroll-lazy-sortable"
+ASSET_VERSION = "0.1.0-rc1"
 
 DASHBOARD_MODULE_FILENAMES = (
     "api.js",
@@ -17,10 +17,12 @@ DASHBOARD_MODULE_FILENAMES = (
     "main.js",
     "modals.js",
     "new_target.js",
+    "next_refresh_countdown.js",
     "partial_updates.js",
     "revision_client.js",
     "settings.js",
     "sidebar.js",
+    "sidebar_dom.js",
     "sidebar_layout.js",
     "sidebar_sorting.js",
     "sidebar_status.js",

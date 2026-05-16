@@ -7,8 +7,8 @@ target runtime state、page ownership 與 worker diagnostics。
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -39,7 +39,7 @@ from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 
 
-AsyncScanCallable = Callable[..., Awaitable[Any]]
+AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
 
 
 class AsyncResidentPageLike(Protocol):
@@ -114,13 +114,26 @@ class ExecutorWorkerPool:
             for worker_id in self.worker_ids
         ]
 
-    async def stop(self) -> None:
-        """停止 worker slots；已取出的 scan 會先自然完成。"""
+    async def stop(self, *, cancel_running: bool = False) -> None:
+        """停止 worker slots；必要時取消尚未完成的長掃描。"""
+
+        if cancel_running:
+            for target_id in await self.target_queue.cancel_pending():
+                mark_resident_target_idle(self.options.db_path, target_id)
 
         for _worker_id in self.worker_ids:
             await self.target_queue.stop_worker()
+        if cancel_running:
+            for task in self.worker_tasks:
+                if not task.done():
+                    task.cancel()
         if self.worker_tasks:
             await asyncio.gather(*self.worker_tasks, return_exceptions=True)
+
+    def worker_health_ok(self) -> bool:
+        """回傳 worker tasks 是否仍健康存活。"""
+
+        return all(not task.done() or task.cancelled() for task in self.worker_tasks)
 
     async def enqueue_due_targets(self, due_targets: tuple[DueTarget, ...]) -> int:
         """把 due targets 放入 queue；成功 enqueue 時同步 runtime state。"""
@@ -143,7 +156,6 @@ class ExecutorWorkerPool:
                 continue
             with SqliteApplicationContext(self.options.db_path) as app:
                 app.services.targets.mark_target_queued(due_target.target_id, reason)
-            self.schedule_planner.mark_dispatched(due_target)
             enqueued_count += 1
         return enqueued_count
 
@@ -194,6 +206,7 @@ class ExecutorWorkerPool:
                 )
             if locked_state is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
+            self.schedule_planner.mark_dispatched(item.due_target)
 
             await prepare_resident_main_page(
                 page=page,
@@ -212,13 +225,16 @@ class ExecutorWorkerPool:
                 )
             with SqliteApplicationContext(self.options.db_path) as app:
                 selected_scan_page = self._select_scan_page(resident_target.target.target_kind)
-                await selected_scan_page(
+                await self._run_scan_with_heartbeat(
+                    selected_scan_page,
                     page=page,
                     app=app,
                     target=resident_target.target,
                     config=resident_target.config,
                     scroll_rounds=self.options.scroll_rounds,
                     scroll_wait_ms=self.options.scroll_wait_ms,
+                    worker_id=worker_id,
+                    page_id=page_id,
                 )
                 app.services.targets.mark_target_idle(target_id)
             return AsyncTargetScanResult(
@@ -246,6 +262,20 @@ class ExecutorWorkerPool:
                 opened_page=opened,
                 reused_page=not opened and bool(page_id),
             )
+        except asyncio.CancelledError:
+            self._record_failure_for_known_target(
+                target_id,
+                "scheduler_stopping",
+                "resident scheduler is stopping",
+                exception_class="CancelledError",
+                page_reused=not opened and bool(page_id),
+            )
+            mark_resident_target_error(
+                self.options.db_path,
+                target_id,
+                "scheduler_stopping: resident scheduler is stopping",
+            )
+            raise
         except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
             reason = classify_playwright_exception(exc)
             self._record_failure_for_known_target(
@@ -285,6 +315,77 @@ class ExecutorWorkerPool:
                 opened_page_count=self._counters.opened_page_count + counters.opened_page_count,
                 reused_page_count=self._counters.reused_page_count + counters.reused_page_count,
             )
+
+    async def _run_scan_with_heartbeat(
+        self,
+        scan_page: AsyncScanCallable,
+        **kwargs: Any,
+    ) -> Any:
+        """以 timeout 與 heartbeat 包住 target scan，避免長跑誤判或永久卡住。"""
+
+        target = kwargs["target"]
+        target_id = target.id
+        worker_id = str(kwargs.pop("worker_id"))
+        page_id = str(kwargs.pop("page_id"))
+        scan_task: asyncio.Task[Any] = asyncio.create_task(scan_page(**kwargs))
+        heartbeat_task = asyncio.create_task(
+            self._scan_heartbeat_loop(
+                target_id=target_id,
+                worker_id=worker_id,
+                page_id=page_id,
+                scan_task=scan_task,
+            )
+        )
+        try:
+            return await asyncio.wait_for(
+                scan_task,
+                timeout=max(float(self.options.scan_timeout_seconds), 0.01),
+            )
+        except TimeoutError as exc:
+            raise WorkerFailure(
+                "scan_timeout",
+                f"scan exceeded {max(float(self.options.scan_timeout_seconds), 0.01):g} seconds",
+            ) from exc
+        except asyncio.CancelledError:
+            if not self._target_still_active(target_id):
+                raise WorkerFailure("target_stopped", "target stopped during scan") from None
+            raise
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def _scan_heartbeat_loop(
+        self,
+        *,
+        target_id: str,
+        worker_id: str,
+        page_id: str,
+        scan_task: asyncio.Task[Any],
+    ) -> None:
+        """掃描期間刷新 heartbeat，並在 target 被停止時取消本輪 scan。"""
+
+        interval_seconds = max(
+            0.01,
+            min(
+                float(self.options.heartbeat_interval_seconds),
+                float(self.options.stale_running_after_seconds) / 3,
+            ),
+        )
+        while not scan_task.done():
+            await asyncio.sleep(interval_seconds)
+            if scan_task.done():
+                return
+            if not self._target_still_active(target_id):
+                scan_task.cancel()
+                return
+            with SqliteApplicationContext(self.options.db_path) as app:
+                if app.repositories.targets.get(target_id) is None:
+                    return
+                app.services.targets.record_target_heartbeat(
+                    target_id,
+                    worker_id=worker_id,
+                    page_id=page_id,
+                )
 
     def _record_guard_skip(self, target_id: str, reason: str) -> None:
         """將 queue admission guard skip 寫入 runtime state。"""

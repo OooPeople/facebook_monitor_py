@@ -108,7 +108,7 @@ def test_application_context_encrypts_notification_secrets_at_rest(tmp_path: Pat
 def test_application_context_reads_legacy_plaintext_notification_secrets(
     tmp_path: Path,
 ) -> None:
-    """舊版 plaintext row 仍可被正式 repository 讀回，避免升級後日常操作中斷。"""
+    """舊版 plaintext row 會被讀回並在 context 成功結束後改寫為密文。"""
 
     db_path = tmp_path / "app.db"
     target = TargetDescriptor.for_group_posts(
@@ -166,4 +166,16 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
     assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/legacy-global"
     assert loaded_outbox is not None
     assert loaded_outbox.endpoint == "https://discord.com/api/webhooks/legacy-outbox"
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        target_row = connection.execute("SELECT * FROM target_configs").fetchone()
+        global_row = connection.execute("SELECT * FROM global_notification_settings").fetchone()
+        outbox_row = connection.execute("SELECT * FROM notification_outbox").fetchone()
+
+    assert target_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
+    assert target_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
+    assert global_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
+    assert global_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
+    assert outbox_row["endpoint"].startswith(ENCRYPTED_SECRET_PREFIX)
 

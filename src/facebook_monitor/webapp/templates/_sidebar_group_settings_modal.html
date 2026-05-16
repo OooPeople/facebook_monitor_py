@@ -5,7 +5,7 @@
       <div>
         <div class="sidebar-template-title-row">
           <h3 id="sidebar-template-title-{{ group.group_id }}">群組設定模板</h3>
-          <span class="field-caption">可以一鍵套用設定到群組內所有 target</span>
+          <span class="field-caption">獨立模板，只在套用時覆蓋群組內 target</span>
         </div>
         <p>{{ group.name }}</p>
       </div>
@@ -30,90 +30,30 @@
       </section>
       <section class="modal-section modal-section-card">
         <h4>掃描設定</h4>
-        <div class="setting-stack" data-refresh-container>
-          <div class="scan-toggle-grid">
-            <label class="checkbox">
-              <input name="auto_load_more" type="checkbox" data-sidebar-template-field {% if template and template.auto_load_more %}checked{% endif %}>
-              自動載入更多項目
-            </label>
-            <label class="checkbox">
-              <input name="auto_adjust_sort" type="checkbox" data-sidebar-template-field {% if template and template.auto_adjust_sort %}checked{% endif %}>
-              開始後自動調整成最新排序
-            </label>
-          </div>
-          <label>
-            目標掃描項目數（最多 10 筆）
-            <input name="max_items_per_scan" type="number" min="1" max="10" value="{{ template.max_items_per_scan if template else 5 }}" data-sidebar-template-field>
-          </label>
-          <div class="refresh-settings" data-refresh-form>
-            <div class="field-caption">刷新模式</div>
-            <div class="refresh-mode-grid">
-              <label class="radio option-card">
-                <input name="refresh_mode" type="radio" value="fixed" data-sidebar-template-field {% if group.refresh_mode == "fixed" %}checked{% endif %}>
-                <span>
-                  <strong>固定刷新</strong>
-                  <small>每固定秒數執行一次掃描</small>
-                </span>
-              </label>
-              <label class="radio option-card">
-                <input name="refresh_mode" type="radio" value="floating" data-sidebar-template-field {% if group.refresh_mode == "floating" %}checked{% endif %}>
-                <span>
-                  <strong>浮動刷新</strong>
-                  <small>在最小與最大秒數之間隨機刷新</small>
-                </span>
-              </label>
-            </div>
-          </div>
-          <div class="form-grid">
-            <label data-refresh-fixed>
-              刷新秒數
-              <input name="fixed_refresh_sec" type="number" min="5" value="{{ group.fixed_refresh_value }}" data-sidebar-template-field>
-            </label>
-            <label data-refresh-floating>
-              最小刷新秒數
-              <input name="min_refresh_sec" type="number" min="5" value="{{ group.min_refresh_value }}" data-sidebar-template-field>
-            </label>
-            <label data-refresh-floating>
-              最大刷新秒數
-              <input name="max_refresh_sec" type="number" min="5" value="{{ group.max_refresh_value }}" data-sidebar-template-field>
-            </label>
-          </div>
+        <div class="settings-form-stack" data-refresh-container>
+          {% set scan_source = template %}
+          {% set scan_input_attrs = "data-sidebar-template-field" %}
+          {% include "_scan_settings_fields.html" %}
+          {% set refresh_source = group %}
+          {% set refresh_input_attrs = "data-sidebar-template-field" %}
+          {% include "_refresh_settings_fields.html" %}
         </div>
       </section>
       <section class="modal-section modal-section-card">
         <h4>通知設定</h4>
-        <div class="setting-stack">
-          <label class="checkbox">
-            <input name="enable_desktop_notification" type="checkbox" data-sidebar-template-field {% if template and template.enable_desktop_notification %}checked{% endif %}>
-            桌面通知
-          </label>
-          <label class="checkbox">
-            <input name="enable_ntfy" type="checkbox" data-sidebar-template-field {% if template and template.enable_ntfy %}checked{% endif %}>
-            ntfy
-          </label>
-          <label>
-            ntfy topic
-            <input name="ntfy_topic" type="text" value="{{ template.ntfy_topic if template else '' }}" autocomplete="off" data-sidebar-template-field>
-          </label>
-          <label class="checkbox">
-            <input name="enable_discord_notification" type="checkbox" data-sidebar-template-field {% if template and template.enable_discord_notification %}checked{% endif %}>
-            Discord webhook
-          </label>
-          <label>
-            Discord webhook URL
-            <input name="discord_webhook" type="text" value="{{ template.discord_webhook if template else '' }}" autocomplete="off" data-sidebar-template-field>
-          </label>
-        </div>
+        {% set notification_source = template %}
+        {% set notification_input_attrs = "data-sidebar-template-field" %}
+        {% include "_notification_settings_fields.html" %}
       </section>
     </div>
     <footer class="modal-footer">
-      <div class="sidebar-template-apply-actions">
+      <div class="sidebar-template-apply-actions settings-actions">
         <button type="button" data-sidebar-template-apply="keywords">套用關鍵字</button>
         <button type="button" data-sidebar-template-apply="scan">套用掃描</button>
         <button type="button" data-sidebar-template-apply="notifications">套用通知</button>
         <button type="button" data-sidebar-template-apply="all">全部套用</button>
       </div>
-      <div class="modal-footer-actions">
+      <div class="modal-footer-actions settings-actions settings-actions--right">
         <button type="button" data-sidebar-template-close>取消</button>
         <button class="button button--primary" type="button" data-sidebar-template-save>儲存模板</button>
       </div>

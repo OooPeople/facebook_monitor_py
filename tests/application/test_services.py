@@ -13,6 +13,7 @@ from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
@@ -32,6 +33,30 @@ def test_target_runtime_state_default_is_stopped() -> None:
     state = TargetRuntimeState(target_id="target-1")
 
     assert state.desired_state == TargetDesiredState.STOPPED
+
+
+def test_target_facade_exposes_display_next_due_update(tmp_path: Path) -> None:
+    """resident main 走 targets facade 寫入 display-only next due。"""
+
+    db_path = tmp_path / "app.db"
+    due_at = utc_now() + timedelta(seconds=60)
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+
+        updated_state = app.services.targets.set_target_display_next_due_at(
+            target.id,
+            due_at,
+        )
+        loaded_state = app.repositories.runtime_states.get(target.id)
+
+        assert updated_state is not None
+        assert loaded_state is not None
+        assert loaded_state.display_next_due_at == due_at
 
 
 def test_create_target_and_record_scan_through_application_context(tmp_path: Path) -> None:
@@ -129,6 +154,33 @@ def test_upsert_group_posts_target_reuses_existing_target(tmp_path: Path) -> Non
         assert config.discord_webhook == "https://discord.com/api/webhooks/example"
         assert config.enable_ntfy
         assert config.ntfy_topic == "phase0test"
+
+
+def test_upsert_group_posts_target_stores_group_cover_image_url(tmp_path: Path) -> None:
+    """group metadata 最小實作會保存社團封面圖 URL，後續空值 upsert 不清掉。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+                group_cover_image_url="https://scontent.example.test/group-cover.jpg",
+            )
+        )
+        second = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+            )
+        )
+        loaded = app.repositories.targets.get(first.id)
+
+    assert second.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert loaded is not None
+    assert loaded.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
 
 
 def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> None:
@@ -342,7 +394,7 @@ def test_posts_and_comments_targets_keep_independent_config(tmp_path: Path) -> N
 
     assert loaded_from_posts is not None
     assert loaded_from_posts.include_keywords == ("票",)
-    assert loaded_from_posts.exclude_keywords == ()
+    assert loaded_from_posts.exclude_keywords == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
     assert loaded_from_posts.ntfy_topic == "phase0test"
     assert loaded_from_comments == updated
     assert loaded_from_comments is not None

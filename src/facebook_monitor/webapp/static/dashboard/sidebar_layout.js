@@ -1,21 +1,24 @@
 import { requestJson } from "/static/dashboard/api.js";
 import { confirmDialog, promptDialog } from "/static/dashboard/dialogs.js";
+import { saveScrollPosition } from "/static/dashboard/state.js";
+import {
+  groupStack,
+  listTargetIds,
+  prefersReducedMotion,
+  sidebarGroups,
+  sidebarItems,
+  sidebarLists,
+  sidebarRoot,
+} from "/static/dashboard/sidebar_dom.js";
 import { setupSidebarSorting } from "/static/dashboard/sidebar_sorting.js";
 import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
 
-const sidebarRoot = () => document.querySelector("[data-sidebar-layout]");
-const groupStack = () => document.querySelector("[data-sidebar-group-stack]");
-const sidebarGroups = () => Array.from(document.querySelectorAll("[data-sidebar-group]"));
-const sidebarLists = () => Array.from(document.querySelectorAll("[data-sidebar-list]"));
-const sidebarItems = () => Array.from(document.querySelectorAll("[data-sidebar-item]"));
 const isSorting = () => sidebarRoot()?.classList.contains("sorting");
-const prefersReducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 
-const listTargetIds = (list) => (
-  Array.from((list || document.createElement("div")).querySelectorAll("[data-sidebar-item]"))
-    .map((item) => item.dataset.targetId || "")
-    .filter(Boolean)
-);
+const reloadDashboardPreservingScroll = () => {
+  saveScrollPosition();
+  window.location.reload();
+};
 
 const updateEmptyStates = () => {
   sidebarLists().forEach((list) => {
@@ -82,12 +85,47 @@ const positionSidebarMenuPanel = () => {
   panel.style.setProperty("--sidebar-menu-top", `${Math.max(viewportPadding, rect.top)}px`);
 };
 
+const closeSidebarMenu = () => {
+  const menu = document.querySelector("[data-sidebar-menu]");
+  const trigger = menu?.querySelector(".sidebar-menu-trigger");
+  if (!menu) return;
+  menu.open = false;
+  trigger?.setAttribute("aria-expanded", "false");
+};
+
+const setSidebarMenuOpen = (open) => {
+  const menu = document.querySelector("[data-sidebar-menu]");
+  const trigger = menu?.querySelector(".sidebar-menu-trigger");
+  if (!menu) return;
+  menu.open = open;
+  trigger?.setAttribute("aria-expanded", String(open));
+  if (open) {
+    window.requestAnimationFrame(positionSidebarMenuPanel);
+  }
+};
+
 const setupSidebarMenuPosition = () => {
   const menu = document.querySelector("[data-sidebar-menu]");
-  if (!menu) return;
+  const trigger = menu?.querySelector(".sidebar-menu-trigger");
+  if (!menu || !trigger) return;
+  trigger.setAttribute("aria-expanded", String(Boolean(menu.open)));
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSidebarMenuOpen(!menu.open);
+  });
   menu.addEventListener("toggle", positionSidebarMenuPanel);
   window.addEventListener("resize", positionSidebarMenuPanel);
   sidebarRoot()?.addEventListener("scroll", positionSidebarMenuPanel, { passive: true });
+  document.addEventListener("click", (event) => {
+    if (!menu.open || event.target.closest?.("[data-sidebar-menu]")) return;
+    closeSidebarMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeSidebarMenu();
+    }
+  });
 };
 
 const setupGroupControls = (showToast) => {
@@ -130,7 +168,7 @@ const setupGroupControls = (showToast) => {
           method: "PATCH",
           payload: { name },
         });
-        window.location.reload();
+        reloadDashboardPreservingScroll();
       } catch (error) {
         showToast?.(`群組更名失敗: ${error.message}`, "error");
       }
@@ -153,7 +191,7 @@ const setupGroupControls = (showToast) => {
         await requestJson(`/api/sidebar/groups/${encodeURIComponent(groupId)}`, {
           method: "DELETE",
         });
-        window.location.reload();
+        reloadDashboardPreservingScroll();
       } catch (error) {
         showToast?.(`群組刪除失敗: ${error.message}`, "error");
       }
@@ -232,10 +270,7 @@ const setupGroupActionToggles = () => {
 const setupGroupCreate = (showToast) => {
   document.querySelectorAll("[data-sidebar-create-group]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const menu = button.closest("[data-sidebar-menu]");
-      if (menu) {
-        menu.open = false;
-      }
+      closeSidebarMenu();
       const name = await promptDialog({
         title: "新增群組",
         label: "群組名稱",
@@ -244,7 +279,7 @@ const setupGroupCreate = (showToast) => {
       if (name === null) return;
       try {
         await requestJson("/api/sidebar/groups", { payload: { name } });
-        window.location.reload();
+        reloadDashboardPreservingScroll();
       } catch (error) {
         showToast?.(`群組建立失敗: ${error.message}`, "error");
       }
@@ -270,6 +305,37 @@ const collectTemplatePayload = (modal) => {
     payload[name] = field.value;
   });
   return payload;
+};
+
+const TEMPLATE_SECTION_LABELS = {
+  keywords: "關鍵字",
+  scan: "掃描",
+  notifications: "通知",
+  all: "全部",
+};
+
+const listGroupTargetNames = (group) => (
+  Array.from(group?.querySelectorAll("[data-sidebar-item] .sidebar-name") || [])
+    .map((node) => (node.textContent || "").trim())
+    .filter(Boolean)
+);
+
+const buildTemplateApplyDetails = ({ section, targetNames, targetCount }) => {
+  const previewNames = targetNames.slice(0, 5);
+  const overflowCount = Math.max(targetCount - previewNames.length, 0);
+  const targetSummary = previewNames.length
+    ? `${previewNames.join("、")}${overflowCount ? `，以及另外 ${overflowCount} 個` : ""}`
+    : "此群組目前沒有 target";
+  return [
+    `套用範圍：${TEMPLATE_SECTION_LABELS[section] || section}`,
+    `影響 target：${targetSummary}`,
+    section === "all"
+      ? "套用前會先儲存目前整份群組模板；本次會覆蓋全部區段。"
+      : "套用前會先儲存目前整份群組模板；本次只會覆蓋所選區段。",
+    "會覆蓋這些 target 既有設定。",
+    "不會影響群組外 target。",
+    "此操作沒有自動復原。",
+  ];
 };
 
 const setupTemplateModals = (showToast) => {
@@ -298,10 +364,17 @@ const setupTemplateModals = (showToast) => {
         const group = document.querySelector(
           `[data-sidebar-group][data-group-id="${CSS.escape(groupId)}"]`,
         );
-        const count = listTargetIds(group?.querySelector("[data-sidebar-list]")).length;
+        const targetIds = listTargetIds(group?.querySelector("[data-sidebar-list]"));
+        const count = targetIds.length;
+        const targetNames = listGroupTargetNames(group);
         const confirmed = await confirmDialog({
           title: "套用群組模板",
-          message: `這會覆蓋群組內 ${count} 個 target 的設定。此操作不會影響群組外 target。`,
+          message: `即將套用到群組內 ${count} 個 target。`,
+          details: buildTemplateApplyDetails({
+            section,
+            targetNames,
+            targetCount: count,
+          }),
           confirmLabel: "套用",
           danger: true,
         });
@@ -316,7 +389,7 @@ const setupTemplateModals = (showToast) => {
             { payload: { sections: [section] } },
           );
           showToast?.(`已套用到 ${data.updated_count || 0} 個 target`, "success");
-          window.location.reload();
+          reloadDashboardPreservingScroll();
         } catch (error) {
           showToast?.(`群組模板套用失敗: ${error.message}`, "error");
         }

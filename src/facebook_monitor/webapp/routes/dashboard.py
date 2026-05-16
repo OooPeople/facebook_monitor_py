@@ -14,9 +14,9 @@ from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_app_theme
-from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
+from facebook_monitor.webapp.query_service import ProfileSessionWarning
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.query_service import get_dashboard_revision
@@ -48,8 +48,23 @@ def _serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:
         "status_class": item.status_class,
         "status_detail": item.status_detail,
         "status_summary": item.status_summary,
+        "mode_label": item.mode_label,
+        "mode_class": item.mode_class,
         "hit_count": item.hit_count,
         "latest_error_summary": item.latest_error_summary,
+        "thumbnail_url": item.thumbnail_url,
+    }
+
+
+def _serialize_profile_session_warning(
+    warning: ProfileSessionWarning,
+) -> dict[str, object]:
+    """序列化首頁 Facebook session 警告。"""
+
+    return {
+        "needs_login": warning.needs_login,
+        "message": warning.message,
+        "reason": warning.reason,
     }
 
 
@@ -80,9 +95,21 @@ def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[s
         "anchor_id": row.anchor_id,
         "display_name": row.display_name,
         "rename_display_name": row.rename_display_name,
+        "thumbnail_url": row.thumbnail_url,
         "status_label": row.status_label,
         "status_class": row.status_class,
         "header_summary_label": row.header_summary_label,
+        "mode_label": row.mode_label,
+        "mode_class": row.mode_class,
+        "monitoring_action": row.monitoring_action,
+        "monitoring_button_label": row.monitoring_button_label,
+        "runtime_error": row.runtime_error,
+        "runtime_skip_reason": row.runtime_skip_reason,
+        "has_latest_failed_scan": bool(row.latest_failed_scan_run),
+        "latest_scan_header_label": f"最近掃描 {row.latest_scan_header_time_label}",
+        "next_refresh_label": f"下次刷新：{row.next_refresh_label}",
+        "next_refresh_seconds": row.next_refresh_seconds,
+        "scan_cycle_result_label": row.scan_cycle_result_label,
         "latest_scan_diagnostics_summary": row.latest_scan_diagnostics_summary,
         "latest_scan_diagnostics_text": row.latest_scan_diagnostics_text,
         "hit_record_total_count": row.hit_record_total_count,
@@ -172,8 +199,8 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "rows": dashboard.rows,
                 "message": message,
                 "error": error,
-                "profile_active": get_profile_manager(request).is_active(),
                 "scheduler_state": scheduler_state,
+                "profile_session_warning": dashboard.profile_session_warning,
                 "dashboard_revision": dashboard_revision,
                 "initial_theme": get_app_theme(request),
             },
@@ -230,6 +257,9 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         return {
+            "profile_session_warning": _serialize_profile_session_warning(
+                dashboard.profile_session_warning
+            ),
             "sidebar": {
                 "items": [_serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
             },

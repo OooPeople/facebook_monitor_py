@@ -71,7 +71,7 @@ class SidebarLayoutService:
         """刪除空 sidebar group；非空 group 不可直接刪除。"""
 
         if self.sidebar_layout.get_group(group_id) is None:
-            raise ValueError("sidebar group not found")
+            raise ValueError("找不到指定的 sidebar 群組")
         if self.sidebar_layout.count_targets_in_group(group_id) > 0:
             raise ValueError("群組內仍有 target，請先移出後再刪除")
         self.sidebar_layout.delete_group(group_id)
@@ -136,6 +136,8 @@ class SidebarLayoutService:
 
         known_ids = {group.id for group in self.sidebar_layout.list_groups()}
         payload_ids = _unique_ids(group_ids)
+        if len(payload_ids) != len(group_ids):
+            raise ValueError("群組排序不可包含重複群組")
         if set(payload_ids) != known_ids:
             raise ValueError("群組排序 payload 必須包含所有 sidebar group")
 
@@ -151,6 +153,12 @@ class SidebarLayoutService:
             for group_id, _target_ids in grouped_target_ids
             if group_id is not None
         ]
+        normalized_section_ids = [
+            group_id if group_id is not None else "__ungrouped__"
+            for group_id, _target_ids in grouped_target_ids
+        ]
+        if len(normalized_section_ids) != len(_unique_ids(normalized_section_ids)):
+            raise ValueError("placement payload 不可包含重複群組區塊")
         if any(group_id not in known_group_ids for group_id in payload_group_ids):
             raise ValueError("placement payload contains unknown sidebar group")
 
@@ -172,14 +180,14 @@ class SidebarLayoutService:
         """保存 sidebar group config template。"""
 
         if self.sidebar_layout.get_group(template.sidebar_group_id) is None:
-            raise ValueError("sidebar group not found")
+            raise ValueError("找不到指定的 sidebar 群組")
         return self.sidebar_layout.save_template(template)
 
     def get_template_or_default(self, group_id: str) -> SidebarGroupConfigTemplate:
         """讀取 group template；未建立時回傳預設模板但不寫入 DB。"""
 
         if self.sidebar_layout.get_group(group_id) is None:
-            raise ValueError("sidebar group not found")
+            raise ValueError("找不到指定的 sidebar 群組")
         return (
             self.sidebar_layout.get_template(group_id)
             or SidebarGroupConfigTemplate(sidebar_group_id=group_id)

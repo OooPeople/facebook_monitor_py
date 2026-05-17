@@ -40,6 +40,7 @@ from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
+from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
 
 
 @dataclass(frozen=True)
@@ -154,19 +155,6 @@ def build_comments_sort_unconfirmed_skip_metadata(
         "scan_skipped": True,
         "skip_reason": SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
     }
-
-
-def should_skip_scan_for_unconfirmed_sort(
-    *,
-    config: TargetConfig,
-    sort_adjust_result: SortAdjustResult,
-) -> bool:
-    """判斷 auto_adjust_sort 開啟時是否因排序未確認而跳過本輪。"""
-
-    return (
-        config.auto_adjust_sort
-        and sort_adjust_result.after_label != sort_adjust_result.preferred_label
-    )
 
 
 def scan_comments_target_page(

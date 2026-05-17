@@ -112,6 +112,46 @@ class ScanFinalizeResult:
         return bool(self.scan_summary.get("baseline_mode"))
 
 
+SORT_ADJUST_UNCONFIRMED_STOP_REASON = "sort_adjust_unconfirmed_skip"
+SORT_ADJUST_UNCONFIRMED_SKIP_REASON = "sort_adjust_unconfirmed"
+
+
+def record_skipped_scan(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    metadata: dict[str, Any],
+) -> ScanFinalizeResult:
+    """記錄保護性跳過的 scan run，且清空本輪 latest scan 快照。"""
+
+    scan_metadata = dict(metadata)
+    scan_metadata.setdefault("scan_skipped", True)
+    scan_metadata.setdefault("skip_reason", SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
+    scan_metadata.setdefault("stop_reason", SORT_ADJUST_UNCONFIRMED_STOP_REASON)
+    scan_metadata.setdefault("new_count", 0)
+    scan_metadata.setdefault("matched_count", 0)
+    scan_run_id = app.services.scans.record_scan(
+        RecordScanRequest(
+            target_id=target.id,
+            status=ScanStatus.SUCCESS,
+            item_count=0,
+            matched_count=0,
+            metadata=scan_metadata,
+        )
+    )
+    app.repositories.latest_scan_items.replace_for_target(target.id, [])
+    return ScanFinalizeResult(
+        scan_run_id=scan_run_id,
+        new_items=(),
+        matched_items=(),
+        match_results=(),
+        history_entries=(),
+        notification_payloads=(),
+        latest_items=(),
+        scan_summary=scan_metadata,
+    )
+
+
 def normalize_extracted_scan_items(
     *,
     items: list[ExtractedItem],

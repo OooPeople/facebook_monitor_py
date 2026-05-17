@@ -16,7 +16,7 @@ from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.ntfy import to_ascii_header_value
 
 
-def test_send_ntfy_notification_matches_userscript_encoding(monkeypatch: Any) -> None:
+def test_send_ntfy_notification_matches_product_encoding(monkeypatch: Any) -> None:
     """ntfy topic 走 URL encode，中文內容放 UTF-8 body，不放進非 ASCII header。"""
 
     calls: list[dict[str, Any]] = []
@@ -146,10 +146,10 @@ def test_send_desktop_notification_sanitizes_runner_exception(monkeypatch: Any) 
     assert "private notification body" not in result.message
 
 
-def test_send_discord_notification_matches_userscript_webhook_payload(
+def test_send_discord_notification_matches_webhook_payload(
     monkeypatch: Any,
 ) -> None:
-    """Discord sender 送 JSON content，並保留 userscript 的長度上限。"""
+    """Discord sender 送 JSON content，並保留產品長度上限。"""
 
     calls: list[dict[str, Any]] = []
 

@@ -1,7 +1,7 @@
 """掃描項目的去重 key 與 alias 規則。
 
-職責：集中保存從 userscript 遷移而來的 post key / alias 概念，讓 seen、
-history 與 latest scan item 使用同一套穩定 key。
+職責：集中保存 post / comment key 與 alias 規則，讓 seen、history
+與 latest scan item 使用同一套穩定 key。
 """
 
 from __future__ import annotations

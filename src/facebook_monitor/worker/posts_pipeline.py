@@ -42,6 +42,10 @@ from facebook_monitor.worker.scan_metadata import PostScanMetadata
 from facebook_monitor.worker.scan_metadata import PostScanRoundMetadata
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
+from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
+from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
+from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,7 @@ def build_scan_metadata(
     round_stats: list[ExtractRoundStats],
     collection_meta: ExtractCollectionMeta,
 ) -> dict[str, Any]:
-    """整理單輪掃描診斷資料，對齊 userscript latestScan 摘要語義。"""
+    """整理單輪掃描診斷資料，維持 latest scan 摘要語義。"""
 
     normalized_rounds: list[PostScanRoundMetadata] = []
     for stat in round_stats:
@@ -128,6 +132,43 @@ def build_scan_metadata(
     ).to_metadata()
 
 
+def build_sort_unconfirmed_skip_metadata(
+    *,
+    config: TargetConfig,
+    sort_adjust_result: SortAdjustResult,
+    scroll_rounds: int,
+    requested_scroll_rounds: int,
+    scroll_wait_ms: int,
+) -> dict[str, Any]:
+    """建立排序未確認時的保護性跳過診斷。"""
+
+    return PostScanMetadata(
+        worker="posts_scan",
+        collection_strategy="sort_adjust_skip",
+        auto_load_more=config.auto_load_more,
+        scroll_collection_enabled=False,
+        target_count=config.max_items_per_scan,
+        scanned_count=0,
+        candidate_count=0,
+        round_count=0,
+        max_window_count=0,
+        requested_scroll_rounds=max(requested_scroll_rounds, 0),
+        scroll_rounds=max(scroll_rounds, 0),
+        scroll_wait_ms=max(scroll_wait_ms, 0),
+        load_more_mode="skipped",
+        stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        collected_meta={
+            "mode": "sort_adjust_skip",
+            "stopReason": SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        },
+        sort_adjust=sort_adjust_result.to_metadata(),
+        rounds=(),
+    ).to_metadata() | {
+        "scan_skipped": True,
+        "skip_reason": SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
+    }
+
+
 def infer_scan_stop_reason(
     *,
     items_count: int,
@@ -178,6 +219,30 @@ def scan_posts_page(
         config=config,
         requested_scroll_rounds=scroll_rounds,
     )
+    if should_skip_scan_for_unconfirmed_sort(
+        config=config,
+        sort_adjust_result=sort_adjust_result,
+    ):
+        finalize_result = record_skipped_scan(
+            app=app,
+            target=target,
+            metadata=build_sort_unconfirmed_skip_metadata(
+                config=config,
+                sort_adjust_result=sort_adjust_result,
+                scroll_rounds=effective_scroll_rounds,
+                requested_scroll_rounds=scroll_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+            ),
+        )
+        return PostsScanSummary(
+            target_id=target.id,
+            url=str(page.url),
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=finalize_result.scan_run_id,
+            round_stats=(),
+        )
     items, round_stats, collection_meta = collect_items_with_diagnostics(
         page=page,
         max_items=config.max_items_per_scan,
@@ -237,6 +302,30 @@ async def scan_posts_page_async(
         config=config,
         requested_scroll_rounds=scroll_rounds,
     )
+    if should_skip_scan_for_unconfirmed_sort(
+        config=config,
+        sort_adjust_result=sort_adjust_result,
+    ):
+        finalize_result = record_skipped_scan(
+            app=app,
+            target=target,
+            metadata=build_sort_unconfirmed_skip_metadata(
+                config=config,
+                sort_adjust_result=sort_adjust_result,
+                scroll_rounds=effective_scroll_rounds,
+                requested_scroll_rounds=scroll_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+            ),
+        )
+        return PostsScanSummary(
+            target_id=target.id,
+            url=str(page.url),
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=finalize_result.scan_run_id,
+            round_stats=(),
+        )
     items, round_stats, collection_meta = await collect_items_with_diagnostics_async(
         page=page,
         max_items=config.max_items_per_scan,

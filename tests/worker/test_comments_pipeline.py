@@ -9,6 +9,7 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
@@ -90,6 +91,28 @@ class FakeCommentsPage:
                 "stopReason": "visible_window_completed",
             },
         }
+
+
+class UnconfirmedCommentSortPage(FakeCommentsPage):
+    """模擬留言排序未能確認切到由新到舊。"""
+
+    def evaluate(self, script: str, payload: object = None) -> object:
+        """排序未確認時不應繼續呼叫留言 extractor。"""
+
+        if "preferredLabel" in script and "getCurrentCommentSortControl" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": True,
+                "changed": False,
+                "preferredLabel": "由新到舊",
+                "beforeLabel": "最相關",
+                "afterLabel": "最相關",
+                "reason": "sort_update_unconfirmed",
+                "mutationSuppressionMs": 3200,
+                "mutationSuppressionReason": "auto_adjust_sort",
+                "menuCandidateTexts": ["最相關", "由新到舊"],
+            }
+        raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
 class FakeScrollableCommentsPage(FakeCommentsPage):
@@ -279,6 +302,82 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
     assert sent and sent[0][0] == "phase0test"
     assert sent[0][1] == "Facebook group comment match"
     assert "類型: 留言" in sent[0][2]
+
+
+def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """留言排序未確認時不寫 seen/history/latest/notification，避免舊留言誤通知。"""
+
+    db_path = tmp_path / "app.db"
+    page = UnconfirmedCommentSortPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=(
+                    "https://www.facebook.com/groups/222518561920110/posts/"
+                    "2187454285426518"
+                ),
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    auto_adjust_sort=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.COMMENT,
+                    item_key="previous-comment",
+                    item_index=0,
+                    author="舊留言者",
+                    text="上一輪留言",
+                    permalink=(
+                        "https://www.facebook.com/groups/222518561920110/posts/"
+                        "2187454285426518/?comment_id=previous"
+                    ),
+                )
+            ],
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_comments_target_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+
+    assert page.sort_adjusted
+    assert summary.item_count == 0
+    assert summary.new_count == 0
+    assert summary.matched_count == 0
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 0
+    assert latest_scan.matched_count == 0
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == "sort_adjust_unconfirmed"
+    assert latest_scan.metadata["stop_reason"] == "sort_adjust_unconfirmed_skip"
+    assert latest_scan.metadata["comment_sort"]["after_label"] == "最相關"
+    assert latest_scan.metadata["comment_sort"]["preferred_label"] == "由新到舊"
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
 
 
 def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notification(

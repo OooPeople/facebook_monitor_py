@@ -13,6 +13,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import default_runtime_paths
@@ -99,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scroll-wait-ms",
         type=int,
-        default=2500,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms,
         help="Milliseconds to wait after each scroll round.",
     )
     parser.add_argument(
@@ -116,7 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval-seconds",
         type=float,
-        default=300,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.one_shot_interval_seconds,
         help="Seconds to wait between scans in duration mode.",
     )
     parser.add_argument(

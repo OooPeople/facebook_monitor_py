@@ -1,7 +1,7 @@
 """Facebook 掃描收集策略。
 
-職責：集中 userscript 的 scan limit / dynamic window 規則，避免 worker、
-Web UI 與 extractor 各自推估掃描上限。
+職責：集中 scan limit / dynamic window 規則，避免 worker、Web UI
+與 extractor 各自推估掃描上限。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def get_effective_scroll_rounds(
     """決定本輪 posts 掃描可使用的最大捲動次數。
 
     `requested_scroll_rounds=0` 保留給 probe / fallback 用來強制只掃目前視窗；
-    其他情況則以 userscript 的 targetCount * 2 動態安全上限為主。
+    其他情況則以 targetCount * 2 動態安全上限為主。
     """
 
     if not auto_load_more:

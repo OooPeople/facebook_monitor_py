@@ -67,7 +67,7 @@ class ExtractRoundStats:
 
 @dataclass(frozen=True)
 class ExtractCollectionMeta:
-    """保存對齊 userscript collected meta 的跨視窗收集統計。"""
+    """保存跨視窗收集統計。"""
 
     target_count: int
     mode: str
@@ -98,7 +98,7 @@ class ExtractCollectionMeta:
     seen_stop_new_count: int = 0
 
     def to_metadata(self) -> dict[str, Any]:
-        """轉成 scan metadata，欄位命名保留 userscript collected meta 語義。"""
+        """轉成 scan metadata，保留穩定 collected meta 欄位語義。"""
 
         return {
             "targetCount": self.target_count,
@@ -532,7 +532,7 @@ def observe_seen_stop_item(
     item_aliases: tuple[str, ...],
     seen_item_predicate: SeenItemPredicate | None,
 ) -> None:
-    """依 userscript seen-stop 語義觀察新收集 item，但保守要求先看見新 item。"""
+    """依 seen-stop 語義觀察新收集 item，但保守要求先看見新 item。"""
 
     if not state.enabled or seen_item_predicate is None:
         return
@@ -554,7 +554,7 @@ def build_collection_meta(
     accumulated_count: int,
     seen_stop_state: FeedSeenStopState | None = None,
 ) -> ExtractCollectionMeta:
-    """依每輪診斷彙整 userscript collected meta 等價摘要。"""
+    """依每輪診斷彙整 collected meta 摘要。"""
 
     window_count = len(round_stats)
     attempted = any(stat.scroll_moved is not None for stat in round_stats)

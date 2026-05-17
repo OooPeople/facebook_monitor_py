@@ -75,8 +75,8 @@ class FakeCommentSortLocator:
             self._page.current_label = "由新到舊"
 
 
-def test_feed_sort_labels_match_userscript_final_labels() -> None:
-    """feed sort 常數需對齊 userscript 成熟版 label。"""
+def test_feed_sort_labels_match_product_labels() -> None:
+    """feed sort 常數需維持產品 label。"""
 
     assert FEED_SORT_NEWEST_LABEL == "新貼文"
     assert FEED_SORT_LABELS == ("新貼文", "最相關", "最新動態")
@@ -100,8 +100,8 @@ def test_sort_script_uses_exact_feed_option_chain() -> None:
     assert "getSelectorElementsByOrder" in FEED_SORT_ADJUST_SCRIPT
 
 
-def test_comment_sort_labels_and_script_match_userscript_semantics() -> None:
-    """comments sort 必須使用 JS 成熟版由新到舊與說明文字判斷鏈。"""
+def test_comment_sort_labels_and_script_match_product_semantics() -> None:
+    """comments sort 必須使用由新到舊與說明文字判斷鏈。"""
 
     assert COMMENT_SORT_NEWEST_LABEL == "由新到舊"
     assert COMMENT_SORT_LABELS == ("由新到舊", "最相關", "所有留言")
@@ -213,7 +213,7 @@ def test_comment_scroll_script_uses_nested_targets_and_guard() -> None:
     assert "isLoadingMoreComments" in BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT
 
 
-def test_comment_mutation_relevance_helpers_match_userscript_chain() -> None:
+def test_comment_mutation_relevance_helpers_match_product_chain() -> None:
     """comments mutation relevance 需保留 permalink/text/suppression 判斷鏈。"""
 
     assert "elementHasCommentMutationSignal" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT

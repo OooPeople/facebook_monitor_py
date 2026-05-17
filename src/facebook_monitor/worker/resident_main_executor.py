@@ -18,6 +18,7 @@ from playwright.async_api import Error as AsyncPlaywrightError
 from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
@@ -337,14 +338,18 @@ class ExecutorWorkerPool:
             )
         )
         try:
+            timeout_seconds = max(
+                float(self.options.scan_timeout_seconds),
+                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_scan_task_timeout_seconds,
+            )
             return await asyncio.wait_for(
                 scan_task,
-                timeout=max(float(self.options.scan_timeout_seconds), 0.01),
+                timeout=timeout_seconds,
             )
         except TimeoutError as exc:
             raise WorkerFailure(
                 "scan_timeout",
-                f"scan exceeded {max(float(self.options.scan_timeout_seconds), 0.01):g} seconds",
+                f"scan exceeded {timeout_seconds:g} seconds",
             ) from exc
         except asyncio.CancelledError:
             if not self._target_still_active(target_id):

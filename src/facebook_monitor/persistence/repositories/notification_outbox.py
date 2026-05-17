@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import replace
 from datetime import timedelta
 
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import NotificationOutboxStatus
@@ -87,7 +88,10 @@ class NotificationOutboxRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def list_pending(self, limit: int = 50) -> list[NotificationOutboxEntry]:
+    def list_pending(
+        self,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[NotificationOutboxEntry]:
         """列出尚未 claim 的 pending events，僅供檢視與測試。"""
 
         rows = self.connection.execute(
@@ -104,7 +108,10 @@ class NotificationOutboxRepository:
         ).fetchall()
         return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
 
-    def claim_pending(self, limit: int = 50) -> list[NotificationOutboxEntry]:
+    def claim_pending(
+        self,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[NotificationOutboxEntry]:
         """原子 claim pending rows，外部 I/O 只能處理 claim 成功的 events。"""
 
         return self._claim_status(
@@ -113,7 +120,10 @@ class NotificationOutboxRepository:
             limit=limit,
         )
 
-    def claim_failed(self, limit: int = 50) -> list[NotificationOutboxEntry]:
+    def claim_failed(
+        self,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[NotificationOutboxEntry]:
         """原子 claim failed rows，供明確 retry API 使用。"""
 
         return self._claim_status(
@@ -122,7 +132,10 @@ class NotificationOutboxRepository:
             limit=limit,
         )
 
-    def list_failed(self, limit: int = 50) -> list[NotificationOutboxEntry]:
+    def list_failed(
+        self,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[NotificationOutboxEntry]:
         """列出 failed outbox events，供明確 retry command 使用。"""
 
         rows = self.connection.execute(

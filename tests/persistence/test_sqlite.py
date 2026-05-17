@@ -1961,7 +1961,7 @@ def test_match_history_repository_counts_offsets_and_clears_by_target(
 def test_match_history_repository_refreshes_duplicates_and_keeps_global_limit(
     tmp_path: Path,
 ) -> None:
-    """查看紀錄對齊 JS：重複 key 刷新到最新，且全域最多保留 10 筆。"""
+    """查看紀錄重複 key 刷新到最新，且全域最多保留 10 筆。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:

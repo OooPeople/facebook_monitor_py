@@ -108,7 +108,7 @@ class SeenItemRepository:
         return row is not None
 
     def clear_scope(self, scope_id: str) -> int:
-        """清空指定 scan scope 的 seen item，對齊 userscript 開始監控語義。"""
+        """清空指定 scan scope 的 seen item，支援開始監控語義。"""
 
         normalized_scope_id = scope_id.strip()
         if not normalized_scope_id:

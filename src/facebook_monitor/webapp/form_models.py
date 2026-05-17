@@ -32,7 +32,7 @@ def checkbox_checked(value: str | None) -> bool:
 
 
 def normalize_refresh_seconds(value: int, fallback: int) -> int:
-    """整理 refresh 秒數，對齊 JS 版至少 5 秒的保護。"""
+    """整理 refresh 秒數，套用至少 5 秒的保護。"""
 
     try:
         seconds = int(value)

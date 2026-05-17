@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 from dataclasses import replace
 
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.keyword_rules import format_keyword_rules
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -155,7 +156,7 @@ class MatchHistoryRepository:
     def list_by_target(
         self,
         target_id: str,
-        limit: int = 50,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
         *,
         offset: int = 0,
         notified_since: datetime | None = None,
@@ -195,7 +196,7 @@ class MatchHistoryRepository:
         self,
         target_ids: list[str],
         *,
-        limit_per_target: int = 50,
+        limit_per_target: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit_per_target,
         notified_since: datetime | None = None,
     ) -> dict[str, list[MatchHistoryEntry]]:
         """一次查詢多個 target 的最近 match history。"""

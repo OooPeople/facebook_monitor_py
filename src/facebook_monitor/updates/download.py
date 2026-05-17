@@ -16,6 +16,7 @@ from typing import AsyncIterator
 
 import httpx
 
+from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
 from facebook_monitor.updates.release_check import UpdateCheckResult
 
 
@@ -42,7 +43,7 @@ async def download_and_verify_update(
     *,
     update_check: UpdateCheckResult,
     updates_dir: Path,
-    timeout_seconds: float = 120.0,
+    timeout_seconds: float = PYTHON_UPDATER_RUNTIME_DEFAULTS.timeout_seconds,
     transport: httpx.AsyncBaseTransport | None = None,
     max_asset_bytes: int = MAX_UPDATE_DOWNLOAD_BYTES,
     max_sha256_bytes: int = MAX_SHA256_DOWNLOAD_BYTES,

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
@@ -66,15 +67,20 @@ class FakeSchedulerManager:
 
         return SchedulerSessionState(
             running=self.running,
-            interval_seconds=60,
+            interval_seconds=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.resident_interval_seconds,
             last_cycle_at="",
             last_error="",
-            max_concurrent_scans=2,
+            max_concurrent_scans=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans,
             current_running_count=1 if self.running else 0,
             current_queued_count=len(self.queued_target_ids),
             queue_length=len(self.queued_target_ids),
             queued_target_ids=self.queued_target_ids,
-            worker_ids=("resident-slot-1", "resident-slot-2") if self.running else (),
+            worker_ids=tuple(
+                f"resident-slot-{index + 1}"
+                for index in range(PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans)
+            )
+            if self.running
+            else (),
             page_pool_size=1 if self.running else 0,
             last_opened_page_count=1 if self.running else 0,
             last_reused_page_count=2 if self.running else 0,

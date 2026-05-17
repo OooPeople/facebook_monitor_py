@@ -625,7 +625,7 @@ class TargetRow:
 
     @property
     def monitoring_button_label(self) -> str:
-        """回傳主操作按鈕文字，對齊 userscript 開始 / 暫停語義。"""
+        """回傳主操作按鈕文字，維持開始 / 暫停語義。"""
 
         return "開始" if self.monitoring_action == "start" else "停止"
 

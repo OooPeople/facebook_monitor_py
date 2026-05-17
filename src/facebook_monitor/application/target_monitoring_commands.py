@@ -81,7 +81,7 @@ class TargetMonitoringCommands:
         return updated_target
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """對齊 userscript「開始」：清 target runtime 去重狀態並要求立即掃描。"""
+        """執行 target「開始」語義：清 runtime 去重狀態並要求立即掃描。"""
 
         target = self.targets.get(target_id)
         if target is None:
@@ -123,7 +123,7 @@ class TargetMonitoringCommands:
         return updated_target
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """對齊 userscript「停止」：停止排程但保留 seen/history。"""
+        """執行 target「停止」語義：停止排程但保留 seen/history。"""
 
         return self.update_target_status(
             UpdateTargetStatusRequest(

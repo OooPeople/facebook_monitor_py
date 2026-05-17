@@ -1,7 +1,7 @@
 """Python 版監視設定預設值。
 
-職責：集中保存 Python 版刻意採用的預設值，避免 Web UI、service 與
-domain model 各自硬寫一份而與 JS 移植語義漂移。
+職責：集中保存正式產品預設值，避免 Web UI、service 與 domain model
+各自硬寫一份而造成行為漂移。
 """
 
 from __future__ import annotations
@@ -9,12 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+DEFAULT_REFRESH_SECONDS = 60
+
+
 @dataclass(frozen=True)
 class TargetConfigDefaults:
     """保存 target config 的 Python 版預設值。"""
 
     fixed_refresh_sec: int | None = None
-    default_fixed_refresh_sec: int = 60
+    default_fixed_refresh_sec: int = DEFAULT_REFRESH_SECONDS
     min_refresh_sec: int = 50
     max_refresh_sec: int = 70
     jitter_enabled: bool = True
@@ -30,4 +33,76 @@ class TargetConfigDefaults:
     discord_webhook: str = ""
 
 
+@dataclass(frozen=True)
+class SchedulerRuntimeDefaults:
+    """保存 scheduler / worker runtime 的 Python 版預設值。"""
+
+    resident_interval_seconds: float = DEFAULT_REFRESH_SECONDS
+    one_shot_interval_seconds: float = 300
+    scheduler_tick_seconds: float = 2
+    max_concurrent_scans: int = 4
+    scroll_rounds: int = 3
+    scroll_wait_ms: int = 2500
+    scan_timeout_seconds: float = 120
+    min_browser_scan_timeout_seconds: float = 10
+    min_scan_task_timeout_seconds: float = 0.01
+    stale_running_after_seconds: float = 180
+    heartbeat_interval_seconds: float = 30
+    metadata_refresh_target_limit_per_tick: int = 1
+
+
+@dataclass(frozen=True)
+class BrowserRuntimeDefaults:
+    """保存 Playwright browser runtime 的 Python 版預設值。"""
+
+    viewport_width: int = 1366
+    viewport_height: int = 900
+    timeout_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
+class WebUiRuntimeDefaults:
+    """保存本機 Web UI 啟動相關的 Python 版預設值。"""
+
+    host: str = "127.0.0.1"
+    port: int = 4818
+    graceful_shutdown_timeout_seconds: int = 5
+    sse_poll_interval_seconds: float = 1.0
+    sse_keepalive_seconds: float = 20.0
+    sse_max_connection_seconds: float = 1.2
+    hit_record_preview_limit: int = 5
+    hit_record_preview_max_limit: int = 20
+    hit_record_full_limit: int = 50
+    hit_record_full_max_limit: int = 200
+
+
+@dataclass(frozen=True)
+class ProfileLoginDefaults:
+    """保存 Facebook profile 引導登入流程的 Python 版預設值。"""
+
+    poll_interval_seconds: float = 1.0
+    min_poll_interval_seconds: float = 0.2
+
+
+@dataclass(frozen=True)
+class UpdaterRuntimeDefaults:
+    """保存更新下載與 updater smoke 的 Python 版預設值。"""
+
+    timeout_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
+class PersistenceQueryDefaults:
+    """保存 repository read/query fallback 的 Python 版預設值。"""
+
+    list_limit: int = 50
+    list_limit_per_target: int = 50
+
+
 PYTHON_TARGET_CONFIG_DEFAULTS = TargetConfigDefaults()
+PYTHON_SCHEDULER_RUNTIME_DEFAULTS = SchedulerRuntimeDefaults()
+PYTHON_BROWSER_RUNTIME_DEFAULTS = BrowserRuntimeDefaults()
+PYTHON_WEBUI_RUNTIME_DEFAULTS = WebUiRuntimeDefaults()
+PYTHON_PROFILE_LOGIN_DEFAULTS = ProfileLoginDefaults()
+PYTHON_UPDATER_RUNTIME_DEFAULTS = UpdaterRuntimeDefaults()
+PYTHON_PERSISTENCE_QUERY_DEFAULTS = PersistenceQueryDefaults()

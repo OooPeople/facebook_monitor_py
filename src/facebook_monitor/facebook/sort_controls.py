@@ -1,7 +1,7 @@
 """Facebook sort control helpers。
 
-職責：對齊 userscript 的保守排序調整語義，在掃描前嘗試把 group feed
-切到偏好的「新貼文」排序，並回傳可保存到 scan metadata 的診斷結果。
+職責：集中保守排序調整語義，在掃描前嘗試把 group feed 切到偏好的
+「新貼文」排序，並回傳可保存到 scan metadata 的診斷結果。
 """
 
 from __future__ import annotations

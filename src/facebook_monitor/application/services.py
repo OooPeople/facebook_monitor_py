@@ -304,12 +304,12 @@ class TargetApplicationService:
         return self.monitoring_commands.update_target_status(request)
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """對齊 userscript「開始」：清 seen scope、啟用並要求立即掃描。"""
+        """執行 target「開始」語義：清 seen scope、啟用並要求立即掃描。"""
 
         return self.monitoring_commands.restart_target_monitoring(target_id)
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """對齊 userscript「停止」：停止排程但保留 seen/history。"""
+        """執行 target「停止」語義：停止排程但保留 seen/history。"""
 
         return self.monitoring_commands.pause_target_monitoring(target_id)
 

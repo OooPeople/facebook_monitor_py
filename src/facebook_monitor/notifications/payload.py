@@ -1,7 +1,7 @@
 """通知 payload 組裝邏輯。
 
-職責：集中建立本機 worker 要送出的通知標題與內容，格式參考 userscript
-的 remote notification 欄位。
+職責：集中建立本機 worker 要送出的通知標題與內容，維持遠端通知欄位
+的穩定格式。
 """
 
 from __future__ import annotations

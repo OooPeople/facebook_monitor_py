@@ -14,6 +14,7 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
@@ -115,6 +116,28 @@ class FakePage:
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         """模擬捲動等待。"""
+
+
+class UnconfirmedSortFakePage(FakePage):
+    """模擬 auto_adjust_sort 未能確認切到新貼文。"""
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """排序未確認時不應繼續呼叫 extractor。"""
+
+        if "preferredLabel" in script and "sort_control_not_found" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": True,
+                "changed": False,
+                "preferredLabel": "新貼文",
+                "beforeLabel": "最相關",
+                "afterLabel": "最相關",
+                "reason": "sort_update_unconfirmed",
+                "mutationSuppressionMs": 3200,
+                "mutationSuppressionReason": "auto_adjust_sort",
+                "menuCandidateTexts": ["最相關", "新貼文"],
+            }
+        raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
 class GrowingFakePage(FakePage):
@@ -393,7 +416,7 @@ def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
 def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
     tmp_path: Path,
 ) -> None:
-    """target_count 較高時對齊 userscript，以動態視窗上限補足掃描。"""
+    """target_count 較高時以動態視窗上限補足掃描。"""
 
     db_path = tmp_path / "app.db"
     fake_page = GrowingFakePage(total_items=10, visible_count=1, grow_by=2)
@@ -582,6 +605,73 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
         }
 
 
+def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -> None:
+    """auto_adjust_sort 未確認新貼文排序時不污染 seen/history/latest/notification。"""
+
+    db_path = tmp_path / "app.db"
+    page = UnconfirmedSortFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    auto_adjust_sort=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.POST,
+                    item_key="previous-post",
+                    item_index=0,
+                    author="舊作者",
+                    text="上一輪貼文",
+                    permalink="https://www.facebook.com/groups/222518561920110/posts/prev",
+                )
+            ],
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+
+    assert page.sort_adjusted
+    assert summary.item_count == 0
+    assert summary.new_count == 0
+    assert summary.matched_count == 0
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 0
+    assert latest_scan.matched_count == 0
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == "sort_adjust_unconfirmed"
+    assert latest_scan.metadata["stop_reason"] == "sort_adjust_unconfirmed_skip"
+    assert latest_scan.metadata["sort_adjust"]["after_label"] == "最相關"
+    assert latest_scan.metadata["sort_adjust"]["preferred_label"] == "新貼文"
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
+
+
 def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
     """啟用 ntfy 時，新命中的貼文會送通知並記錄 notification event。"""
 
@@ -696,7 +786,7 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
 def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
     tmp_path: Path,
 ) -> None:
-    """ntfy 啟用但 topic 空白時對齊 userscript，記錄 skipped 而非 failed。"""
+    """ntfy 啟用但 topic 空白時記錄 skipped 而非 failed。"""
 
     db_path = tmp_path / "app.db"
     sent_payloads: list[tuple[NtfyConfig, str, str]] = []
@@ -822,8 +912,8 @@ def test_scan_posts_page_records_all_enabled_notification_channels(
         ]
 
 
-def test_scan_posts_page_supports_userscript_keyword_rules(tmp_path: Path) -> None:
-    """worker 使用 userscript 的分號 OR、空白 AND 與 exclude 規則。"""
+def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
+    """worker 使用分號 OR、空白 AND 與 exclude 規則。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:

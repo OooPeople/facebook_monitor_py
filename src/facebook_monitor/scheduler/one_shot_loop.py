@@ -15,6 +15,7 @@ from time import sleep
 from uuid import uuid4
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -39,13 +40,15 @@ class SchedulerOptions:
 
     db_path: Path
     profile_dir: Path
-    interval_seconds: float = 300
-    scheduler_tick_seconds: float = 2
-    max_concurrent_scans: int = 2
-    scroll_rounds: int = 3
-    scroll_wait_ms: int = 2500
-    scan_timeout_seconds: float = 120
-    stale_running_after_seconds: float = 180
+    interval_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.one_shot_interval_seconds
+    scheduler_tick_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds
+    max_concurrent_scans: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans
+    scroll_rounds: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds
+    scroll_wait_ms: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms
+    scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
+    stale_running_after_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds
+    )
     max_cycles: int | None = None
 
 
@@ -63,7 +66,9 @@ class SchedulerCycleSummary:
 def list_schedulable_target_ids(
     db_path: Path,
     *,
-    default_interval_seconds: float = 300,
+    default_interval_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.one_shot_interval_seconds
+    ),
     now: datetime | None = None,
 ) -> tuple[str, ...]:
     """列出目前 one-shot fallback scheduler 應該掃描的 target ids。"""

@@ -24,6 +24,7 @@ from starlette.types import Scope
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
@@ -111,8 +112,8 @@ def create_app(
     scheduler_manager: SchedulerManagerLike | None = None,
     auto_start_scheduler: bool = False,
     scheduler_interval_seconds: float = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
-    scheduler_tick_seconds: float = 2,
-    max_concurrent_scans: int = 2,
+    scheduler_tick_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds,
+    max_concurrent_scans: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans,
     reset_targets_on_startup: bool = False,
     reset_runtime_data_on_startup: bool = False,
     ntfy_sender: NtfySender = send_ntfy_notification,

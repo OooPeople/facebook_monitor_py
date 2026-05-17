@@ -183,4 +183,4 @@ notification topic 與 webhook 會在 UI 明文顯示，方便使用者確認輸
 
 ## 驗證與工具
 
-日常開發驗證與低頻 admin/debug/internal tools 看 `docs/tooling.md`。目前最近一次驗證結果看 `docs/TASK_BREAKDOWN.md#驗證`。
+日常開發驗證與低頻 admin/debug/internal tools 看 `docs/tooling.md`。最近一次驗證結果屬於本機進度筆記或 release 記錄，不放在公開使用文件。

@@ -15,9 +15,13 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
+from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
 from scripts.admin.release_artifact_validation import REQUIRED_ZIP_ENTRIES
 
 APP_DIR_NAME = "facebook-monitor"
@@ -46,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--timeout-seconds",
         type=float,
-        default=120,
+        default=PYTHON_UPDATER_RUNTIME_DEFAULTS.timeout_seconds,
         help="Maximum seconds to wait for the frozen updater process.",
     )
     return parser.parse_args()
@@ -73,7 +77,7 @@ def run_smoke(
     *,
     built_app: Path,
     smoke_root: Path,
-    timeout_seconds: float = 120,
+    timeout_seconds: float = PYTHON_UPDATER_RUNTIME_DEFAULTS.timeout_seconds,
 ) -> dict[str, object]:
     """執行 frozen updater smoke 並回傳結構化結果。"""
 

@@ -95,7 +95,7 @@ def test_extract_canonical_permalink_from_photo_gm_href() -> None:
 
 
 def test_permalink_canonicalization_matches_golden_fixture() -> None:
-    """permalink canonicalization golden fixture 鎖住 JS parity 來源語義。"""
+    """permalink canonicalization golden fixture 鎖住產品語義。"""
 
     fixture_path = Path("tests/fixtures/facebook/permalink_golden.json")
     cases = json.loads(fixture_path.read_text(encoding="utf-8"))

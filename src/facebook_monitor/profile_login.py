@@ -23,6 +23,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_PROFILE_LOGIN_DEFAULTS
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.worker.scan_orchestration import classify_facebook_session_failure
 
@@ -42,7 +43,7 @@ class GuidedLoginOptions:
 
     profile_dir: Path
     start_url: str = FACEBOOK_HOME_URL
-    poll_interval_seconds: float = 1.0
+    poll_interval_seconds: float = PYTHON_PROFILE_LOGIN_DEFAULTS.poll_interval_seconds
 
 
 def run_guided_facebook_login(
@@ -52,7 +53,10 @@ def run_guided_facebook_login(
 ) -> bool:
     """開啟 Facebook 登入視窗，偵測登入完成後自動關閉。"""
 
-    poll_interval = max(float(options.poll_interval_seconds), 0.2)
+    poll_interval = max(
+        float(options.poll_interval_seconds),
+        PYTHON_PROFILE_LOGIN_DEFAULTS.min_poll_interval_seconds,
+    )
     try:
         with acquire_profile_lease(options.profile_dir, "launcher guided login"):
             with sync_playwright() as playwright:

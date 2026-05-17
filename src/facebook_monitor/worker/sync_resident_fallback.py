@@ -24,6 +24,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
@@ -231,7 +232,11 @@ def run_sync_resident_fallback_cycle(
             prepare_sync_resident_page(
                 page=page,
                 target=resident_target.target,
-                timeout_ms=max(options.scan_timeout_seconds, 10) * 1000,
+                timeout_ms=max(
+                    options.scan_timeout_seconds,
+                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                )
+                * 1000,
             )
             with SqliteApplicationContext(options.db_path) as app:
                 selected_scan_page = (
@@ -296,13 +301,26 @@ def _open_sync_fallback_browser_context(
                     BrowserRuntimeOptions(
                         profile_dir=options.profile_dir,
                         headless=not options.headed_compat,
-                        timeout_seconds=max(options.scan_timeout_seconds, 10),
+                        timeout_seconds=max(
+                            options.scan_timeout_seconds,
+                            PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                        ),
                     ),
                 )
                 try:
-                    context.set_default_timeout(max(options.scan_timeout_seconds, 10) * 1000)
+                    context.set_default_timeout(
+                        max(
+                            options.scan_timeout_seconds,
+                            PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                        )
+                        * 1000
+                    )
                     context.set_default_navigation_timeout(
-                        max(options.scan_timeout_seconds, 10) * 1000
+                        max(
+                            options.scan_timeout_seconds,
+                            PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                        )
+                        * 1000
                     )
                     yield context
                 finally:

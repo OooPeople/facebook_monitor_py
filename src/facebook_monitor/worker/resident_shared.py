@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetDescriptor
@@ -31,14 +32,18 @@ class ResidentRuntimeOptions:
 
     db_path: Path
     profile_dir: Path
-    interval_seconds: float = 60
-    scheduler_tick_seconds: float = 2
-    max_concurrent_scans: int = 2
-    scroll_rounds: int = 3
-    scroll_wait_ms: int = 2500
-    scan_timeout_seconds: float = 120
-    stale_running_after_seconds: float = 180
-    heartbeat_interval_seconds: float = 30
+    interval_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.resident_interval_seconds
+    scheduler_tick_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds
+    max_concurrent_scans: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans
+    scroll_rounds: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds
+    scroll_wait_ms: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms
+    scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
+    stale_running_after_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds
+    )
+    heartbeat_interval_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.heartbeat_interval_seconds
+    )
     headed_compat: bool = False
     max_cycles: int | None = None
     metadata_refresh_provider: Callable[[], tuple[str, ...]] | None = None

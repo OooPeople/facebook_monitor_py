@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from facebook_monitor.webapp.diagnostics_presenter import _append_sort_block
+from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
+from facebook_monitor.webapp.diagnostics_presenter import format_scan_stop_reason
 
 
 def test_append_sort_block_shows_menu_candidate_texts_when_present() -> None:
@@ -44,3 +46,16 @@ def test_append_sort_block_hides_empty_menu_candidate_texts() -> None:
     )
 
     assert not any(line.startswith("menu_candidate_texts=") for line in lines)
+
+
+def test_sort_unconfirmed_skip_reason_is_user_readable() -> None:
+    """排序未確認的保護性跳過會顯示在本輪結果位置。"""
+
+    assert (
+        format_scan_cycle_result_reason("sort_adjust_unconfirmed_skip")
+        == "調整排序失敗，已跳過掃描"
+    )
+    assert (
+        format_scan_stop_reason("sort_adjust_unconfirmed_skip")
+        == "調整排序失敗，已跳過掃描"
+    )

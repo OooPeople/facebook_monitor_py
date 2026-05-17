@@ -14,6 +14,7 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
@@ -115,6 +116,28 @@ class FakePage:
 
     def wait_for_timeout(self, milliseconds: int) -> None:
         """模擬捲動等待。"""
+
+
+class UnconfirmedSortFakePage(FakePage):
+    """模擬 auto_adjust_sort 未能確認切到新貼文。"""
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """排序未確認時不應繼續呼叫 extractor。"""
+
+        if "preferredLabel" in script and "sort_control_not_found" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": True,
+                "changed": False,
+                "preferredLabel": "新貼文",
+                "beforeLabel": "最相關",
+                "afterLabel": "最相關",
+                "reason": "sort_update_unconfirmed",
+                "mutationSuppressionMs": 3200,
+                "mutationSuppressionReason": "auto_adjust_sort",
+                "menuCandidateTexts": ["最相關", "新貼文"],
+            }
+        raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
 class GrowingFakePage(FakePage):
@@ -580,6 +603,73 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
             "mutation_suppression_reason": "auto_adjust_sort",
             "menu_candidate_texts": [],
         }
+
+
+def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -> None:
+    """auto_adjust_sort 未確認新貼文排序時不污染 seen/history/latest/notification。"""
+
+    db_path = tmp_path / "app.db"
+    page = UnconfirmedSortFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    auto_adjust_sort=True,
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.POST,
+                    item_key="previous-post",
+                    item_index=0,
+                    author="舊作者",
+                    text="上一輪貼文",
+                    permalink="https://www.facebook.com/groups/222518561920110/posts/prev",
+                )
+            ],
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+
+    assert page.sort_adjusted
+    assert summary.item_count == 0
+    assert summary.new_count == 0
+    assert summary.matched_count == 0
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 0
+    assert latest_scan.matched_count == 0
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == "sort_adjust_unconfirmed"
+    assert latest_scan.metadata["stop_reason"] == "sort_adjust_unconfirmed_skip"
+    assert latest_scan.metadata["sort_adjust"]["after_label"] == "最相關"
+    assert latest_scan.metadata["sort_adjust"]["preferred_label"] == "新貼文"
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
 
 
 def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:

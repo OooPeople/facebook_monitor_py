@@ -389,6 +389,7 @@ def format_scan_stop_reason(value: str) -> str:
         "comment_scroll_rounds_completed": "完成留言捲動輪數",
         "comment_collection_stopped": "留言抽取流程停止",
         "comment_load_more_guard_active": "留言載入更多 guard 使用中",
+        "sort_adjust_unconfirmed_skip": "調整排序失敗，已跳過掃描",
     }
     return labels.get(value, value or "(未知)")
 
@@ -412,6 +413,7 @@ def format_scan_cycle_result_reason(value: str) -> str:
         "comment_scroll_rounds_completed": "已完成留言深度掃描",
         "comment_collection_stopped": "留言抽取流程結束",
         "comment_load_more_guard_active": "留言載入更多正在使用中",
+        "sort_adjust_unconfirmed_skip": "調整排序失敗，已跳過掃描",
     }
     return labels.get(value, value or "未知原因")
 

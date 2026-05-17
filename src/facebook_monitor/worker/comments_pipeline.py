@@ -37,6 +37,9 @@ from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
+from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
+from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,55 @@ def build_comments_scan_metadata(
     ).to_metadata()
 
 
+def build_comments_sort_unconfirmed_skip_metadata(
+    *,
+    config: TargetConfig,
+    sort_adjust_result: SortAdjustResult,
+    scroll_rounds: int,
+    requested_scroll_rounds: int,
+    scroll_wait_ms: int,
+) -> dict[str, Any]:
+    """建立留言排序未確認時的保護性跳過診斷。"""
+
+    return CommentScanMetadata(
+        worker="comments_scan",
+        collection_strategy="sort_adjust_skip",
+        comment_count=0,
+        target_count=config.max_items_per_scan,
+        candidate_count=0,
+        round_count=0,
+        requested_scroll_rounds=max(requested_scroll_rounds, 0),
+        scroll_rounds=max(scroll_rounds, 0),
+        scroll_wait_ms=max(scroll_wait_ms, 0),
+        auto_load_more=config.auto_load_more,
+        load_more_mode="skipped",
+        comment_scroll_collection_enabled=False,
+        stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        comment_sort=sort_adjust_result.to_metadata(),
+        comment_extract_rounds=(),
+        comments_meta={
+            "mode": "sort_adjust_skip",
+            "stopReason": SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        },
+    ).to_metadata() | {
+        "scan_skipped": True,
+        "skip_reason": SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
+    }
+
+
+def should_skip_scan_for_unconfirmed_sort(
+    *,
+    config: TargetConfig,
+    sort_adjust_result: SortAdjustResult,
+) -> bool:
+    """判斷 auto_adjust_sort 開啟時是否因排序未確認而跳過本輪。"""
+
+    return (
+        config.auto_adjust_sort
+        and sort_adjust_result.after_label != sort_adjust_result.preferred_label
+    )
+
+
 def scan_comments_target_page(
     *,
     page: Any,
@@ -142,6 +194,30 @@ def scan_comments_target_page(
         config=config,
         requested_scroll_rounds=scroll_rounds,
     )
+    if should_skip_scan_for_unconfirmed_sort(
+        config=config,
+        sort_adjust_result=sort_adjust_result,
+    ):
+        finalize_result = record_skipped_scan(
+            app=app,
+            target=target,
+            metadata=build_comments_sort_unconfirmed_skip_metadata(
+                config=config,
+                sort_adjust_result=sort_adjust_result,
+                scroll_rounds=effective_scroll_rounds,
+                requested_scroll_rounds=scroll_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+            ),
+        )
+        return CommentsScanSummary(
+            target_id=target.id,
+            url=str(page.url),
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=finalize_result.scan_run_id,
+            round_stats=(),
+        )
     items, round_stats, collection_meta = collect_comment_items_with_diagnostics(
         page=page,
         group_id=target.group_id,
@@ -197,6 +273,30 @@ async def scan_comments_target_page_async(
         config=config,
         requested_scroll_rounds=scroll_rounds,
     )
+    if should_skip_scan_for_unconfirmed_sort(
+        config=config,
+        sort_adjust_result=sort_adjust_result,
+    ):
+        finalize_result = record_skipped_scan(
+            app=app,
+            target=target,
+            metadata=build_comments_sort_unconfirmed_skip_metadata(
+                config=config,
+                sort_adjust_result=sort_adjust_result,
+                scroll_rounds=effective_scroll_rounds,
+                requested_scroll_rounds=scroll_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+            ),
+        )
+        return CommentsScanSummary(
+            target_id=target.id,
+            url=str(page.url),
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=finalize_result.scan_run_id,
+            round_stats=(),
+        )
     items, round_stats, collection_meta = await collect_comment_items_with_diagnostics_async(
         page=page,
         group_id=target.group_id,

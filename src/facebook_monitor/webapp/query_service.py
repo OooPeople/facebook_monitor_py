@@ -13,6 +13,7 @@ from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
@@ -476,7 +477,7 @@ def list_hit_record_preview_rows(
     db_path: Path,
     target_id: str,
     *,
-    limit: int = 5,
+    limit: int = PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_preview_limit,
     session_started_at: datetime | None = None,
 ) -> tuple[HitRecordPreviewRow, ...]:
     """讀取單一 target 的命中紀錄 preview rows。"""
@@ -500,7 +501,7 @@ def list_full_hit_record_rows(
     db_path: Path,
     target_id: str,
     *,
-    limit: int = 50,
+    limit: int = PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_full_limit,
     offset: int = 0,
 ) -> tuple[FullHitRecordRow, ...]:
     """讀取單一 target 的完整命中紀錄 rows。"""

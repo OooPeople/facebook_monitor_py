@@ -826,11 +826,10 @@ def test_sidebar_placement_strategy_stays_lazy_without_repository_backfill_helpe
         "src/facebook_monitor/persistence/repositories/sidebar_layout.py"
     ).read_text(encoding="utf-8")
     architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
-    handoff = Path("docs/HANDOFF.md").read_text(encoding="utf-8")
 
     assert "ensure_default_placements" not in repository
     assert "不得為缺失 placement 寫入 DB" in architecture
-    assert "缺失 placement 只能作為未分組顯示" in handoff
+    assert "缺失 placement 採 lazy fallback 顯示在未分組區" in architecture
 
 
 def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> None:
@@ -941,8 +940,8 @@ def test_keyword_ignore_phrase_help_uses_short_examples_without_footer_note() ->
     assert ".keyword-help-body ul" in modals_css
 
 
-def test_include_keyword_help_matches_userscript_keyword_rule_copy() -> None:
-    """包含關鍵字說明沿用 userscript 的分號 OR / 空格 AND 語義。"""
+def test_include_keyword_help_matches_keyword_rule_copy() -> None:
+    """包含關鍵字說明維持分號 OR / 空格 AND 語義。"""
 
     card_template = Path(
         "src/facebook_monitor/webapp/templates/_target_card.html"

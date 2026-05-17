@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.facebook.group_metadata import GroupMetadata
@@ -119,8 +120,20 @@ def build_scheduler_options(request: Request) -> SchedulerSessionOptions:
                 DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
             )
         ),
-        scheduler_tick_seconds=float(getattr(request.app.state, "scheduler_tick_seconds", 2)),
-        max_concurrent_scans=int(getattr(request.app.state, "max_concurrent_scans", 2)),
+        scheduler_tick_seconds=float(
+            getattr(
+                request.app.state,
+                "scheduler_tick_seconds",
+                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds,
+            )
+        ),
+        max_concurrent_scans=int(
+            getattr(
+                request.app.state,
+                "max_concurrent_scans",
+                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans,
+            )
+        ),
     )
 
 

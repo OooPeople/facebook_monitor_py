@@ -1,7 +1,7 @@
 """Facebook 文字清理 helper。
 
-職責：保存 userscript 已成熟的重複文字折疊語義，供 extractor 與通知 payload
-共用，避免同一段 DOM 文字被 Facebook 重複輸出時造成通知內容重複。
+職責：保存重複文字折疊語義，供 extractor 與通知 payload 共用，
+避免同一段 DOM 文字被 Facebook 重複輸出時造成通知內容重複。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ def normalize_text(value: object) -> str:
 
 
 def collapse_repeated_adjacent_text(value: object) -> str:
-    """移除整段相鄰重複文字，對齊 userscript 的留言文字清理語義。"""
+    """移除整段相鄰重複文字，保留留言文字清理語義。"""
 
     text = normalize_text(value)
     if not text:

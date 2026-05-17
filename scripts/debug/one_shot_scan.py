@@ -13,12 +13,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
-from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import default_runtime_paths
 from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
+from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
+from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
@@ -41,9 +42,21 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Facebook group id to scan. Useful when multiple group targets are saved.",
     )
-    parser.add_argument("--scroll-rounds", type=int, default=3)
-    parser.add_argument("--scroll-wait-ms", type=int, default=2500)
-    parser.add_argument("--scan-timeout-seconds", type=float, default=120)
+    parser.add_argument(
+        "--scroll-rounds",
+        type=int,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds,
+    )
+    parser.add_argument(
+        "--scroll-wait-ms",
+        type=int,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms,
+    )
+    parser.add_argument(
+        "--scan-timeout-seconds",
+        type=float,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds,
+    )
     parser.add_argument("--headed-compat", action="store_true", help="Run with a visible browser window.")
     return parser.parse_args()
 

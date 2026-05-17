@@ -73,7 +73,7 @@ def build_scan_metadata(
     round_stats: list[ExtractRoundStats],
     collection_meta: ExtractCollectionMeta,
 ) -> dict[str, Any]:
-    """整理單輪掃描診斷資料，對齊 userscript latestScan 摘要語義。"""
+    """整理單輪掃描診斷資料，維持 latest scan 摘要語義。"""
 
     normalized_rounds: list[PostScanRoundMetadata] = []
     for stat in round_stats:

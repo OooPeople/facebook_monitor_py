@@ -1,14 +1,14 @@
 # 架構說明
 
-本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`；目前狀態與驗證看 `docs/TASK_BREAKDOWN.md`；新對話接手看 `docs/HANDOFF.md`。
+本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`。本機進度與交接筆記屬於 `docs/local/`，不追蹤到 GitHub。
 
 ## 核心原則
 
-- JS userscript 是功能語義來源，不是逐行翻譯來源。
-- Python 版可以重新分層與命名，但 target/scope、config、seen、notification、sort、load-more、diagnostics 等語義必須對齊 JS 成熟版本。
+- Python 版是目前正式維護主體；target/scope、config、seen、notification、sort、load-more、diagnostics 等語義以本 repo 的 domain、application、worker 與 Web UI 契約為準。
+- 原始 userscript repo 只作為歷史背景與必要時的行為追溯來源，不是日常開發的本地 reference。
 - Web UI 是正式日常入口；scheduler 是 Web UI 背後的背景服務，不是使用者第二個主開關。
 - async resident worker 是正式產品主路徑；one-shot 與 sync resident worker 僅作 fallback / debug tooling。
-- 新功能若涉及 JS 已有成熟行為，先對照 `docs/REFERENCE_MAP.md` 指向的 userscript，再實作 Python 版。
+- 新功能優先沿用 Python 版既有模組邊界、資料模型、diagnostics 與測試契約；若刻意改變既有產品語義，需在 handoff 中說明原因與風險。
 
 ## 正式入口與本機邊界
 
@@ -145,5 +145,5 @@
 - `loadMoreMode=wheel`
 - `phase_offset_sec`
 - one-shot scheduler queue 化
-- fallback/debug path comments parity
+- fallback/debug path comments feature completeness
 - DOM script 片段內部更細粒度 helper 測試與再拆分

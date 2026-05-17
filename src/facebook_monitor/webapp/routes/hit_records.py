@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
 
+from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.query_service import clear_hit_records
@@ -37,7 +38,11 @@ def register_hit_record_routes(app: FastAPI) -> None:
     async def hit_record_preview(
         request: Request,
         target_id: str,
-        limit: int = Query(default=5, ge=1, le=20),
+        limit: int = Query(
+            default=PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_preview_limit,
+            ge=1,
+            le=PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_preview_max_limit,
+        ),
     ) -> dict[str, object]:
         """回傳右側 preview tab 使用的本次 session 命中紀錄。"""
 
@@ -82,7 +87,11 @@ def register_hit_record_routes(app: FastAPI) -> None:
     async def hit_record_list(
         request: Request,
         target_id: str,
-        limit: int = Query(default=50, ge=1, le=200),
+        limit: int = Query(
+            default=PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_full_limit,
+            ge=1,
+            le=PYTHON_WEBUI_RUNTIME_DEFAULTS.hit_record_full_max_limit,
+        ),
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         """回傳完整查看紀錄 modal 使用的持久詳細列表。"""

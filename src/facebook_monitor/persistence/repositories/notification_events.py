@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
@@ -67,7 +68,11 @@ class NotificationEventRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def list_by_target(self, target_id: str, limit: int = 50) -> list[NotificationEvent]:
+    def list_by_target(
+        self,
+        target_id: str,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[NotificationEvent]:
         """依 target id 查詢最近 notification events。"""
 
         rows = self.connection.execute(

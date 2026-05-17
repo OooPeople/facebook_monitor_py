@@ -59,7 +59,7 @@ def test_aliases_overlap_when_permalink_disappears_but_author_text_remain() -> N
 
 
 def test_comment_key_uses_comment_id_before_permalink_and_fallback() -> None:
-    """comments item key 對齊 JS：commentId 優先，再退回 permalink / parent composite。"""
+    """comments item key 使用 commentId 優先，再退回 permalink / parent composite。"""
 
     identity = ScanItemIdentity(
         item_kind="comment",

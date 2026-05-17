@@ -136,7 +136,7 @@ def detect_group_comments_route(
 
 
 def extract_group_post_route_id_from_parsed_url(parsed_url: object, expected_group_id: str) -> str:
-    """對齊 userscript 的 group post route id 抽取規則，供 comments D1 建 target。"""
+    """抽取 group post route id，供 comments target 建立流程使用。"""
 
     path = getattr(parsed_url, "path", "").rstrip("/")
     group_post_match = re.match(r"^/groups/([^/?#]+)/posts?/(?:pcb\.)?(\d+)$", path, re.I)

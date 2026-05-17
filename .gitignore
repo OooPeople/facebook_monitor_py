@@ -12,6 +12,9 @@
 /logs/*
 !/logs/.gitkeep
 
+# Local planning / agent handoff notes
+/docs/local/
+
 # Python
 __pycache__/
 .codex/

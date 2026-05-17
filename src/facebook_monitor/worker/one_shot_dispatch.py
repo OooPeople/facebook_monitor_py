@@ -22,6 +22,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.worker.errors import WorkerFailure
@@ -42,10 +43,10 @@ class OneShotScanOptions:
     db_path: Path
     target_id: str = ""
     group_id: str = ""
-    scroll_rounds: int = 3
-    scroll_wait_ms: int = 2500
+    scroll_rounds: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds
+    scroll_wait_ms: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms
     headed_compat: bool = False
-    scan_timeout_seconds: float = 120
+    scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
 
 
 def select_one_shot_target(app: ApplicationContext, target_id: str, group_id: str) -> TargetDescriptor:
@@ -123,7 +124,10 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
 
     target: TargetDescriptor | None = None
     started_at = monotonic()
-    effective_scan_timeout_seconds = max(options.scan_timeout_seconds, 10)
+    effective_scan_timeout_seconds = max(
+        options.scan_timeout_seconds,
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+    )
     scan_timeout_ms = effective_scan_timeout_seconds * 1000
 
     def remaining_timeout_ms() -> float:

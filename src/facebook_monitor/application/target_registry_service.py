@@ -302,7 +302,7 @@ class TargetRegistryService:
 
 
 def clean_facebook_group_name(value: str) -> str:
-    """清理準備保存的 Facebook 社團名稱，對齊 userscript 取得名稱階段。"""
+    """清理準備保存的 Facebook 社團名稱。"""
 
     return clean_facebook_page_title(value)
 

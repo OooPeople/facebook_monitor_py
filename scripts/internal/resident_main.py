@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import default_runtime_paths
 from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
@@ -31,13 +32,41 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Run the resident main worker.")
     add_runtime_path_arguments(parser, include_unsafe_profile_dir=True)
-    parser.add_argument("--interval-seconds", type=float, default=60)
-    parser.add_argument("--scheduler-tick-seconds", type=float, default=2)
-    parser.add_argument("--max-concurrent-scans", type=int, default=2)
-    parser.add_argument("--scroll-rounds", type=int, default=3)
-    parser.add_argument("--scroll-wait-ms", type=int, default=2500)
-    parser.add_argument("--scan-timeout-seconds", type=float, default=120)
-    parser.add_argument("--stale-running-after-seconds", type=float, default=180)
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.resident_interval_seconds,
+    )
+    parser.add_argument(
+        "--scheduler-tick-seconds",
+        type=float,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds,
+    )
+    parser.add_argument(
+        "--max-concurrent-scans",
+        type=int,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans,
+    )
+    parser.add_argument(
+        "--scroll-rounds",
+        type=int,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds,
+    )
+    parser.add_argument(
+        "--scroll-wait-ms",
+        type=int,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms,
+    )
+    parser.add_argument(
+        "--scan-timeout-seconds",
+        type=float,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds,
+    )
+    parser.add_argument(
+        "--stale-running-after-seconds",
+        type=float,
+        default=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds,
+    )
     parser.add_argument(
         "--headed-compat",
         action="store_true",

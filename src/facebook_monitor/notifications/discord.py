@@ -97,7 +97,7 @@ def send_discord_notification(
 
 
 def truncate_discord_content(value: str, limit: int = DISCORD_CONTENT_LIMIT) -> str:
-    """限制 Discord content 長度，對齊 userscript 保守上限。"""
+    """限制 Discord content 長度，套用保守上限。"""
 
     text = str(value or "")
     if len(text) <= limit:

@@ -393,7 +393,7 @@ def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
 def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
     tmp_path: Path,
 ) -> None:
-    """target_count 較高時對齊 userscript，以動態視窗上限補足掃描。"""
+    """target_count 較高時以動態視窗上限補足掃描。"""
 
     db_path = tmp_path / "app.db"
     fake_page = GrowingFakePage(total_items=10, visible_count=1, grow_by=2)
@@ -696,7 +696,7 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
 def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
     tmp_path: Path,
 ) -> None:
-    """ntfy 啟用但 topic 空白時對齊 userscript，記錄 skipped 而非 failed。"""
+    """ntfy 啟用但 topic 空白時記錄 skipped 而非 failed。"""
 
     db_path = tmp_path / "app.db"
     sent_payloads: list[tuple[NtfyConfig, str, str]] = []
@@ -822,8 +822,8 @@ def test_scan_posts_page_records_all_enabled_notification_channels(
         ]
 
 
-def test_scan_posts_page_supports_userscript_keyword_rules(tmp_path: Path) -> None:
-    """worker 使用 userscript 的分號 OR、空白 AND 與 exclude 規則。"""
+def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
+    """worker 使用分號 OR、空白 AND 與 exclude 規則。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:

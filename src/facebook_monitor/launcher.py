@@ -26,6 +26,7 @@ import uvicorn.server
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.profile_login import GuidedLoginError
 from facebook_monitor.profile_login import GuidedLoginOptions
@@ -50,14 +51,14 @@ from facebook_monitor.version import APP_NAME
 from facebook_monitor.webapp.app import create_app
 
 logger = logging.getLogger(__name__)
-DEFAULT_WEBUI_PORT = 4818
+DEFAULT_WEBUI_PORT = PYTHON_WEBUI_RUNTIME_DEFAULTS.port
 
 
 def build_parser() -> argparse.ArgumentParser:
     """建立 Web UI launcher CLI parser。"""
 
     parser = argparse.ArgumentParser(description="Run the local Facebook Monitor Web UI.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default=PYTHON_WEBUI_RUNTIME_DEFAULTS.host)
     parser.add_argument(
         "--port",
         type=int,
@@ -123,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--graceful-shutdown-timeout-seconds",
         type=int,
-        default=5,
+        default=PYTHON_WEBUI_RUNTIME_DEFAULTS.graceful_shutdown_timeout_seconds,
         help=(
             "Maximum seconds uvicorn waits for long-lived dashboard connections such as SSE "
             "when CTRL+C shuts down the local Web UI."

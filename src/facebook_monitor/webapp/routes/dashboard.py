@@ -12,6 +12,7 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
@@ -130,9 +131,13 @@ def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[s
 async def _dashboard_revision_event_stream(
     request: Request,
     *,
-    poll_interval_seconds: float = 1.0,
-    keepalive_seconds: float = 20.0,
-    max_connection_seconds: float = 1.2,
+    poll_interval_seconds: float = (
+        PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_poll_interval_seconds
+    ),
+    keepalive_seconds: float = PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_keepalive_seconds,
+    max_connection_seconds: float = (
+        PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_max_connection_seconds
+    ),
 ) -> AsyncIterator[str]:
     """短生命週期輸出 dashboard revision SSE event，避免 shutdown 被長連線拖住。"""
 

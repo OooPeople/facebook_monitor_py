@@ -36,7 +36,7 @@ def test_parse_keyword_input_uses_semicolon_or_and_space_and() -> None:
 
 
 def test_parse_keyword_values_keeps_existing_storage_shape() -> None:
-    """已保存 tuple 可逐項轉成 userscript 規則。"""
+    """已保存 tuple 可逐項轉成 keyword 規則。"""
 
     rules = parse_keyword_values(("票,不應拆逗號", "讓票;交換"))
 

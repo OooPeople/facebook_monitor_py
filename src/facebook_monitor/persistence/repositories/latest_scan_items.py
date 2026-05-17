@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import replace
 
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.keyword_rules import format_keyword_rules
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.core.models import LatestScanItem
@@ -67,7 +68,11 @@ class LatestScanItemRepository:
             ],
         )
 
-    def list_by_target(self, target_id: str, limit: int = 50) -> list[LatestScanItem]:
+    def list_by_target(
+        self,
+        target_id: str,
+        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
+    ) -> list[LatestScanItem]:
         """依 target id 查詢最近一輪掃描到的貼文候選。"""
 
         rows = self.connection.execute(
@@ -85,7 +90,7 @@ class LatestScanItemRepository:
         self,
         target_ids: list[str],
         *,
-        limit_per_target: int = 50,
+        limit_per_target: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit_per_target,
     ) -> dict[str, list[LatestScanItem]]:
         """一次查詢多個 target 的最近掃描項目。"""
 

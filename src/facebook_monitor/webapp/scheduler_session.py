@@ -16,6 +16,7 @@ from threading import RLock
 from threading import Thread
 from typing import Protocol
 
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -52,13 +53,15 @@ class SchedulerSessionOptions:
 
     db_path: Path
     profile_dir: Path
-    interval_seconds: float = 60
-    scheduler_tick_seconds: float = 2
-    max_concurrent_scans: int = 2
-    scroll_rounds: int = 3
-    scroll_wait_ms: int = 2500
-    scan_timeout_seconds: float = 120
-    stale_running_after_seconds: float = 180
+    interval_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.resident_interval_seconds
+    scheduler_tick_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds
+    max_concurrent_scans: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans
+    scroll_rounds: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_rounds
+    scroll_wait_ms: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms
+    scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
+    stale_running_after_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds
+    )
 
 
 @dataclass(frozen=True)

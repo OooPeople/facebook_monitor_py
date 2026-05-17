@@ -7,7 +7,7 @@ MAX_TARGET_POSTS = 10
 
 
 def clamp_target_post_count(value: int | float | str | None, default: int = 5) -> int:
-    """對齊 userscript，限制單輪目標項目數在安全範圍內。"""
+    """限制單輪目標項目數在安全範圍內。"""
 
     try:
         numeric_value = int(float(value)) if value is not None else int(default)

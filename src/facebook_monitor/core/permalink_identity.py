@@ -109,7 +109,7 @@ def _extract_photo_route_group_id(parsed_url: Any, expected_group_id: str = "") 
 
 
 def extract_canonical_permalink_from_href(value: str, expected_group_id: str = "") -> str:
-    """依 JS 版 permalink 規則，把 Facebook href 變體正規化為 canonical URL。"""
+    """依產品 permalink 規則，把 Facebook href 變體正規化為 canonical URL。"""
 
     parsed = normalize_facebook_url(value)
     if parsed is None:

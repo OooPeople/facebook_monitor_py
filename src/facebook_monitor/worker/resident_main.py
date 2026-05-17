@@ -2,7 +2,7 @@
 
 職責：正式產品主路徑，負責 Playwright persistent context 生命週期與
 producer-only scheduler tick 接線；queue、page pool 與 executor worker pool
-分別由專門模組承擔。fallback/debug parity 不應反向牽動此主路徑。
+分別由專門模組承擔。fallback/debug path 不應反向牽動此主路徑。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -42,7 +43,9 @@ logger = logging.getLogger(__name__)
 AsyncSleepCallable = Callable[[float], Awaitable[None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
-METADATA_REFRESH_TARGET_LIMIT_PER_TICK = 1
+METADATA_REFRESH_TARGET_LIMIT_PER_TICK = (
+    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.metadata_refresh_target_limit_per_tick
+)
 
 
 def _is_playwright_driver_shutdown_exception(exc: object) -> bool:
@@ -117,15 +120,26 @@ async def run_resident_main_loop(
                         BrowserRuntimeOptions(
                             profile_dir=options.profile_dir,
                             headless=not options.headed_compat,
-                            timeout_seconds=max(options.scan_timeout_seconds, 10),
+                            timeout_seconds=max(
+                                options.scan_timeout_seconds,
+                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                            ),
                         ),
                     )
                     try:
                         browser_context.set_default_timeout(
-                            max(options.scan_timeout_seconds, 10) * 1000
+                            max(
+                                options.scan_timeout_seconds,
+                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                            )
+                            * 1000
                         )
                         browser_context.set_default_navigation_timeout(
-                            max(options.scan_timeout_seconds, 10) * 1000
+                            max(
+                                options.scan_timeout_seconds,
+                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                            )
+                            * 1000
                         )
                         page_pool = AsyncResidentPagePool(browser_context)
                         executor = ExecutorWorkerPool(

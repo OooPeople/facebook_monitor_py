@@ -7,7 +7,7 @@ from facebook_monitor.notifications.payload import build_compact_notification_bo
 from facebook_monitor.notifications.payload import build_match_notification_payload
 
 
-def test_build_match_notification_payload_uses_userscript_remote_lines() -> None:
+def test_build_match_notification_payload_uses_remote_lines() -> None:
     """命中通知會包含社團、類型、作者、關鍵字、內容與連結。"""
 
     title, message = build_match_notification_payload(
@@ -72,7 +72,7 @@ def test_build_comment_notification_payload_collapses_repeated_text() -> None:
 
 
 def test_build_compact_notification_body_uses_single_line_segments() -> None:
-    """桌面通知 body 對齊 userscript compact notification 語義。"""
+    """桌面通知 body 維持 compact notification 語義。"""
 
     body = build_compact_notification_body(
         MatchNotificationFields(

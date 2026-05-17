@@ -1,7 +1,7 @@
 """Facebook permalink normalization helpers。
 
-職責：移植 userscript 中成熟的 canonical permalink 語義，提供 posts/comments
-extractor 共用的 URL 正規化與來源判斷。此模組不依賴 Playwright 或 DOM。
+職責：集中 canonical permalink 語義，提供 posts/comments extractor 共用的
+URL 正規化與來源判斷。此模組不依賴 Playwright 或 DOM。
 """
 
 from __future__ import annotations
@@ -188,7 +188,7 @@ def extract_canonical_permalink_from_href(
     value: str,
     expected_group_id: str = "",
 ) -> PermalinkDetails:
-    """依 JS 版 permalink 規則，把 Facebook href 變體正規化為 canonical URL。"""
+    """依產品 permalink 規則，把 Facebook href 變體正規化為 canonical URL。"""
 
     parsed = normalize_facebook_url(value)
     if parsed is None:

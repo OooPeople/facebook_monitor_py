@@ -35,8 +35,8 @@ from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_logged_in
-from facebook_monitor.worker.scan_orchestration import ensure_sync_page_logged_in
+from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
+from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
 from facebook_monitor.worker.scan_metadata import PostScanMetadata
 from facebook_monitor.worker.scan_metadata import PostScanRoundMetadata
@@ -209,7 +209,7 @@ def scan_posts_page(
 ) -> PostsScanSummary:
     """掃描目前 page，並把結果寫入 application context。"""
 
-    ensure_sync_page_logged_in(page)
+    ensure_sync_page_scannable(page)
 
     sort_adjust_result = ensure_preferred_feed_sort(
         page,
@@ -292,7 +292,7 @@ async def scan_posts_page_async(
 ) -> PostsScanSummary:
     """resident main worker 掃描目前 page，並寫入 application context。"""
 
-    await ensure_async_page_logged_in(page)
+    await ensure_async_page_scannable(page)
 
     sort_adjust_result = await ensure_preferred_feed_sort_async(
         page,

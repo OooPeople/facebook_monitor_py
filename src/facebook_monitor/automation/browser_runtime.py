@@ -138,6 +138,35 @@ def _bundled_browser_executable_path() -> Path | None:
         app_base_dir / "_internal" / "browser" / "chrome.exe",
         app_base_dir / "browser" / "chrome-win64" / "chrome.exe",
         app_base_dir / "_internal" / "browser" / "chrome-win64" / "chrome.exe",
+        app_base_dir / "browser" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+        (
+            app_base_dir
+            / "_internal"
+            / "browser"
+            / "Chromium.app"
+            / "Contents"
+            / "MacOS"
+            / "Chromium"
+        ),
+        (
+            app_base_dir
+            / "browser"
+            / "chrome-mac"
+            / "Chromium.app"
+            / "Contents"
+            / "MacOS"
+            / "Chromium"
+        ),
+        (
+            app_base_dir
+            / "_internal"
+            / "browser"
+            / "chrome-mac"
+            / "Chromium.app"
+            / "Contents"
+            / "MacOS"
+            / "Chromium"
+        ),
     )
     for candidate in candidates:
         if candidate.is_file():

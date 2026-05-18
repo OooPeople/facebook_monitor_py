@@ -21,6 +21,7 @@ from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
@@ -28,6 +29,78 @@ from facebook_monitor.webapp.notification_presenters import format_notification_
 PENDING_TARGET_DISPLAY_NAME = "抓取社團名稱中，請稍後"
 FAILED_TARGET_DISPLAY_NAME = "無法自動抓取名稱，請手動更改名稱"
 EMPTY_INCLUDE_KEYWORDS_LABEL = "目前沒有關鍵字"
+CONTENT_UNAVAILABLE_LABEL = "連結已失效"
+CONTENT_UNAVAILABLE_TITLE = "Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+CONTENT_UNAVAILABLE_ERROR_MESSAGE = (
+    "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+)
+CONTENT_UNAVAILABLE_HISTORY_MESSAGE = (
+    "曾偵測到連結失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+)
+
+
+def is_content_unavailable_scan(scan: ScanRun | None) -> bool:
+    """判斷 failed scan 是否代表 Facebook 內容不可見。"""
+
+    if scan is None:
+        return False
+    metadata = scan.metadata or {}
+    return (
+        metadata.get("reason") == CONTENT_UNAVAILABLE_REASON
+        or scan.error_message.startswith(f"{CONTENT_UNAVAILABLE_REASON}:")
+    )
+
+
+def is_content_unavailable_runtime_error(value: str) -> bool:
+    """判斷 runtime error 是否代表 Facebook 內容不可見。"""
+
+    return value.startswith(f"{CONTENT_UNAVAILABLE_REASON}:")
+
+
+def format_latest_error_indicator_label(
+    scan: ScanRun | None,
+    *,
+    content_unavailable_current: bool | None = None,
+) -> str:
+    """回傳 target header 使用的最近錯誤短標籤。"""
+
+    if scan is None:
+        return ""
+    current = (
+        is_content_unavailable_scan(scan)
+        if content_unavailable_current is None
+        else content_unavailable_current
+    )
+    if current:
+        return CONTENT_UNAVAILABLE_LABEL
+    return "最近有錯誤"
+
+
+def format_latest_error_indicator_title(
+    scan: ScanRun | None,
+    *,
+    content_unavailable_current: bool | None = None,
+) -> str:
+    """回傳 target header 最近錯誤的 hover 說明。"""
+
+    if scan is None:
+        return ""
+    current = (
+        is_content_unavailable_scan(scan)
+        if content_unavailable_current is None
+        else content_unavailable_current
+    )
+    if current:
+        return CONTENT_UNAVAILABLE_TITLE
+    return scan.error_message
+
+
+def format_runtime_error_message(value: str) -> str:
+    """把 runtime error 轉成使用者可讀訊息，保留未知錯誤原文。"""
+
+    if is_content_unavailable_runtime_error(value):
+        return CONTENT_UNAVAILABLE_ERROR_MESSAGE
+    return value
 
 
 @dataclass(frozen=True)
@@ -83,6 +156,9 @@ class TargetCardSummary:
     def sections(self) -> tuple[TargetCardSummarySection, ...]:
         """回傳收合卡片使用的欄位式摘要。"""
 
+        scan_lines = [self.latest_scan_label]
+        if self.latest_error_summary:
+            scan_lines.append(self.latest_error_summary)
         return (
             TargetCardSummarySection(
                 icon_key="keyword",
@@ -100,7 +176,7 @@ class TargetCardSummary:
             TargetCardSummarySection(
                 icon_key="scan",
                 label="最近掃描",
-                lines=(self.latest_scan_label,),
+                lines=tuple(scan_lines),
             ),
             TargetCardSummarySection(
                 icon_key="hit",
@@ -335,6 +411,7 @@ class TargetCardSummaryPresenter:
     latest_failed_scan_run: ScanRun | None
     hit_record_total_count: int
     latest_notification_event: NotificationEvent | None = None
+    content_unavailable_current: bool = False
 
     @property
     def latest_scan_label(self) -> str:
@@ -350,6 +427,16 @@ class TargetCardSummaryPresenter:
 
         if not self.latest_failed_scan_run:
             return ""
+        if (
+            is_content_unavailable_scan(self.latest_failed_scan_run)
+            and self.content_unavailable_current
+        ):
+            return CONTENT_UNAVAILABLE_LABEL
+        if is_content_unavailable_scan(self.latest_failed_scan_run):
+            return (
+                f"{format_datetime_for_ui(self.latest_failed_scan_run.finished_at)} · "
+                f"{CONTENT_UNAVAILABLE_HISTORY_MESSAGE}"
+            )
         failed = self.latest_failed_scan_run
         return f"{format_datetime_for_ui(failed.finished_at)} · {failed.error_message}"
 

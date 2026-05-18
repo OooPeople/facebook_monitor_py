@@ -83,6 +83,7 @@ def list_schedulable_target_ids(
             if runtime_state.desired_state != TargetDesiredState.ACTIVE:
                 continue
             if runtime_state.runtime_status in {
+                TargetRuntimeStatus.ERROR,
                 TargetRuntimeStatus.QUEUED,
                 TargetRuntimeStatus.RUNNING,
             }:

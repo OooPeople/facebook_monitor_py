@@ -1,4 +1,4 @@
-"""Admin tool：驗證 Windows release artifact 一致性。"""
+"""Admin tool：驗證 release artifact 一致性。"""
 
 # ruff: noqa: E402
 
@@ -23,9 +23,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.version import APP_VERSION
+from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_SUFFIX
+from facebook_monitor.updates.artifacts import MACOS_X64_ONEDIR_SUFFIX
+from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_SUFFIX
 
 
-WINDOWS_PORTABLE_SUFFIX = "-windows-portable.zip"
 VERSION_INFO_FILE = ROOT / "packaging" / "pyinstaller" / "version_info.txt"
 MAX_ZIP_ENTRIES = 50_000
 MAX_ZIP_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
@@ -44,6 +46,33 @@ ZIP_EXE_ENTRIES = (
     "facebook-monitor/facebook-monitor.exe",
     "facebook-monitor/facebook-monitor-updater.exe",
 )
+MACOS_REQUIRED_ZIP_ENTRIES = frozenset(
+    {
+        "facebook-monitor/facebook-monitor",
+        "facebook-monitor/facebook-monitor-updater",
+    }
+)
+MACOS_EXECUTABLE_ENTRIES = (
+    "facebook-monitor/facebook-monitor",
+    "facebook-monitor/facebook-monitor-updater",
+)
+MACOS_BROWSER_ENTRY_SUFFIXES = (
+    "browser/Chromium.app/Contents/MacOS/Chromium",
+    "_internal/browser/Chromium.app/Contents/MacOS/Chromium",
+    "browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+    "_internal/browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+)
+SENSITIVE_RELEASE_PATH_PARTS = frozenset(
+    {
+        "data",
+        "profiles",
+        "logs",
+        "cookies",
+        "tokens",
+        "session",
+        "sessions",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -58,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     """解析 CLI 參數。"""
 
     parser = argparse.ArgumentParser(
-        description="Validate Windows portable release zip and SHA256 artifact."
+        description="Validate release zip and SHA256 artifact."
     )
     parser.add_argument(
         "--version",
@@ -70,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "dist",
         help="Directory containing release artifacts.",
+    )
+    parser.add_argument(
+        "--platform",
+        default="windows",
+        choices=("windows", "macos-arm64", "macos-x64"),
+        help="Artifact platform to validate.",
     )
     parser.add_argument(
         "--expected-signer-subject",
@@ -88,23 +123,28 @@ def validate_release_artifacts(
     *,
     version: str,
     dist_dir: Path,
+    platform_name: str = "windows",
     expected_signer_subject: str = "",
     expected_tag: str = "",
 ) -> ArtifactValidationResult:
-    """驗證 release zip、SHA256、version resource 與必要內容。"""
+    """驗證 release zip、SHA256、version metadata 與必要內容。"""
 
     messages: list[str] = []
-    zip_name = f"facebook-monitor-{version}{WINDOWS_PORTABLE_SUFFIX}"
+    normalized_platform = _normalize_platform_name(platform_name)
+    zip_name = f"facebook-monitor-{version}{_artifact_suffix(normalized_platform)}"
     zip_path = dist_dir / zip_name
     sha_path = zip_path.with_name(zip_path.name + ".sha256")
 
     _require_file(zip_path, messages)
     _require_file(sha_path, messages)
     _validate_expected_tag(version, expected_tag, messages)
-    _validate_version_info_file(version, messages)
-    if zip_path.is_file():
+    if normalized_platform == "windows":
+        _validate_version_info_file(version, messages)
+    if zip_path.is_file() and normalized_platform == "windows":
         _validate_zip_contents(zip_path, messages)
         _validate_zipped_exes(zip_path, version, expected_signer_subject, messages)
+    elif zip_path.is_file():
+        _validate_macos_zip_contents(zip_path, messages)
     if zip_path.is_file() and sha_path.is_file():
         _validate_sha256(zip_path, sha_path, messages)
 
@@ -112,8 +152,31 @@ def validate_release_artifacts(
         return ArtifactValidationResult(ok=False, messages=tuple(messages))
     return ArtifactValidationResult(
         ok=True,
-        messages=(f"release artifacts valid for {version}: {zip_name}",),
+        messages=(f"release artifacts valid for {version} {normalized_platform}: {zip_name}",),
     )
+
+
+def _normalize_platform_name(platform_name: str) -> str:
+    """整理 artifact platform 名稱。"""
+
+    normalized = platform_name.strip().casefold()
+    if normalized in {"windows", "win32"}:
+        return "windows"
+    if normalized in {"macos-arm64", "darwin-arm64"}:
+        return "macos-arm64"
+    if normalized in {"macos-x64", "macos-x86_64", "darwin-x64", "darwin-x86_64"}:
+        return "macos-x64"
+    raise ValueError(f"unsupported artifact platform: {platform_name}")
+
+
+def _artifact_suffix(platform_name: str) -> str:
+    """回傳 artifact platform 對應的 release 檔名 suffix。"""
+
+    if platform_name == "macos-arm64":
+        return MACOS_ARM64_ONEDIR_SUFFIX
+    if platform_name == "macos-x64":
+        return MACOS_X64_ONEDIR_SUFFIX
+    return WINDOWS_PORTABLE_SUFFIX
 
 
 def _require_file(path: Path, messages: list[str]) -> None:
@@ -168,6 +231,54 @@ def _validate_zip_contents(zip_path: Path, messages: list[str]) -> None:
         messages.append(f"zip missing required entry: {name}")
     if any(name.startswith("facebook-monitor/data/") for name in names):
         messages.append("zip must not include portable data directory")
+
+
+def _validate_macos_zip_contents(zip_path: Path, messages: list[str]) -> None:
+    """確認 macOS onedir zip 內含必要檔案且不含 runtime data。"""
+
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            names = _validated_zip_names(archive, messages)
+            infos = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
+    except zipfile.BadZipFile:
+        messages.append(f"bad zip file: {zip_path}")
+        return
+    missing = sorted(MACOS_REQUIRED_ZIP_ENTRIES - names)
+    for name in missing:
+        messages.append(f"zip missing required entry: {name}")
+    for entry in MACOS_EXECUTABLE_ENTRIES:
+        info = infos.get(entry)
+        if info is not None and not _zip_member_has_executable_bit(info):
+            messages.append(f"zip executable bit missing: {entry}")
+    browser_entries = [
+        name
+        for name in names
+        if any(name.endswith(suffix) for suffix in MACOS_BROWSER_ENTRY_SUFFIXES)
+    ]
+    if not browser_entries:
+        messages.append("zip missing required macOS Chromium executable")
+    for entry in browser_entries:
+        info = infos.get(entry)
+        if info is not None and not _zip_member_has_executable_bit(info):
+            messages.append(f"zip executable bit missing: {entry}")
+    _validate_no_sensitive_runtime_paths(names, messages)
+
+
+def _zip_member_has_executable_bit(info: zipfile.ZipInfo) -> bool:
+    """檢查 zip member 是否保留 POSIX executable bit。"""
+
+    mode = (info.external_attr >> 16) & 0o777
+    return bool(mode & 0o111)
+
+
+def _validate_no_sensitive_runtime_paths(names: set[str], messages: list[str]) -> None:
+    """避免 release artifact 夾帶 runtime data、profile 或 session 類資料。"""
+
+    for name in names:
+        path = PurePosixPath(name)
+        lower_parts = {part.casefold() for part in path.parts}
+        if SENSITIVE_RELEASE_PATH_PARTS & lower_parts:
+            messages.append(f"zip must not include runtime/private data: {name}")
 
 
 def _validate_zipped_exes(
@@ -366,6 +477,7 @@ def main() -> int:
     result = validate_release_artifacts(
         version=str(args.version),
         dist_dir=args.dist_dir.resolve(),
+        platform_name=str(args.platform),
         expected_signer_subject=str(args.expected_signer_subject),
         expected_tag=str(args.expected_tag),
     )

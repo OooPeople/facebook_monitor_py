@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 import sys
@@ -49,6 +50,15 @@ from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
 
 
+@dataclass(frozen=True)
+class UpdateCapability:
+    """描述目前 runtime 可提供的更新操作能力。"""
+
+    download_supported: bool
+    apply_supported: bool
+    unsupported_reason: str
+
+
 def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     """註冊 settings / notification / profile routes。"""
 
@@ -60,6 +70,11 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         error = request.query_params.get("error", "")
         metadata = collect_build_metadata(asset_version=ASSET_VERSION)
         paths = get_runtime_paths(request)
+        update_capability = _resolve_update_capability(
+            packaging_mode=metadata.packaging_mode,
+            frozen=metadata.frozen,
+            app_base_dir=paths.app_base_dir,
+        )
         update_check = build_idle_update_check(
             current_version=metadata.app_version,
             channel="stable",
@@ -80,11 +95,9 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "target_keyword_defaults": get_target_keyword_defaults(request),
                 "runtime_diagnostics": build_runtime_diagnostics_view(request.app.state),
                 "update_check": update_check,
-                "update_download_supported": _update_download_supported(
-                    packaging_mode=metadata.packaging_mode,
-                    frozen=metadata.frozen,
-                    app_base_dir=paths.app_base_dir,
-                ),
+                "update_download_supported": update_capability.download_supported,
+                "update_apply_supported": update_capability.apply_supported,
+                "update_unsupported_reason": update_capability.unsupported_reason,
                 "pending_update_available": pending_update_path(paths.runtime_dir).is_file(),
                 "initial_theme": get_app_theme(request),
             },
@@ -142,16 +155,18 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.post("/settings/updates/download")
     async def download_update(request: Request) -> RedirectResponse:
-        """下載並驗證 Windows portable 更新包，但不套用更新。"""
+        """下載並驗證更新包；不支援自動套用的平台只保留下載結果。"""
 
         metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        if not _update_download_supported(
+        paths = get_runtime_paths(request)
+        update_capability = _resolve_update_capability(
             packaging_mode=metadata.packaging_mode,
             frozen=metadata.frozen,
-            app_base_dir=get_runtime_paths(request).app_base_dir,
-        ):
+            app_base_dir=paths.app_base_dir,
+        )
+        if not update_capability.download_supported:
             return redirect_settings_with_error(
-                "目前執行環境不是 Windows PyInstaller 打包版，僅支援檢查更新"
+                update_capability.unsupported_reason
             )
         update_check = await check_github_release_updates(
             current_version=metadata.app_version,
@@ -160,7 +175,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         if not update_check.update_available:
             reason = update_check.failure_reason or update_check.status
             return redirect_settings_with_error(f"沒有可下載的更新：{reason}")
-        paths = get_runtime_paths(request)
         result = await download_and_verify_update(
             update_check=update_check,
             updates_dir=paths.updates_dir,
@@ -168,6 +182,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         if not result.verified:
             return redirect_settings_with_error(
                 f"更新下載或驗證失敗：{result.failure_reason}"
+            )
+        file_path = result.file_path
+        opened = reveal_in_file_manager(file_path) if file_path is not None else False
+        suffix = "，已開啟下載資料夾" if opened else ""
+        if not update_capability.apply_supported:
+            return redirect_settings_with_message(
+                "更新下載完成並已驗證；此平台目前尚不支援自動套用，"
+                f"請手動解壓新版 zip 後啟動{suffix}"
             )
         try:
             write_pending_update(
@@ -177,9 +199,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             )
         except ValueError as exc:
             return redirect_settings_with_error(f"更新交接檔建立失敗：{exc}")
-        file_path = result.file_path
-        opened = reveal_in_file_manager(file_path) if file_path is not None else False
-        suffix = "，已開啟下載資料夾" if opened else ""
         return redirect_settings_with_message(
             "更新下載完成並已驗證；已建立交接檔："
             f"{pending_update_path(paths.runtime_dir)}{suffix}"
@@ -190,15 +209,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """啟動 temp updater，讓它等待主程式退出後套用已驗證更新。"""
 
         metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        if not _update_download_supported(
+        paths = get_runtime_paths(request)
+        update_capability = _resolve_update_capability(
             packaging_mode=metadata.packaging_mode,
             frozen=metadata.frozen,
-            app_base_dir=get_runtime_paths(request).app_base_dir,
-        ):
-            return redirect_settings_with_error(
-                "目前執行環境不是 Windows PyInstaller 打包版，僅支援檢查更新"
-            )
-        paths = get_runtime_paths(request)
+            app_base_dir=paths.app_base_dir,
+        )
+        if not update_capability.apply_supported:
+            return redirect_settings_with_error(update_capability.unsupported_reason)
         result = launch_temp_updater(paths=paths)
         if not result.launched:
             return redirect_settings_with_error(f"無法啟動更新器：{result.message}")
@@ -217,15 +235,13 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
         metadata = collect_build_metadata(asset_version=ASSET_VERSION)
         paths = get_runtime_paths(request)
-        if not _update_download_supported(
+        update_capability = _resolve_update_capability(
             packaging_mode=metadata.packaging_mode,
             frozen=metadata.frozen,
             app_base_dir=paths.app_base_dir,
-        ):
-            return _update_json_error(
-                "目前執行環境不是 Windows PyInstaller 打包版，僅支援檢查更新",
-                stage="environment",
-            )
+        )
+        if not update_capability.apply_supported:
+            return _update_json_error(update_capability.unsupported_reason, stage="environment")
         update_check = await check_github_release_updates(
             current_version=metadata.app_version,
             channel="stable",
@@ -347,18 +363,65 @@ def _update_download_supported(
 ) -> bool:
     """只有 Windows frozen / PyInstaller onedir 且含 updater exe 才可套用更新。"""
 
+    return _resolve_update_capability(
+        packaging_mode=packaging_mode,
+        frozen=frozen,
+        app_base_dir=app_base_dir,
+    ).apply_supported
+
+
+def _resolve_update_capability(
+    *,
+    packaging_mode: str,
+    frozen: bool,
+    app_base_dir: object,
+) -> UpdateCapability:
+    """依 runtime 與平台決定 Web UI 可提供的更新能力。"""
+
     normalized = packaging_mode.strip().casefold()
+    packaged = frozen or normalized.startswith("pyinstaller")
+    if not packaged:
+        return UpdateCapability(
+            download_supported=False,
+            apply_supported=False,
+            unsupported_reason="Source mode 僅支援檢查更新",
+        )
     if not _is_windows():
-        return False
-    if not (frozen or normalized.startswith("pyinstaller")):
-        return False
-    return find_bundled_updater(Path(str(app_base_dir))) is not None
+        if _is_macos():
+            return UpdateCapability(
+                download_supported=True,
+                apply_supported=False,
+                unsupported_reason="macOS 目前僅支援下載並驗證更新，尚不支援自動套用",
+            )
+        return UpdateCapability(
+            download_supported=False,
+            apply_supported=False,
+            unsupported_reason="目前平台僅支援檢查更新",
+        )
+    updater_available = find_bundled_updater(Path(str(app_base_dir))) is not None
+    if not updater_available:
+        return UpdateCapability(
+            download_supported=False,
+            apply_supported=False,
+            unsupported_reason="Windows PyInstaller 打包版缺少 updater，僅支援檢查更新",
+        )
+    return UpdateCapability(
+        download_supported=True,
+        apply_supported=True,
+        unsupported_reason="",
+    )
 
 
 def _is_windows() -> bool:
     """集中平台判斷，方便測試替換。"""
 
     return sys.platform == "win32"
+
+
+def _is_macos() -> bool:
+    """集中 macOS 平台判斷，方便測試替換。"""
+
+    return sys.platform == "darwin"
 
 
 def _request_app_shutdown(request: Request) -> bool:

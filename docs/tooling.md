@@ -21,7 +21,7 @@
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
-| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 Windows portable zip、同名 `.sha256`、version metadata、必要 onedir 檔案與可選 Authenticode signer | 否 |
+| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案；Windows 可選驗證 Authenticode signer | 否 |
 | Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
 | Relogin Flow Smoke | `scripts/admin/smoke_relogin_flow.py` | Admin smoke | 使用隔離暫存資料驗證重新登入警告與 launcher login gate | 否 |
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
@@ -79,7 +79,7 @@ Release tag 前建議執行：
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts
 ```
 
-腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 會檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template 與必要 onedir 檔案。若已有正式 code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
+腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 會檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template 與必要 onedir 檔案。若已有正式 code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS onedir zip 可用 `release_artifact_validation.py --platform macos-arm64` 或 `--platform macos-x64` 做 zip / SHA256 / executable bit / 私人 runtime data 檢查；這只代表 artifact 形狀有效，不代表 macOS 自動套用 updater 已完成。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
 若這次 release 改過 `webapp/static` 或 template 入口，確認 `src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 已更新；release validation 會印出目前值，避免瀏覽器吃到舊 module graph。
 

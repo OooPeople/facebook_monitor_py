@@ -72,6 +72,30 @@ def test_list_schedulable_target_ids_skips_currently_running_target(tmp_path: Pa
     assert list_schedulable_target_ids(db_path) == (idle_target.id,)
 
 
+def test_list_schedulable_target_ids_skips_error_target(tmp_path: Path) -> None:
+    """非 retryable error target 不應被 fallback scheduler 反覆重掃。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        error_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        idle_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        app.services.targets.restart_target_monitoring(error_target.id)
+        app.services.targets.restart_target_monitoring(idle_target.id)
+        app.services.targets.mark_target_error(error_target.id, "content_unavailable")
+
+    assert list_schedulable_target_ids(db_path) == (idle_target.id,)
+
+
 def test_list_schedulable_target_ids_respects_per_target_interval(tmp_path: Path) -> None:
     """scheduler 會依 target fixed_refresh_sec 判斷是否到期。"""
 
@@ -243,6 +267,33 @@ def test_target_schedule_planner_publishes_display_due_only_when_changed(
     )
 
     assert published[-1] == (target.id, None)
+
+
+def test_target_schedule_planner_skips_error_target(tmp_path: Path) -> None:
+    """resident planner 不自動排程已進入 error 的 target。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.mark_target_error(target.id, "content_unavailable")
+
+    planner = TargetSchedulePlanner()
+
+    assert (
+        planner.list_due_targets(
+            db_path,
+            default_interval_seconds=60,
+            now=now,
+        )
+        == ()
+    )
 
 
 def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) -> None:

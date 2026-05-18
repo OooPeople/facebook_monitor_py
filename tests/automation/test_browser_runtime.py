@@ -117,6 +117,29 @@ def test_frozen_runtime_uses_bundled_browser_when_env_is_absent(
     assert kwargs["executable_path"] == str(browser_exe.resolve())
 
 
+def test_frozen_runtime_uses_bundled_macos_chromium_when_env_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS frozen onedir 可自動使用隨附 Chromium.app executable。"""
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    exe = app_dir / "facebook-monitor"
+    exe.write_text("", encoding="utf-8")
+    browser_exe = app_dir / "browser" / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
+    browser_exe.parent.mkdir(parents=True)
+    browser_exe.write_text("", encoding="utf-8")
+    monkeypatch.delenv(BROWSER_EXECUTABLE_ENV, raising=False)
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("sys.executable", str(exe))
+    options = BrowserRuntimeOptions(profile_dir=tmp_path / "profile")
+
+    kwargs = build_persistent_context_kwargs(options)
+
+    assert kwargs["executable_path"] == str(browser_exe.resolve())
+
+
 def test_missing_browser_executable_path_fails_explicitly(tmp_path: Path) -> None:
     """browser executable path 指到不存在檔案時先給明確錯誤。"""
 

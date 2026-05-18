@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from pathlib import Path
 
+import pytest
+
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
@@ -12,6 +14,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
 
 
@@ -113,6 +116,33 @@ class UnconfirmedCommentSortPage(FakeCommentsPage):
                 "menuCandidateTexts": ["最相關", "由新到舊"],
             }
         raise AssertionError("sort-unconfirmed scan should skip before extractor")
+
+
+class ContentUnavailableLocator:
+    """提供 Facebook 內容不可見頁文字。"""
+
+    def inner_text(self, timeout: int) -> str:
+        """回傳內容不可見頁文字。"""
+
+        return (
+            "目前無法查看此內容 "
+            "會發生此情況，通常是因為擁有者僅與一小群用戶分享內容、"
+            "變更了分享對象，或是刪除了內容。"
+        )
+
+
+class ContentUnavailableCommentsPage(FakeCommentsPage):
+    """模擬 parent post 已不可見的 comments target。"""
+
+    def locator(self, selector: str) -> ContentUnavailableLocator:
+        """回傳內容不可見頁 locator。"""
+
+        return ContentUnavailableLocator()
+
+    def evaluate(self, script: str, payload: object = None) -> object:
+        """內容不可見時不應進入排序或留言抽取。"""
+
+        raise AssertionError("content-unavailable scan should stop before sort")
 
 
 class FakeScrollableCommentsPage(FakeCommentsPage):
@@ -378,6 +408,42 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
     assert latest_items == []
     assert history == []
     assert notifications == []
+
+
+def test_scan_comments_target_page_raises_content_unavailable_before_sort(
+    tmp_path: Path,
+) -> None:
+    """parent post 不可見時應分類成連結失效，不應落到留言排序失敗。"""
+
+    db_path = tmp_path / "app.db"
+    page = ContentUnavailableCommentsPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=(
+                    "https://www.facebook.com/groups/222518561920110/posts/"
+                    "2187454285426518"
+                ),
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        with pytest.raises(WorkerFailure) as exc_info:
+            scan_comments_target_page(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=0,
+                scroll_wait_ms=0,
+            )
+
+    assert exc_info.value.reason == "content_unavailable"
+    assert not page.sort_adjusted
 
 
 def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notification(

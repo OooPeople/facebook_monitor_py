@@ -69,6 +69,8 @@ class TargetSchedulePlanner:
                 runtime_state = app.services.targets.ensure_runtime_state(target.id)
                 if runtime_state.desired_state != TargetDesiredState.ACTIVE:
                     continue
+                if runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
+                    continue
                 active_target_ids.add(target.id)
                 if runtime_state.runtime_status in {
                     TargetRuntimeStatus.QUEUED,

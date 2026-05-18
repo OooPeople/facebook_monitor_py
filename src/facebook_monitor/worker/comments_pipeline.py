@@ -30,8 +30,8 @@ from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_logged_in
-from facebook_monitor.worker.scan_orchestration import ensure_sync_page_logged_in
+from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
+from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
 from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata
@@ -172,7 +172,7 @@ def scan_comments_target_page(
     """掃描目前頁面可見留言，並寫入 comments latest scan state。"""
 
     ensure_comments_target(target)
-    ensure_sync_page_logged_in(page)
+    ensure_sync_page_scannable(page)
 
     sort_adjust_result = ensure_preferred_comment_sort(
         page,
@@ -251,7 +251,7 @@ async def scan_comments_target_page_async(
     """async 版本：掃描目前頁面可見留言。"""
 
     ensure_comments_target(target)
-    await ensure_async_page_logged_in(page)
+    await ensure_async_page_scannable(page)
 
     sort_adjust_result = await ensure_preferred_comment_sort_async(
         page,

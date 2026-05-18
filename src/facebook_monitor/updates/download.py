@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import sys
 from typing import AsyncIterator
 
@@ -257,6 +258,13 @@ def reveal_in_file_manager(path: Path) -> bool:
                 return False
             startfile(str(target))
             return True
+        if _is_macos():
+            subprocess.Popen(  # noqa: S603, S607
+                ["open", str(target)],
+                close_fds=True,
+                start_new_session=True,
+            )
+            return True
         return False
     except OSError:
         return False
@@ -266,3 +274,9 @@ def _is_windows() -> bool:
     """集中平台判斷，方便測試替換。"""
 
     return sys.platform == "win32"
+
+
+def _is_macos() -> bool:
+    """集中平台判斷，方便測試替換。"""
+
+    return sys.platform == "darwin"

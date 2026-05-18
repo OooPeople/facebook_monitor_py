@@ -15,11 +15,14 @@ from urllib.parse import quote
 
 import httpx
 
+from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
+from facebook_monitor.updates.artifacts import current_update_artifact_policy
+from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
+
 
 DEFAULT_UPDATE_REPOSITORY = "OooPeople/facebook_monitor_py"
 UPDATE_REPOSITORY_ENV = "FACEBOOK_MONITOR_UPDATE_REPOSITORY"
 GITHUB_API_BASE_URL = "https://api.github.com"
-WINDOWS_PORTABLE_SUFFIX = "-windows-portable.zip"
 SUPPORTED_CHANNELS = frozenset({"stable", "preview"})
 
 
@@ -102,6 +105,7 @@ async def check_github_release_updates(
     channel: str = "stable",
     repository: str | None = None,
     timeout_seconds: float = 10.0,
+    artifact_policy: UpdateArtifactPolicy | None = None,
 ) -> UpdateCheckResult:
     """查詢 GitHub Releases，回傳目前版本與遠端 release 的比較結果。"""
 
@@ -145,6 +149,7 @@ async def check_github_release_updates(
         channel=normalized_channel,
         repository=resolved_repository,
         release=release,
+        artifact_policy=artifact_policy,
     )
 
 
@@ -154,9 +159,11 @@ def evaluate_release(
     channel: str,
     repository: str,
     release: dict[str, Any],
+    artifact_policy: UpdateArtifactPolicy | None = None,
 ) -> UpdateCheckResult:
-    """依單筆 GitHub release payload 判斷是否有可用 Windows portable asset。"""
+    """依單筆 GitHub release payload 判斷是否有可用 release asset。"""
 
+    resolved_policy = artifact_policy or current_update_artifact_policy()
     tag_name = str(release.get("tag_name", "")).strip()
     latest_version = normalize_version_text(tag_name)
     release_url = str(release.get("html_url", "")).strip()
@@ -181,7 +188,11 @@ def evaluate_release(
         )
 
     assets = parse_release_assets(release.get("assets", []))
-    portable_asset = find_windows_portable_asset(assets, latest_version=latest_version)
+    portable_asset = find_portable_asset(
+        assets,
+        latest_version=latest_version,
+        policy=resolved_policy,
+    )
     sha256_asset = find_sha256_asset(assets, portable_asset=portable_asset)
     if parsed_latest.sort_key() <= parsed_current.sort_key():
         return UpdateCheckResult(
@@ -204,9 +215,10 @@ def evaluate_release(
             failure_reason="",
         )
     if portable_asset is None:
-        if has_version_mismatched_windows_portable_asset(
+        if has_version_mismatched_portable_asset(
             assets,
             latest_version=latest_version,
+            policy=resolved_policy,
         ):
             return UpdateCheckResult(
                 checked=True,
@@ -216,7 +228,7 @@ def evaluate_release(
                 current_version=current_version,
                 latest_version=latest_version,
                 update_available=False,
-                summary="找到新版，但 Windows portable zip 版本不符",
+                summary=f"找到新版，但 {resolved_policy.display_label} zip 版本不符",
                 detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
                 release_url=release_url,
                 asset_name="",
@@ -233,8 +245,8 @@ def evaluate_release(
             current_version=current_version,
             latest_version=latest_version,
             update_available=False,
-            summary="找到新版，但沒有 Windows portable zip",
-            detail="Release asset 未包含預期的 Windows portable zip。",
+            summary=f"找到新版，但沒有 {resolved_policy.display_label} zip",
+            detail=f"Release asset 未包含預期的 {resolved_policy.display_label} zip。",
             release_url=release_url,
             asset_name="",
             asset_download_url="",
@@ -328,7 +340,22 @@ def find_windows_portable_asset(
 ) -> ReleaseAsset | None:
     """尋找 Windows portable zip；只接受符合 release version 的精確檔名。"""
 
-    expected_name = f"facebook-monitor-{latest_version}{WINDOWS_PORTABLE_SUFFIX}"
+    return find_portable_asset(
+        assets,
+        latest_version=latest_version,
+        policy=WINDOWS_PORTABLE_POLICY,
+    )
+
+
+def find_portable_asset(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+    policy: UpdateArtifactPolicy,
+) -> ReleaseAsset | None:
+    """尋找指定平台 portable zip；只接受符合 release version 的精確檔名。"""
+
+    expected_name = policy.asset_name(latest_version)
     for asset in assets:
         if asset.name == expected_name:
             return asset
@@ -342,11 +369,24 @@ def has_version_mismatched_windows_portable_asset(
 ) -> bool:
     """判斷 release 是否含有 portable zip，但檔名版本未對齊 tag。"""
 
-    expected_name = f"facebook-monitor-{latest_version}{WINDOWS_PORTABLE_SUFFIX}"
+    return has_version_mismatched_portable_asset(
+        assets,
+        latest_version=latest_version,
+        policy=WINDOWS_PORTABLE_POLICY,
+    )
+
+
+def has_version_mismatched_portable_asset(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+    policy: UpdateArtifactPolicy,
+) -> bool:
+    """判斷 release 是否含有指定平台 zip，但檔名版本未對齊 tag。"""
+
+    expected_name = policy.asset_name(latest_version)
     for asset in assets:
-        if asset.name.startswith("facebook-monitor-") and asset.name.endswith(
-            WINDOWS_PORTABLE_SUFFIX
-        ):
+        if asset.name.startswith("facebook-monitor-") and asset.name.endswith(policy.asset_suffix):
             return asset.name != expected_name
     return False
 

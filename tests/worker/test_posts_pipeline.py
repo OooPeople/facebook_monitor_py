@@ -6,6 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
@@ -24,6 +26,7 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 
 
@@ -138,6 +141,24 @@ class UnconfirmedSortFakePage(FakePage):
                 "menuCandidateTexts": ["最相關", "新貼文"],
             }
         raise AssertionError("sort-unconfirmed scan should skip before extractor")
+
+
+class ContentUnavailablePostsPage(FakePage):
+    """模擬 Facebook 內容不可見頁。"""
+
+    def locator(self, selector: str) -> FakeLocator:
+        """回傳內容不可見頁文字。"""
+
+        return FakeLocator(
+            "目前無法查看此內容 "
+            "會發生此情況，通常是因為擁有者僅與一小群用戶分享內容、"
+            "變更了分享對象，或是刪除了內容。"
+        )
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """內容不可見時不應進入排序或 extractor。"""
+
+        raise AssertionError("content-unavailable scan should stop before sort")
 
 
 class GrowingFakePage(FakePage):
@@ -670,6 +691,36 @@ def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -
     assert latest_items == []
     assert history == []
     assert notifications == []
+
+
+def test_scan_posts_page_raises_content_unavailable_before_sort(tmp_path: Path) -> None:
+    """內容不可見頁應分類成 target 失效，不應落到排序失敗。"""
+
+    db_path = tmp_path / "app.db"
+    page = ContentUnavailablePostsPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        with pytest.raises(WorkerFailure) as exc_info:
+            scan_posts_page(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=0,
+                scroll_wait_ms=0,
+            )
+
+    assert exc_info.value.reason == "content_unavailable"
+    assert not page.sort_adjusted
 
 
 def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:

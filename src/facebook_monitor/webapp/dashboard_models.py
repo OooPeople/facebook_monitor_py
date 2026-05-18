@@ -30,6 +30,11 @@ from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresen
 from facebook_monitor.webapp.dashboard_presenters import TargetIdentityPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
+from facebook_monitor.webapp.dashboard_presenters import format_latest_error_indicator_label
+from facebook_monitor.webapp.dashboard_presenters import format_latest_error_indicator_title
+from facebook_monitor.webapp.dashboard_presenters import format_runtime_error_message
+from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_runtime_error
+from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_scan
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
@@ -297,6 +302,7 @@ class TargetRow:
             latest_failed_scan_run=self.latest_failed_scan_run,
             latest_notification_event=self.latest_notification_event,
             hit_record_total_count=self.hit_record_total_count,
+            content_unavailable_current=self.content_unavailable_current,
         )
 
     @property
@@ -321,7 +327,7 @@ class TargetRow:
             f"下次刷新：{self.next_refresh_label}",
         ]
         if self.latest_failed_scan_run:
-            parts.append("最近有錯誤")
+            parts.append(self.latest_error_indicator_label)
         return " · ".join(parts)
 
     @property
@@ -342,7 +348,7 @@ class TargetRow:
 
         if self.runtime_state.runtime_status != TargetRuntimeStatus.ERROR:
             return ""
-        return self.runtime_state.last_error
+        return format_runtime_error_message(self.runtime_state.last_error)
 
     @property
     def runtime_skip_reason(self) -> str:
@@ -387,6 +393,8 @@ class TargetRow:
             or self.target.paused
             or self.runtime_state.desired_state != TargetDesiredState.ACTIVE
         ):
+            return NextRefreshDisplay(label="未排程")
+        if self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
             return NextRefreshDisplay(label="未排程")
         if self.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
             return NextRefreshDisplay(label="排隊中")
@@ -484,6 +492,48 @@ class TargetRow:
         return self.card_summary_presenter.latest_failed_scan_summary
 
     @property
+    def latest_error_indicator_label(self) -> str:
+        """回傳 target header 的最近錯誤短標籤。"""
+
+        return format_latest_error_indicator_label(
+            self.latest_failed_scan_run,
+            content_unavailable_current=self.content_unavailable_current,
+        )
+
+    @property
+    def latest_error_indicator_title(self) -> str:
+        """回傳 target header 最近錯誤說明。"""
+
+        return format_latest_error_indicator_title(
+            self.latest_failed_scan_run,
+            content_unavailable_current=self.content_unavailable_current,
+        )
+
+    @property
+    def latest_error_indicator_kind(self) -> str:
+        """回傳最近錯誤 UI 類型。"""
+
+        if self.content_unavailable_current:
+            return "content-unavailable"
+        return "error" if self.latest_failed_scan_run else ""
+
+    @property
+    def content_unavailable_current(self) -> bool:
+        """回傳連結失效是否仍代表目前狀態。"""
+
+        if not is_content_unavailable_scan(self.latest_failed_scan_run):
+            return False
+        if (
+            self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR
+            and is_content_unavailable_runtime_error(self.runtime_state.last_error)
+        ):
+            return True
+        if self.latest_scan_run is None:
+            return True
+        failed_at = self.latest_failed_scan_run.finished_at
+        return failed_at >= self.latest_scan_run.finished_at
+
+    @property
     def latest_notification_label(self) -> str:
         """回傳最近通知通道狀態。"""
 
@@ -578,7 +628,9 @@ class TargetRow:
         """回傳 Phase 5 sidebar 使用的 target 摘要。"""
 
         base_status_summary = self.status_label
-        if self.hit_record_total_count:
+        if self.content_unavailable_current:
+            status_detail = self.latest_error_indicator_label
+        elif self.hit_record_total_count:
             status_detail = f"命中 {self.hit_record_total_count} 筆"
         elif not self.latest_scan_run:
             status_detail = "尚未掃描"

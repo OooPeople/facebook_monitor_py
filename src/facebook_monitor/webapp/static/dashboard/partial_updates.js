@@ -81,6 +81,12 @@ const updateHeaderRuntimeSummary = (card, payload) => {
     "hidden",
     !showLatestError,
   );
+  const latestErrorIndicator = card.querySelector("[data-latest-error-indicator]");
+  if (latestErrorIndicator) {
+    latestErrorIndicator.textContent = payload.latest_error_indicator_label || "最近有錯誤";
+    latestErrorIndicator.title = payload.latest_error_indicator_title || "";
+    latestErrorIndicator.dataset.latestErrorKind = payload.latest_error_indicator_kind || "";
+  }
 };
 
 const updateMonitoringAction = (card, payload) => {

@@ -1,6 +1,6 @@
 # Packaging
 
-本文件記錄 Windows EXE 打包方式、發佈包內容與 frozen smoke checklist。正式產品入口仍是 `facebook-monitor`，打包不得繞過 `src/facebook_monitor/launcher.py`。
+本文件記錄 Windows EXE 打包方式、macOS onedir 初期打包路徑、發佈包內容與 frozen smoke checklist。正式產品入口仍是 `facebook-monitor`，打包不得繞過 `src/facebook_monitor/launcher.py`。
 
 ## 目前設計
 
@@ -16,8 +16,11 @@
 - 每次輸出 portable zip 時，必須同時產生同名 `.sha256`，供 GitHub Release updater 驗證下載完整性。
 - GitHub Release tag、app version、Windows version metadata、portable zip 檔名與 `.sha256` 內容必須互相對齊；updater 只接受精確版本檔名，不 fallback 到其他版本 zip。
 - Release artifact validation 會檢查 zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template、必要 onedir 檔案、可選 Git tag 與可選 Authenticode signer；正式發佈前應納入 release validation。
+- macOS 目前只有 PyInstaller onedir zip 與 download-only 更新檢查路徑；尚未支援 macOS 自動套用 updater，也尚未做 Developer ID signing / notarization。
 
 ## 發佈內容
+
+### Windows
 
 發佈時請發佈整個 portable zip，不要只發佈單一 EXE：
 
@@ -53,7 +56,34 @@ facebook-monitor-{version}-windows-portable.zip.sha256
 若 tag 是 `v0.2.0`，zip 檔名也必須是 `facebook-monitor-0.2.0-windows-portable.zip`。不要把 rc 測試 build 上傳成正式 stable release asset。
 rc release 應在 GitHub 勾選 `Set as a pre-release`，避免 GitHub stable release 清單語義混淆。
 
+### macOS onedir
+
+macOS 目前是初期 onedir artifact，需在 macOS build machine 上產出。發佈時同樣要附同名 `.sha256`：
+
+```text
+dist/facebook-monitor-0.2.0-macos-arm64-onedir.zip
+dist/facebook-monitor-0.2.0-macos-arm64-onedir.zip.sha256
+```
+
+Intel Mac 若需要獨立 build，檔名使用：
+
+```text
+dist/facebook-monitor-0.2.0-macos-x64-onedir.zip
+dist/facebook-monitor-0.2.0-macos-x64-onedir.zip.sha256
+```
+
+macOS zip 內預期包含：
+
+- `facebook-monitor`
+- `facebook-monitor-updater`
+- `browser/Chromium.app/Contents/MacOS/Chromium` 或等效 bundled Chromium path
+- Web UI templates/static 與 Python runtime dependencies
+
+目前 macOS frozen Web UI 只支援檢查、下載與 SHA256 驗證更新，不會自動解壓套用，也不會重啟新版 app。若未做 Developer ID signing / notarization，使用者可能需要右鍵 Open、到系統設定允許，或自行處理 quarantine。
+
 ## 打包指令
+
+### Windows
 
 ```powershell
 .\scripts\uv.ps1 run python -m pip install pyinstaller
@@ -91,6 +121,59 @@ $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --expected-signer-subject "Your Publisher Name"
 ```
+
+### macOS onedir
+
+macOS build 必須在 macOS 上執行。若要使用 bundled Chromium，先安裝 Playwright Chromium，或用 `FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR` 指到含 `Chromium.app` 的資料夾：
+
+```bash
+uv run python -m pip install pyinstaller
+uv run playwright install chromium
+export FACEBOOK_MONITOR_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export FACEBOOK_MONITOR_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
+uv run python -m PyInstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean --noconfirm
+```
+
+重新輸出 macOS portable zip 時，要保留 executable bit。可用 Python 產生 zip 與 `.sha256`，避免一般 zip 工具遺失權限：
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import hashlib
+import zipfile
+
+version = "0.2.0"
+arch = "arm64"
+dist = Path("dist")
+source = dist / "facebook-monitor"
+zip_path = dist / f"facebook-monitor-{version}-macos-{arch}-onedir.zip"
+if zip_path.exists():
+    zip_path.unlink()
+with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in source.rglob("*"):
+        arcname = path.relative_to(dist).as_posix()
+        info = zipfile.ZipInfo.from_file(path, arcname)
+        if path.is_file():
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with path.open("rb") as file:
+                archive.writestr(info, file.read())
+        else:
+            archive.writestr(info, b"")
+digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+zip_path.with_name(zip_path.name + ".sha256").write_text(
+    f"{digest}  {zip_path.name}\n",
+    encoding="ascii",
+)
+PY
+```
+
+驗證 macOS artifact：
+
+```bash
+uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64
+```
+
+這只驗證 artifact 形狀與完整性；不代表 macOS 自動套用 updater 已完成。
 
 ## Windows Tray
 

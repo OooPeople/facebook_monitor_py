@@ -1106,12 +1106,16 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     assert "data-runtime-error" in card_template
     assert "data-runtime-skip-reason" in card_template
     assert "data-latest-error-indicator" in card_template
+    assert "data-latest-error-kind" in card_template
     assert "data-latest-error-separator" in card_template
     assert "monitoring_action" in dashboard_routes
     assert "monitoring_button_label" in dashboard_routes
     assert "runtime_error" in dashboard_routes
     assert "runtime_skip_reason" in dashboard_routes
     assert "has_latest_failed_scan" in dashboard_routes
+    assert "latest_error_indicator_label" in dashboard_routes
+    assert "latest_error_indicator_title" in dashboard_routes
+    assert "latest_error_indicator_kind" in dashboard_routes
     assert "const updateMonitoringAction" in partial_updates_js
     assert "payload.monitoring_action" in partial_updates_js
     assert "payload.monitoring_button_label" in partial_updates_js
@@ -1119,4 +1123,7 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     assert "payload.runtime_error" in partial_updates_js
     assert "payload.runtime_skip_reason" in partial_updates_js
     assert "payload.has_latest_failed_scan" in partial_updates_js
+    assert "payload.latest_error_indicator_label" in partial_updates_js
+    assert "payload.latest_error_indicator_title" in partial_updates_js
+    assert "payload.latest_error_indicator_kind" in partial_updates_js
     assert "[data-latest-error-indicator]" in partial_updates_js

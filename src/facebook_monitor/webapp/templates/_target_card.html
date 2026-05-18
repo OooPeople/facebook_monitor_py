@@ -21,7 +21,12 @@
           <span class="target-subtitle-separator" aria-hidden="true">·</span>
           <span data-next-refresh data-next-refresh-seconds="{{ row.next_refresh_seconds if row.next_refresh_seconds is not none else '' }}">下次刷新：{{ row.next_refresh_label }}</span>
           <span class="target-subtitle-separator" aria-hidden="true" data-latest-error-separator {% if not row.latest_failed_scan_run %}hidden{% endif %}>·</span>
-          <span data-latest-error-indicator {% if not row.latest_failed_scan_run %}hidden{% endif %}>最近有錯誤</span>
+          <span
+            data-latest-error-indicator
+            data-latest-error-kind="{{ row.latest_error_indicator_kind }}"
+            title="{{ row.latest_error_indicator_title }}"
+            {% if not row.latest_failed_scan_run %}hidden{% endif %}
+          >{{ row.latest_error_indicator_label or "最近有錯誤" }}</span>
         </p>
       </div>
     </div>

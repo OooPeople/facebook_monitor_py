@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# ruff: noqa: F821
 
 """macOS PyInstaller onedir spec for the formal local Web UI launcher.
 
@@ -12,7 +13,6 @@ Signing / notarization is a later release step.
 """
 
 import os
-import platform
 import subprocess
 import sys
 from datetime import datetime
@@ -54,9 +54,7 @@ def build_date():
 
 
 def platform_packaging_mode():
-    machine = platform.machine().lower()
-    suffix = "macos-x64-onedir" if machine in {"x86_64", "amd64"} else "macos-arm64-onedir"
-    return f"pyinstaller-{suffix}"
+    return "pyinstaller-macos-arm64-onedir"
 
 
 def bundled_chromium_dir():

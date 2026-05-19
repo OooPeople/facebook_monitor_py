@@ -521,17 +521,20 @@ class TargetRow:
     def content_unavailable_current(self) -> bool:
         """回傳連結失效是否仍代表目前狀態。"""
 
-        if not is_content_unavailable_scan(self.latest_failed_scan_run):
+        failed_scan = self.latest_failed_scan_run
+        if not is_content_unavailable_scan(failed_scan):
             return False
         if (
             self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR
             and is_content_unavailable_runtime_error(self.runtime_state.last_error)
         ):
             return True
-        if self.latest_scan_run is None:
+        latest_scan = self.latest_scan_run
+        if latest_scan is None:
             return True
-        failed_at = self.latest_failed_scan_run.finished_at
-        return failed_at >= self.latest_scan_run.finished_at
+        if failed_scan is None:
+            return False
+        return failed_scan.finished_at >= latest_scan.finished_at
 
     @property
     def latest_notification_label(self) -> str:

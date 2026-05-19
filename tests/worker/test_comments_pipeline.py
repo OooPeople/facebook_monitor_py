@@ -118,7 +118,7 @@ class UnconfirmedCommentSortPage(FakeCommentsPage):
         raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
-class ContentUnavailableLocator:
+class ContentUnavailableLocator(FakeLocator):
     """提供 Facebook 內容不可見頁文字。"""
 
     def inner_text(self, timeout: int) -> str:

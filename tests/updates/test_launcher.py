@@ -24,6 +24,16 @@ def test_find_bundled_updater_returns_root_exe(tmp_path: Path) -> None:
     assert find_bundled_updater(updater.parent) == updater.resolve()
 
 
+def test_find_bundled_updater_returns_macos_root_binary(tmp_path: Path) -> None:
+    """macOS onedir 的 updater binary 沒有 .exe 副檔名。"""
+
+    updater = tmp_path / "app" / "facebook-monitor-updater"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+
+    assert find_bundled_updater(updater.parent) == updater.resolve()
+
+
 def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path, monkeypatch) -> None:
     """updater 會被複製到 temp，避免鎖住 app base dir。"""
 
@@ -45,6 +55,29 @@ def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path, monkeypatch
         encoding="utf-8"
     ) == "dll"
     assert not copied.is_relative_to(source.parent)
+
+
+def test_copy_updater_to_temp_preserves_macos_updater_name(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """macOS temp updater copy 使用無副檔名 binary 並帶上 runtime 目錄。"""
+
+    monkeypatch.setattr(
+        "facebook_monitor.updates.launcher.tempfile.gettempdir",
+        lambda: str(tmp_path / "temp"),
+    )
+    source = tmp_path / "app" / "facebook-monitor-updater"
+    source.parent.mkdir()
+    source.write_text("updater", encoding="utf-8")
+    (source.parent / "_internal").mkdir()
+    (source.parent / "_internal" / "python").write_text("runtime", encoding="utf-8")
+
+    copied = copy_updater_to_temp(source, tmp_path / "data" / "runtime")
+
+    assert copied.name == "facebook-monitor-updater"
+    assert copied.read_text(encoding="utf-8") == "updater"
+    assert (copied.parent / "_internal" / "python").read_text(encoding="utf-8") == "runtime"
 
 
 def test_copy_updater_to_temp_uses_unique_directories(
@@ -181,3 +214,52 @@ def test_launch_restarted_app_preserves_runtime_path_overrides(
     assert str(pending.profile_dir) in command
     assert "--logs-dir" in command
     assert str(pending.logs_dir) in command
+
+
+def test_launch_restarted_app_uses_macos_binary_and_detached_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """macOS restart path 使用無副檔名 app entry 並用新 session detached 啟動。"""
+
+    app_base_dir = tmp_path / "app"
+    app_base_dir.mkdir()
+    (app_base_dir / "facebook-monitor").write_text("app", encoding="utf-8")
+    pending = PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name="app.zip",
+        zip_path=tmp_path / "app.zip",
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        app_base_dir=app_base_dir,
+        data_dir=tmp_path / "custom-data",
+        db_path=tmp_path / "custom-data" / "custom.db",
+        profile_dir=tmp_path / "custom-data" / "profiles" / "main",
+        logs_dir=tmp_path / "custom-logs",
+        runtime_dir=tmp_path / "custom-data" / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 9876
+
+    def fake_popen(command, **kwargs):
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("facebook_monitor.updates.launcher.sys.platform", "darwin")
+    monkeypatch.setattr("facebook_monitor.updates.launcher.subprocess.Popen", fake_popen)
+
+    result = launch_restarted_app(pending)
+
+    assert result.status == "launched"
+    assert result.pid == 9876
+    command = launched["command"]
+    assert isinstance(command, list)
+    assert command[0] == str(app_base_dir / "facebook-monitor")
+    kwargs = launched["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["start_new_session"] is True

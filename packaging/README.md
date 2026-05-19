@@ -65,12 +65,7 @@ dist/facebook-monitor-0.2.0-macos-arm64-onedir.zip
 dist/facebook-monitor-0.2.0-macos-arm64-onedir.zip.sha256
 ```
 
-Intel Mac 若需要獨立 build，檔名使用：
-
-```text
-dist/facebook-monitor-0.2.0-macos-x64-onedir.zip
-dist/facebook-monitor-0.2.0-macos-x64-onedir.zip.sha256
-```
+目前 macOS 打包範圍只包含 Apple Silicon，不維護 Intel Mac artifact。
 
 macOS zip 內預期包含：
 

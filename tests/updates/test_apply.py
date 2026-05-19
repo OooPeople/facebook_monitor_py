@@ -36,11 +36,36 @@ def make_app_root(root: Path, *, exe_text: str) -> None:
     (root / "facebook-monitor-updater.exe").write_text("updater", encoding="utf-8")
 
 
+def make_macos_app_root(root: Path, *, app_text: str) -> None:
+    """建立最小 macOS arm64 onedir 目錄。"""
+
+    browser = root / "browser" / "Chromium.app" / "Contents" / "MacOS"
+    browser.mkdir(parents=True)
+    (browser / "Chromium").write_text("chromium", encoding="utf-8")
+    (root / "_internal").mkdir(parents=True)
+    (root / "_internal" / "python").write_text("runtime", encoding="utf-8")
+    (root / "facebook-monitor").write_text(app_text, encoding="utf-8")
+    (root / "facebook-monitor-updater").write_text("updater", encoding="utf-8")
+
+
 def make_update_zip(zip_path: Path, *, exe_text: str) -> str:
     """建立含單層 facebook-monitor 目錄的 update zip，回傳 SHA256。"""
 
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_app_root(source_root, exe_text=exe_text)
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_file():
+                archive.write(file_path, file_path.relative_to(source_root.parent))
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    return digest
+
+
+def make_macos_update_zip(zip_path: Path, *, app_text: str) -> str:
+    """建立含單層 facebook-monitor 目錄的 macOS update zip。"""
+
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text=app_text)
     with zipfile.ZipFile(zip_path, "w") as archive:
         for file_path in source_root.rglob("*"):
             if file_path.is_file():
@@ -89,6 +114,30 @@ def test_apply_pending_update_replaces_app_files_but_preserves_data(tmp_path: Pa
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     assert result.backup_dir is not None
     assert (result.backup_dir / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_supports_macos_arm64_onedir_layout(
+    tmp_path: Path,
+) -> None:
+    """platform layout policy 允許 macOS onedir 替換 app files 並保留 data。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    (data_dir / "app.db").write_text("user data", encoding="utf-8")
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "applied"
+    assert result.applied
+    assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
+    assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
+    assert result.backup_dir is not None
+    assert (result.backup_dir / "facebook-monitor").read_text(encoding="utf-8") == "old"
 
 
 def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> None:

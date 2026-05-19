@@ -24,7 +24,6 @@ if str(SRC) not in sys.path:
 
 from facebook_monitor.version import APP_VERSION
 from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_SUFFIX
-from facebook_monitor.updates.artifacts import MACOS_X64_ONEDIR_SUFFIX
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_SUFFIX
 
 
@@ -103,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--platform",
         default="windows",
-        choices=("windows", "macos-arm64", "macos-x64"),
+        choices=("windows", "macos-arm64"),
         help="Artifact platform to validate.",
     )
     parser.add_argument(
@@ -164,8 +163,6 @@ def _normalize_platform_name(platform_name: str) -> str:
         return "windows"
     if normalized in {"macos-arm64", "darwin-arm64"}:
         return "macos-arm64"
-    if normalized in {"macos-x64", "macos-x86_64", "darwin-x64", "darwin-x86_64"}:
-        return "macos-x64"
     raise ValueError(f"unsupported artifact platform: {platform_name}")
 
 
@@ -174,8 +171,6 @@ def _artifact_suffix(platform_name: str) -> str:
 
     if platform_name == "macos-arm64":
         return MACOS_ARM64_ONEDIR_SUFFIX
-    if platform_name == "macos-x64":
-        return MACOS_X64_ONEDIR_SUFFIX
     return WINDOWS_PORTABLE_SUFFIX
 
 

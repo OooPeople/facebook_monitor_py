@@ -17,14 +17,20 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import pending_update_path
+from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
+from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
+from facebook_monitor.updates.platforms import detect_layout_policy
+from facebook_monitor.updates.platforms import layout_policy_for_updater_path
+from facebook_monitor.updates.platforms import supported_layout_policies
 
 
-UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
-APP_EXE_NAME = "facebook-monitor.exe"
+UPDATER_EXE_NAME = WINDOWS_UPDATER_ENTRY
+APP_EXE_NAME = WINDOWS_APP_ENTRY
 TEMP_UPDATER_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
@@ -62,7 +68,7 @@ def launch_temp_updater(
         return UpdaterLaunchResult(
             launched=False,
             status="updater_missing",
-            message="facebook-monitor-updater.exe not found",
+            message="bundled updater not found",
         )
     pending_path = pending_update_path(paths.runtime_dir)
     if not pending_path.is_file():
@@ -91,12 +97,7 @@ def launch_temp_updater(
     if restart:
         command.append("--restart")
     try:
-        process = subprocess.Popen(  # noqa: S603
-            command,
-            close_fds=True,
-            creationflags=_detached_creation_flags(),
-            cwd=str(temp_updater.parent),
-        )
+        process = _popen_detached(command, cwd=temp_updater.parent)
     except OSError as exc:
         return UpdaterLaunchResult(
             launched=False,
@@ -114,11 +115,12 @@ def launch_temp_updater(
 
 
 def find_bundled_updater(app_base_dir: Path) -> Path | None:
-    """尋找 frozen onedir 旁的 updater EXE。"""
+    """尋找 frozen onedir 旁的 updater。"""
 
-    candidate = app_base_dir / UPDATER_EXE_NAME
-    if candidate.is_file():
-        return candidate.resolve()
+    for policy in supported_layout_policies():
+        candidate = policy.updater_entry(app_base_dir)
+        if candidate.is_file():
+            return candidate.resolve()
     return None
 
 
@@ -136,12 +138,14 @@ def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
             dir=str(root),
         )
     )
-    destination = temp_dir / UPDATER_EXE_NAME
+    layout_policy = layout_policy_for_updater_path(source)
+    destination = temp_dir / layout_policy.updater_entry_name
     shutil.copy2(source, destination)
-    source_internal = source.parent / "_internal"
-    if not source_internal.is_dir():
-        raise ValueError("updater_internal_dir_missing")
-    shutil.copytree(source_internal, temp_dir / "_internal")
+    for directory_name in layout_policy.temp_copy_dirs:
+        source_dir = source.parent / directory_name
+        if not source_dir.is_dir():
+            raise ValueError(f"updater_runtime_dir_missing:{directory_name}")
+        shutil.copytree(source_dir, temp_dir / directory_name)
     return destination
 
 
@@ -173,7 +177,8 @@ def cleanup_old_temp_updaters(
 def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:
     """套用更新後啟動新版 app，並保留原 runtime path 覆寫。"""
 
-    executable = pending.app_base_dir / APP_EXE_NAME
+    layout_policy = detect_layout_policy(pending.app_base_dir)
+    executable = layout_policy.app_entry(pending.app_base_dir)
     if not executable.is_file():
         return AppRestartResult(
             launched=False,
@@ -192,12 +197,7 @@ def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:
         str(pending.logs_dir),
     ]
     try:
-        process = subprocess.Popen(  # noqa: S603
-            command,
-            close_fds=True,
-            creationflags=_detached_creation_flags(),
-            cwd=str(pending.app_base_dir),
-        )
+        process = _popen_detached(command, cwd=pending.app_base_dir)
     except OSError as exc:
         return AppRestartResult(
             launched=False,
@@ -212,11 +212,22 @@ def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:
     )
 
 
-def _detached_creation_flags() -> int:
-    """Windows 使用 detached process；其他平台保持 0。"""
+def _popen_detached(command: list[str], *, cwd: Path) -> subprocess.Popen[Any]:
+    """以平台適合的 detached 方式啟動 process。"""
 
     if sys.platform != "win32":
-        return 0
-    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
+        return subprocess.Popen(  # noqa: S603
+            command,
+            close_fds=True,
+            cwd=str(cwd),
+            start_new_session=True,
+        )
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
         getattr(subprocess, "DETACHED_PROCESS", 0)
+    )
+    return subprocess.Popen(  # noqa: S603
+        command,
+        close_fds=True,
+        creationflags=creationflags,
+        cwd=str(cwd),
     )

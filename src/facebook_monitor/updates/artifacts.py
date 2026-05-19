@@ -13,7 +13,6 @@ import sys
 
 WINDOWS_PORTABLE_SUFFIX = "-windows-portable.zip"
 MACOS_ARM64_ONEDIR_SUFFIX = "-macos-arm64-onedir.zip"
-MACOS_X64_ONEDIR_SUFFIX = "-macos-x64-onedir.zip"
 
 
 @dataclass(frozen=True)
@@ -46,15 +45,6 @@ MACOS_ARM64_ONEDIR_POLICY = UpdateArtifactPolicy(
     download_supported=True,
     apply_supported=False,
 )
-MACOS_X64_ONEDIR_POLICY = UpdateArtifactPolicy(
-    platform_key="macos-x64",
-    asset_suffix=MACOS_X64_ONEDIR_SUFFIX,
-    display_label="macOS x64 onedir",
-    download_supported=True,
-    apply_supported=False,
-)
-
-
 def current_update_artifact_policy() -> UpdateArtifactPolicy:
     """依目前執行平台取得 release artifact 策略。"""
 
@@ -72,12 +62,9 @@ def update_artifact_policy_for_platform(
     """依平台字串回傳 release artifact 策略；未知平台退回 Windows 既有語義。"""
 
     normalized_system = system.casefold()
-    normalized_machine = machine.casefold()
     if normalized_system == "win32" or normalized_system.startswith("windows"):
         return WINDOWS_PORTABLE_POLICY
     if normalized_system == "darwin" or normalized_system.startswith("macos"):
-        if normalized_machine in {"x86_64", "amd64"}:
-            return MACOS_X64_ONEDIR_POLICY
         return MACOS_ARM64_ONEDIR_POLICY
     return WINDOWS_PORTABLE_POLICY
 

@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import zipfile
 
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
@@ -18,6 +17,8 @@ from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
 from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
+from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import write_macos_app_bundle
 
 
 def assert_posix_executable_when_supported(path: Path) -> None:
@@ -87,23 +88,7 @@ def make_macos_chrome_for_testing_app_root(root: Path, *, app_text: str) -> None
 def make_macos_app_bundle(root: Path) -> None:
     """建立測試用 Finder/Dock `.app` launcher bundle。"""
 
-    contents = root / "Facebook Monitor.app" / "Contents"
-    launcher = contents / "MacOS" / "facebook-monitor-launcher"
-    icon = contents / "Resources" / "facebook-monitor.icns"
-    launcher.parent.mkdir(parents=True)
-    icon.parent.mkdir(parents=True)
-    launcher.write_text("#!/bin/sh\nexec ../facebook-monitor \"$@\"\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    icon.write_text("icon", encoding="utf-8")
-    (contents / "Info.plist").write_bytes(
-        plistlib.dumps(
-            {
-                "CFBundleExecutable": "facebook-monitor-launcher",
-                "CFBundleIconFile": "facebook-monitor",
-                "CFBundlePackageType": "APPL",
-            }
-        )
-    )
+    write_macos_app_bundle(root)
 
 
 def make_update_zip(zip_path: Path, *, exe_text: str) -> str:
@@ -218,6 +203,43 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     assert result.backup_dir is not None
     assert (result.backup_dir / "facebook-monitor").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_replaces_legacy_macos_shell_launcher(
+    tmp_path: Path,
+) -> None:
+    """更新套用時會把舊 shell `.app` launcher 覆蓋成新版 native launcher。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    legacy_launcher = b"#!/bin/sh\nexec ../facebook-monitor \"$@\"\n"
+    write_macos_app_bundle(app_root, launcher_content=legacy_launcher)
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    launcher = (
+        app_root
+        / "Facebook Monitor.app"
+        / "Contents"
+        / "MacOS"
+        / "facebook-monitor-launcher"
+    )
+    assert result.status == "applied"
+    assert result.applied
+    assert launcher.read_bytes() == MACHO_ARM64_BYTES
+    assert result.backup_dir is not None
+    assert (
+        result.backup_dir
+        / "Facebook Monitor.app"
+        / "Contents"
+        / "MacOS"
+        / "facebook-monitor-launcher"
+    ).read_bytes() == legacy_launcher
 
 
 def test_apply_pending_update_supports_macos_chrome_for_testing_layout(

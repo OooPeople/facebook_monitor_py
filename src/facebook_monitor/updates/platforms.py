@@ -16,11 +16,16 @@ WINDOWS_APP_ENTRY = "facebook-monitor.exe"
 WINDOWS_UPDATER_ENTRY = "facebook-monitor-updater.exe"
 MACOS_APP_ENTRY = "facebook-monitor"
 MACOS_UPDATER_ENTRY = "facebook-monitor-updater"
-MACOS_APP_BUNDLE_INFO_PLIST = "Facebook Monitor.app/Contents/Info.plist"
+MACOS_APP_BUNDLE_NAME = "Facebook Monitor.app"
+MACOS_APP_BUNDLE_INFO_PLIST = f"{MACOS_APP_BUNDLE_NAME}/Contents/Info.plist"
 MACOS_APP_BUNDLE_LAUNCHER = (
-    "Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher"
+    f"{MACOS_APP_BUNDLE_NAME}/Contents/MacOS/facebook-monitor-launcher"
 )
-MACOS_APP_BUNDLE_ICON = "Facebook Monitor.app/Contents/Resources/facebook-monitor.icns"
+MACOS_APP_BUNDLE_ICON = (
+    f"{MACOS_APP_BUNDLE_NAME}/Contents/Resources/facebook-monitor.icns"
+)
+MACOS_APP_BUNDLE_LAUNCHER_ENV = "FACEBOOK_MONITOR_MACOS_APP_LAUNCHER"
+MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE = "1"
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class UpdaterLayoutPolicy:
     required_staging_any_groups: tuple[tuple[str, ...], ...] = ()
     required_current_any_groups: tuple[tuple[str, ...], ...] = ()
     temp_copy_dirs: tuple[str, ...] = ("_internal",)
+    restart_entry_name: str | None = None
 
     def app_entry(self, root: Path) -> Path:
         """回傳 app entry path。"""
@@ -45,6 +51,11 @@ class UpdaterLayoutPolicy:
         """回傳 updater entry path。"""
 
         return root / self.updater_entry_name
+
+    def restart_entry(self, root: Path) -> Path:
+        """回傳 updater 套用後重新啟動時應使用的 entry path。"""
+
+        return root / (self.restart_entry_name or self.app_entry_name)
 
 
 WINDOWS_LAYOUT_POLICY = UpdaterLayoutPolicy(
@@ -83,6 +94,7 @@ MACOS_ARM64_LAYOUT_POLICY = UpdaterLayoutPolicy(
         MACOS_BUNDLED_BROWSER_RELATIVE_PATHS,
     ),
     required_current_any_groups=(("_internal", "browser"),),
+    restart_entry_name=MACOS_APP_BUNDLE_LAUNCHER,
 )
 
 

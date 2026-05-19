@@ -16,7 +16,7 @@
 - `facebook-monitor-updater.exe` 是 PyInstaller onedir app，從 Web UI 啟動 temp updater 時必須連同 `_internal\` 複製；不可只複製單一 updater exe。
 - 每次輸出 portable zip 時，必須同時產生同名 `.sha256`，供 GitHub Release updater 驗證下載完整性。
 - GitHub Release tag、app version、Windows version metadata、portable zip 檔名與 `.sha256` 內容必須互相對齊；updater 只接受精確版本檔名，不 fallback 到其他版本 zip。
-- Release artifact validation 會檢查 zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template、必要 onedir 檔案、可選 Git tag 與可選 Authenticode signer；正式發佈前應納入 release validation。
+- Release artifact validation 會檢查 zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template、必要 onedir 檔案、macOS `.app` Info.plist version、arm64 Mach-O launcher、可選 Git tag 與可選 Authenticode signer；正式發佈前應納入 release validation。
 - macOS Apple Silicon 目前使用 PyInstaller onedir zip，內含 `Facebook Monitor.app` native launcher 外殼，避免 Finder 啟動時跳出 Terminal，並讓程式執行期間持續顯示在 Dock；尚未做 Developer ID signing / notarization。
 
 ## 發佈內容
@@ -77,7 +77,7 @@ macOS zip 內預期包含：
 - `browser/Chromium.app/Contents/MacOS/Chromium` 或等效 bundled Chromium path
 - Web UI templates/static 與 Python runtime dependencies
 
-`Facebook Monitor.app` 只是一個 Finder / Dock native launcher 外殼，會啟動同一個 `facebook-monitor/` onedir 內真正的 `facebook-monitor` executable；launcher 會留在 Dock 當母程序，使用者從 Dock Quit 時會終止子程序。updater 替換的 app base dir 仍是這個 onedir 根目錄，不改 Windows 或 macOS updater layout 語義。
+`Facebook Monitor.app` 只是一個 Finder / Dock native launcher 外殼，會啟動同一個 `facebook-monitor/` onedir 內真正的 `facebook-monitor` executable；launcher 會留在 Dock 當母程序，使用者從 Dock Quit 時會終止子程序。若舊版 updater 或 Finder 直接啟動 root `facebook-monitor` binary，新版 frozen launcher 會轉交給 `.app` native launcher，避免 Dock item 消失。updater 替換的 app base dir 仍是這個 onedir 根目錄，不改 Windows 或 macOS updater layout 語義。
 
 目前 macOS frozen Web UI 可檢查、下載、驗證 SHA256，並啟動獨立 updater 在主程式退出後套用新版 onedir。若未做 Developer ID signing / notarization，使用者可能需要右鍵 Open、到系統設定允許，或自行處理 quarantine。
 

@@ -19,13 +19,17 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.version import APP_VERSION
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_NAME
 
 
 APP_ROOT_NAME = "facebook-monitor"
-BUNDLE_NAME = "Facebook Monitor.app"
+BUNDLE_NAME = MACOS_APP_BUNDLE_NAME
 BUNDLE_DISPLAY_NAME = "Facebook Monitor"
 BUNDLE_IDENTIFIER = "com.ooopeople.facebook-monitor"
-LAUNCHER_EXECUTABLE_NAME = "facebook-monitor-launcher"
+LAUNCHER_EXECUTABLE_NAME = Path(MACOS_APP_BUNDLE_LAUNCHER).name
 ICON_BASENAME = "facebook-monitor"
 DEFAULT_ICON_SOURCE = ROOT / "packaging" / "assets" / "facebook-monitor.png"
 
@@ -113,36 +117,40 @@ def _compile_native_launcher(destination: Path) -> None:
     """編譯 Dock 常駐 launcher，讓 `.app` 保持為可關閉的母程序。"""
 
     clang = _find_clang()
+    sdk_path = _find_macos_sdk_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="facebook-monitor-launcher-") as temp_dir:
         source = Path(temp_dir) / "facebook-monitor-launcher.m"
         source.write_text(_native_launcher_source(), encoding="utf-8")
-        subprocess.run(
+        command = [
+            clang,
+            "-fobjc-arc",
+            "-arch",
+            "arm64",
+        ]
+        if sdk_path:
+            command.extend(["-isysroot", sdk_path])
+        command.extend(
             [
-                clang,
-                "-fobjc-arc",
                 "-framework",
                 "Cocoa",
                 str(source),
                 "-o",
                 str(destination),
-            ],
-            check=True,
+            ]
         )
+        subprocess.run(command, check=True)
     destination.chmod(0o755)
 
 
 def _find_clang() -> str:
     """尋找 macOS native launcher 所需的 Objective-C compiler。"""
 
-    clang = shutil.which("clang")
-    if clang:
-        return clang
     xcrun = shutil.which("xcrun")
     if xcrun:
         try:
             detected = subprocess.check_output(
-                [xcrun, "--find", "clang"],
+                [xcrun, "--sdk", "macosx", "--find", "clang"],
                 text=True,
                 stderr=subprocess.DEVNULL,
             ).strip()
@@ -150,13 +158,32 @@ def _find_clang() -> str:
             detected = ""
         if detected:
             return detected
+    clang = shutil.which("clang")
+    if clang:
+        return clang
     raise ValueError("macOS native launcher compiler not found: clang")
+
+
+def _find_macos_sdk_path() -> str:
+    """透過 xcrun 取得 macOS SDK path；失敗時讓 clang 使用自己的預設值。"""
+
+    xcrun = shutil.which("xcrun")
+    if not xcrun:
+        return ""
+    try:
+        return subprocess.check_output(
+            [xcrun, "--sdk", "macosx", "--show-sdk-path"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.SubprocessError:
+        return ""
 
 
 def _native_launcher_source() -> str:
     """回傳 `.app` 內部 native launcher 的 Objective-C source。"""
 
-    return r"""#import <Cocoa/Cocoa.h>
+    source = r"""#import <Cocoa/Cocoa.h>
 #include <signal.h>
 
 static dispatch_source_t gTermSource;
@@ -198,12 +225,22 @@ static dispatch_source_t InstallTerminationSignalHandler(int signalNumber) {
     NSArray<NSString *> *processArgs = [[NSProcessInfo processInfo] arguments];
     NSMutableArray<NSString *> *childArgs = [NSMutableArray array];
     if ([processArgs count] > 1) {
-        [childArgs addObjectsFromArray:[processArgs subarrayWithRange:NSMakeRange(1, [processArgs count] - 1)]];
+        for (NSString *arg in [processArgs subarrayWithRange:NSMakeRange(1, [processArgs count] - 1)]) {
+            if ([arg hasPrefix:@"-psn_"]) {
+                continue;
+            }
+            [childArgs addObject:arg];
+        }
     }
+
+    NSMutableDictionary<NSString *, NSString *> *environment = [[[NSProcessInfo processInfo] environment] mutableCopy];
+    [environment setObject:@"__FACEBOOK_MONITOR_LAUNCHER_ENV_VALUE__"
+                    forKey:@"__FACEBOOK_MONITOR_LAUNCHER_ENV_KEY__"];
 
     self.task = [[NSTask alloc] init];
     [self.task setExecutableURL:[NSURL fileURLWithPath:executable]];
     [self.task setArguments:childArgs];
+    [self.task setEnvironment:environment];
     [self.task setTerminationHandler:^(NSTask *finishedTask) {
         (void)finishedTask;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -257,6 +294,16 @@ int main(int argc, const char * argv[]) {
     return 0;
 }
 """
+    return (
+        source.replace(
+            "__FACEBOOK_MONITOR_LAUNCHER_ENV_KEY__",
+            MACOS_APP_BUNDLE_LAUNCHER_ENV,
+        )
+        .replace(
+            "__FACEBOOK_MONITOR_LAUNCHER_ENV_VALUE__",
+            MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE,
+        )
+    )
 
 
 def _info_plist(*, version: str) -> dict[str, object]:

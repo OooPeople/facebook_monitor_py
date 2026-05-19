@@ -10,6 +10,7 @@ import os
 import plistlib
 from pathlib import PurePosixPath
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -26,13 +27,25 @@ if str(SRC) not in sys.path:
 from facebook_monitor.version import APP_VERSION
 from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_SUFFIX
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_SUFFIX
-from facebook_monitor.runtime.bundled_browser import MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from facebook_monitor.updates.platforms import MACOS_APP_ENTRY
+from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
+from facebook_monitor.updates.platforms import MACOS_UPDATER_ENTRY
 
 
 VERSION_INFO_FILE = ROOT / "packaging" / "pyinstaller" / "version_info.txt"
 MAX_ZIP_ENTRIES = 50_000
 MAX_ZIP_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
+MACOS_ZIP_ROOT = "facebook-monitor"
+CPU_TYPE_ARM64 = 0x0100000C
+MACHO_MAGIC_64 = 0xFEEDFACF
+MACHO_CIGAM_64 = 0xCFFAEDFE
+FAT_MAGIC = 0xCAFEBABE
+FAT_MAGIC_64 = 0xCAFEBABF
+FAT_CIGAM = 0xBEBAFECA
+FAT_CIGAM_64 = 0xBFBAFECA
 REQUIRED_ZIP_ENTRIES = frozenset(
     {
         "facebook-monitor/facebook-monitor.exe",
@@ -48,25 +61,22 @@ ZIP_EXE_ENTRIES = (
     "facebook-monitor/facebook-monitor-updater.exe",
 )
 MACOS_REQUIRED_ZIP_ENTRIES = frozenset(
-    {
-        "facebook-monitor/facebook-monitor",
-        "facebook-monitor/facebook-monitor-updater",
-        "facebook-monitor/Facebook Monitor.app/Contents/Info.plist",
-        "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
-        "facebook-monitor/Facebook Monitor.app/Contents/Resources/facebook-monitor.icns",
-    }
+    f"{MACOS_ZIP_ROOT}/{path}"
+    for path in MACOS_ARM64_LAYOUT_POLICY.required_staging_files
 )
 MACOS_EXECUTABLE_ENTRIES = (
-    "facebook-monitor/facebook-monitor",
-    "facebook-monitor/facebook-monitor-updater",
-    "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
+    f"{MACOS_ZIP_ROOT}/{MACOS_APP_ENTRY}",
+    f"{MACOS_ZIP_ROOT}/{MACOS_UPDATER_ENTRY}",
+    f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_LAUNCHER}",
 )
-MACOS_APP_INFO_PLIST_ENTRY = "facebook-monitor/Facebook Monitor.app/Contents/Info.plist"
-MACOS_APP_LAUNCHER_ENTRY = (
-    "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher"
+MACOS_APP_INFO_PLIST_ENTRY = f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_INFO_PLIST}"
+MACOS_APP_LAUNCHER_ENTRY = f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_LAUNCHER}"
+MACOS_APP_LAUNCHER_NAME = PurePosixPath(MACOS_APP_BUNDLE_LAUNCHER).name
+MACOS_BROWSER_ENTRY_SUFFIXES = tuple(
+    suffix
+    for group in MACOS_ARM64_LAYOUT_POLICY.required_staging_any_groups
+    for suffix in group
 )
-MACOS_APP_LAUNCHER_NAME = "facebook-monitor-launcher"
-MACOS_BROWSER_ENTRY_SUFFIXES = MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
 SENSITIVE_RELEASE_PATH_PARTS = frozenset(
     {
         "data",
@@ -149,7 +159,7 @@ def validate_release_artifacts(
         _validate_zip_contents(zip_path, messages)
         _validate_zipped_exes(zip_path, version, expected_signer_subject, messages)
     elif zip_path.is_file():
-        _validate_macos_zip_contents(zip_path, messages)
+        _validate_macos_zip_contents(zip_path, version, messages)
     if zip_path.is_file() and sha_path.is_file():
         _validate_sha256(zip_path, sha_path, messages)
 
@@ -234,14 +244,18 @@ def _validate_zip_contents(zip_path: Path, messages: list[str]) -> None:
         messages.append("zip must not include portable data directory")
 
 
-def _validate_macos_zip_contents(zip_path: Path, messages: list[str]) -> None:
+def _validate_macos_zip_contents(
+    zip_path: Path,
+    version: str,
+    messages: list[str],
+) -> None:
     """確認 macOS onedir zip 內含必要檔案且不含 runtime data。"""
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
             names = _validated_zip_names(archive, messages)
             infos = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
-            _validate_macos_app_bundle_metadata(archive, names, messages)
+            _validate_macos_app_bundle_metadata(archive, names, version, messages)
     except zipfile.BadZipFile:
         messages.append(f"bad zip file: {zip_path}")
         return
@@ -269,6 +283,7 @@ def _validate_macos_zip_contents(zip_path: Path, messages: list[str]) -> None:
 def _validate_macos_app_bundle_metadata(
     archive: zipfile.ZipFile,
     names: set[str],
+    version: str,
     messages: list[str],
 ) -> None:
     """確認 macOS launcher `.app` 會顯示在 Dock 並保持 native app 生命周期。"""
@@ -288,12 +303,55 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle must remain visible in Dock")
     if not plist.get("CFBundleIconFile"):
         messages.append("macOS app bundle icon is missing")
+    if plist.get("CFBundleShortVersionString") != version:
+        messages.append("macOS app bundle short version does not match app version")
+    if plist.get("CFBundleVersion") != version:
+        messages.append("macOS app bundle version does not match app version")
     try:
-        launcher_prefix = archive.read(MACOS_APP_LAUNCHER_ENTRY)[:2]
+        launcher_data = archive.read(MACOS_APP_LAUNCHER_ENTRY)
     except (OSError, KeyError):
         return
-    if launcher_prefix == b"#!":
-        messages.append("macOS app bundle launcher must be a native executable")
+    if not _is_macho_arm64(launcher_data):
+        messages.append("macOS app bundle launcher must be an arm64 Mach-O executable")
+
+
+def _is_macho_arm64(data: bytes) -> bool:
+    """判斷 bytes 是否為 arm64 Mach-O 或包含 arm64 slice 的 universal binary。"""
+
+    if len(data) < 8:
+        return False
+    little_magic = struct.unpack_from("<I", data, 0)[0]
+    big_magic = struct.unpack_from(">I", data, 0)[0]
+    if little_magic == MACHO_MAGIC_64:
+        return struct.unpack_from("<i", data, 4)[0] == CPU_TYPE_ARM64
+    if big_magic in {MACHO_MAGIC_64, MACHO_CIGAM_64}:
+        return struct.unpack_from(">i", data, 4)[0] == CPU_TYPE_ARM64
+    if big_magic in {FAT_MAGIC, FAT_MAGIC_64}:
+        return _fat_binary_contains_arm64(data, endian=">")
+    if little_magic in {FAT_CIGAM, FAT_CIGAM_64}:
+        return _fat_binary_contains_arm64(data, endian="<")
+    return False
+
+
+def _fat_binary_contains_arm64(data: bytes, *, endian: str) -> bool:
+    """檢查 universal binary 的 fat_arch / fat_arch_64 table 是否包含 arm64。"""
+
+    if len(data) < 8:
+        return False
+    magic = struct.unpack_from(f"{endian}I", data, 0)[0]
+    arch_size = 32 if magic in {FAT_MAGIC_64, FAT_CIGAM_64} else 20
+    arch_count = struct.unpack_from(f"{endian}I", data, 4)[0]
+    if arch_count > 64:
+        return False
+    offset = 8
+    for _ in range(arch_count):
+        if len(data) < offset + arch_size:
+            return False
+        cpu_type = struct.unpack_from(f"{endian}i", data, offset)[0]
+        if cpu_type == CPU_TYPE_ARM64:
+            return True
+        offset += arch_size
+    return False
 
 
 def _zip_member_has_executable_bit(info: zipfile.ZipInfo) -> bool:

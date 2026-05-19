@@ -6,7 +6,7 @@
 
 - 目前只支援 macOS Apple Silicon / arm64。
 - Intel Mac 不列入目前打包與 updater 範圍。
-- onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；使用者應從這個 `.app` 啟動，避免 Finder 直接執行 Unix executable 時跳出 Terminal，並讓 Dock item 在主程式執行期間持續存在。
+- onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；使用者應從這個 `.app` 啟動，避免 Finder 直接執行 Unix executable 時跳出 Terminal，並讓 Dock item 在主程式執行期間持續存在。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版會自動轉交給 `.app` launcher。
 - macOS Web UI 支援「檢查、下載、SHA256 驗證、handoff、temp updater 套用」。
 - 尚未做 Developer ID signing / notarization。
 
@@ -21,7 +21,7 @@
 - settings macOS download-and-apply UI
 - macOS apply / launcher policy 單元測試
 - macOS PyInstaller build 可收進 Playwright Apple Silicon `Google Chrome for Testing.app`
-- PyInstaller macOS build 會從 `packaging/assets/facebook-monitor.png` 產生 `.app` Dock icon，並編譯 native launcher 作為 Dock 母程序
+- PyInstaller macOS build 會從 `packaging/assets/facebook-monitor.png` 產生 `.app` Dock icon，並編譯 arm64 native launcher 作為 Dock 母程序
 - frozen updater smoke 可替換 app files、保留 data/profile、清除 handoff/zip，並保留 executable bit
 
 Mac 端已知狀態：

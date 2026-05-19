@@ -17,6 +17,9 @@ from facebook_monitor.runtime.instance_lock import ServerInfo
 from facebook_monitor.runtime.instance_lock import acquire_resource_identity_lock
 from facebook_monitor.runtime.logging_setup import reset_app_logging
 from facebook_monitor.runtime import windows_integration
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +49,82 @@ def test_windows_tray_defaults_only_for_frozen_windows(monkeypatch) -> None:
     assert windows_integration.resolve_windows_tray_decision(None).enabled
     assert not windows_integration.resolve_windows_tray_decision(False).enabled
     assert windows_integration.resolve_windows_tray_decision(True).enabled
+
+
+def test_frozen_macos_root_binary_relaunches_via_app_launcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """舊 updater 直啟新版 root binary 時，launcher 會轉回 `.app` Dock 母程序。"""
+
+    app_root = tmp_path / "facebook-monitor"
+    executable = app_root / "facebook-monitor"
+    app_launcher = app_root / MACOS_APP_BUNDLE_LAUNCHER
+    app_launcher.parent.mkdir(parents=True)
+    executable.write_text("app", encoding="utf-8")
+    app_launcher.write_text("launcher", encoding="utf-8")
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 12345
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.delenv(MACOS_APP_BUNDLE_LAUNCHER_ENV, raising=False)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+
+    exit_code = launcher.main(["--data-dir", str(tmp_path / "data"), "--no-open-browser"])
+
+    assert exit_code == 0
+    assert launched["command"] == [
+        str(app_launcher),
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--no-open-browser",
+    ]
+    kwargs = launched["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["cwd"] == str(app_root)
+    assert kwargs["start_new_session"] is True
+    assert isinstance(kwargs["env"], dict)
+    assert (
+        kwargs["env"][MACOS_APP_BUNDLE_LAUNCHER_ENV]
+        == MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+    )
+
+
+def test_frozen_macos_root_binary_guard_skips_app_relaunch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """`.app` native launcher 啟動的 child 不會再自我 relaunch 形成迴圈。"""
+
+    app_root = tmp_path / "facebook-monitor"
+    executable = app_root / "facebook-monitor"
+    app_launcher = app_root / MACOS_APP_BUNDLE_LAUNCHER
+    app_launcher.parent.mkdir(parents=True)
+    executable.write_text("app", encoding="utf-8")
+    app_launcher.write_text("launcher", encoding="utf-8")
+
+    def fail_popen(*args: object, **kwargs: object) -> None:
+        raise AssertionError("guarded child should not relaunch")
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.setenv(
+        MACOS_APP_BUNDLE_LAUNCHER_ENV,
+        MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE,
+    )
+    monkeypatch.setattr(launcher.subprocess, "Popen", fail_popen)
+
+    assert launcher._maybe_relaunch_via_macos_app([]) is None
 
 
 def test_explicit_windows_tray_on_non_windows_falls_back_to_plain_server(

@@ -191,3 +191,66 @@ def test_validate_pending_update_rejects_nested_data_dir_under_app(
         assert str(exc) == "pending_update_data_dir_must_be_app_data"
     else:
         raise AssertionError("expected nested app data dir to fail")
+
+
+def test_validate_pending_update_rejects_logs_dir_inside_app_outside_data(
+    tmp_path: Path,
+) -> None:
+    """logs dir 不可落在 app root 內但 data dir 外，避免 updater 替換時刪除。"""
+
+    app_base_dir = tmp_path / "app"
+    data_dir = app_base_dir / "data"
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_bytes(b"zip")
+    pending = PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name=zip_path.name,
+        zip_path=zip_path,
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        app_base_dir=app_base_dir,
+        data_dir=data_dir,
+        db_path=data_dir / "app.db",
+        profile_dir=data_dir / "profiles" / "automation_default",
+        logs_dir=app_base_dir / "logs",
+        runtime_dir=data_dir / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+
+    try:
+        validate_pending_update_paths(pending)
+    except ValueError as exc:
+        assert str(exc) == "pending_update_logs_dir_unsafe"
+    else:
+        raise AssertionError("expected app-local logs dir outside data to fail")
+
+
+def test_validate_pending_update_allows_logs_dir_inside_data(
+    tmp_path: Path,
+) -> None:
+    """portable app/data/logs 是 updater 可保留的安全 logs 位置。"""
+
+    app_base_dir = tmp_path / "app"
+    data_dir = app_base_dir / "data"
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_bytes(b"zip")
+    pending = PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name=zip_path.name,
+        zip_path=zip_path,
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        app_base_dir=app_base_dir,
+        data_dir=data_dir,
+        db_path=data_dir / "app.db",
+        profile_dir=data_dir / "profiles" / "automation_default",
+        logs_dir=data_dir / "logs",
+        runtime_dir=data_dir / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+
+    validate_pending_update_paths(pending)

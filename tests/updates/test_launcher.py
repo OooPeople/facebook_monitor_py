@@ -12,6 +12,7 @@ from facebook_monitor.updates.launcher import find_bundled_updater
 from facebook_monitor.updates.launcher import launch_restarted_app
 from facebook_monitor.updates.launcher import launch_temp_updater
 from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 
 
 def test_find_bundled_updater_returns_root_exe(tmp_path: Path) -> None:
@@ -220,11 +221,14 @@ def test_launch_restarted_app_uses_macos_binary_and_detached_session(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """macOS restart path 使用無副檔名 app entry 並用新 session detached 啟動。"""
+    """macOS restart path 使用 `.app` launcher 並用新 session detached 啟動。"""
 
     app_base_dir = tmp_path / "app"
     app_base_dir.mkdir()
     (app_base_dir / "facebook-monitor").write_text("app", encoding="utf-8")
+    launcher = app_base_dir / MACOS_APP_BUNDLE_LAUNCHER
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher", encoding="utf-8")
     pending = PendingUpdate(
         schema_version=1,
         version="0.1.0",
@@ -259,7 +263,38 @@ def test_launch_restarted_app_uses_macos_binary_and_detached_session(
     assert result.pid == 9876
     command = launched["command"]
     assert isinstance(command, list)
-    assert command[0] == str(app_base_dir / "facebook-monitor")
+    assert command[0] == str(launcher)
     kwargs = launched["kwargs"]
     assert isinstance(kwargs, dict)
     assert kwargs["start_new_session"] is True
+
+
+def test_launch_restarted_app_reports_missing_macos_launcher(
+    tmp_path: Path,
+) -> None:
+    """macOS update artifact 若缺 `.app` launcher，restart 不可退回 root binary。"""
+
+    app_base_dir = tmp_path / "app"
+    app_base_dir.mkdir()
+    (app_base_dir / "facebook-monitor").write_text("app", encoding="utf-8")
+    pending = PendingUpdate(
+        schema_version=1,
+        version="0.1.0",
+        asset_name="app.zip",
+        zip_path=tmp_path / "app.zip",
+        expected_sha256="a" * 64,
+        actual_sha256="a" * 64,
+        app_base_dir=app_base_dir,
+        data_dir=tmp_path / "custom-data",
+        db_path=tmp_path / "custom-data" / "custom.db",
+        profile_dir=tmp_path / "custom-data" / "profiles" / "main",
+        logs_dir=tmp_path / "custom-logs",
+        runtime_dir=tmp_path / "custom-data" / "runtime",
+        created_at="2026-05-17T00:00:00+00:00",
+    )
+
+    result = launch_restarted_app(pending)
+
+    assert not result.launched
+    assert result.status == "restart_entry_missing"
+    assert result.message == str(app_base_dir / MACOS_APP_BUNDLE_LAUNCHER)

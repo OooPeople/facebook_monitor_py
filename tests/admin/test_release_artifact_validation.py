@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-import plistlib
 import zipfile
 
 import pytest
 
 from scripts.admin import release_artifact_validation as validation
+from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import write_macos_app_bundle_to_zip
 
 
 def test_validate_release_artifacts_accepts_matching_zip_and_sha(
@@ -609,7 +610,7 @@ def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
             "chromium",
             0o755,
         )
-        _write_macos_app_bundle(archive, launcher_content="#!/bin/sh\nexec app\n")
+        _write_macos_app_bundle(archive, launcher_content=b"#!/bin/sh\nexec app\n")
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -623,13 +624,53 @@ def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
     )
 
     assert not result.ok
-    assert any("native executable" in message for message in result.messages)
+    assert any("arm64 Mach-O" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` Info.plist version 也必須與 release version 對齊。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            "updater",
+            0o755,
+        )
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            "chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, version="0.0.9")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("short version" in message for message in result.messages)
+    assert any("bundle version" in message for message in result.messages)
 
 
 def _writestr_with_mode(
     archive: zipfile.ZipFile,
     name: str,
-    content: str,
+    content: str | bytes,
     mode: int,
 ) -> None:
     """寫入帶 POSIX mode 的 zip member。"""
@@ -642,27 +683,13 @@ def _writestr_with_mode(
 def _write_macos_app_bundle(
     archive: zipfile.ZipFile,
     *,
-    launcher_content: str = "native launcher",
+    version: str = "0.1.0",
+    launcher_content: bytes = MACHO_ARM64_BYTES,
 ) -> None:
     """寫入測試用 Finder/Dock `.app` launcher bundle。"""
 
-    archive.writestr(
-        "facebook-monitor/Facebook Monitor.app/Contents/Info.plist",
-        plistlib.dumps(
-            {
-                "CFBundleExecutable": "facebook-monitor-launcher",
-                "CFBundleIconFile": "facebook-monitor",
-                "CFBundlePackageType": "APPL",
-            }
-        ),
-    )
-    _writestr_with_mode(
+    write_macos_app_bundle_to_zip(
         archive,
-        "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
-        launcher_content,
-        0o755,
-    )
-    archive.writestr(
-        "facebook-monitor/Facebook Monitor.app/Contents/Resources/facebook-monitor.icns",
-        "icon",
+        version=version,
+        launcher_content=launcher_content,
     )

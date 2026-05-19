@@ -178,11 +178,11 @@ def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:
     """套用更新後啟動新版 app，並保留原 runtime path 覆寫。"""
 
     layout_policy = detect_layout_policy(pending.app_base_dir)
-    executable = layout_policy.app_entry(pending.app_base_dir)
+    executable = layout_policy.restart_entry(pending.app_base_dir)
     if not executable.is_file():
         return AppRestartResult(
             launched=False,
-            status="app_exe_missing",
+            status="restart_entry_missing",
             message=str(executable),
         )
     command = [

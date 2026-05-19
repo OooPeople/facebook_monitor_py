@@ -16,7 +16,7 @@ def test_collect_build_metadata_uses_source_defaults() -> None:
     metadata = collect_build_metadata(asset_version="asset-test")
 
     assert metadata.app_name == "Facebook Monitor"
-    assert metadata.app_version == "0.3.0"
+    assert metadata.app_version == "0.3.1"
     assert metadata.asset_version == "asset-test"
     assert metadata.python_version
     assert metadata.executable.exists()

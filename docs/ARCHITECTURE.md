@@ -74,6 +74,7 @@
 ## Frozen Updater
 
 - 目前正式更新目標支援 Windows PyInstaller onedir portable zip 與 macOS Apple Silicon onedir zip；source mode 只提供 GitHub Release 檢查，不把原始碼更新包裝成正式功能。
+- macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock launcher；它只啟動同一個 onedir 內的正式 `facebook-monitor` executable，updater 仍以 onedir 根目錄作為 app base dir。
 - 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
 - Release asset 檔名必須精確對齊 GitHub tag version：Windows 使用 `facebook-monitor-{version}-windows-portable.zip`，macOS arm64 使用 `facebook-monitor-{version}-macos-arm64-onedir.zip`，兩者都必須有同名 `.sha256`。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
 - Web UI 只負責下載、驗證 SHA256、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
@@ -84,7 +85,7 @@
 - 成功套用後 updater 會清除本次下載 zip、`.sha256`、pending handoff 與 staging，並保留最近 3 份 app backup 供人工追查或 rollback；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
 - 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
 - updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
-- release artifact validation 會檢查 app version、Windows version metadata、platform zip 檔名、`.sha256` 內容、zip 內必要 onedir 檔案、Windows EXE metadata、macOS executable bit、可選 tag 與可選 Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
+- release artifact validation 會檢查 app version、Windows version metadata、platform zip 檔名、`.sha256` 內容、zip 內必要 onedir 檔案、Windows EXE metadata、macOS `.app` launcher、macOS executable bit、可選 tag 與可選 Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
 - SHA256 只驗證下載完整性，不驗證發布者身分；尚未加入 signed manifest 或 detached signature。Authenticode signer validation hook 已存在，但實際簽章需要正式 code signing 憑證。
 
 ## Persistence

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import zipfile
 
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
@@ -61,6 +62,7 @@ def make_macos_app_root(root: Path, *, app_text: str) -> None:
     updater_entry.write_text("updater", encoding="utf-8")
     app_entry.chmod(0o755)
     updater_entry.chmod(0o755)
+    make_macos_app_bundle(root)
 
 
 def make_macos_chrome_for_testing_app_root(root: Path, *, app_text: str) -> None:
@@ -79,6 +81,29 @@ def make_macos_chrome_for_testing_app_root(root: Path, *, app_text: str) -> None
     updater_entry.write_text("updater", encoding="utf-8")
     app_entry.chmod(0o755)
     updater_entry.chmod(0o755)
+    make_macos_app_bundle(root)
+
+
+def make_macos_app_bundle(root: Path) -> None:
+    """建立測試用 Finder/Dock `.app` launcher bundle。"""
+
+    contents = root / "Facebook Monitor.app" / "Contents"
+    launcher = contents / "MacOS" / "facebook-monitor-launcher"
+    icon = contents / "Resources" / "facebook-monitor.icns"
+    launcher.parent.mkdir(parents=True)
+    icon.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\nexec ../facebook-monitor \"$@\"\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    icon.write_text("icon", encoding="utf-8")
+    (contents / "Info.plist").write_bytes(
+        plistlib.dumps(
+            {
+                "CFBundleExecutable": "facebook-monitor-launcher",
+                "CFBundleIconFile": "facebook-monitor",
+                "CFBundlePackageType": "APPL",
+            }
+        )
+    )
 
 
 def make_update_zip(zip_path: Path, *, exe_text: str) -> str:
@@ -183,6 +208,13 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
     assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
     assert_posix_executable_when_supported(app_root / "facebook-monitor")
     assert_posix_executable_when_supported(app_root / "facebook-monitor-updater")
+    assert_posix_executable_when_supported(
+        app_root
+        / "Facebook Monitor.app"
+        / "Contents"
+        / "MacOS"
+        / "facebook-monitor-launcher"
+    )
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     assert result.backup_dir is not None
     assert (result.backup_dir / "facebook-monitor").read_text(encoding="utf-8") == "old"

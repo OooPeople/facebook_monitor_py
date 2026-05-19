@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import plistlib
 from pathlib import PurePosixPath
 import re
 import subprocess
@@ -50,12 +51,18 @@ MACOS_REQUIRED_ZIP_ENTRIES = frozenset(
     {
         "facebook-monitor/facebook-monitor",
         "facebook-monitor/facebook-monitor-updater",
+        "facebook-monitor/Facebook Monitor.app/Contents/Info.plist",
+        "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
+        "facebook-monitor/Facebook Monitor.app/Contents/Resources/facebook-monitor.icns",
     }
 )
 MACOS_EXECUTABLE_ENTRIES = (
     "facebook-monitor/facebook-monitor",
     "facebook-monitor/facebook-monitor-updater",
+    "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
 )
+MACOS_APP_INFO_PLIST_ENTRY = "facebook-monitor/Facebook Monitor.app/Contents/Info.plist"
+MACOS_APP_LAUNCHER_NAME = "facebook-monitor-launcher"
 MACOS_BROWSER_ENTRY_SUFFIXES = MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
 SENSITIVE_RELEASE_PATH_PARTS = frozenset(
     {
@@ -231,6 +238,7 @@ def _validate_macos_zip_contents(zip_path: Path, messages: list[str]) -> None:
         with zipfile.ZipFile(zip_path) as archive:
             names = _validated_zip_names(archive, messages)
             infos = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
+            _validate_macos_app_bundle_metadata(archive, names, messages)
     except zipfile.BadZipFile:
         messages.append(f"bad zip file: {zip_path}")
         return
@@ -253,6 +261,30 @@ def _validate_macos_zip_contents(zip_path: Path, messages: list[str]) -> None:
         if info is not None and not _zip_member_has_executable_bit(info):
             messages.append(f"zip executable bit missing: {entry}")
     _validate_no_sensitive_runtime_paths(names, messages)
+
+
+def _validate_macos_app_bundle_metadata(
+    archive: zipfile.ZipFile,
+    names: set[str],
+    messages: list[str],
+) -> None:
+    """確認 macOS launcher `.app` 會顯示在 Dock 並啟動 wrapper script。"""
+
+    if MACOS_APP_INFO_PLIST_ENTRY not in names:
+        return
+    try:
+        plist = plistlib.loads(archive.read(MACOS_APP_INFO_PLIST_ENTRY))
+    except (OSError, plistlib.InvalidFileException, KeyError):
+        messages.append("macOS app bundle Info.plist is invalid")
+        return
+    if plist.get("CFBundlePackageType") != "APPL":
+        messages.append("macOS app bundle CFBundlePackageType must be APPL")
+    if plist.get("CFBundleExecutable") != MACOS_APP_LAUNCHER_NAME:
+        messages.append("macOS app bundle executable does not match launcher")
+    if plist.get("LSUIElement") is True or plist.get("LSBackgroundOnly") is True:
+        messages.append("macOS app bundle must remain visible in Dock")
+    if not plist.get("CFBundleIconFile"):
+        messages.append("macOS app bundle icon is missing")
 
 
 def _zip_member_has_executable_bit(info: zipfile.ZipInfo) -> bool:

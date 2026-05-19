@@ -16,6 +16,11 @@ WINDOWS_APP_ENTRY = "facebook-monitor.exe"
 WINDOWS_UPDATER_ENTRY = "facebook-monitor-updater.exe"
 MACOS_APP_ENTRY = "facebook-monitor"
 MACOS_UPDATER_ENTRY = "facebook-monitor-updater"
+MACOS_APP_BUNDLE_INFO_PLIST = "Facebook Monitor.app/Contents/Info.plist"
+MACOS_APP_BUNDLE_LAUNCHER = (
+    "Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher"
+)
+MACOS_APP_BUNDLE_ICON = "Facebook Monitor.app/Contents/Resources/facebook-monitor.icns"
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,9 @@ MACOS_ARM64_LAYOUT_POLICY = UpdaterLayoutPolicy(
     required_staging_files=(
         MACOS_APP_ENTRY,
         MACOS_UPDATER_ENTRY,
+        MACOS_APP_BUNDLE_INFO_PLIST,
+        MACOS_APP_BUNDLE_LAUNCHER,
+        MACOS_APP_BUNDLE_ICON,
     ),
     required_current_paths=(
         MACOS_APP_ENTRY,

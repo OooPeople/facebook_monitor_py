@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import plistlib
 import zipfile
 
 import pytest
@@ -450,6 +451,7 @@ def test_validate_release_artifacts_accepts_macos_arm64_onedir_zip(
             "facebook-monitor/_internal/facebook_monitor/webapp/templates/index.html",
             "<html></html>",
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -490,6 +492,7 @@ def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -527,6 +530,7 @@ def test_validate_release_artifacts_rejects_macos_zip_without_executable_bit(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -565,6 +569,7 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
         archive.writestr("facebook-monitor/data/app.db", "private")
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -593,3 +598,28 @@ def _writestr_with_mode(
     info = zipfile.ZipInfo(name)
     info.external_attr = (mode & 0o777) << 16
     archive.writestr(info, content)
+
+
+def _write_macos_app_bundle(archive: zipfile.ZipFile) -> None:
+    """寫入測試用 Finder/Dock `.app` launcher bundle。"""
+
+    archive.writestr(
+        "facebook-monitor/Facebook Monitor.app/Contents/Info.plist",
+        plistlib.dumps(
+            {
+                "CFBundleExecutable": "facebook-monitor-launcher",
+                "CFBundleIconFile": "facebook-monitor",
+                "CFBundlePackageType": "APPL",
+            }
+        ),
+    )
+    _writestr_with_mode(
+        archive,
+        "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
+        "#!/bin/sh\nexec ../facebook-monitor \"$@\"\n",
+        0o755,
+    )
+    archive.writestr(
+        "facebook-monitor/Facebook Monitor.app/Contents/Resources/facebook-monitor.icns",
+        "icon",
+    )

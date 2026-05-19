@@ -12,6 +12,7 @@
 | `docs/ARCHITECTURE.md` | 穩定架構事實、正式主路徑、模組邊界、不可回退產品語義、deferred 邊界 | 短期進度、最近驗證、逐次任務紀錄 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、功能進度 |
 | `packaging/README.md` | EXE 打包前置、PyInstaller 與 frozen smoke checklist | source-mode 日常操作、目前進度 |
+| `packaging/MACOS_HANDOFF.md` | macOS Apple Silicon 打包接手、實機 build/smoke 指令與目前阻塞 | 穩定使用者操作、Windows 打包規則 |
 
 ## 本機協作文件
 

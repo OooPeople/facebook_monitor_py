@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# ruff: noqa: F821
+# ruff: noqa: E402,F821
 
 """macOS PyInstaller onedir spec for the formal local Web UI launcher.
 
@@ -8,8 +8,9 @@ in the active environment:
 
     pyinstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean
 
-This spec intentionally produces an onedir folder, not a signed `.app` bundle.
-Signing / notarization is a later release step.
+This spec intentionally produces an onedir folder with a lightweight `.app`
+launcher, not a signed standalone `.app` distribution. Signing / notarization
+is a later release step.
 """
 
 import os
@@ -30,6 +31,14 @@ if sys.platform != "darwin":
 
 ROOT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from scripts.admin.create_macos_app_launcher import create_macos_app_launcher
+from facebook_monitor.version import APP_VERSION
+
 ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "launcher.py")
 UPDATER_ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "updater.py")
 GENERATED_DIR = os.path.join(ROOT_DIR, "build", "pyinstaller_generated")
@@ -202,4 +211,9 @@ coll = COLLECT(
     upx=False,
     upx_exclude=[],
     name="facebook-monitor",
+)
+create_macos_app_launcher(
+    app_root=Path(DISTPATH) / "facebook-monitor",
+    icon_source=Path(ICON_PATH),
+    version=APP_VERSION,
 )

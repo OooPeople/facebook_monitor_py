@@ -48,10 +48,16 @@ def test_validate_built_app_accepts_macos_onedir_layout(tmp_path: Path) -> None:
         "facebook-monitor",
         "facebook-monitor-updater",
         "_internal/python",
+        "Facebook Monitor.app/Contents/Info.plist",
+        "Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
+        "Facebook Monitor.app/Contents/Resources/facebook-monitor.icns",
     ):
         path = built_app / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x", encoding="utf-8")
+    (built_app / "Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher").chmod(
+        0o755
+    )
     browser_exe.parent.mkdir(parents=True, exist_ok=True)
     browser_exe.write_text("chromium", encoding="utf-8")
 

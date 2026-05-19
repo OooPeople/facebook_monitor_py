@@ -6,6 +6,7 @@
 
 - 目前只支援 macOS Apple Silicon / arm64。
 - Intel Mac 不列入目前打包與 updater 範圍。
+- onedir 內包含 `Facebook Monitor.app` Finder / Dock launcher；使用者應從這個 `.app` 啟動，避免 Finder 直接執行 Unix executable 時跳出 Terminal。
 - macOS Web UI 支援「檢查、下載、SHA256 驗證、handoff、temp updater 套用」。
 - 尚未做 Developer ID signing / notarization。
 
@@ -20,6 +21,7 @@
 - settings macOS download-and-apply UI
 - macOS apply / launcher policy 單元測試
 - macOS PyInstaller build 可收進 Playwright Apple Silicon `Google Chrome for Testing.app`
+- PyInstaller macOS build 會從 `packaging/assets/facebook-monitor.png` 產生 `.app` Dock icon
 - frozen updater smoke 可替換 app files、保留 data/profile、清除 handoff/zip，並保留 executable bit
 
 Mac 端已知狀態：
@@ -119,20 +121,21 @@ rm -rf ~/dev/fb-monitor-frozen-test
 mkdir -p ~/dev/fb-monitor-frozen-test
 ditto -x -k dist/facebook-monitor-0.3.0-macos-arm64-onedir.zip ~/dev/fb-monitor-frozen-test
 cd ~/dev/fb-monitor-frozen-test/facebook-monitor
-./facebook-monitor --data-dir ~/dev/fb-monitor-frozen-test/data
+open "Facebook Monitor.app" --args --data-dir ~/dev/fb-monitor-frozen-test/data
 ```
 
 若 Gatekeeper / quarantine 擋住，測試用可先跑：
 
 ```bash
 xattr -dr com.apple.quarantine ~/dev/fb-monitor-frozen-test/facebook-monitor
-./facebook-monitor --data-dir ~/dev/fb-monitor-frozen-test/data
+open "Facebook Monitor.app" --args --data-dir ~/dev/fb-monitor-frozen-test/data
 ```
 
 Smoke 至少確認：
 
 - Web UI 可開，`/health` 正常。
 - static assets 正常。
+- Finder 開啟 `Facebook Monitor.app` 不跳 Terminal，執行時顯示在 Dock。
 - `~/dev/fb-monitor-frozen-test/data/logs/startup.log` 與 `app.log` 無 fatal error。
 - bundled Chromium 可開 Facebook login/profile 視窗。
 - posts/comments target 至少做一個基本 metadata refresh 或 scan smoke。

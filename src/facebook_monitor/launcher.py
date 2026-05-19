@@ -281,10 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     ),
                                 )
                             else:
-                                uvicorn.run(
-                                    app,
-                                    **uvicorn_kwargs,
-                                )
+                                _run_uvicorn_with_shutdown_hook(app, **uvicorn_kwargs)
                     finally:
                         instance_lock.clear_server_info()
             except AppInstanceLockError as exc:
@@ -347,6 +344,15 @@ def _handle_existing_instance(
         return 2
     print(f"{APP_NAME} 已在執行，但目前找不到 server 資訊。")
     return 2
+
+
+def _run_uvicorn_with_shutdown_hook(app: Any, **uvicorn_kwargs: Any) -> None:
+    """啟動 plain uvicorn server，並暴露 Web UI 可呼叫的 shutdown hook。"""
+
+    config = uvicorn.Config(app, **uvicorn_kwargs)
+    server = uvicorn.Server(config)
+    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
+    server.run()
 
 
 def _server_is_healthy(url: str) -> bool:

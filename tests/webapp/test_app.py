@@ -135,7 +135,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "app": "Facebook Monitor",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "asset_version": ASSET_VERSION,
         "python_version": payload["python_version"],
         "packaging_mode": "source",
@@ -286,7 +286,7 @@ def test_settings_update_check_uses_github_release_presenter(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.2.0"
+        assert current_version == "0.3.0"
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -494,7 +494,7 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.2.0"
+        assert current_version == "0.3.0"
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -668,7 +668,7 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.2.0"
+        assert current_version == "0.3.0"
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,

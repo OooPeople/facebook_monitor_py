@@ -76,7 +76,7 @@ from pathlib import Path
 import hashlib
 import zipfile
 
-version = "0.2.0"
+version = "0.3.0"
 arch = "arm64"
 dist = Path("dist")
 source = dist / "facebook-monitor"
@@ -117,7 +117,7 @@ uv run python scripts/admin/release_artifact_validation.py --platform macos-arm6
 ```bash
 rm -rf ~/dev/fb-monitor-frozen-test
 mkdir -p ~/dev/fb-monitor-frozen-test
-ditto -x -k dist/facebook-monitor-0.2.0-macos-arm64-onedir.zip ~/dev/fb-monitor-frozen-test
+ditto -x -k dist/facebook-monitor-0.3.0-macos-arm64-onedir.zip ~/dev/fb-monitor-frozen-test
 cd ~/dev/fb-monitor-frozen-test/facebook-monitor
 ./facebook-monitor --data-dir ~/dev/fb-monitor-frozen-test/data
 ```

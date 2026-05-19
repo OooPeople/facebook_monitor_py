@@ -118,13 +118,18 @@
       </dl>
 
       <div class="settings-card-actions settings-actions settings-actions--right">
-        {% if update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
+        {% if update_apply_supported and update_check.update_available and update_check.sha256_asset_download_url %}
           <form method="post" action="/settings/updates/download-and-apply" data-update-install-form>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button button--primary" type="submit">下載新版並套用更新</button>
           </form>
+        {% elif update_download_supported and update_check.update_available and update_check.sha256_asset_download_url %}
+          <form method="post" action="/settings/updates/download">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button button--primary" type="submit">下載並驗證更新</button>
+          </form>
         {% elif not update_download_supported %}
-          <span class="inline-feedback form-status is-visible">Source mode 僅支援檢查更新</span>
+          <span class="inline-feedback form-status is-visible">{{ update_unsupported_reason }}</span>
         {% endif %}
         <form class="settings-inline-form" method="get" action="/settings" data-update-check-form>
           <input type="hidden" name="update_check" value="1">

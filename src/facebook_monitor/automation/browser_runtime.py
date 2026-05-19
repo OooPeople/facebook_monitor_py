@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from facebook_monitor.core.defaults import PYTHON_BROWSER_RUNTIME_DEFAULTS
+from facebook_monitor.runtime.bundled_browser import find_bundled_browser_executable
 
 DEFAULT_VIEWPORT_WIDTH = PYTHON_BROWSER_RUNTIME_DEFAULTS.viewport_width
 DEFAULT_VIEWPORT_HEIGHT = PYTHON_BROWSER_RUNTIME_DEFAULTS.viewport_height
@@ -133,13 +134,4 @@ def _bundled_browser_executable_path() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     app_base_dir = Path(sys.executable).resolve().parent
-    candidates = (
-        app_base_dir / "browser" / "chrome.exe",
-        app_base_dir / "_internal" / "browser" / "chrome.exe",
-        app_base_dir / "browser" / "chrome-win64" / "chrome.exe",
-        app_base_dir / "_internal" / "browser" / "chrome-win64" / "chrome.exe",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
+    return find_bundled_browser_executable(app_base_dir)

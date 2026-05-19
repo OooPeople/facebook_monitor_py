@@ -7,9 +7,12 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.webapp.app import create_app
 from tests.helpers.webapp import render_seeded_index
 from tests.helpers.webapp import seed_dashboard_index_target
@@ -126,6 +129,62 @@ def test_index_renders_scan_diagnostics_without_legacy_debug_json(
     assert "debug_json=" not in text
     assert "https://www.facebook.com/groups/1/user/2" in text
     assert '<details class="debug-details scan-debug-details">' not in text
+
+
+def test_index_renders_content_unavailable_alert(tmp_path: Path) -> None:
+    """Facebook 內容不可見時，卡片與收合摘要顯示連結已失效。"""
+
+    db_path = tmp_path / "app.db"
+    target = seed_dashboard_index_target(db_path)
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.scans.record_scan(
+            RecordScanRequest(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                error_message=(
+                    "content_unavailable: Facebook content is unavailable or no "
+                    "longer visible."
+                ),
+                metadata={
+                    "reason": CONTENT_UNAVAILABLE_REASON,
+                    "worker": "resident_main",
+                    "target_kind": "posts",
+                    "retryable": False,
+                },
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        app_context.services.targets.mark_target_error(
+            target.id,
+            "content_unavailable: Facebook content is unavailable or no longer visible.",
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            enforce_csrf=False,
+        )
+    )
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "連結已失效" in response.text
+    assert "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。" in response.text
+    assert (
+        '<div class="runtime-error" data-runtime-error >'
+        "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。</div>"
+    ) in response.text
+    assert (
+        '<div class="runtime-error" data-runtime-error >'
+        "content_unavailable: Facebook content is unavailable"
+    ) not in response.text
+    assert 'data-sidebar-status-detail="連結已失效"' in response.text
+    assert 'data-latest-error-kind="content-unavailable"' in response.text
+    assert "下次刷新：未排程" in response.text
+    assert "Facebook 顯示目前無法查看此內容" in response.text
+    assert "status=failed · reason=連結已失效" in response.text
+    assert "failure_reason=連結已失效" in response.text
 
 
 def test_index_keeps_internal_scheduler_and_old_debug_ui_hidden(

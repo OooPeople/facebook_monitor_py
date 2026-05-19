@@ -4,7 +4,7 @@
 避免多個 template 或 JS import 各自手動維護版本字串。
 """
 
-ASSET_VERSION = "0.2.0"
+ASSET_VERSION = "0.3.0"
 
 DASHBOARD_MODULE_FILENAMES = (
     "api.js",

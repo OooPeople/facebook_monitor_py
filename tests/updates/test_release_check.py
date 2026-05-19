@@ -8,6 +8,8 @@ from facebook_monitor.updates.release_check import evaluate_release
 from facebook_monitor.updates.release_check import find_windows_portable_asset
 from facebook_monitor.updates.release_check import parse_release_assets
 from facebook_monitor.updates.release_check import parse_version
+from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_POLICY
+from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
 
 
 def release_payload(
@@ -47,6 +49,7 @@ def test_evaluate_release_reports_available_windows_portable_asset() -> None:
         current_version="0.1.0-rc1",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.0",
             assets=[
@@ -64,6 +67,29 @@ def test_evaluate_release_reports_available_windows_portable_asset() -> None:
     assert result.failure_reason == ""
 
 
+def test_evaluate_release_reports_available_macos_arm64_asset() -> None:
+    """macOS policy 應尋找 arm64 onedir zip，不影響 Windows asset 命名。"""
+
+    result = evaluate_release(
+        current_version="0.1.0-rc1",
+        channel="stable",
+        repository="OooPeople/facebook_monitor_py",
+        artifact_policy=MACOS_ARM64_ONEDIR_POLICY,
+        release=release_payload(
+            tag_name="v0.1.0",
+            assets=[
+                asset("facebook-monitor-0.1.0-macos-arm64-onedir.zip"),
+                asset("facebook-monitor-0.1.0-macos-arm64-onedir.zip.sha256"),
+            ],
+        ),
+    )
+
+    assert result.status == "available"
+    assert result.update_available
+    assert result.asset_name == "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    assert result.sha256_asset_name == "facebook-monitor-0.1.0-macos-arm64-onedir.zip.sha256"
+
+
 def test_evaluate_release_keeps_missing_sha256_as_non_blocking_phase_one_reason() -> None:
     """Phase 1 只查 metadata，缺 SHA256 asset 先保留 reason 但不阻擋更新提示。"""
 
@@ -71,6 +97,7 @@ def test_evaluate_release_keeps_missing_sha256_as_non_blocking_phase_one_reason(
         current_version="0.1.0-rc1",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.0",
             assets=[asset("facebook-monitor-0.1.0-windows-portable.zip")],
@@ -90,6 +117,7 @@ def test_evaluate_release_reports_current_when_remote_is_not_newer() -> None:
         current_version="0.1.0",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.0",
             assets=[asset("facebook-monitor-0.1.0-windows-portable.zip")],
@@ -108,6 +136,7 @@ def test_evaluate_release_does_not_show_older_rc_as_latest_version() -> None:
         current_version="0.1.0",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.0-rc1",
             assets=[asset("facebook-monitor-0.1.0-rc1-windows-portable.zip")],
@@ -127,6 +156,7 @@ def test_evaluate_release_reports_asset_missing_for_newer_release_without_zip() 
         current_version="0.1.0-rc1",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(tag_name="v0.1.0", assets=[asset("source.zip")]),
     )
 
@@ -142,6 +172,7 @@ def test_evaluate_release_rejects_portable_asset_for_different_version() -> None
         current_version="0.1.0",
         channel="stable",
         repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.1",
             assets=[

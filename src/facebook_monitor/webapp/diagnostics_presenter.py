@@ -14,10 +14,12 @@ from typing import Any
 
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationOutboxSummary
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 
 
 _LATEST_SCAN_ITEM_DEBUG_KEYS = (
@@ -100,6 +102,20 @@ def build_scan_diagnostics_view(
         )
 
     metadata = latest_scan_run.metadata or {}
+    if latest_scan_run.status == ScanStatus.FAILED:
+        failure_reason = format_scan_failure_reason(str(metadata.get("reason") or ""))
+        return ScanDiagnosticsView(
+            summary=f"status=failed · reason={failure_reason}",
+            text=_build_scan_diagnostics_text(
+                target=target,
+                config=config,
+                runtime_state=runtime_state,
+                scan=latest_scan_run,
+                latest_scan_items=latest_scan_items,
+                notification_outbox_summary=notification_outbox_summary,
+                latest_failed_scan_run=latest_failed_scan_run,
+            ),
+        )
     round_count = metadata.get("round_count", 0)
     candidate_count = metadata.get("candidate_count", latest_scan_run.item_count)
     stop_reason = format_scan_stop_reason(str(metadata.get("stop_reason") or ""))
@@ -150,6 +166,9 @@ def _build_scan_diagnostics_text(
         f"last_skip_reason={runtime_state.last_skip_reason or '(none)'}",
         _format_outbox_summary_line(notification_outbox_summary),
         f"scan_status={scan.status.value}",
+        f"failure_reason={format_scan_failure_reason(str(metadata.get('reason') or ''))}"
+        if scan.status == ScanStatus.FAILED
+        else "",
         f"finished_at={format_datetime_for_ui(scan.finished_at)}",
         f"item_count={scan.item_count}",
         f"matched_count={scan.matched_count}",
@@ -168,6 +187,7 @@ def _build_scan_diagnostics_text(
         f"stop_reason={format_scan_stop_reason(str(metadata.get('stop_reason') or ''))}",
         f"worker={metadata.get('worker', '(unknown)')}",
     ]
+    lines = [line for line in lines if line]
     _append_sort_block(lines, "sort_adjust", metadata.get("sort_adjust"))
     _append_sort_block(lines, "comment_sort", metadata.get("comment_sort"))
     _append_comments_meta(lines, metadata.get("comments_meta"))
@@ -178,6 +198,10 @@ def _build_scan_diagnostics_text(
                 "",
                 "latest_failed_scan:",
                 f"finished_at={format_datetime_for_ui(latest_failed_scan_run.finished_at)}",
+                "reason="
+                + format_scan_failure_reason(
+                    str((latest_failed_scan_run.metadata or {}).get("reason") or "")
+                ),
                 f"error={latest_failed_scan_run.error_message or '(none)'}",
             ]
         )
@@ -390,6 +414,22 @@ def format_scan_stop_reason(value: str) -> str:
         "comment_collection_stopped": "留言抽取流程停止",
         "comment_load_more_guard_active": "留言載入更多 guard 使用中",
         "sort_adjust_unconfirmed_skip": "調整排序失敗，已跳過掃描",
+    }
+    return labels.get(value, value or "(未知)")
+
+
+def format_scan_failure_reason(value: str) -> str:
+    """把 failed scan reason 轉成 UI 可讀文字。"""
+
+    labels = {
+        CONTENT_UNAVAILABLE_REASON: "連結已失效",
+        "login_required": "需要重新登入",
+        "checkpoint_required": "需要完成 Facebook 驗證",
+        "session_invalid": "Facebook 工作階段失效",
+        "extractor_empty": "未抽取到可用項目",
+        "scan_timeout": "掃描逾時",
+        "page_load_timeout": "頁面載入逾時",
+        "target_stopped": "target 已停止",
     }
     return labels.get(value, value or "(未知)")
 

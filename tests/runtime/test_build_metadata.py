@@ -16,7 +16,7 @@ def test_collect_build_metadata_uses_source_defaults() -> None:
     metadata = collect_build_metadata(asset_version="asset-test")
 
     assert metadata.app_name == "Facebook Monitor"
-    assert metadata.app_version == "0.2.0"
+    assert metadata.app_version == "0.3.0"
     assert metadata.asset_version == "asset-test"
     assert metadata.python_version
     assert metadata.executable.exists()
@@ -65,3 +65,17 @@ def test_pyinstaller_spec_uses_formal_launcher_and_web_assets() -> None:
     assert "console=False" in spec_text
     assert "upx=False" in spec_text
     assert "webapp.app:app" not in spec_text
+
+
+def test_macos_pyinstaller_spec_supports_apple_silicon_playwright_browser() -> None:
+    """macOS spec 必須支援 Apple Silicon Playwright browser bundle 名稱。"""
+
+    spec_text = Path("packaging/pyinstaller/facebook_monitor_macos.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert "chromium-*/*" in spec_text
+    assert "Google Chrome for Testing.app" in spec_text
+    assert "Google Chrome for Testing" in spec_text
+    assert "Chromium.app" in spec_text
+    assert "FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR" in spec_text

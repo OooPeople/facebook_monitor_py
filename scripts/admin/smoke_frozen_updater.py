@@ -22,18 +22,18 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
-from scripts.admin.release_artifact_validation import REQUIRED_ZIP_ENTRIES
+from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
+from facebook_monitor.updates.platforms import detect_layout_policy
+from facebook_monitor.updates.platforms import missing_required_paths
 
 APP_DIR_NAME = "facebook-monitor"
-APP_EXE_NAME = "facebook-monitor.exe"
-UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
 
 
 def parse_args() -> argparse.Namespace:
     """解析 CLI 參數。"""
 
     parser = argparse.ArgumentParser(
-        description="Smoke test frozen facebook-monitor-updater.exe."
+        description="Smoke test frozen facebook-monitor-updater."
     )
     parser.add_argument(
         "--built-app",
@@ -82,7 +82,7 @@ def run_smoke(
     """執行 frozen updater smoke 並回傳結構化結果。"""
 
     _validate_smoke_root(smoke_root)
-    _validate_built_app(built_app)
+    layout_policy = _validate_built_app(built_app)
     if smoke_root.exists():
         shutil.rmtree(smoke_root)
     smoke_root.mkdir(parents=True)
@@ -110,7 +110,7 @@ def run_smoke(
     (data_dir / "app.db").write_text("smoke-user-db", encoding="utf-8")
     (profile_dir / "profile-marker.txt").write_text("smoke-profile", encoding="utf-8")
 
-    zip_path = updates_dir / "facebook-monitor-0.2.0-smoke-windows-portable.zip"
+    zip_path = updates_dir / f"facebook-monitor-0.2.0-smoke-{layout_policy.platform_key}.zip"
     _write_app_zip(new_app, zip_path)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -143,10 +143,15 @@ def run_smoke(
 
     temp_updater_dir = smoke_root / "temp-updater"
     temp_updater_dir.mkdir()
-    shutil.copy2(old_app / UPDATER_EXE_NAME, temp_updater_dir / UPDATER_EXE_NAME)
-    shutil.copytree(old_app / "_internal", temp_updater_dir / "_internal")
+    updater_entry = layout_policy.updater_entry(old_app)
+    temp_updater = temp_updater_dir / layout_policy.updater_entry_name
+    shutil.copy2(updater_entry, temp_updater)
+    for dirname in layout_policy.temp_copy_dirs:
+        source = old_app / dirname
+        if source.exists():
+            shutil.copytree(source, temp_updater_dir / dirname)
     command = [
-        str(temp_updater_dir / UPDATER_EXE_NAME),
+        str(temp_updater),
         "--data-dir",
         str(data_dir),
         "--pending-update",
@@ -218,14 +223,18 @@ def _validate_smoke_root(smoke_root: Path) -> None:
         raise ValueError(f"smoke root escaped repo: {smoke_root}")
 
 
-def _validate_built_app(built_app: Path) -> None:
+def _validate_built_app(built_app: Path) -> UpdaterLayoutPolicy:
     """確認 frozen onedir build 有 updater smoke 必要檔案。"""
 
-    for entry in REQUIRED_ZIP_ENTRIES:
-        relative = entry.removeprefix(f"{APP_DIR_NAME}/")
-        path = built_app / Path(relative)
-        if not path.is_file():
-            raise ValueError(f"missing built file: {path}")
+    layout_policy = detect_layout_policy(built_app)
+    missing = missing_required_paths(
+        built_app,
+        required_paths=layout_policy.required_staging_files,
+        any_groups=layout_policy.required_staging_any_groups,
+    )
+    if missing:
+        raise ValueError(f"missing built file: {missing[0]}")
+    return layout_policy
 
 
 def _write_app_zip(app_root: Path, zip_path: Path) -> None:

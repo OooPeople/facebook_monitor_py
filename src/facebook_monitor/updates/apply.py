@@ -27,12 +27,17 @@ from facebook_monitor.updates.download import sanitize_release_asset_name
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import load_pending_update
 from facebook_monitor.updates.handoff import validate_pending_update_paths
+from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
+from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
+from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
+from facebook_monitor.updates.platforms import detect_layout_policy
+from facebook_monitor.updates.platforms import missing_required_paths
 
 
 STAGING_DIR_NAME = "update_staging"
 BACKUP_DIR_NAME = "update_backups"
-APP_EXE_NAME = "facebook-monitor.exe"
-UPDATER_EXE_NAME = "facebook-monitor-updater.exe"
+APP_EXE_NAME = WINDOWS_APP_ENTRY
+UPDATER_EXE_NAME = WINDOWS_UPDATER_ENTRY
 BACKUP_RETENTION_COUNT = 3
 MAX_ZIP_ENTRIES = 50_000
 MAX_ZIP_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
@@ -124,15 +129,19 @@ def apply_pending_update(
             wait_for_lock_seconds=wait_for_lock_seconds,
             poll_seconds=poll_seconds,
         ):
+            layout_policy = detect_layout_policy(pending.app_base_dir)
             staging_dir = _prepare_empty_dir(
                 pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(
                     pending.version
                 )
             )
             safe_extract_zip(pending.zip_path, staging_dir)
-            staging_app_root = find_staging_app_root(staging_dir)
-            validate_staging_app_root(staging_app_root)
-            validate_current_app_root(pending.app_base_dir)
+            staging_app_root = find_staging_app_root(
+                staging_dir,
+                layout_policy=layout_policy,
+            )
+            validate_staging_app_root(staging_app_root, layout_policy=layout_policy)
+            validate_current_app_root(pending.app_base_dir, layout_policy=layout_policy)
             backup_dir = _prepare_empty_dir(
                 pending.runtime_dir
                 / BACKUP_DIR_NAME
@@ -230,47 +239,85 @@ def safe_extract_zip(
             total_uncompressed += member.file_size
             if total_uncompressed > max_uncompressed_bytes:
                 raise ValueError("zip_uncompressed_too_large")
-        archive.extractall(destination)
+        for member in members:
+            _extract_zip_member(archive, member, destination)
 
 
-def find_staging_app_root(staging_dir: Path) -> Path:
+def _extract_zip_member(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    destination: Path,
+) -> None:
+    """解出單一 zip member，並保留 POSIX executable bit。"""
+
+    target = (destination / member.filename).resolve()
+    if member.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+        _apply_zip_member_mode(target, member)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(member) as source, target.open("wb") as output:
+        shutil.copyfileobj(source, output)
+    _apply_zip_member_mode(target, member)
+
+
+def _apply_zip_member_mode(target: Path, member: zipfile.ZipInfo) -> None:
+    """套用 zip member 內保存的 POSIX permission bits。"""
+
+    mode = (member.external_attr >> 16) & 0o777
+    if mode:
+        target.chmod(mode)
+
+
+def find_staging_app_root(
+    staging_dir: Path,
+    *,
+    layout_policy: UpdaterLayoutPolicy | None = None,
+) -> Path:
     """尋找 update zip 內的 app root，支援 zip 包住單一 `facebook-monitor/` 目錄。"""
 
-    if (staging_dir / APP_EXE_NAME).is_file():
+    policy = layout_policy or detect_layout_policy(staging_dir)
+    if policy.app_entry(staging_dir).is_file():
         return staging_dir
     child_dirs = [path for path in staging_dir.iterdir() if path.is_dir()]
     for child in child_dirs:
-        if (child / APP_EXE_NAME).is_file():
+        if policy.app_entry(child).is_file():
             return child
     raise ValueError("staging_app_root_missing")
 
 
-def validate_staging_app_root(app_root: Path) -> None:
+def validate_staging_app_root(
+    app_root: Path,
+    *,
+    layout_policy: UpdaterLayoutPolicy | None = None,
+) -> None:
     """驗證 staging app root 至少包含目前 frozen onedir 必要檔案。"""
 
-    required = (
-        app_root / APP_EXE_NAME,
-        app_root / UPDATER_EXE_NAME,
-        app_root / "_internal" / "browser" / "chrome.exe",
-        app_root / "_internal" / "assets" / "facebook-monitor.ico",
-        app_root / "_internal" / "assets" / "facebook-monitor-tray.ico",
+    policy = layout_policy or detect_layout_policy(app_root)
+    missing = missing_required_paths(
+        app_root,
+        required_paths=policy.required_staging_files,
+        any_groups=policy.required_staging_any_groups,
     )
-    missing = [path for path in required if not path.exists()]
     if missing:
         raise ValueError("staging_required_file_missing:" + str(missing[0]))
 
 
-def validate_current_app_root(app_root: Path) -> None:
+def validate_current_app_root(
+    app_root: Path,
+    *,
+    layout_policy: UpdaterLayoutPolicy | None = None,
+) -> None:
     """驗證目前要被替換的 app root 看起來像本專案的 frozen onedir。"""
 
     if _is_dangerous_app_root(app_root):
         raise ValueError("app_base_dir_unsafe")
-    required = (
-        app_root / APP_EXE_NAME,
-        app_root / UPDATER_EXE_NAME,
-        app_root / "_internal",
+    policy = layout_policy or detect_layout_policy(app_root)
+    missing = missing_required_paths(
+        app_root,
+        required_paths=policy.required_current_paths,
+        any_groups=policy.required_current_any_groups,
     )
-    missing = [path for path in required if not path.exists()]
     if missing:
         raise ValueError("app_required_file_missing:" + str(missing[0]))
 

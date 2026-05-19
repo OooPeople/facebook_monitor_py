@@ -25,6 +25,7 @@ if str(SRC) not in sys.path:
 from facebook_monitor.version import APP_VERSION
 from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_SUFFIX
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_SUFFIX
+from facebook_monitor.runtime.bundled_browser import MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
 
 
 VERSION_INFO_FILE = ROOT / "packaging" / "pyinstaller" / "version_info.txt"
@@ -55,12 +56,7 @@ MACOS_EXECUTABLE_ENTRIES = (
     "facebook-monitor/facebook-monitor",
     "facebook-monitor/facebook-monitor-updater",
 )
-MACOS_BROWSER_ENTRY_SUFFIXES = (
-    "browser/Chromium.app/Contents/MacOS/Chromium",
-    "_internal/browser/Chromium.app/Contents/MacOS/Chromium",
-    "browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-    "_internal/browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-)
+MACOS_BROWSER_ENTRY_SUFFIXES = MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
 SENSITIVE_RELEASE_PATH_PARTS = frozenset(
     {
         "data",

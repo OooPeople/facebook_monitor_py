@@ -38,6 +38,28 @@ def test_validate_smoke_root_accepts_build_child() -> None:
     )
 
 
+def test_validate_built_app_accepts_macos_onedir_layout(tmp_path: Path) -> None:
+    """frozen updater smoke 可辨識 macOS Apple Silicon onedir。"""
+
+    built_app = tmp_path / "dist" / "facebook-monitor"
+    browser = built_app / "_internal" / "browser" / "Google Chrome for Testing.app"
+    browser_exe = browser / "Contents" / "MacOS" / "Google Chrome for Testing"
+    for relative in (
+        "facebook-monitor",
+        "facebook-monitor-updater",
+        "_internal/python",
+    ):
+        path = built_app / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    browser_exe.parent.mkdir(parents=True, exist_ok=True)
+    browser_exe.write_text("chromium", encoding="utf-8")
+
+    policy = smoke_frozen_updater._validate_built_app(built_app)
+
+    assert policy.platform_key == "macos-arm64"
+
+
 def test_run_smoke_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     """frozen updater process 卡住時，smoke 應回結構化 timeout 而不是無限等待。"""
 

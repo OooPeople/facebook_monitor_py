@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import zipfile
 
@@ -16,6 +17,14 @@ from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
 from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
+
+
+def assert_posix_executable_when_supported(path: Path) -> None:
+    """在支援 POSIX mode 的平台確認 executable bit。"""
+
+    assert path.is_file()
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o111
 
 
 def make_app_root(root: Path, *, exe_text: str) -> None:
@@ -172,8 +181,8 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
     assert result.status == "applied"
     assert result.applied
     assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
-    assert (app_root / "facebook-monitor").stat().st_mode & 0o111
-    assert (app_root / "facebook-monitor-updater").stat().st_mode & 0o111
+    assert_posix_executable_when_supported(app_root / "facebook-monitor")
+    assert_posix_executable_when_supported(app_root / "facebook-monitor-updater")
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     assert result.backup_dir is not None
     assert (result.backup_dir / "facebook-monitor").read_text(encoding="utf-8") == "old"
@@ -198,8 +207,8 @@ def test_apply_pending_update_supports_macos_chrome_for_testing_layout(
     assert result.status == "applied"
     assert result.applied
     assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
-    assert (app_root / "facebook-monitor").stat().st_mode & 0o111
-    assert (app_root / "facebook-monitor-updater").stat().st_mode & 0o111
+    assert_posix_executable_when_supported(app_root / "facebook-monitor")
+    assert_posix_executable_when_supported(app_root / "facebook-monitor-updater")
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     browser_exe = (
         app_root
@@ -210,7 +219,7 @@ def test_apply_pending_update_supports_macos_chrome_for_testing_layout(
         / "Google Chrome for Testing"
     )
     assert browser_exe.read_text(encoding="utf-8") == "chromium"
-    assert browser_exe.stat().st_mode & 0o111
+    assert_posix_executable_when_supported(browser_exe)
 
 
 def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> None:
@@ -504,7 +513,7 @@ def test_safe_extract_zip_preserves_executable_bit(tmp_path: Path) -> None:
 
     extracted = tmp_path / "staging" / "facebook-monitor" / "facebook-monitor"
     assert extracted.read_text(encoding="utf-8") == "app"
-    assert extracted.stat().st_mode & 0o111
+    assert_posix_executable_when_supported(extracted)
 
 
 def test_apply_pending_update_rejects_zip_outside_updates_dir(tmp_path: Path) -> None:

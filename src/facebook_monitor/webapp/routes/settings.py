@@ -386,13 +386,20 @@ def _resolve_update_capability(
             apply_supported=False,
             unsupported_reason="Source mode 僅支援檢查更新",
         )
-    if not _is_windows():
-        if _is_macos():
+    if _is_macos():
+        updater_available = find_bundled_updater(Path(str(app_base_dir))) is not None
+        if not updater_available:
             return UpdateCapability(
                 download_supported=True,
                 apply_supported=False,
-                unsupported_reason="macOS 目前僅支援下載並驗證更新，尚不支援自動套用",
+                unsupported_reason="macOS PyInstaller 打包版缺少 updater，僅支援下載並驗證",
             )
+        return UpdateCapability(
+            download_supported=True,
+            apply_supported=True,
+            unsupported_reason="",
+        )
+    if not _is_windows():
         return UpdateCapability(
             download_supported=False,
             apply_supported=False,

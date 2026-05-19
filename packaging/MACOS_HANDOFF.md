@@ -1,41 +1,36 @@
 # macOS Apple Silicon Packaging Handoff
 
-本文件是可追蹤的 macOS Apple Silicon 打包接手文件，供 Mac 端 Codex 或人工測試使用。它記錄目前 macOS frozen artifact 的下一步，不代表 macOS 自動套用 updater 已完成。
+本文件是可追蹤的 macOS Apple Silicon 打包接手文件，供 Mac 端 Codex 或人工測試使用。它記錄目前 macOS frozen artifact 的狀態與下一步。
 
 ## Scope
 
 - 目前只支援 macOS Apple Silicon / arm64。
 - Intel Mac 不列入目前打包與 updater 範圍。
-- macOS Web UI 目前只支援「檢查、下載、SHA256 驗證」。
-- 在真實 macOS frozen updater smoke 通過前，不得把 macOS `apply_supported` 改成 `True`，也不得宣稱 macOS 自動套用 updater 已完成。
+- macOS Web UI 支援「檢查、下載、SHA256 驗證、handoff、temp updater 套用」。
+- 尚未做 Developer ID signing / notarization。
 
 ## Current State
 
-已完成程式碼層 groundwork：
+已完成：
 
 - `packaging/pyinstaller/facebook_monitor_macos.spec`
 - `src/facebook_monitor/updates/artifacts.py`
 - `src/facebook_monitor/updates/platforms.py`
 - macOS artifact validation：`scripts/admin/release_artifact_validation.py --platform macos-arm64`
-- settings download-only UI
+- settings macOS download-and-apply UI
 - macOS apply / launcher policy 單元測試
+- macOS PyInstaller build 可收進 Playwright Apple Silicon `Google Chrome for Testing.app`
+- frozen updater smoke 可替換 app files、保留 data/profile、清除 handoff/zip，並保留 executable bit
 
 Mac 端已知狀態：
 
 - 使用者已在 Mac 上跑過 `uv run playwright install chromium` 與 `uv run facebook-monitor`。
 - Facebook login 視窗可開。
-- PyInstaller build 曾失敗於：
+- 目前 Mac 實測 Playwright cache 形狀是 `chromium-*/chrome-mac-arm64/Google Chrome for Testing.app`。
+- PyInstaller build 已通過，產物在 `dist/facebook-monitor`。
+- release zip 與 `.sha256` 已可由 validation 通過。
 
-```text
-No Playwright macOS Chromium folder found. Run playwright install chromium or set FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR.
-```
-
-推測原因：
-
-- `facebook_monitor_macos.spec` 目前只找 `~/Library/Caches/ms-playwright/chromium-*/chrome-mac/Chromium.app`。
-- Apple Silicon Playwright 可能使用 `chrome-mac-arm64/Chromium.app` 或其他資料夾。
-
-## First Diagnostics On Mac
+## Diagnostics On Mac
 
 在 repo 根目錄先跑：
 
@@ -44,22 +39,18 @@ pwd
 git branch --show-current
 git status --short
 find ~/Library/Caches/ms-playwright -path "*/Chromium.app/Contents/MacOS/Chromium" -type f
+find ~/Library/Caches/ms-playwright -path "*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" -type f
 find ~/Library/Caches/ms-playwright -maxdepth 5 -name "Chromium.app" -print
+find ~/Library/Caches/ms-playwright -maxdepth 5 -name "Google Chrome for Testing.app" -print
 ```
 
-## Suggested Fix
-
-更新 `packaging/pyinstaller/facebook_monitor_macos.spec` 的 `bundled_chromium_dir()`：
-
-- 除了 `chromium-*/chrome-mac`，也搜尋所有符合 `chromium-*/*/Chromium.app/Contents/MacOS/Chromium` 的候選。
-- 或至少加入 `chrome-mac-arm64`。
-- `FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR` 覆寫仍應接受「包含 `Chromium.app` 的資料夾」，不要接受 executable 本身。
-
-修完後先跑：
+## Focused Verification
 
 ```bash
 uv run python -m py_compile packaging/pyinstaller/facebook_monitor_macos.spec
 uv run ruff check packaging/pyinstaller/facebook_monitor_macos.spec
+uv run pytest tests/automation/test_browser_runtime.py tests/updates/test_apply.py tests/admin/test_release_artifact_validation.py tests/admin/test_smoke_frozen_updater.py tests/webapp/test_app.py -q
+uv run python scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor
 ```
 
 ## Build Commands

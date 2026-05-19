@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from facebook_monitor.runtime.bundled_browser import MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
+
 
 WINDOWS_APP_ENTRY = "facebook-monitor.exe"
 WINDOWS_UPDATER_ENTRY = "facebook-monitor-updater.exe"
@@ -70,12 +72,7 @@ MACOS_ARM64_LAYOUT_POLICY = UpdaterLayoutPolicy(
         MACOS_UPDATER_ENTRY,
     ),
     required_staging_any_groups=(
-        (
-            "browser/Chromium.app/Contents/MacOS/Chromium",
-            "_internal/browser/Chromium.app/Contents/MacOS/Chromium",
-            "browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-            "_internal/browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-        ),
+        MACOS_BUNDLED_BROWSER_RELATIVE_PATHS,
     ),
     required_current_any_groups=(("_internal", "browser"),),
 )

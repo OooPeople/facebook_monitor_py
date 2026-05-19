@@ -43,7 +43,7 @@ MACOS_ARM64_ONEDIR_POLICY = UpdateArtifactPolicy(
     asset_suffix=MACOS_ARM64_ONEDIR_SUFFIX,
     display_label="macOS arm64 onedir",
     download_supported=True,
-    apply_supported=False,
+    apply_supported=True,
 )
 def current_update_artifact_policy() -> UpdateArtifactPolicy:
     """依目前執行平台取得 release artifact 策略。"""

@@ -65,14 +65,10 @@ def bundled_chromium_dir():
             return str(candidate)
         raise SystemExit(
             "FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR must point to a macOS Chromium "
-            "folder that contains Chromium.app"
+            "folder that contains a supported browser .app"
         )
     browsers_root = Path.home() / "Library" / "Caches" / "ms-playwright"
-    candidates = [
-        path
-        for path in browsers_root.glob("chromium-*/chrome-mac")
-        if _contains_macos_chromium(path)
-    ]
+    candidates = _playwright_macos_chromium_dirs(browsers_root)
     if not candidates:
         raise SystemExit(
             "No Playwright macOS Chromium folder found. Run `playwright install chromium` "
@@ -82,7 +78,27 @@ def bundled_chromium_dir():
 
 
 def _contains_macos_chromium(path):
-    return (path / "Chromium.app" / "Contents" / "MacOS" / "Chromium").is_file()
+    return any(
+        (path / app_name / "Contents" / "MacOS" / executable_name).is_file()
+        for app_name, executable_name in _macos_browser_app_executables()
+    )
+
+
+def _playwright_macos_chromium_dirs(browsers_root):
+    candidates = []
+    if not browsers_root.is_dir():
+        return candidates
+    for path in browsers_root.glob("chromium-*/*"):
+        if path.is_dir() and _contains_macos_chromium(path):
+            candidates.append(path)
+    return candidates
+
+
+def _macos_browser_app_executables():
+    return (
+        ("Chromium.app", "Chromium"),
+        ("Google Chrome for Testing.app", "Google Chrome for Testing"),
+    )
 
 
 os.makedirs(GENERATED_DIR, exist_ok=True)

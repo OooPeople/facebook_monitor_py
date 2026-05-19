@@ -71,6 +71,18 @@ def make_supported_update_paths(tmp_path: Path):
     return paths
 
 
+def make_supported_macos_update_paths(tmp_path: Path):
+    """建立 settings 更新 route 測試用的 macOS onedir-like app root。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.app_base_dir.mkdir(parents=True, exist_ok=True)
+    (paths.app_base_dir / "facebook-monitor-updater").write_text(
+        "updater",
+        encoding="utf-8",
+    )
+    return paths
+
+
 def test_parse_keywords_text_dedupes_and_trims() -> None:
     """Web UI keyword parser 會去除空白與重複值。"""
 
@@ -366,11 +378,60 @@ def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
     assert "下載新版並套用更新" in response.text
 
 
-def test_settings_update_check_shows_macos_download_only_action(
+def test_settings_update_check_shows_macos_apply_action_when_updater_exists(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """macOS frozen 初版只顯示下載驗證，不顯示自動套用。"""
+    """macOS frozen onedir 含 updater 時顯示下載並套用入口。"""
+
+    paths = make_supported_macos_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert 'action="/settings/updates/download-and-apply"' in response.text
+    assert "下載新版並套用更新" in response.text
+
+
+def test_settings_update_check_shows_macos_download_only_when_updater_missing(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """macOS frozen onedir 缺 updater 時保留下載驗證但不允許套用。"""
 
     paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
     paths.app_base_dir.mkdir(parents=True, exist_ok=True)
@@ -415,7 +476,6 @@ def test_settings_update_check_shows_macos_download_only_action(
     assert 'action="/settings/updates/download"' in response.text
     assert "下載並驗證更新" in response.text
     assert 'action="/settings/updates/download-and-apply"' not in response.text
-    assert "下載新版並套用更新" not in response.text
 
 
 def test_settings_download_update_verifies_asset_and_opens_folder(
@@ -516,7 +576,7 @@ def test_settings_macos_download_update_does_not_create_pending_update(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """macOS download-only 流程只下載驗證，不建立 updater handoff。"""
+    """macOS 打包缺 updater 時只下載驗證，不建立 updater handoff。"""
 
     paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
     paths.app_base_dir.mkdir(parents=True, exist_ok=True)
@@ -691,6 +751,104 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
         "shutdown_requested": True,
     }
     assert checked_update["asset_name"] == "facebook-monitor-0.1.1-windows-portable.zip"
+    assert checked_update["updates_dir"] == paths.updates_dir
+    assert (paths.runtime_dir / "pending_update.json").is_file()
+    assert launched_paths == [paths.runtime_dir]
+    assert shutdown_requested == [True]
+
+
+def test_settings_macos_download_and_apply_update_creates_handoff(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """macOS frozen onedir 可走 settings 下載、handoff、啟動 updater 流程。"""
+
+    paths = make_supported_macos_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    checked_update: dict[str, object] = {}
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    async def fake_download_and_verify_update(
+        *,
+        update_check: UpdateCheckResult,
+        updates_dir: Path,
+    ) -> UpdateDownloadResult:
+        checked_update["asset_name"] = update_check.asset_name
+        checked_update["updates_dir"] = updates_dir
+        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"verified zip")
+        return UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=file_path,
+            sha256_path=file_path.with_name(file_path.name + ".sha256"),
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+        )
+
+    launched_paths: list[Path] = []
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        launched_paths.append(paths.runtime_dir)
+        from facebook_monitor.updates.launcher import UpdaterLaunchResult
+
+        return UpdaterLaunchResult(
+            launched=True,
+            status="launched",
+            message="updater launched",
+            pid=123,
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    shutdown_requested: list[bool] = []
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    app.state.request_shutdown = lambda: shutdown_requested.append(True)
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/download-and-apply")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert checked_update["asset_name"] == "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
     assert checked_update["updates_dir"] == paths.updates_dir
     assert (paths.runtime_dir / "pending_update.json").is_file()
     assert launched_paths == [paths.runtime_dir]
@@ -3661,4 +3819,3 @@ def test_delete_route_removes_only_selected_target(tmp_path: Path) -> None:
     assert loaded_second is not None
     assert loaded_second.enabled
     assert loaded_second.paused
-

@@ -239,7 +239,34 @@ def safe_extract_zip(
             total_uncompressed += member.file_size
             if total_uncompressed > max_uncompressed_bytes:
                 raise ValueError("zip_uncompressed_too_large")
-        archive.extractall(destination)
+        for member in members:
+            _extract_zip_member(archive, member, destination)
+
+
+def _extract_zip_member(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    destination: Path,
+) -> None:
+    """解出單一 zip member，並保留 POSIX executable bit。"""
+
+    target = (destination / member.filename).resolve()
+    if member.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+        _apply_zip_member_mode(target, member)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(member) as source, target.open("wb") as output:
+        shutil.copyfileobj(source, output)
+    _apply_zip_member_mode(target, member)
+
+
+def _apply_zip_member_mode(target: Path, member: zipfile.ZipInfo) -> None:
+    """套用 zip member 內保存的 POSIX permission bits。"""
+
+    mode = (member.external_attr >> 16) & 0o777
+    if mode:
+        target.chmod(mode)
 
 
 def find_staging_app_root(

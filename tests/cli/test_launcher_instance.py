@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from typing import cast
 
 import pytest
@@ -16,6 +17,9 @@ from facebook_monitor.runtime.instance_lock import ServerInfo
 from facebook_monitor.runtime.instance_lock import acquire_resource_identity_lock
 from facebook_monitor.runtime.logging_setup import reset_app_logging
 from facebook_monitor.runtime import windows_integration
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +51,82 @@ def test_windows_tray_defaults_only_for_frozen_windows(monkeypatch) -> None:
     assert windows_integration.resolve_windows_tray_decision(True).enabled
 
 
+def test_frozen_macos_root_binary_relaunches_via_app_launcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """舊 updater 直啟新版 root binary 時，launcher 會轉回 `.app` Dock 母程序。"""
+
+    app_root = tmp_path / "facebook-monitor"
+    executable = app_root / "facebook-monitor"
+    app_launcher = app_root / MACOS_APP_BUNDLE_LAUNCHER
+    app_launcher.parent.mkdir(parents=True)
+    executable.write_text("app", encoding="utf-8")
+    app_launcher.write_text("launcher", encoding="utf-8")
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 12345
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.delenv(MACOS_APP_BUNDLE_LAUNCHER_ENV, raising=False)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
+
+    exit_code = launcher.main(["--data-dir", str(tmp_path / "data"), "--no-open-browser"])
+
+    assert exit_code == 0
+    assert launched["command"] == [
+        str(app_launcher),
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--no-open-browser",
+    ]
+    kwargs = launched["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["cwd"] == str(app_root)
+    assert kwargs["start_new_session"] is True
+    assert isinstance(kwargs["env"], dict)
+    assert (
+        kwargs["env"][MACOS_APP_BUNDLE_LAUNCHER_ENV]
+        == MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+    )
+
+
+def test_frozen_macos_root_binary_guard_skips_app_relaunch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """`.app` native launcher 啟動的 child 不會再自我 relaunch 形成迴圈。"""
+
+    app_root = tmp_path / "facebook-monitor"
+    executable = app_root / "facebook-monitor"
+    app_launcher = app_root / MACOS_APP_BUNDLE_LAUNCHER
+    app_launcher.parent.mkdir(parents=True)
+    executable.write_text("app", encoding="utf-8")
+    app_launcher.write_text("launcher", encoding="utf-8")
+
+    def fail_popen(*args: object, **kwargs: object) -> None:
+        raise AssertionError("guarded child should not relaunch")
+
+    monkeypatch.setattr(launcher.sys, "platform", "darwin")
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+    monkeypatch.setenv(
+        MACOS_APP_BUNDLE_LAUNCHER_ENV,
+        MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE,
+    )
+    monkeypatch.setattr(launcher.subprocess, "Popen", fail_popen)
+
+    assert launcher._maybe_relaunch_via_macos_app([]) is None
+
+
 def test_explicit_windows_tray_on_non_windows_falls_back_to_plain_server(
     tmp_path,
     monkeypatch,
@@ -63,7 +143,7 @@ def test_explicit_windows_tray_on_non_windows_falls_back_to_plain_server(
         raise AssertionError("tray runner should not be used on non-Windows")
 
     monkeypatch.setattr(windows_integration.sys, "platform", "linux")
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     monkeypatch.setattr(
         launcher,
         "run_uvicorn_with_windows_tray",
@@ -98,7 +178,7 @@ def test_launcher_reuses_runtime_csrf_token_between_restarts(tmp_path, monkeypat
     def fake_uvicorn_run(app, *args: object, **kwargs: object) -> None:
         csrf_tokens.append(str(app.state.csrf_token))
 
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
 
     try:
         first_exit_code = launcher.main(
@@ -156,8 +236,8 @@ def test_launcher_rejects_non_loopback_host(tmp_path, monkeypatch) -> None:
     """正式管理 UI 不允許綁到非 loopback host。"""
 
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -188,8 +268,8 @@ def test_launcher_opens_existing_healthy_instance(
     monkeypatch.setattr(launcher, "_server_is_healthy", lambda url: True)
     monkeypatch.setattr(launcher, "_open_browser", opened_urls.append)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -269,7 +349,7 @@ def test_launcher_writes_startup_and_app_logs(tmp_path, monkeypatch, capsys) -> 
         return None
 
     opened_urls: list[str] = []
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     monkeypatch.setattr(launcher, "_open_browser", opened_urls.append)
     try:
         exit_code = launcher.main(
@@ -321,8 +401,8 @@ def test_launcher_runs_guided_login_when_profile_status_needs_login(
 
     monkeypatch.setattr(launcher, "run_guided_facebook_login", fake_guided_login)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: uvicorn_ports.append(int(kwargs["port"])),
     )
 
@@ -360,8 +440,8 @@ def test_launcher_runs_guided_login_when_profile_has_no_cookie_session(
 
     monkeypatch.setattr(launcher, "run_guided_facebook_login", fake_guided_login)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: uvicorn_ports.append(int(kwargs["port"])),
     )
 
@@ -401,7 +481,7 @@ def test_launcher_default_uses_home_data_default_port_and_opens_browser(
     def fake_uvicorn_run(*args: object, **kwargs: object) -> None:
         uvicorn_kwargs.append(kwargs)
 
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     try:
         exit_code = launcher.main([])
     finally:
@@ -431,8 +511,8 @@ def test_launcher_default_falls_back_to_auto_port_when_default_port_is_busy(
     monkeypatch.setattr(launcher, "_choose_available_port", lambda host: 54320)
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: seen_ports.append(kwargs["port"]),
     )
 
@@ -463,7 +543,7 @@ def test_launcher_verbose_startup_prints_full_diagnostics(
         uvicorn_kwargs.append(kwargs)
         return None
 
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)
     try:
         exit_code = launcher.main(
@@ -488,7 +568,7 @@ def test_launcher_access_log_keeps_uvicorn_info_level(tmp_path, monkeypatch) -> 
     def fake_uvicorn_run(*args: object, **kwargs: object) -> None:
         uvicorn_kwargs.append(kwargs)
 
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)
     try:
         exit_code = launcher.main(
@@ -500,6 +580,46 @@ def test_launcher_access_log_keeps_uvicorn_info_level(tmp_path, monkeypatch) -> 
     assert exit_code == 0
     assert uvicorn_kwargs[0]["access_log"] is True
     assert uvicorn_kwargs[0]["log_level"] == "info"
+
+
+def test_plain_uvicorn_runner_exposes_shutdown_hook(monkeypatch) -> None:
+    """非 Windows tray 路徑也要讓 Web UI 可要求 uvicorn 關閉。"""
+
+    class FakeState:
+        pass
+
+    class FakeApp:
+        state = FakeState()
+
+    class FakeConfig:
+        def __init__(self, app: object, **kwargs: object) -> None:
+            self.app = app
+            self.kwargs = kwargs
+
+    class FakeServer:
+        def __init__(self, config: FakeConfig) -> None:
+            self.config = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            shutdown = getattr(cast(Any, self.config.app).state, "request_shutdown")
+            shutdown()
+
+    created_servers: list[FakeServer] = []
+
+    def fake_server(config: FakeConfig) -> FakeServer:
+        server = FakeServer(config)
+        created_servers.append(server)
+        return server
+
+    monkeypatch.setattr(launcher.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(launcher.uvicorn, "Server", fake_server)
+
+    app = FakeApp()
+    launcher._run_uvicorn_with_shutdown_hook(app, host="127.0.0.1", port=8765)
+
+    assert created_servers[0].config.kwargs == {"host": "127.0.0.1", "port": 8765}
+    assert created_servers[0].should_exit is True
 
 
 def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
@@ -590,7 +710,7 @@ def test_launcher_auto_port_writes_effective_port(tmp_path, monkeypatch) -> None
             (data_dir / "runtime" / "server.json").read_text(encoding="utf-8")
         )
 
-    monkeypatch.setattr(launcher.uvicorn, "run", fake_uvicorn_run)
+    monkeypatch.setattr(launcher, "_run_uvicorn_with_shutdown_hook", fake_uvicorn_run)
     try:
         exit_code = launcher.main(["--data-dir", str(data_dir), "--auto-port"])
     finally:
@@ -612,8 +732,8 @@ def test_launcher_port_zero_uses_auto_port(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(launcher, "_choose_available_port", lambda host: 54322)
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: seen_ports.append(kwargs["port"]),
     )
 
@@ -631,8 +751,8 @@ def test_launcher_no_auto_port_uses_fixed_default_port(tmp_path, monkeypatch) ->
 
     seen_ports: list[int] = []
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: seen_ports.append(kwargs["port"]),
     )
     monkeypatch.setattr(launcher, "_port_is_available", lambda host, port: True)
@@ -659,8 +779,8 @@ def test_launcher_fixed_port_conflict_fails_before_uvicorn(
     data_dir = tmp_path / "data"
     monkeypatch.setattr(launcher, "_port_is_available", lambda host, port: False)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -689,8 +809,8 @@ def test_launcher_rejects_shared_db_profile_across_data_dirs(
     shared_db.parent.mkdir()
     shared_profile.mkdir(parents=True)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -735,8 +855,8 @@ def test_launcher_rejects_shared_db_with_different_profile(
     first_profile.mkdir(parents=True)
     second_profile.mkdir(parents=True)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -780,8 +900,8 @@ def test_launcher_rejects_shared_profile_with_different_db(
     second_db.parent.mkdir()
     shared_profile.mkdir(parents=True)
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("uvicorn should not run")),
     )
 
@@ -825,8 +945,8 @@ def test_launcher_allows_different_db_and_different_profile(tmp_path, monkeypatc
     second_profile.mkdir(parents=True)
 
     monkeypatch.setattr(
-        launcher.uvicorn,
-        "run",
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
         lambda *args, **kwargs: seen_ports.append(int(kwargs["port"])),
     )
     monkeypatch.setattr(launcher, "_open_browser", lambda url: None)

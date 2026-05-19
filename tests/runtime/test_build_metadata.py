@@ -16,7 +16,7 @@ def test_collect_build_metadata_uses_source_defaults() -> None:
     metadata = collect_build_metadata(asset_version="asset-test")
 
     assert metadata.app_name == "Facebook Monitor"
-    assert metadata.app_version == "0.3.0"
+    assert metadata.app_version == "0.3.2"
     assert metadata.asset_version == "asset-test"
     assert metadata.python_version
     assert metadata.executable.exists()
@@ -79,3 +79,4 @@ def test_macos_pyinstaller_spec_supports_apple_silicon_playwright_browser() -> N
     assert "Google Chrome for Testing" in spec_text
     assert "Chromium.app" in spec_text
     assert "FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR" in spec_text
+    assert "create_macos_app_launcher" in spec_text

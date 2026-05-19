@@ -12,8 +12,10 @@ import contextlib
 from collections.abc import Sequence
 import ipaddress
 import logging
+import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 from types import FrameType
 from typing import Any
@@ -47,6 +49,10 @@ from facebook_monitor.runtime.windows_integration import ensure_standard_streams
 from facebook_monitor.runtime.windows_integration import find_windows_tray_icon
 from facebook_monitor.runtime.windows_integration import resolve_windows_tray_decision
 from facebook_monitor.runtime.windows_integration import run_uvicorn_with_windows_tray
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+from facebook_monitor.updates.platforms import MACOS_APP_ENTRY
 from facebook_monitor.version import APP_NAME
 from facebook_monitor.webapp.app import create_app
 
@@ -154,6 +160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint：解析 runtime paths 後啟動 uvicorn server。"""
 
     ensure_standard_streams_for_gui_subsystem()
+    relaunch_exit_code = _maybe_relaunch_via_macos_app(argv)
+    if relaunch_exit_code is not None:
+        return relaunch_exit_code
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -281,10 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     ),
                                 )
                             else:
-                                uvicorn.run(
-                                    app,
-                                    **uvicorn_kwargs,
-                                )
+                                _run_uvicorn_with_shutdown_hook(app, **uvicorn_kwargs)
                     finally:
                         instance_lock.clear_server_info()
             except AppInstanceLockError as exc:
@@ -296,6 +302,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             exc.server_info,
             open_browser=open_existing_browser,
         )
+    return 0
+
+
+def _maybe_relaunch_via_macos_app(argv: Sequence[str] | None) -> int | None:
+    """frozen macOS root binary 直啟時，轉交給 `.app` launcher 維持 Dock 生命週期。"""
+
+    if sys.platform != "darwin":
+        return None
+    if not getattr(sys, "frozen", False):
+        return None
+    if os.environ.get(MACOS_APP_BUNDLE_LAUNCHER_ENV) == MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE:
+        return None
+    executable = Path(sys.executable).resolve()
+    if executable.name != MACOS_APP_ENTRY:
+        return None
+    launcher = executable.parent / MACOS_APP_BUNDLE_LAUNCHER
+    if not launcher.is_file():
+        return None
+    child_args = list(sys.argv[1:] if argv is None else argv)
+    env = os.environ.copy()
+    env[MACOS_APP_BUNDLE_LAUNCHER_ENV] = MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+    try:
+        subprocess.Popen(  # noqa: S603
+            [str(launcher), *child_args],
+            close_fds=True,
+            cwd=str(executable.parent),
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(f"無法透過 macOS app launcher 啟動，改用目前程序繼續：{exc}")
+        return None
     return 0
 
 
@@ -347,6 +385,15 @@ def _handle_existing_instance(
         return 2
     print(f"{APP_NAME} 已在執行，但目前找不到 server 資訊。")
     return 2
+
+
+def _run_uvicorn_with_shutdown_hook(app: Any, **uvicorn_kwargs: Any) -> None:
+    """啟動 plain uvicorn server，並暴露 Web UI 可呼叫的 shutdown hook。"""
+
+    config = uvicorn.Config(app, **uvicorn_kwargs)
+    server = uvicorn.Server(config)
+    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
+    server.run()
 
 
 def _server_is_healthy(url: str) -> bool:

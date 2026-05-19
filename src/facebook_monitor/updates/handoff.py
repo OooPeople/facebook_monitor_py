@@ -149,7 +149,10 @@ def validate_pending_update_paths(
         raise ValueError("pending_update_db_outside_data_dir")
     if not pending.profile_dir.resolve().is_relative_to(profiles_dir):
         raise ValueError("pending_update_profile_outside_profiles_dir")
-    if pending.logs_dir.resolve() == app_base_dir:
+    logs_dir = pending.logs_dir.resolve()
+    if logs_dir == app_base_dir:
+        raise ValueError("pending_update_logs_dir_unsafe")
+    if logs_dir.is_relative_to(app_base_dir) and not logs_dir.is_relative_to(data_dir):
         raise ValueError("pending_update_logs_dir_unsafe")
     if pending_path is not None:
         expected_pending_path = pending_update_path(runtime_dir).resolve()

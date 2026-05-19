@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 from scripts.admin import smoke_frozen_updater
+from tests.helpers.macos_bundle import write_macos_app_bundle
 
 
 def test_validate_smoke_root_rejects_repo_root() -> None:
@@ -52,6 +53,7 @@ def test_validate_built_app_accepts_macos_onedir_layout(tmp_path: Path) -> None:
         path = built_app / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x", encoding="utf-8")
+    write_macos_app_bundle(built_app)
     browser_exe.parent.mkdir(parents=True, exist_ok=True)
     browser_exe.write_text("chromium", encoding="utf-8")
 

@@ -9,6 +9,8 @@ import zipfile
 import pytest
 
 from scripts.admin import release_artifact_validation as validation
+from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import write_macos_app_bundle_to_zip
 
 
 def test_validate_release_artifacts_accepts_matching_zip_and_sha(
@@ -450,6 +452,7 @@ def test_validate_release_artifacts_accepts_macos_arm64_onedir_zip(
             "facebook-monitor/_internal/facebook_monitor/webapp/templates/index.html",
             "<html></html>",
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -490,6 +493,7 @@ def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -527,6 +531,7 @@ def test_validate_release_artifacts_rejects_macos_zip_without_executable_bit(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
         f"{digest}  {zip_path.name}",
@@ -565,6 +570,7 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
             "chromium",
             0o755,
         )
+        _write_macos_app_bundle(archive)
         archive.writestr("facebook-monitor/data/app.db", "private")
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -582,10 +588,89 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
     assert any("runtime/private data" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` launcher 不可退回會讓 Dock item 消失的 shell wrapper。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            "updater",
+            0o755,
+        )
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            "chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, launcher_content=b"#!/bin/sh\nexec app\n")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("arm64 Mach-O" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` Info.plist version 也必須與 release version 對齊。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            "updater",
+            0o755,
+        )
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            "chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, version="0.0.9")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("short version" in message for message in result.messages)
+    assert any("bundle version" in message for message in result.messages)
+
+
 def _writestr_with_mode(
     archive: zipfile.ZipFile,
     name: str,
-    content: str,
+    content: str | bytes,
     mode: int,
 ) -> None:
     """寫入帶 POSIX mode 的 zip member。"""
@@ -593,3 +678,18 @@ def _writestr_with_mode(
     info = zipfile.ZipInfo(name)
     info.external_attr = (mode & 0o777) << 16
     archive.writestr(info, content)
+
+
+def _write_macos_app_bundle(
+    archive: zipfile.ZipFile,
+    *,
+    version: str = "0.1.0",
+    launcher_content: bytes = MACHO_ARM64_BYTES,
+) -> None:
+    """寫入測試用 Finder/Dock `.app` launcher bundle。"""
+
+    write_macos_app_bundle_to_zip(
+        archive,
+        version=version,
+        launcher_content=launcher_content,
+    )

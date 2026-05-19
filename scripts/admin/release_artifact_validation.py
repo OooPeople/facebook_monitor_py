@@ -62,6 +62,9 @@ MACOS_EXECUTABLE_ENTRIES = (
     "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
 )
 MACOS_APP_INFO_PLIST_ENTRY = "facebook-monitor/Facebook Monitor.app/Contents/Info.plist"
+MACOS_APP_LAUNCHER_ENTRY = (
+    "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher"
+)
 MACOS_APP_LAUNCHER_NAME = "facebook-monitor-launcher"
 MACOS_BROWSER_ENTRY_SUFFIXES = MACOS_BUNDLED_BROWSER_RELATIVE_PATHS
 SENSITIVE_RELEASE_PATH_PARTS = frozenset(
@@ -268,7 +271,7 @@ def _validate_macos_app_bundle_metadata(
     names: set[str],
     messages: list[str],
 ) -> None:
-    """確認 macOS launcher `.app` 會顯示在 Dock 並啟動 wrapper script。"""
+    """確認 macOS launcher `.app` 會顯示在 Dock 並保持 native app 生命周期。"""
 
     if MACOS_APP_INFO_PLIST_ENTRY not in names:
         return
@@ -285,6 +288,12 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle must remain visible in Dock")
     if not plist.get("CFBundleIconFile"):
         messages.append("macOS app bundle icon is missing")
+    try:
+        launcher_prefix = archive.read(MACOS_APP_LAUNCHER_ENTRY)[:2]
+    except (OSError, KeyError):
+        return
+    if launcher_prefix == b"#!":
+        messages.append("macOS app bundle launcher must be a native executable")
 
 
 def _zip_member_has_executable_bit(info: zipfile.ZipInfo) -> bool:

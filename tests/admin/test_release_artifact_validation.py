@@ -587,6 +587,45 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
     assert any("runtime/private data" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` launcher 不可退回會讓 Dock item 消失的 shell wrapper。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            "updater",
+            0o755,
+        )
+        _writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            "chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, launcher_content="#!/bin/sh\nexec app\n")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("native executable" in message for message in result.messages)
+
+
 def _writestr_with_mode(
     archive: zipfile.ZipFile,
     name: str,
@@ -600,7 +639,11 @@ def _writestr_with_mode(
     archive.writestr(info, content)
 
 
-def _write_macos_app_bundle(archive: zipfile.ZipFile) -> None:
+def _write_macos_app_bundle(
+    archive: zipfile.ZipFile,
+    *,
+    launcher_content: str = "native launcher",
+) -> None:
     """寫入測試用 Finder/Dock `.app` launcher bundle。"""
 
     archive.writestr(
@@ -616,7 +659,7 @@ def _write_macos_app_bundle(archive: zipfile.ZipFile) -> None:
     _writestr_with_mode(
         archive,
         "facebook-monitor/Facebook Monitor.app/Contents/MacOS/facebook-monitor-launcher",
-        "#!/bin/sh\nexec ../facebook-monitor \"$@\"\n",
+        launcher_content,
         0o755,
     )
     archive.writestr(

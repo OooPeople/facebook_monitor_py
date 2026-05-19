@@ -75,6 +75,7 @@ def create_macos_app_launcher(
     icon_source: Path = DEFAULT_ICON_SOURCE,
     version: str = APP_VERSION,
     convert_icon: bool = True,
+    compile_launcher: bool = True,
 ) -> Path:
     """在 frozen onedir 內建立 `Facebook Monitor.app` launcher bundle。"""
 
@@ -93,8 +94,11 @@ def create_macos_app_launcher(
     resources_dir.mkdir(parents=True)
 
     launcher_path = macos_dir / LAUNCHER_EXECUTABLE_NAME
-    launcher_path.write_text(_launcher_script(), encoding="utf-8")
-    launcher_path.chmod(0o755)
+    if compile_launcher:
+        _compile_native_launcher(launcher_path)
+    else:
+        launcher_path.write_text(_native_launcher_source(), encoding="utf-8")
+        launcher_path.chmod(0o755)
     (contents_dir / "Info.plist").write_bytes(
         plistlib.dumps(_info_plist(version=version), sort_keys=True)
     )
@@ -105,18 +109,153 @@ def create_macos_app_launcher(
     return bundle_dir
 
 
-def _launcher_script() -> str:
-    """回傳 .app 內部 launcher script。"""
+def _compile_native_launcher(destination: Path) -> None:
+    """編譯 Dock 常駐 launcher，讓 `.app` 保持為可關閉的母程序。"""
 
-    return """#!/bin/sh
-APP_BUNDLE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
-APP_ROOT=$(CDPATH= cd -- "$APP_BUNDLE_DIR/.." && pwd -P)
-EXECUTABLE="$APP_ROOT/facebook-monitor"
-if [ ! -x "$EXECUTABLE" ]; then
-  /usr/bin/osascript -e 'display alert "Facebook Monitor" message "找不到 facebook-monitor executable。請確認 Facebook Monitor.app 仍在 facebook-monitor 資料夾內。" as critical' >/dev/null 2>&1 || true
-  exit 127
-fi
-exec "$EXECUTABLE" "$@"
+    clang = _find_clang()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="facebook-monitor-launcher-") as temp_dir:
+        source = Path(temp_dir) / "facebook-monitor-launcher.m"
+        source.write_text(_native_launcher_source(), encoding="utf-8")
+        subprocess.run(
+            [
+                clang,
+                "-fobjc-arc",
+                "-framework",
+                "Cocoa",
+                str(source),
+                "-o",
+                str(destination),
+            ],
+            check=True,
+        )
+    destination.chmod(0o755)
+
+
+def _find_clang() -> str:
+    """尋找 macOS native launcher 所需的 Objective-C compiler。"""
+
+    clang = shutil.which("clang")
+    if clang:
+        return clang
+    xcrun = shutil.which("xcrun")
+    if xcrun:
+        try:
+            detected = subprocess.check_output(
+                [xcrun, "--find", "clang"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except subprocess.SubprocessError:
+            detected = ""
+        if detected:
+            return detected
+    raise ValueError("macOS native launcher compiler not found: clang")
+
+
+def _native_launcher_source() -> str:
+    """回傳 `.app` 內部 native launcher 的 Objective-C source。"""
+
+    return r"""#import <Cocoa/Cocoa.h>
+#include <signal.h>
+
+static dispatch_source_t gTermSource;
+static dispatch_source_t gIntSource;
+static dispatch_source_t gHupSource;
+
+static dispatch_source_t InstallTerminationSignalHandler(int signalNumber) {
+    signal(signalNumber, SIG_IGN);
+    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, signalNumber, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(source, ^{
+        [NSApp terminate:nil];
+    });
+    dispatch_resume(source);
+    return source;
+}
+
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@property(nonatomic, strong) NSTask *task;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    (void)notification;
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *appRoot = [bundlePath stringByDeletingLastPathComponent];
+    NSString *executable = [appRoot stringByAppendingPathComponent:@"facebook-monitor"];
+
+    if (![[NSFileManager defaultManager] isExecutableFileAtPath:executable]) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Facebook Monitor"];
+        [alert setInformativeText:@"找不到 facebook-monitor executable。請確認 Facebook Monitor.app 仍在 facebook-monitor 資料夾內。"];
+        [alert setAlertStyle:NSAlertStyleCritical];
+        [alert runModal];
+        [NSApp terminate:nil];
+        return;
+    }
+
+    NSArray<NSString *> *processArgs = [[NSProcessInfo processInfo] arguments];
+    NSMutableArray<NSString *> *childArgs = [NSMutableArray array];
+    if ([processArgs count] > 1) {
+        [childArgs addObjectsFromArray:[processArgs subarrayWithRange:NSMakeRange(1, [processArgs count] - 1)]];
+    }
+
+    self.task = [[NSTask alloc] init];
+    [self.task setExecutableURL:[NSURL fileURLWithPath:executable]];
+    [self.task setArguments:childArgs];
+    [self.task setTerminationHandler:^(NSTask *finishedTask) {
+        (void)finishedTask;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSApp terminate:nil];
+        });
+    }];
+
+    NSError *error = nil;
+    if (![self.task launchAndReturnError:&error]) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Facebook Monitor"];
+        [alert setInformativeText:[NSString stringWithFormat:@"無法啟動 facebook-monitor：%@", [error localizedDescription]]];
+        [alert setAlertStyle:NSAlertStyleCritical];
+        [alert runModal];
+        [NSApp terminate:nil];
+        return;
+    }
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender;
+    if (self.task != nil && [self.task isRunning]) {
+        [self.task terminate];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+        while ([self.task isRunning] && [deadline timeIntervalSinceNow] > 0) {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                     beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+        }
+        if ([self.task isRunning]) {
+            kill([self.task processIdentifier], SIGKILL);
+        }
+    }
+    return NSTerminateNow;
+}
+
+@end
+
+int main(int argc, const char * argv[]) {
+    (void)argc;
+    (void)argv;
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+        gTermSource = InstallTerminationSignalHandler(SIGTERM);
+        gIntSource = InstallTerminationSignalHandler(SIGINT);
+        gHupSource = InstallTerminationSignalHandler(SIGHUP);
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        [app setDelegate:delegate];
+        [app run];
+    }
+    return 0;
+}
 """
 
 

@@ -8,9 +8,9 @@ in the active environment:
 
     pyinstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean
 
-This spec intentionally produces an onedir folder with a lightweight `.app`
-launcher, not a signed standalone `.app` distribution. Signing / notarization
-is a later release step.
+This spec intentionally produces an onedir folder with a lightweight native
+`.app` launcher, not a signed standalone `.app` distribution. Signing /
+notarization is a later release step.
 """
 
 import os

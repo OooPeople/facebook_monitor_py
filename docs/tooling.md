@@ -23,7 +23,7 @@
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
 | Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案；Windows 可選驗證 Authenticode signer | 否 |
 | Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
-| macOS App Launcher Builder | `scripts/admin/create_macos_app_launcher.py` | Admin packaging | 在 macOS onedir 內建立 `Facebook Monitor.app` Finder / Dock launcher，圖示來源為 `packaging/assets/facebook-monitor.png` | 否 |
+| macOS App Launcher Builder | `scripts/admin/create_macos_app_launcher.py` | Admin packaging | 在 macOS onedir 內建立 `Facebook Monitor.app` Finder / Dock native launcher，圖示來源為 `packaging/assets/facebook-monitor.png` | 否 |
 | Relogin Flow Smoke | `scripts/admin/smoke_relogin_flow.py` | Admin smoke | 使用隔離暫存資料驗證重新登入警告與 launcher login gate | 否 |
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
 | One-shot Scan | `scripts/debug/one_shot_scan.py` | Debug | 對已保存 target 執行一次 one-shot 掃描 | 否 |

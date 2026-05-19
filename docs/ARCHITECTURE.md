@@ -74,7 +74,7 @@
 ## Frozen Updater
 
 - 目前正式更新目標支援 Windows PyInstaller onedir portable zip 與 macOS Apple Silicon onedir zip；source mode 只提供 GitHub Release 檢查，不把原始碼更新包裝成正式功能。
-- macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock launcher；它只啟動同一個 onedir 內的正式 `facebook-monitor` executable，updater 仍以 onedir 根目錄作為 app base dir。
+- macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；它啟動同一個 onedir 內的正式 `facebook-monitor` executable，並留在 Dock 作為可 Quit 的母程序，updater 仍以 onedir 根目錄作為 app base dir。
 - 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
 - Release asset 檔名必須精確對齊 GitHub tag version：Windows 使用 `facebook-monitor-{version}-windows-portable.zip`，macOS arm64 使用 `facebook-monitor-{version}-macos-arm64-onedir.zip`，兩者都必須有同名 `.sha256`。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
 - Web UI 只負責下載、驗證 SHA256、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。

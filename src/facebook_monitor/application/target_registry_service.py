@@ -124,6 +124,27 @@ class TargetRegistryService:
         self.targets.save(updated_target)
         return updated_target
 
+    def refresh_target_group_cover_image(
+        self,
+        target_id: str,
+        group_cover_image_url: str,
+    ) -> TargetDescriptor:
+        """只刷新 target 封面圖 URL，不改名稱與名稱 metadata 狀態。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        request_cover_image_url = _normalize_metadata_url(group_cover_image_url)
+        if not request_cover_image_url:
+            return target
+        updated_target = replace(
+            target,
+            group_cover_image_url=request_cover_image_url,
+            updated_at=utc_now(),
+        )
+        self.targets.save(updated_target)
+        return updated_target
+
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
         """標記 target 正等待 resident worker 補齊 Facebook metadata。"""
 

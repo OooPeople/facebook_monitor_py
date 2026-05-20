@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+
 
 class WorkerFailure(RuntimeError):
     """保存 worker 可記錄到 scan run 的失敗分類。"""
@@ -20,9 +24,9 @@ def classify_playwright_exception(error: Exception) -> str:
 
     message = str(error).lower()
     if "user data directory is already in use" in message or "processsingleton" in message:
-        return "profile_locked"
+        return PROFILE_LOCKED_REASON
     if "timeout" in message:
-        return "page_load_timeout"
+        return PAGE_LOAD_TIMEOUT_REASON
     if "net::" in message or "navigation" in message:
-        return "page_load_timeout"
-    return "unknown"
+        return PAGE_LOAD_TIMEOUT_REASON
+    return UNKNOWN_REASON

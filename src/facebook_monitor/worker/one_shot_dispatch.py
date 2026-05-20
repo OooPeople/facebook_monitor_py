@@ -25,6 +25,13 @@ from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
+from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
+from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
+from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
@@ -47,27 +54,37 @@ class OneShotScanOptions:
     scroll_wait_ms: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scroll_wait_ms
     headed_compat: bool = False
     scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
+    record_failures: bool = True
 
 
 def select_one_shot_target(app: ApplicationContext, target_id: str, group_id: str) -> TargetDescriptor:
     """選取本次 one-shot worker 要掃描的 target。"""
 
     if target_id and group_id:
-        raise WorkerFailure("target_argument_conflict", "Use either --target-id or --group-id.")
+        raise WorkerFailure(
+            TARGET_ARGUMENT_CONFLICT_REASON,
+            "Use either --target-id or --group-id.",
+        )
 
     if target_id:
         target = app.repositories.targets.get(target_id)
         if target is None:
-            raise WorkerFailure("target_missing", f"Target not found: {target_id}")
+            raise WorkerFailure(TARGET_MISSING_REASON, f"Target not found: {target_id}")
         if target.target_kind != TargetKind.POSTS:
-            raise WorkerFailure("target_kind_unsupported", "Only group posts targets are supported.")
+            raise WorkerFailure(
+                TARGET_KIND_UNSUPPORTED_REASON,
+                "Only group posts targets are supported.",
+            )
         validate_posts_target_route(target)
         return target
 
     if group_id:
         target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, group_id)
         if target is None:
-            raise WorkerFailure("target_missing", f"Group target not found: {group_id}")
+            raise WorkerFailure(
+                TARGET_MISSING_REASON,
+                f"Group target not found: {group_id}",
+            )
         validate_posts_target_route(target)
         return target
 
@@ -84,11 +101,14 @@ def select_one_shot_target(app: ApplicationContext, target_id: str, group_id: st
 
     if invalid_target_ids:
         raise WorkerFailure(
-            "target_invalid",
+            TARGET_INVALID_REASON,
             "No valid group posts target found. Invalid target ids: "
             + ", ".join(invalid_target_ids),
         )
-    raise WorkerFailure("target_missing", "No enabled group posts target found in database.")
+    raise WorkerFailure(
+        TARGET_MISSING_REASON,
+        "No enabled group posts target found in database.",
+    )
 
 
 def record_failure(
@@ -120,7 +140,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
     """執行一次已保存 target 掃描，成功時回傳掃描摘要。"""
 
     if not options.profile_dir.exists():
-        raise WorkerFailure("profile_missing", str(options.profile_dir))
+        raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
 
     target: TargetDescriptor | None = None
     started_at = monotonic()
@@ -137,7 +157,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
         remaining_ms = scan_timeout_ms - elapsed_ms
         if remaining_ms <= 0:
             raise WorkerFailure(
-                "scan_timeout",
+                SCAN_TIMEOUT_REASON,
                 f"Worker scan exceeded {int(effective_scan_timeout_seconds)} seconds.",
             )
         return max(remaining_ms, 1000)
@@ -180,31 +200,34 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                     finally:
                         context.close()
         except ProfileLeaseError as error:
-            record_failure(
-                options.db_path,
-                target,
-                "profile_locked",
-                str(error),
-                exception_class=error.__class__.__name__,
-                profile_lease_state="locked",
-            )
-            raise WorkerFailure("profile_locked", str(error)) from error
+            if options.record_failures:
+                record_failure(
+                    options.db_path,
+                    target,
+                    PROFILE_LOCKED_REASON,
+                    str(error),
+                    exception_class=error.__class__.__name__,
+                    profile_lease_state="locked",
+                )
+            raise WorkerFailure(PROFILE_LOCKED_REASON, str(error)) from error
         except WorkerFailure as error:
-            record_failure(
-                options.db_path,
-                target,
-                error.reason,
-                str(error),
-                exception_class=error.__class__.__name__,
-            )
+            if options.record_failures:
+                record_failure(
+                    options.db_path,
+                    target,
+                    error.reason,
+                    str(error),
+                    exception_class=error.__class__.__name__,
+                )
             raise
         except (PlaywrightTimeoutError, PlaywrightError) as error:
             reason = classify_playwright_exception(error)
-            record_failure(
-                options.db_path,
-                target,
-                reason,
-                str(error),
-                exception_class=error.__class__.__name__,
-            )
+            if options.record_failures:
+                record_failure(
+                    options.db_path,
+                    target,
+                    reason,
+                    str(error),
+                    exception_class=error.__class__.__name__,
+                )
             raise WorkerFailure(reason, str(error)) from error

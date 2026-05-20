@@ -15,6 +15,7 @@ from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
 from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
 )
@@ -40,6 +41,9 @@ from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannabl
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
 from facebook_monitor.worker.scan_metadata import PostScanMetadata
 from facebook_monitor.worker.scan_metadata import PostScanRoundMetadata
+from facebook_monitor.worker.scan_metadata import SORT_ADJUST_SKIP_COLLECTION_MODE
+from facebook_monitor.worker.scan_metadata import build_sort_adjust_skip_meta
+from facebook_monitor.worker.scan_metadata import with_scan_skipped_reason
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
@@ -142,9 +146,9 @@ def build_sort_unconfirmed_skip_metadata(
 ) -> dict[str, Any]:
     """建立排序未確認時的保護性跳過診斷。"""
 
-    return PostScanMetadata(
+    metadata = PostScanMetadata(
         worker="posts_scan",
-        collection_strategy="sort_adjust_skip",
+        collection_strategy=SORT_ADJUST_SKIP_COLLECTION_MODE,
         auto_load_more=config.auto_load_more,
         scroll_collection_enabled=False,
         target_count=config.max_items_per_scan,
@@ -157,16 +161,16 @@ def build_sort_unconfirmed_skip_metadata(
         scroll_wait_ms=max(scroll_wait_ms, 0),
         load_more_mode="skipped",
         stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
-        collected_meta={
-            "mode": "sort_adjust_skip",
-            "stopReason": SORT_ADJUST_UNCONFIRMED_STOP_REASON,
-        },
+        collected_meta=build_sort_adjust_skip_meta(
+            stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        ),
         sort_adjust=sort_adjust_result.to_metadata(),
         rounds=(),
-    ).to_metadata() | {
-        "scan_skipped": True,
-        "skip_reason": SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
-    }
+    ).to_metadata()
+    return with_scan_skipped_reason(
+        metadata,
+        skip_reason=SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
+    )
 
 
 def infer_scan_stop_reason(
@@ -257,7 +261,7 @@ def scan_posts_page(
         ),
     )
     if not items:
-        raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
+        raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No post-like items were extracted.")
 
     return finalize_posts_pipeline_scan(
         page_url=str(page.url),
@@ -340,7 +344,7 @@ async def scan_posts_page_async(
         ),
     )
     if not items:
-        raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
+        raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No post-like items were extracted.")
 
     return finalize_posts_pipeline_scan(
         page_url=str(page.url),

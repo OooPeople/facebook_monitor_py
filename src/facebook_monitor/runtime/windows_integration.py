@@ -99,6 +99,9 @@ def run_uvicorn_with_windows_tray(
         on_exit=lambda: setattr(server, "should_exit", True),
     )
     try:
-        server.run()
+        try:
+            server.run()
+        except KeyboardInterrupt:
+            return
     finally:
         tray_icon.stop()

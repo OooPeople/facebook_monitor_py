@@ -325,7 +325,7 @@ def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) 
     assert recovered_count == 1
     assert loaded is not None
     assert loaded.runtime_status == TargetRuntimeStatus.ERROR
-    assert "stale_running" in loaded.last_error
+    assert "掃描狀態逾時" in loaded.last_error
 
 
 def test_recover_stale_runtime_targets_requeues_stale_queued_target(tmp_path: Path) -> None:
@@ -550,3 +550,57 @@ def test_scheduler_loop_marks_extractor_empty_as_idle_after_failed_scan(
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.last_error == ""
+
+
+def test_scheduler_loop_marks_page_load_timeout_error_after_third_failure(
+    tmp_path: Path,
+) -> None:
+    """one-shot fallback 也要沿用 page_load_timeout 連續三次才 error 的策略。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def fake_scan_once(_options: OneShotScanOptions) -> PostsScanSummary:
+        """模擬頁面載入期間 navigation 造成本輪掃描失敗。"""
+
+        raise WorkerFailure(
+            "page_load_timeout",
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation.",
+        )
+
+    for attempt in range(1, 4):
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.request_target_scan(target.id)
+        summaries = run_one_shot_scheduler_loop(
+            SchedulerOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                max_cycles=1,
+            ),
+            scan_once=fake_scan_once,
+            sleep_fn=lambda _seconds: None,
+        )
+        assert summaries[0].failure_count == 1
+        with SqliteApplicationContext(db_path) as app:
+            state = app.repositories.runtime_states.get(target.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        assert state is not None
+        assert latest_scan is not None
+        assert latest_scan.metadata["retry_streak"] == attempt
+        if attempt < 3:
+            assert state.runtime_status == TargetRuntimeStatus.IDLE
+            assert state.last_error == ""
+            assert latest_scan.metadata["runtime_action"] == "will_retry"
+            assert latest_scan.metadata["retryable"] is True
+        else:
+            assert state.runtime_status == TargetRuntimeStatus.ERROR
+            assert "已連續 3 次失敗" in state.last_error
+            assert latest_scan.metadata["runtime_action"] == "error"
+            assert latest_scan.metadata["retryable"] is False

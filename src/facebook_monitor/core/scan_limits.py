@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 MIN_TARGET_POSTS = 1
+DEFAULT_TARGET_POSTS = 5
 MAX_TARGET_POSTS = 10
 
 
-def clamp_target_post_count(value: int | float | str | None, default: int = 5) -> int:
+def clamp_target_post_count(
+    value: int | float | str | None,
+    default: int = DEFAULT_TARGET_POSTS,
+) -> int:
     """限制單輪目標項目數在安全範圍內。"""
 
     try:

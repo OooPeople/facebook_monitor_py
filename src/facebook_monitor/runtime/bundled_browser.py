@@ -15,21 +15,19 @@ WINDOWS_BUNDLED_BROWSER_RELATIVE_PATHS = (
     "browser/chrome-win64/chrome.exe",
     "_internal/browser/chrome-win64/chrome.exe",
 )
-MACOS_BUNDLED_BROWSER_RELATIVE_PATHS = (
-    "browser/Chromium.app/Contents/MacOS/Chromium",
-    "_internal/browser/Chromium.app/Contents/MacOS/Chromium",
-    "browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-    "_internal/browser/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-    "browser/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-    "_internal/browser/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+MACOS_BROWSER_APP_EXECUTABLES = (
+    "Chromium.app/Contents/MacOS/Chromium",
+    "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+    "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
     (
-        "browser/chrome-mac-arm64/Google Chrome for Testing.app/"
+        "chrome-mac-arm64/Google Chrome for Testing.app/"
         "Contents/MacOS/Google Chrome for Testing"
     ),
-    (
-        "_internal/browser/chrome-mac-arm64/Google Chrome for Testing.app/"
-        "Contents/MacOS/Google Chrome for Testing"
-    ),
+)
+MACOS_BUNDLED_BROWSER_RELATIVE_PATHS = tuple(
+    f"{prefix}/{relative_path}"
+    for prefix in ("browser", "_internal/browser")
+    for relative_path in MACOS_BROWSER_APP_EXECUTABLES
 )
 BUNDLED_BROWSER_RELATIVE_PATHS = (
     WINDOWS_BUNDLED_BROWSER_RELATIVE_PATHS + MACOS_BUNDLED_BROWSER_RELATIVE_PATHS

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Literal
 
+from facebook_monitor.core.notification_channels import copy_notification_settings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
@@ -284,12 +285,5 @@ def _merge_template_sections(
             auto_adjust_sort=template.auto_adjust_sort,
         )
     if "notifications" in sections:
-        next_config = replace(
-            next_config,
-            enable_desktop_notification=template.enable_desktop_notification,
-            enable_ntfy=template.enable_ntfy,
-            ntfy_topic=template.ntfy_topic,
-            enable_discord_notification=template.enable_discord_notification,
-            discord_webhook=template.discord_webhook,
-        )
+        next_config = copy_notification_settings(next_config, template)
     return next_config

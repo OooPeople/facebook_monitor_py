@@ -28,8 +28,10 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
@@ -40,12 +42,14 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.resident_shared import apply_resident_scan_failure_decision
+from facebook_monitor.worker.resident_shared import decide_resident_scan_failure
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_error
-from facebook_monitor.worker.resident_shared import mark_resident_target_idle
 from facebook_monitor.worker.resident_shared import record_resident_scan_failure
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
+from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
 
 
 SleepCallable = Callable[[float], None]
@@ -148,7 +152,7 @@ def run_sync_resident_fallback_loop(
     """執行 sync fallback 常駐 loop；max_cycles 為 None 時會持續執行。"""
 
     if not options.profile_dir.exists():
-        raise WorkerFailure("profile_missing", str(options.profile_dir))
+        raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
 
     summaries: list[ResidentCycleSummary] = []
     cycle_index = 0
@@ -214,7 +218,11 @@ def run_sync_resident_fallback_cycle(
         try:
             resident_target = load_resident_target(options.db_path, target_id)
         except WorkerFailure as exc:
-            mark_resident_target_error(options.db_path, target_id, f"{exc.reason}: {exc}")
+            mark_resident_target_error(
+                options.db_path,
+                target_id,
+                format_scan_failure_message(exc.reason, str(exc)),
+            )
             failure_count += 1
             continue
 
@@ -256,22 +264,80 @@ def run_sync_resident_fallback_cycle(
             success_count += 1
         except WorkerFailure as exc:
             failure_count += 1
-            record_resident_scan_failure(options.db_path, resident_target.target, exc.reason, str(exc))
-            if exc.reason in RETRYABLE_IDLE_FAILURE_REASONS:
-                mark_resident_target_idle(options.db_path, target_id)
-            else:
-                mark_resident_target_error(options.db_path, target_id, f"{exc.reason}: {exc}")
+            decision = decide_resident_scan_failure(
+                options.db_path,
+                target_id,
+                exc.reason,
+                source="worker_failure",
+            )
+            record_resident_scan_failure(
+                options.db_path,
+                resident_target.target,
+                exc.reason,
+                str(exc),
+                retryable=decision.retryable,
+                exception_class=exc.__class__.__name__,
+                decision=decision,
+            )
+            apply_resident_scan_failure_decision(
+                options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                page_pool.discard(target_id)
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
             failure_count += 1
             reason = classify_playwright_exception(exc)
-            record_resident_scan_failure(options.db_path, resident_target.target, reason, str(exc))
-            mark_resident_target_error(options.db_path, target_id, f"{reason}: {exc}")
-            page_pool.discard(target_id)
+            decision = decide_resident_scan_failure(
+                options.db_path,
+                target_id,
+                reason,
+                source="playwright",
+            )
+            record_resident_scan_failure(
+                options.db_path,
+                resident_target.target,
+                reason,
+                str(exc),
+                retryable=decision.retryable,
+                exception_class=exc.__class__.__name__,
+                decision=decision,
+            )
+            apply_resident_scan_failure_decision(
+                options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                page_pool.discard(target_id)
         except Exception as exc:
             failure_count += 1
-            record_resident_scan_failure(options.db_path, resident_target.target, "unknown", str(exc))
-            mark_resident_target_error(options.db_path, target_id, f"unknown: {exc}")
-            page_pool.discard(target_id)
+            decision = decide_resident_scan_failure(
+                options.db_path,
+                target_id,
+                UNKNOWN_REASON,
+                source="unknown_exception",
+            )
+            record_resident_scan_failure(
+                options.db_path,
+                resident_target.target,
+                UNKNOWN_REASON,
+                str(exc),
+                retryable=decision.retryable,
+                exception_class=exc.__class__.__name__,
+                decision=decision,
+            )
+            apply_resident_scan_failure_decision(
+                options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                page_pool.discard(target_id)
         finally:
             planner.mark_finished(target_id)
 
@@ -326,7 +392,7 @@ def _open_sync_fallback_browser_context(
                 finally:
                     context.close()
     except ProfileLeaseError as exc:
-        raise WorkerFailure("profile_locked", str(exc)) from exc
+        raise WorkerFailure(PROFILE_LOCKED_REASON, str(exc)) from exc
 
 
 def _is_page_closed(page: Any) -> bool:

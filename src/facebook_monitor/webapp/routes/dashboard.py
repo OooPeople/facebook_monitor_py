@@ -12,7 +12,11 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
+from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
+from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
+from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
@@ -80,12 +84,13 @@ def _render_preview_rows_html(
     templates: Jinja2Templates,
     rows: object,
     empty_text: str,
+    empty_kind: str,
 ) -> str:
     """以 Jinja 單一來源產生 preview rows partial HTML。"""
 
     template = templates.env.get_template("_preview_rows.html")
     preview_rows = getattr(template.module, "preview_rows")
-    return str(preview_rows(rows, empty_text)).strip()
+    return str(preview_rows(rows, empty_text, empty_kind)).strip()
 
 
 def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[str, object]:
@@ -122,11 +127,13 @@ def _serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[s
             templates,
             row.latest_scan_preview_rows,
             "尚無掃描紀錄",
+            "latest_scan",
         ),
         "hit_record_preview_html": _render_preview_rows_html(
             templates,
             row.hit_record_preview_rows,
             "尚無命中紀錄",
+            "hit_records",
         ),
     }
 
@@ -186,6 +193,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """顯示 target 清單與設定表單。"""
 
         message = request.query_params.get("message", "")
+        feedback = request.query_params.get("feedback", "")
         error = request.query_params.get("error", "")
         try:
             dashboard = get_dashboard_view(
@@ -206,10 +214,15 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "dashboard": dashboard,
                 "rows": dashboard.rows,
                 "message": message,
+                "feedback": feedback,
                 "error": error,
                 "scheduler_state": scheduler_state,
                 "profile_session_warning": dashboard.profile_session_warning,
                 "dashboard_revision": dashboard_revision,
+                "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,
+                "min_refresh_seconds": MIN_REFRESH_SECONDS,
+                "min_target_posts": MIN_TARGET_POSTS,
+                "max_target_posts": MAX_TARGET_POSTS,
                 "initial_theme": get_app_theme(request),
             },
         )

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import TypeVar
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 
@@ -21,29 +20,6 @@ class UnsetConfigValue:
 
 
 UNSET_CONFIG_VALUE = UnsetConfigValue()
-ConfigFieldValue = TypeVar("ConfigFieldValue")
-
-
-def provided_or_default(
-    value: ConfigFieldValue | UnsetConfigValue,
-    default: ConfigFieldValue,
-) -> ConfigFieldValue:
-    """合併 upsert request：未提供欄位時使用新 target 預設值。"""
-
-    if isinstance(value, UnsetConfigValue):
-        return default
-    return value
-
-
-def provided_or_existing(
-    value: ConfigFieldValue | UnsetConfigValue,
-    existing: ConfigFieldValue,
-) -> ConfigFieldValue:
-    """合併 upsert request：未提供欄位時保留既有 config。"""
-
-    if isinstance(value, UnsetConfigValue):
-        return existing
-    return value
 
 
 @dataclass(frozen=True)

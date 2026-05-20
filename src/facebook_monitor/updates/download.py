@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -18,10 +17,13 @@ from typing import AsyncIterator
 import httpx
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
+from facebook_monitor.updates.checksum import HASH_CHUNK_SIZE
+from facebook_monitor.updates.checksum import calculate_sha256 as _calculate_sha256
+from facebook_monitor.updates.checksum import read_sha256_sidecar
 from facebook_monitor.updates.release_check import UpdateCheckResult
 
 
-DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_CHUNK_SIZE = HASH_CHUNK_SIZE
 MAX_UPDATE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 MAX_SHA256_DOWNLOAD_BYTES = 1024 * 1024
 
@@ -142,29 +144,13 @@ def ensure_child_path(parent: Path, child: Path) -> None:
 def read_expected_sha256(path: Path, *, expected_filename: str) -> str:
     """讀取 `.sha256` 檔案，支援常見 `hash  filename` 格式。"""
 
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        raise ValueError("sha256_file_empty")
-    first_line = text.splitlines()[0].strip()
-    candidate = first_line.split()[0].casefold()
-    if not re.fullmatch(r"[0-9a-f]{64}", candidate):
-        raise ValueError("sha256_file_invalid")
-    parts = first_line.split(maxsplit=1)
-    if len(parts) == 2:
-        filename = parts[1].lstrip("*").strip()
-        if filename and Path(filename).name != expected_filename:
-            raise ValueError("sha256_filename_mismatch")
-    return candidate
+    return read_sha256_sidecar(path, expected_filename=expected_filename)
 
 
 def calculate_sha256(path: Path) -> str:
     """計算檔案 SHA256。"""
 
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(DOWNLOAD_CHUNK_SIZE), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _calculate_sha256(path)
 
 
 async def _download_file(

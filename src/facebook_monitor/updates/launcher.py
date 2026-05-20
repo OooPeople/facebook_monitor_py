@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from typing import Any
 
@@ -27,11 +27,15 @@ from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import layout_policy_for_updater_path
 from facebook_monitor.updates.platforms import supported_layout_policies
+from facebook_monitor.updates.validation import has_unsafe_existing_path_component
+from facebook_monitor.updates.validation import is_reparse_or_symlink
+from facebook_monitor.updates.validation import validate_tree_links_stay_within_root
 
 
 UPDATER_EXE_NAME = WINDOWS_UPDATER_ENTRY
 APP_EXE_NAME = WINDOWS_APP_ENTRY
 TEMP_UPDATER_MAX_AGE_SECONDS = 24 * 60 * 60
+TEMP_UPDATER_DIR_NAME = "temp_updater"
 
 
 @dataclass(frozen=True)
@@ -117,7 +121,12 @@ def launch_temp_updater(
 def find_bundled_updater(app_base_dir: Path) -> Path | None:
     """尋找 frozen onedir 旁的 updater。"""
 
-    for policy in supported_layout_policies():
+    detected_policy = detect_layout_policy(app_base_dir)
+    policies = (
+        detected_policy,
+        *(policy for policy in supported_layout_policies() if policy != detected_policy),
+    )
+    for policy in policies:
         candidate = policy.updater_entry(app_base_dir)
         if candidate.is_file():
             return candidate.resolve()
@@ -127,17 +136,15 @@ def find_bundled_updater(app_base_dir: Path) -> Path | None:
 def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
     """複製 updater onedir runtime 到 temp，避免 updater 鎖住 app base dir。"""
 
-    root = temp_updater_root()
+    root = temp_updater_root(runtime_dir)
+    _ensure_safe_temp_updater_root(root, runtime_dir=runtime_dir)
     cleanup_old_temp_updaters(root)
     root.mkdir(parents=True, exist_ok=True)
+    _harden_temp_updater_root(root)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     runtime_hash = hashlib.sha256(str(runtime_dir.resolve()).encode("utf-8")).hexdigest()[:12]
-    temp_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f"{timestamp}-{runtime_hash}-",
-            dir=str(root),
-        )
-    )
+    temp_dir = root / f"{timestamp}-{runtime_hash}-{hashlib.sha256(os.urandom(16)).hexdigest()[:8]}"
+    temp_dir.mkdir(mode=0o700)
     layout_policy = layout_policy_for_updater_path(source)
     destination = temp_dir / layout_policy.updater_entry_name
     shutil.copy2(source, destination)
@@ -145,14 +152,19 @@ def copy_updater_to_temp(source: Path, runtime_dir: Path) -> Path:
         source_dir = source.parent / directory_name
         if not source_dir.is_dir():
             raise ValueError(f"updater_runtime_dir_missing:{directory_name}")
-        shutil.copytree(source_dir, temp_dir / directory_name)
+        validate_tree_links_stay_within_root(
+            source_dir,
+            root=source.parent,
+            reason="updater_runtime_dir_unsafe",
+        )
+        shutil.copytree(source_dir, temp_dir / directory_name, symlinks=True)
     return destination
 
 
-def temp_updater_root() -> Path:
+def temp_updater_root(runtime_dir: Path) -> Path:
     """回傳 temp updater runtime copy 的根目錄。"""
 
-    return Path(tempfile.gettempdir()) / "facebook-monitor" / "updater"
+    return runtime_dir / TEMP_UPDATER_DIR_NAME
 
 
 def cleanup_old_temp_updaters(
@@ -165,13 +177,38 @@ def cleanup_old_temp_updaters(
     cutoff = time.time() - max_age_seconds
     if not root.exists():
         return
+    if is_reparse_or_symlink(root):
+        return
     with suppress(OSError):
         for child in root.iterdir():
             if not child.is_dir():
                 continue
+            if is_reparse_or_symlink(child):
+                continue
             with suppress(OSError):
                 if child.stat().st_mtime < cutoff:
                     shutil.rmtree(child)
+
+
+def _ensure_safe_temp_updater_root(root: Path, *, runtime_dir: Path) -> None:
+    """確認 temp updater root 不是 symlink/junction 或一般檔案。"""
+
+    if has_unsafe_existing_path_component(root, root=runtime_dir.parent):
+        raise ValueError("temp_updater_root_unsafe")
+    if root.exists() or root.is_symlink():
+        if is_reparse_or_symlink(root) or not root.is_dir():
+            raise ValueError("temp_updater_root_unsafe")
+
+
+def _harden_temp_updater_root(root: Path) -> None:
+    """盡量讓 temp updater root 僅目前使用者可讀寫執行。"""
+
+    try:
+        if hasattr(os, "geteuid") and root.stat().st_uid != os.geteuid():
+            raise ValueError("temp_updater_root_owner_mismatch")
+        root.chmod(0o700)
+    except OSError as exc:
+        raise ValueError("temp_updater_root_unsafe") from exc
 
 
 def launch_restarted_app(pending: PendingUpdate) -> AppRestartResult:

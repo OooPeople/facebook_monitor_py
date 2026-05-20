@@ -1,4 +1,5 @@
 import { setupCardCollapse } from "/static/dashboard/card_collapse.js";
+import { setupCoverImageRefresh } from "/static/dashboard/cover_image_refresh.js";
 import { setupDebugCopyButtons } from "/static/dashboard/debug_tools.js";
 import { setupConfirmSubmitForms } from "/static/dashboard/dialogs.js";
 import { setupConfigForms, setupFormSubmitTracking, setupRefreshFields } from "/static/dashboard/forms.js";
@@ -32,17 +33,18 @@ if ("scrollRestoration" in window.history) {
 
 const dispatchPageFeedback = () => {
   const message = pageFeedback.message || "";
+  const feedback = pageFeedback.feedback || "";
   if (pageFeedback.error) {
     clearSubmittedActionAnchor();
   }
   const submittedConfigAnchor = getSubmittedConfigAnchor();
   const submittedActionAnchor = getSubmittedActionAnchor();
-  const feedbackAnchor = message === "設定已更新"
+  const feedbackAnchor = feedback === "target_config_saved"
     ? submittedConfigAnchor
     : submittedActionAnchor || window.location.hash.slice(1);
   const targetElement = feedbackAnchor ? document.getElementById(feedbackAnchor) : null;
   let handled = false;
-  if (message === "設定已更新" && targetElement) {
+  if (feedback === "target_config_saved" && targetElement) {
     showInlineStatus(
       targetElement.querySelector("[data-dirty-status]"),
       "設定已更新",
@@ -52,7 +54,7 @@ const dispatchPageFeedback = () => {
     handled = true;
     clearSubmittedConfigAnchor();
   } else if (
-    ["target 已開始", "target 已停止", "已排入掃描"].includes(message) &&
+    ["target_started", "target_stopped", "scan_requested"].includes(feedback) &&
     targetElement
   ) {
     showInlineStatus(
@@ -72,6 +74,7 @@ const dispatchPageFeedback = () => {
 
 restoreScrollPosition();
 setupThemeToggle();
+setupCoverImageRefresh();
 setupConfigForms(state);
 setupCardCollapse(state);
 setupRefreshFields();

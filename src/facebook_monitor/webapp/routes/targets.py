@@ -18,6 +18,13 @@ from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SE
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.models import CoverImageRefreshRequestStatus
+from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
+from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
+from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
+from facebook_monitor.core.user_messages import format_failure_message_text
+from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.facebook.route_detection import RouteDetectionError
@@ -138,6 +145,9 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "error": error,
                 "notification_settings": get_global_notification_settings(request),
                 "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,
+                "min_refresh_seconds": MIN_REFRESH_SECONDS,
+                "min_target_posts": MIN_TARGET_POSTS,
+                "max_target_posts": MAX_TARGET_POSTS,
                 "target_keyword_defaults": get_target_keyword_defaults(request),
                 "initial_theme": get_app_theme(request),
             },
@@ -251,8 +261,10 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except ProfileSessionError as exc:
             return redirect_new_target_with_error(str(exc))
         except Exception as exc:
-            return redirect_new_target_with_error(f"新增失敗: {exc}")
-        return redirect_with_message("target 已新增")
+            return redirect_new_target_with_error(
+                "新增失敗：" + format_failure_message_text(str(exc))
+            )
+        return redirect_with_message("target 已新增", feedback="target_created")
 
     @app.post("/targets/{target_id}/config")
     async def update_config(
@@ -303,8 +315,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                     config_form.to_update_request(target_id=target_id)
                 )
         except Exception as exc:
-            return redirect_with_error(f"設定更新失敗: {exc}", return_to=return_to)
-        return redirect_with_message("設定已更新", return_to=return_to)
+            return redirect_with_error(
+                "設定更新失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            "設定已更新",
+            return_to=return_to,
+            feedback="target_config_saved",
+        )
 
     @app.post("/targets/{target_id}/name")
     async def update_target_name(
@@ -319,8 +338,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 app_context.services.targets.update_target_name(target_id, display_name)
         except Exception as exc:
-            return redirect_with_error(f"名稱更新失敗: {exc}", return_to=return_to)
-        return redirect_with_message("名稱已更新", return_to=return_to)
+            return redirect_with_error(
+                "名稱更新失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            "名稱已更新",
+            return_to=return_to,
+            feedback="target_name_saved",
+        )
 
     @app.post("/targets/{target_id}/metadata/refresh")
     async def refresh_target_metadata_route(
@@ -339,11 +365,48 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             get_scheduler_manager(request).request_metadata_refresh(target_id)
             start_resident_scheduler_if_needed(request)
         except Exception as exc:
-            return redirect_with_error(f"重新抓取失敗: {exc}", return_to=return_to)
+            return redirect_with_error(
+                "重新抓取失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
         return redirect_with_message(
             "已加入排程，會在下一次啟動時抓取名稱與封面",
             return_to=return_to,
         )
+
+    @app.post("/api/targets/{target_id}/cover-image/load-failure")
+    async def report_target_cover_image_load_failure(
+        request: Request,
+        target_id: str,
+    ) -> JSONResponse:
+        """接收 UI 壞圖 hint，排程 image-only cover URL 背景刷新。"""
+
+        payload = await request.json()
+        reported_url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
+        min_interval_seconds = (
+            PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
+        )
+        with SqliteApplicationContext(get_db_path(request)) as app_context:
+            result = app_context.services.targets.request_target_cover_image_refresh(
+                target_id,
+                reported_url=reported_url,
+                min_interval_seconds=min_interval_seconds,
+            )
+        if result.status in {
+            CoverImageRefreshRequestStatus.QUEUED,
+            CoverImageRefreshRequestStatus.PENDING,
+        }:
+            start_resident_scheduler_if_needed(request)
+        return JSONResponse({
+            "ok": result.status
+            not in {
+                CoverImageRefreshRequestStatus.NOT_FOUND,
+                CoverImageRefreshRequestStatus.INVALID_URL,
+            },
+            "status": result.status,
+            "queued": result.queued,
+            "reason": result.reason,
+        })
 
     @app.post("/targets/{target_id}/notifications/test")
     async def test_target_notifications(
@@ -385,7 +448,9 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except Exception as exc:
             error_message = (
                 "測試通知失敗: "
-                + safe_exception_message("notification_test_failed", exc)
+                + format_notification_event_message(
+                    safe_exception_message("notification_test_failed", exc)
+                )
             )
             if _wants_json_response(request):
                 return JSONResponse(
@@ -396,9 +461,13 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 error_message,
                 return_to=return_to,
             )
-        message = "測試通知結果：" + " / ".join(results)
+        localized_results = [
+            format_notification_event_message(result)
+            for result in results
+        ]
+        message = "測試通知結果：" + " / ".join(localized_results)
         if _wants_json_response(request):
-            return JSONResponse({"ok": True, "message": message, "results": results})
+            return JSONResponse({"ok": True, "message": message, "results": localized_results})
         return redirect_with_message(message, return_to=return_to)
 
     @app.post("/targets/{target_id}/start")
@@ -414,8 +483,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 app_context.services.targets.restart_target_monitoring(target_id)
             get_scheduler_manager(request).wake()
         except Exception as exc:
-            return redirect_with_error(f"啟動失敗: {exc}", return_to=return_to)
-        return redirect_with_message("target 已開始", return_to=return_to)
+            return redirect_with_error(
+                "啟動失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            "target 已開始",
+            return_to=return_to,
+            feedback="target_started",
+        )
 
     @app.post("/targets/{target_id}/stop")
     async def pause_target_monitoring_route(
@@ -430,8 +506,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 app_context.services.targets.pause_target_monitoring(target_id)
             get_scheduler_manager(request).wake()
         except Exception as exc:
-            return redirect_with_error(f"停止失敗: {exc}", return_to=return_to)
-        return redirect_with_message("target 已停止", return_to=return_to)
+            return redirect_with_error(
+                "停止失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            "target 已停止",
+            return_to=return_to,
+            feedback="target_stopped",
+        )
 
     @app.post("/targets/{target_id}/delete")
     async def delete_target(
@@ -445,8 +528,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 app_context.services.targets.delete_target(target_id)
         except Exception as exc:
-            return redirect_with_error(f"刪除失敗: {exc}", return_to=return_to)
-        return redirect_with_message("target 已刪除", return_to=return_to)
+            return redirect_with_error(
+                "刪除失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            "target 已刪除",
+            return_to=return_to,
+            feedback="target_deleted",
+        )
 
     @app.post("/targets/{target_id}/scan-once")
     async def scan_once(request: Request, target_id: str) -> RedirectResponse:
@@ -463,5 +553,5 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             start_resident_scheduler_if_needed(request)
         except Exception as exc:
             logger.exception("scan once failed", extra={"target_id": target_id})
-            return redirect_with_error(f"掃描失敗：{exc}")
-        return redirect_with_message("已排入掃描")
+            return redirect_with_error("掃描失敗：" + format_failure_message_text(str(exc)))
+        return redirect_with_message("已排入掃描", feedback="scan_requested")

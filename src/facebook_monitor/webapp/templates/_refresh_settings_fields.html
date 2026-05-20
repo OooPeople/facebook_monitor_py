@@ -2,9 +2,10 @@
 {% set refresh_source = refresh_source if refresh_source is defined else (row if has_row else none) %}
 {% set refresh_form_id = refresh_form_id if refresh_form_id is defined else ("config-" ~ row.target.id if has_row else "") %}
 {% set refresh_input_attrs = refresh_input_attrs|default("") %}
-{% set fixed_default = target_defaults.default_fixed_refresh_sec if target_defaults is defined else 60 %}
-{% set min_default = target_defaults.min_refresh_sec if target_defaults is defined else 60 %}
-{% set max_default = target_defaults.max_refresh_sec if target_defaults is defined else 120 %}
+{% set refresh_defaults = target_defaults %}
+{% set fixed_default = refresh_defaults.default_fixed_refresh_sec %}
+{% set min_default = refresh_defaults.min_refresh_sec %}
+{% set max_default = refresh_defaults.max_refresh_sec %}
 {% set floating_checked = (refresh_source and refresh_source.refresh_mode == "floating") or not refresh_source %}
 {% set fixed_checked = refresh_source and refresh_source.refresh_mode == "fixed" %}
 {% set fixed_value = refresh_source.fixed_refresh_value if refresh_source else fixed_default %}
@@ -32,14 +33,14 @@
 <div class="form-grid">
   <label data-refresh-fixed>
     刷新秒數
-    <input name="fixed_refresh_sec" type="number" min="5" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input name="fixed_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
   <label data-refresh-floating>
     最小刷新秒數
-    <input name="min_refresh_sec" type="number" min="5" value="{{ min_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input name="min_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ min_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
   <label data-refresh-floating>
     最大刷新秒數
-    <input name="max_refresh_sec" type="number" min="5" value="{{ max_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input name="max_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ max_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
   </label>
 </div>

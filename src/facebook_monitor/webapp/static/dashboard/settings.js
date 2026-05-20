@@ -1,6 +1,7 @@
 import {
   clearFeedbackParams,
   closeDialog,
+  formatClientErrorMessage,
   openDialog,
   readJsonScript,
   setupDirtyFormStatus,
@@ -49,9 +50,9 @@ setupDirtyFormStatus({
   statusElement: targetKeywordStatus,
 });
 
-if (pageFeedback.message === "關鍵字預設值已保存") {
+if (pageFeedback.feedback === "target_keyword_defaults_saved") {
   showInlineStatus(targetKeywordStatus, "設定已更新", "saved", 2500);
-} else if (pageFeedback.message === "通知預設值已保存") {
+} else if (pageFeedback.feedback === "notification_defaults_saved") {
   showInlineStatus(notificationStatus, "設定已更新", "saved", 2500);
 } else if (pageFeedback.message) {
   showToast(pageFeedback.message, "success");
@@ -184,7 +185,7 @@ const handleUpdateCheckSubmit = async (form) => {
   } catch (error) {
     button?.removeAttribute("disabled");
     if (summary) {
-      summary.textContent = error?.message || "檢查更新失敗。";
+      summary.textContent = formatClientErrorMessage(error, "檢查更新失敗。");
     }
   }
 };
@@ -223,7 +224,7 @@ const handleUpdateInstallSubmit = async (updateInstallForm) => {
       }
       setUpdateModalState({
         text: "更新沒有完成。",
-        error: error?.message || "更新失敗，請稍後再試。",
+        error: formatClientErrorMessage(error, "更新失敗，請稍後再試。"),
         closeVisible: true,
       });
     }

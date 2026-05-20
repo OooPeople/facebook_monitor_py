@@ -65,6 +65,7 @@ WINDOWS_LAYOUT_POLICY = UpdaterLayoutPolicy(
     required_staging_files=(
         WINDOWS_APP_ENTRY,
         WINDOWS_UPDATER_ENTRY,
+        "_internal/python313.dll",
         "_internal/browser/chrome.exe",
         "_internal/assets/facebook-monitor.ico",
         "_internal/assets/facebook-monitor-tray.ico",
@@ -118,6 +119,45 @@ def supported_layout_policies() -> tuple[UpdaterLayoutPolicy, ...]:
     """回傳目前 updater 可辨識的 layout policies。"""
 
     return (WINDOWS_LAYOUT_POLICY, MACOS_ARM64_LAYOUT_POLICY)
+
+
+def macos_app_executable_staging_paths(
+    layout_policy: UpdaterLayoutPolicy,
+) -> tuple[str, ...]:
+    """回傳 macOS onedir 內必須保留 executable bit 的固定 executable path。"""
+
+    if layout_policy.platform_key != MACOS_ARM64_LAYOUT_POLICY.platform_key:
+        return ()
+    return (
+        layout_policy.app_entry_name,
+        layout_policy.updater_entry_name,
+        MACOS_APP_BUNDLE_LAUNCHER,
+    )
+
+
+def macos_optional_executable_staging_paths(
+    layout_policy: UpdaterLayoutPolicy,
+) -> tuple[str, ...]:
+    """回傳 macOS any-group 內可能出現且需 executable bit 的 path。"""
+
+    if layout_policy.platform_key != MACOS_ARM64_LAYOUT_POLICY.platform_key:
+        return ()
+    return tuple(
+        path
+        for group in layout_policy.required_staging_any_groups
+        for path in group
+    )
+
+
+def macos_known_executable_staging_paths(
+    layout_policy: UpdaterLayoutPolicy,
+) -> tuple[str, ...]:
+    """回傳 macOS release zip 建立時可預先標記 executable bit 的 path。"""
+
+    return (
+        *macos_app_executable_staging_paths(layout_policy),
+        *macos_optional_executable_staging_paths(layout_policy),
+    )
 
 
 def missing_required_paths(

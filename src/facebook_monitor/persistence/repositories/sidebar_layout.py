@@ -10,6 +10,7 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime
 
+from facebook_monitor.core.notification_channels import transform_notification_endpoints
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
@@ -213,11 +214,7 @@ class SidebarLayoutRepository:
     ) -> SidebarGroupConfigTemplate:
         """新增或更新 group config template。"""
 
-        encrypted = replace(
-            template,
-            ntfy_topic=self.secret_codec.encrypt(template.ntfy_topic),
-            discord_webhook=self.secret_codec.encrypt(template.discord_webhook),
-        )
+        encrypted = transform_notification_endpoints(template, self.secret_codec.encrypt)
         self.connection.execute(
             """
             INSERT INTO sidebar_group_config_templates (
@@ -274,11 +271,7 @@ class SidebarLayoutRepository:
     ) -> SidebarGroupConfigTemplate:
         """還原 group template 內的 notification secrets。"""
 
-        return replace(
-            template,
-            ntfy_topic=self.secret_codec.decrypt(template.ntfy_topic),
-            discord_webhook=self.secret_codec.decrypt(template.discord_webhook),
-        )
+        return transform_notification_endpoints(template, self.secret_codec.decrypt)
 
 
 def _now() -> datetime:

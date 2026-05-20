@@ -12,6 +12,7 @@ from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
@@ -20,13 +21,15 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_dispatch import dispatch_notification_outbox_entry
-from facebook_monitor.notifications.channel_dispatch import is_channel_enabled
+from facebook_monitor.notifications.channel_dispatch import get_channel_definition
 from facebook_monitor.notifications.channel_dispatch import (
     record_failed_notification_event_for_outbox_error,
 )
+from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
+from facebook_monitor.notifications.channel_plan import get_channel_endpoint
+from facebook_monitor.notifications.channel_plan import is_channel_enabled_by_config
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
@@ -36,8 +39,10 @@ from facebook_monitor.notifications.payload import build_match_notification_payl
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
-DEFAULT_STALE_PROCESSING_SECONDS = 300
-DEFAULT_DISPATCH_BATCH_LIMIT = 10
+DEFAULT_STALE_PROCESSING_SECONDS = (
+    PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.stale_processing_seconds
+)
+DEFAULT_DISPATCH_BATCH_LIMIT = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.dispatch_batch_limit
 
 
 def build_match_notification_message(
@@ -140,46 +145,23 @@ def enqueue_match_notifications(
         permalink=permalink,
         matched_keyword=matched_keyword,
     )
-    for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
-        if definition.channel == NotificationChannel.DESKTOP:
-            if not config.enable_desktop_notification:
-                continue
-            entries.append(
-                app.repositories.notification_outbox.enqueue(
-                    NotificationOutboxEntry(
-                        idempotency_key=build_notification_idempotency_key(
-                            target_id=target.id,
-                            item_key=item_key,
-                            channel=definition.channel,
-                        ),
-                        target_id=target.id,
-                        item_key=item_key,
-                        item_kind=item_kind,
-                        channel=definition.channel,
-                        title=title,
-                        message=compact_message,
-                    )
-                )
-            )
-            continue
-        if not is_channel_enabled(config, definition):
-            continue
-        endpoint = str(getattr(config, definition.endpoint_field, "") or "")
+    for plan in build_enabled_channel_plans(config):
+        message_for_channel = compact_message if plan.use_compact_message else message
         entries.append(
             app.repositories.notification_outbox.enqueue(
                 NotificationOutboxEntry(
                     idempotency_key=build_notification_idempotency_key(
                         target_id=target.id,
                         item_key=item_key,
-                        channel=definition.channel,
+                        channel=plan.channel,
                     ),
                     target_id=target.id,
                     item_key=item_key,
                     item_kind=item_kind,
-                    channel=definition.channel,
+                    channel=plan.channel,
                     title=title,
-                    message=message,
-                    endpoint=endpoint,
+                    message=message_for_channel,
+                    endpoint=plan.endpoint,
                     permalink=permalink,
                 )
             )
@@ -346,20 +328,13 @@ def refresh_outbox_entry_delivery_endpoint(
 
     if entry.id is None or entry.channel == NotificationChannel.DESKTOP:
         return entry
-    definition = next(
-        (
-            channel_definition
-            for channel_definition in NOTIFICATION_CHANNEL_DEFINITIONS
-            if channel_definition.channel == entry.channel
-        ),
-        None,
-    )
-    if definition is None or not definition.endpoint_field:
+    definition = get_channel_definition(entry.channel)
+    if not definition.endpoint_field:
         return entry
     config = app.services.targets.get_config_for_target(target)
     endpoint = (
-        str(getattr(config, definition.endpoint_field, "") or "")
-        if is_channel_enabled(config, definition)
+        get_channel_endpoint(config, definition)
+        if is_channel_enabled_by_config(config, definition)
         else ""
     )
     if endpoint == entry.endpoint:

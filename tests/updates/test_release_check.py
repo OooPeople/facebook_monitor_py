@@ -65,6 +65,7 @@ def test_evaluate_release_reports_available_windows_portable_asset() -> None:
     assert result.asset_name == "facebook-monitor-0.1.0-windows-portable.zip"
     assert result.sha256_asset_name == "facebook-monitor-0.1.0-windows-portable.zip.sha256"
     assert result.failure_reason == ""
+    assert "只提供檢查" not in result.detail
 
 
 def test_evaluate_release_reports_available_macos_arm64_asset() -> None:

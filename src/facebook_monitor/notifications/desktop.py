@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import subprocess
 import sys
 
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
@@ -65,8 +66,10 @@ def build_desktop_notification_command(*, title: str, message: str) -> list[str]
         f"$notify.BalloonTipTitle = '{escaped_title}'; "
         f"$notify.BalloonTipText = '{escaped_body}'; "
         "$notify.Visible = $true; "
-        "$notify.ShowBalloonTip(5000); "
-        "Start-Sleep -Milliseconds 1000; "
+        "$notify.ShowBalloonTip("
+        f"{PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_balloon_tip_milliseconds}); "
+        "Start-Sleep -Milliseconds "
+        f"{PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_cleanup_sleep_milliseconds}; "
         "$notify.Dispose();"
     )
     return [
@@ -96,6 +99,6 @@ def _run_command(command: list[str]) -> None:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=10,
+        timeout=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_command_timeout_seconds,
         creationflags=creationflags,
     )

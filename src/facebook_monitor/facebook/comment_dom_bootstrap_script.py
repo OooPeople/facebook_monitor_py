@@ -20,17 +20,10 @@ COMMENT_DOM_BOOTSTRAP_SCRIPT = r'''(payload) => {
     "回覆",
     "分享",
     "編輯紀錄",
-    "查看更多",
-    "顯示更多",
     "Like",
     "Reply",
     "Share",
-    "See more",
   ]);
-
-  function normalizeText(value) {
-    return String(value || "").replace(/\s+/g, " ").trim();
-  }
 
 '''
 

@@ -18,6 +18,8 @@ from typing import Protocol
 
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
@@ -307,8 +309,13 @@ class BackgroundSchedulerManager:
                 )
                 return
             except Exception as exc:
+                reason = getattr(exc, "reason", "")
                 with self._lock:
-                    self.last_error = str(exc)
+                    self.last_error = (
+                        format_failure_message(str(reason), str(exc))
+                        if reason
+                        else format_failure_message_text(str(exc))
+                    )
                     self.resident_browser_alive = False
                     self.lifecycle_state = SchedulerLifecycleState.ERROR
                 if self.wait_fn(self.stop_event, max(options.scheduler_tick_seconds, 1)):

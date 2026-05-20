@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from facebook_monitor.facebook.text_cleanup_dom import TEXT_CLEANUP_HELPERS_SCRIPT
+
 
 def get_comment_mutation_relevance_diagnostics(page: Any) -> dict[str, Any]:
     """讀取目前頁面與 comments mutation relevance 有關的診斷狀態。"""
@@ -24,11 +26,14 @@ async def get_comment_mutation_relevance_diagnostics_async(page: Any) -> dict[st
     return result if isinstance(result, dict) else {}
 
 
-COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT = r"""
+COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT = (
+    r"""
 () => {
   const commentPermalinkAnchors = 'a[href*="comment_id="], a[href*="reply_comment_id="]';
   const commentTextCandidates = ['div[dir="auto"]', 'span[dir="auto"]'];
-  const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+"""
+    + TEXT_CLEANUP_HELPERS_SCRIPT
+    + r"""
   const isOwnScriptUiElement = (element) => {
     if (!(element instanceof HTMLElement)) return false;
     return Boolean(element.closest?.("#fb-group-refresh-panel,#fbgr-history-modal,#fbgr-settings-modal,#fbgr-include-help-modal,#fbgr-ntfy-help-modal,#fbgr-discord-help-modal"));
@@ -49,7 +54,7 @@ COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT = r"""
   };
   const isLikelyCommentTextNode = (text, node) => {
     if (!(node instanceof HTMLElement)) return false;
-    const normalized = normalizeText(text);
+    const normalized = cleanSharedFacebookText(text);
     if (!normalized || normalized.length < 2) return false;
     if (node.closest("a[href]")) return false;
     return !["讚", "回覆", "分享", "Like", "Reply", "Share"].includes(normalized);
@@ -121,6 +126,7 @@ COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT = r"""
   };
 }
 """
+)
 
 
 COMMENT_MUTATION_RELEVANCE_DIAGNOSTICS_SCRIPT = f"""

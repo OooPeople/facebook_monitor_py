@@ -22,11 +22,15 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
+from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
@@ -45,6 +49,9 @@ StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
 METADATA_REFRESH_TARGET_LIMIT_PER_TICK = (
     PYTHON_SCHEDULER_RUNTIME_DEFAULTS.metadata_refresh_target_limit_per_tick
+)
+COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK = (
+    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_refresh_target_limit_per_tick
 )
 
 
@@ -97,7 +104,7 @@ async def run_resident_main_loop(
     """執行 queue-based continuous resident main worker loop。"""
 
     if not options.profile_dir.exists():
-        raise WorkerFailure("profile_missing", str(options.profile_dir))
+        raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
 
     summaries: list[ResidentCycleSummary] = []
     cycle_index = 0
@@ -190,7 +197,7 @@ async def run_resident_main_loop(
                     finally:
                         await browser_context.close()
         except ProfileLeaseError as exc:
-            raise WorkerFailure("profile_locked", str(exc)) from exc
+            raise WorkerFailure(PROFILE_LOCKED_REASON, str(exc)) from exc
     finally:
         restore_playwright_exception_handler()
 
@@ -231,6 +238,10 @@ async def run_resident_main_scheduler_tick(
         options=options,
         browser_context=browser_context,
     )
+    cover_image_refresh_count = await refresh_pending_target_cover_images(
+        options=options,
+        browser_context=browser_context,
+    )
     active_target_ids = list_active_resident_target_ids(options.db_path)
     closed_page_count = await page_pool.close_inactive(active_target_ids)
     due_targets = schedule_planner.list_due_targets(
@@ -249,7 +260,9 @@ async def run_resident_main_scheduler_tick(
         skipped_count=counters.skipped_count,
         opened_page_count=counters.opened_page_count,
         reused_page_count=counters.reused_page_count,
-        closed_page_count=closed_page_count + metadata_refresh_count,
+        closed_page_count=closed_page_count
+        + metadata_refresh_count
+        + cover_image_refresh_count,
         queued_count=queued_count,
         running_count=running_count,
         queue_length=queued_count,
@@ -258,6 +271,8 @@ async def run_resident_main_scheduler_tick(
         page_pool_size=await page_pool.size(),
         resident_browser_alive=executor.worker_health_ok(),
         recovered_runtime_count=recovered_runtime_count,
+        metadata_refresh_count=metadata_refresh_count,
+        cover_image_refresh_count=cover_image_refresh_count,
         worker_health_ok=executor.worker_health_ok(),
     )
 
@@ -308,6 +323,131 @@ def list_metadata_refresh_target_ids(options: ResidentRuntimeOptions) -> tuple[s
             )
         )
     return tuple(dict.fromkeys(target_id for target_id in target_ids if target_id))
+
+
+async def refresh_pending_target_cover_images(
+    *,
+    options: ResidentRuntimeOptions,
+    browser_context: Any | None,
+) -> int:
+    """消化 dashboard 壞圖上報排入的 image-only cover refresh jobs。"""
+
+    if browser_context is None:
+        return 0
+    refreshed_count = 0
+    with SqliteApplicationContext(options.db_path) as app:
+        states = app.services.targets.list_pending_cover_image_refreshes(
+            limit=COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK,
+        )
+    for state in states:
+        try:
+            if await refresh_target_group_cover_image_from_context(
+                options=options,
+                browser_context=browser_context,
+                state=state,
+            ):
+                refreshed_count += 1
+        except Exception as exc:
+            logger.exception(
+                "cover image refresh failed",
+                extra={"target_id": state.target_id},
+            )
+            mark_target_cover_image_refresh_failed(
+                options,
+                state.target_id,
+                _format_exception_message(exc),
+            )
+    return refreshed_count
+
+
+async def refresh_target_group_cover_image_from_context(
+    *,
+    options: ResidentRuntimeOptions,
+    browser_context: Any,
+    state: TargetCoverImageRefreshState,
+) -> bool:
+    """用 resident browser context 只刷新 target group cover image URL。"""
+
+    group_id = ""
+    target_id = state.target_id
+    reported_url = state.last_reported_url.strip()
+    with SqliteApplicationContext(options.db_path) as app:
+        target = app.repositories.targets.get(target_id)
+        if target is None:
+            return False
+        current_url = target.group_cover_image_url.strip()
+        if current_url != reported_url:
+            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
+                target_id,
+                current_url=current_url,
+            )
+            return False
+        group_id = target.group_id
+        app.services.targets.mark_target_cover_image_refresh_attempted(target_id)
+    if not group_id:
+        mark_target_cover_image_refresh_failed(
+            options,
+            target_id,
+            "target group id is empty",
+        )
+        return False
+    try:
+        cover_image_url = await resolve_group_cover_image_with_context(
+            browser_context,
+            canonical_url=f"https://www.facebook.com/groups/{group_id}",
+        )
+    except GroupMetadataError as exc:
+        logger.info(
+            "cover image refresh skipped",
+            extra={"target_id": target_id},
+        )
+        mark_target_cover_image_refresh_failed(options, target_id, str(exc))
+        return False
+    with SqliteApplicationContext(options.db_path) as app:
+        target = app.repositories.targets.get(target_id)
+        if target is None:
+            return False
+        current_url = target.group_cover_image_url.strip()
+        if current_url != reported_url:
+            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
+                target_id,
+                current_url=current_url,
+            )
+            return True
+        normalized_cover_image_url = cover_image_url.strip()
+        changed = normalized_cover_image_url != current_url
+        app.services.targets.refresh_target_group_cover_image(
+            target_id,
+            normalized_cover_image_url,
+        )
+        app.services.targets.mark_target_cover_image_refresh_succeeded(
+            target_id,
+            resolved_url=normalized_cover_image_url,
+            changed=changed,
+        )
+    return True
+
+
+def _format_exception_message(exc: Exception) -> str:
+    """保留非預期例外類型，讓 cover refresh 診斷可回查真正原因。"""
+
+    message = str(exc).strip()
+    if message:
+        return f"{exc.__class__.__name__}: {message}"
+    return exc.__class__.__name__
+
+
+def mark_target_cover_image_refresh_failed(
+    options: ResidentRuntimeOptions,
+    target_id: str,
+    error: str,
+) -> None:
+    """將 cover image refresh 失敗寫回獨立狀態；target 已刪除時忽略。"""
+
+    with SqliteApplicationContext(options.db_path) as app:
+        if app.repositories.targets.get(target_id) is None:
+            return
+        app.services.targets.mark_target_cover_image_refresh_failed(target_id, error)
 
 
 def mark_target_metadata_refresh_failed(

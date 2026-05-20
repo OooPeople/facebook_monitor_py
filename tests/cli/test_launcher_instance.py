@@ -622,6 +622,83 @@ def test_plain_uvicorn_runner_exposes_shutdown_hook(monkeypatch) -> None:
     assert created_servers[0].should_exit is True
 
 
+def test_plain_uvicorn_runner_suppresses_shutdown_keyboard_interrupt(
+    monkeypatch,
+) -> None:
+    """Ctrl+C graceful shutdown 不應把 KeyboardInterrupt traceback 顯示給使用者。"""
+
+    class FakeState:
+        pass
+
+    class FakeApp:
+        state = FakeState()
+
+    class FakeConfig:
+        def __init__(self, app: object, **kwargs: object) -> None:
+            self.app = app
+            self.kwargs = kwargs
+
+    class FakeServer:
+        def __init__(self, config: FakeConfig) -> None:
+            self.config = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(launcher.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(launcher.uvicorn, "Server", FakeServer)
+
+    launcher._run_uvicorn_with_shutdown_hook(FakeApp(), host="127.0.0.1", port=8765)
+
+
+def test_windows_tray_uvicorn_runner_suppresses_shutdown_keyboard_interrupt(
+    monkeypatch,
+) -> None:
+    """tray runner 也要把 Ctrl+C 關閉視為正常結束並清掉 tray icon。"""
+
+    class FakeConfig:
+        def __init__(self, app: object, **kwargs: object) -> None:
+            self.app = app
+            self.kwargs = kwargs
+
+    class FakeServer:
+        def __init__(self, config: FakeConfig) -> None:
+            self.config = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            raise KeyboardInterrupt
+
+    class FakeTray:
+        def __init__(self) -> None:
+            self.stop_count = 0
+
+        def stop(self) -> None:
+            self.stop_count += 1
+
+    tray = FakeTray()
+
+    def fake_start_windows_tray_icon(**kwargs: object) -> FakeTray:
+        return tray
+
+    monkeypatch.setattr(windows_integration.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(windows_integration.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(
+        "facebook_monitor.runtime.windows_tray.start_windows_tray_icon",
+        fake_start_windows_tray_icon,
+    )
+
+    windows_integration.run_uvicorn_with_windows_tray(
+        object(),
+        url="http://127.0.0.1:8765",
+        icon_path=None,
+        uvicorn_kwargs={"host": "127.0.0.1", "port": 8765},
+    )
+
+    assert tray.stop_count == 1
+
+
 def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
     monkeypatch,
     capsys,

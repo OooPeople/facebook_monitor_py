@@ -10,6 +10,27 @@ from dataclasses import dataclass
 from typing import Any
 
 
+SORT_ADJUST_SKIP_COLLECTION_MODE = "sort_adjust_skip"
+
+
+def build_sort_adjust_skip_meta(*, stop_reason: str) -> dict[str, str]:
+    """建立 posts/comments 共用的排序保護性跳過 collection meta。"""
+
+    return {
+        "mode": SORT_ADJUST_SKIP_COLLECTION_MODE,
+        "stopReason": stop_reason,
+    }
+
+
+def with_scan_skipped_reason(metadata: dict[str, Any], *, skip_reason: str) -> dict[str, Any]:
+    """替 scan metadata 加上共用 skip flags。"""
+
+    return metadata | {
+        "scan_skipped": True,
+        "skip_reason": skip_reason,
+    }
+
+
 @dataclass(frozen=True)
 class PostScanRoundMetadata:
     """保存 posts extractor 單輪診斷 metadata。"""

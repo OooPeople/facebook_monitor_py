@@ -30,6 +30,9 @@ from facebook_monitor.persistence.repositories.scan_scope_state import ScanScope
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.sidebar_layout import SidebarLayoutRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
+from facebook_monitor.persistence.repositories.target_cover_image_refresh import (
+    TargetCoverImageRefreshRepository,
+)
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -53,6 +56,7 @@ class RepositoryBundle:
 
     targets: TargetRepository
     configs: TargetConfigRepository
+    cover_image_refreshes: TargetCoverImageRefreshRepository
     runtime_states: TargetRuntimeStateRepository
     seen_items: SeenItemRepository
     match_history: MatchHistoryRepository
@@ -114,6 +118,7 @@ def build_repositories(
     return RepositoryBundle(
         targets=TargetRepository(connection),
         configs=TargetConfigRepository(connection, secret_codec=secret_codec),
+        cover_image_refreshes=TargetCoverImageRefreshRepository(connection),
         runtime_states=TargetRuntimeStateRepository(connection),
         seen_items=SeenItemRepository(connection),
         match_history=MatchHistoryRepository(connection),
@@ -146,6 +151,7 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
         targets=TargetApplicationService(
             targets=repositories.targets,
             configs=repositories.configs,
+            cover_image_refreshes=repositories.cover_image_refreshes,
             runtime_states=repositories.runtime_states,
             seen_items=repositories.seen_items,
             scan_scope_state=repositories.scan_scope_state,

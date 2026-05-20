@@ -21,7 +21,9 @@
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
-| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案；Windows 可選驗證 Authenticode signer | 否 |
+| Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 從 `dist/facebook-monitor` 建立 Windows / macOS release zip 與同名 `.sha256`，並先檢查平台必要檔案與私密 runtime data | 否 |
+| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案與私密 runtime data；Windows 可選驗證 Authenticode signer | 否 |
+| Windows Version Resource Builder | `scripts/admin/windows_version_resource.py` | Admin packaging | 由 `APP_VERSION` 產生 Windows PyInstaller version resource；通常由 Windows spec 自動呼叫 | 否 |
 | Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
 | macOS App Launcher Builder | `scripts/admin/create_macos_app_launcher.py` | Admin packaging | 在 macOS onedir 內建立 `Facebook Monitor.app` Finder / Dock native launcher，圖示來源為 `packaging/assets/facebook-monitor.png` | 否 |
 | Relogin Flow Smoke | `scripts/admin/smoke_relogin_flow.py` | Admin smoke | 使用隔離暫存資料驗證重新登入警告與 launcher login gate | 否 |
@@ -53,6 +55,7 @@
 .\scripts\uv.ps1 run python .\scripts\admin\console.py
 .\scripts\uv.ps1 run python .\scripts\admin\manage_targets.py
 .\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
+.\scripts\uv.ps1 run python .\scripts\admin\create_release_zip.py --platform windows --force
 .\scripts\uv.ps1 run python .\scripts\admin\release_artifact_validation.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
@@ -78,9 +81,10 @@ Release tag 前建議執行：
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts --artifact-platform macos-arm64
 ```
 
-腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 會檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、PyInstaller version template 與必要 onedir 檔案。若已有正式 code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS Apple Silicon onedir zip 可用 `release_artifact_validation.py --platform macos-arm64` 做 zip / SHA256 / `.app` Info.plist version / arm64 Mach-O launcher / executable bit / 私人 runtime data 檢查；macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
+腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
 若這次 release 改過 `webapp/static` 或 template 入口，確認 `src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 已更新；release validation 會印出目前值，避免瀏覽器吃到舊 module graph。
 

@@ -5,4 +5,25 @@
 """
 
 CONTENT_UNAVAILABLE_REASON = "content_unavailable"
+LOGIN_REQUIRED_REASON = "login_required"
+CHECKPOINT_REQUIRED_REASON = "checkpoint_required"
+SESSION_INVALID_REASON = "session_invalid"
+PROFILE_LOCKED_REASON = "profile_locked"
+PAGE_LOAD_TIMEOUT_REASON = "page_load_timeout"
+EXTRACTOR_EMPTY_REASON = "extractor_empty"
+SCAN_TIMEOUT_REASON = "scan_timeout"
+TARGET_STOPPED_REASON = "target_stopped"
+TARGET_MISSING_REASON = "target_missing"
+TARGET_KIND_UNSUPPORTED_REASON = "target_kind_unsupported"
+TARGET_INVALID_REASON = "target_invalid"
+TARGET_ARGUMENT_CONFLICT_REASON = "target_argument_conflict"
+PROFILE_MISSING_REASON = "profile_missing"
+UNKNOWN_REASON = "unknown"
 
+PROFILE_SESSION_FAILURE_REASONS = frozenset(
+    {
+        LOGIN_REQUIRED_REASON,
+        CHECKPOINT_REQUIRED_REASON,
+        SESSION_INVALID_REASON,
+    }
+)

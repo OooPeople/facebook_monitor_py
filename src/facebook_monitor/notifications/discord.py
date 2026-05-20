@@ -8,13 +8,18 @@ from typing import Any
 
 import httpx
 
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
-DISCORD_CONTENT_LIMIT = 1900
+DISCORD_CONTENT_LIMIT = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_content_limit
 DISCORD_RATE_LIMIT_STATUS = 429
-DISCORD_RATE_LIMIT_RETRY_LIMIT = 1
-DISCORD_RATE_LIMIT_RETRY_AFTER_CAP_SECONDS = 5.0
+DISCORD_RATE_LIMIT_RETRY_LIMIT = (
+    PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_rate_limit_retry_limit
+)
+DISCORD_RATE_LIMIT_RETRY_AFTER_CAP_SECONDS = (
+    PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_rate_limit_retry_after_cap_seconds
+)
 
 
 @dataclass(frozen=True)
@@ -22,7 +27,7 @@ class DiscordConfig:
     """保存 Discord webhook 發送設定。"""
 
     webhook_url: str = ""
-    username: str = "facebook_monitor_py"
+    username: str = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_username
 
 
 @dataclass(frozen=True)
@@ -60,7 +65,7 @@ def send_discord_notification(
                 webhook_url,
                 json=payload,
                 headers={"Accept": "*/*"},
-                timeout=15,
+                timeout=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_timeout_seconds,
             )
             if 200 <= response.status_code < 300:
                 return DiscordResult(

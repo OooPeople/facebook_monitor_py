@@ -13,6 +13,7 @@ from facebook_monitor.updates.launcher import launch_restarted_app
 from facebook_monitor.updates.launcher import launch_temp_updater
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
+from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 
 
 def test_find_bundled_updater_returns_root_exe(tmp_path: Path) -> None:
@@ -35,20 +36,17 @@ def test_find_bundled_updater_returns_macos_root_binary(tmp_path: Path) -> None:
     assert find_bundled_updater(updater.parent) == updater.resolve()
 
 
-def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path, monkeypatch) -> None:
+def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path) -> None:
     """updater 會被複製到 temp，避免鎖住 app base dir。"""
 
-    monkeypatch.setattr(
-        "facebook_monitor.updates.launcher.tempfile.gettempdir",
-        lambda: str(tmp_path / "temp"),
-    )
     source = tmp_path / "app" / "facebook-monitor-updater.exe"
     source.parent.mkdir()
     source.write_text("exe", encoding="utf-8")
     (source.parent / "_internal").mkdir()
     (source.parent / "_internal" / "python313.dll").write_text("dll", encoding="utf-8")
 
-    copied = copy_updater_to_temp(source, tmp_path / "data" / "runtime")
+    runtime_dir = tmp_path / "data" / "runtime"
+    copied = copy_updater_to_temp(source, runtime_dir)
 
     assert copied.name == "facebook-monitor-updater.exe"
     assert copied.read_text(encoding="utf-8") == "exe"
@@ -56,21 +54,18 @@ def test_copy_updater_to_temp_copies_outside_app_dir(tmp_path: Path, monkeypatch
         encoding="utf-8"
     ) == "dll"
     assert not copied.is_relative_to(source.parent)
+    assert copied.is_relative_to(runtime_dir)
 
 
 def test_copy_updater_to_temp_preserves_macos_updater_name(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     """macOS temp updater copy 使用無副檔名 binary 並帶上 runtime 目錄。"""
 
-    monkeypatch.setattr(
-        "facebook_monitor.updates.launcher.tempfile.gettempdir",
-        lambda: str(tmp_path / "temp"),
-    )
     source = tmp_path / "app" / "facebook-monitor-updater"
     source.parent.mkdir()
     source.write_text("updater", encoding="utf-8")
+    source.chmod(0o755)
     (source.parent / "_internal").mkdir()
     (source.parent / "_internal" / "python").write_text("runtime", encoding="utf-8")
 
@@ -79,18 +74,14 @@ def test_copy_updater_to_temp_preserves_macos_updater_name(
     assert copied.name == "facebook-monitor-updater"
     assert copied.read_text(encoding="utf-8") == "updater"
     assert (copied.parent / "_internal" / "python").read_text(encoding="utf-8") == "runtime"
+    assert_posix_executable_when_supported(copied)
 
 
 def test_copy_updater_to_temp_uses_unique_directories(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     """連續啟動 updater 時不可覆蓋前一次 temp runtime copy。"""
 
-    monkeypatch.setattr(
-        "facebook_monitor.updates.launcher.tempfile.gettempdir",
-        lambda: str(tmp_path / "temp"),
-    )
     source = tmp_path / "app" / "facebook-monitor-updater.exe"
     source.parent.mkdir()
     source.write_text("exe", encoding="utf-8")
@@ -103,6 +94,86 @@ def test_copy_updater_to_temp_uses_unique_directories(
     assert first.parent != second.parent
     assert first.is_file()
     assert second.is_file()
+
+
+def test_copy_updater_to_temp_rejects_symlinked_runtime_temp_root(tmp_path: Path) -> None:
+    """runtime temp updater root 若是 symlink，不可 follow 後寫入外部目錄。"""
+
+    source = tmp_path / "app" / "facebook-monitor-updater"
+    source.parent.mkdir()
+    source.write_text("updater", encoding="utf-8")
+    source.chmod(0o755)
+    (source.parent / "_internal").mkdir()
+    (source.parent / "_internal" / "python").write_text("runtime", encoding="utf-8")
+    runtime_dir = tmp_path / "data" / "runtime"
+    temp_root = runtime_dir / "temp_updater"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runtime_dir.mkdir(parents=True)
+    try:
+        temp_root.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    try:
+        copy_updater_to_temp(source, runtime_dir)
+    except ValueError as exc:
+        assert str(exc) == "temp_updater_root_unsafe"
+    else:
+        raise AssertionError("expected symlinked temp updater root to fail")
+    assert list(outside.iterdir()) == []
+
+
+def test_copy_updater_to_temp_rejects_symlinked_runtime_dir(tmp_path: Path) -> None:
+    """runtime dir 若是 symlink，不可 follow 後建立 temp updater。"""
+
+    source = tmp_path / "app" / "facebook-monitor-updater"
+    source.parent.mkdir()
+    source.write_text("updater", encoding="utf-8")
+    source.chmod(0o755)
+    (source.parent / "_internal").mkdir()
+    (source.parent / "_internal" / "python").write_text("runtime", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (data_dir / "runtime").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    try:
+        copy_updater_to_temp(source, data_dir / "runtime")
+    except ValueError as exc:
+        assert str(exc) == "temp_updater_root_unsafe"
+    else:
+        raise AssertionError("expected symlinked runtime dir to fail")
+    assert list(outside.iterdir()) == []
+
+
+def test_copy_updater_to_temp_rejects_symlinked_data_dir(tmp_path: Path) -> None:
+    """runtime parent 若是 symlink，不可 follow 後寫入外部目錄。"""
+
+    source = tmp_path / "app" / "facebook-monitor-updater"
+    source.parent.mkdir()
+    source.write_text("updater", encoding="utf-8")
+    source.chmod(0o755)
+    (source.parent / "_internal").mkdir()
+    (source.parent / "_internal" / "python").write_text("runtime", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (tmp_path / "data").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    try:
+        copy_updater_to_temp(source, tmp_path / "data" / "runtime")
+    except ValueError as exc:
+        assert str(exc) == "temp_updater_root_unsafe"
+    else:
+        raise AssertionError("expected symlinked data dir to fail")
+    assert list(outside.iterdir()) == []
 
 
 def test_cleanup_old_temp_updaters_removes_stale_directories(tmp_path: Path) -> None:
@@ -127,10 +198,6 @@ def test_launch_temp_updater_builds_detached_command(
 ) -> None:
     """啟動 updater 時使用 temp copy、pending_update 與 wait seconds。"""
 
-    monkeypatch.setattr(
-        "facebook_monitor.updates.launcher.tempfile.gettempdir",
-        lambda: str(tmp_path / "temp"),
-    )
     paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
     paths.app_base_dir.mkdir(parents=True)
     (paths.app_base_dir / "facebook-monitor-updater.exe").write_text("exe", encoding="utf-8")

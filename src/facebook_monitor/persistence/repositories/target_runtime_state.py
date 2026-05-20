@@ -24,9 +24,10 @@ class TargetRuntimeStateRepository:
                 target_id, desired_state, runtime_status, scan_requested_at, last_enqueued_at,
                 last_started_at, last_finished_at, last_heartbeat_at, last_error,
                 last_skip_reason, enqueue_reason, active_worker_id, active_page_id,
-                last_page_reloaded_at, scan_guard_count, display_next_due_at, updated_at
+                last_page_reloaded_at, scan_guard_count, display_next_due_at,
+                consecutive_failure_reason, consecutive_failure_count, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(target_id) DO UPDATE SET
                 desired_state=excluded.desired_state,
                 runtime_status=excluded.runtime_status,
@@ -43,6 +44,8 @@ class TargetRuntimeStateRepository:
                 last_page_reloaded_at=excluded.last_page_reloaded_at,
                 scan_guard_count=excluded.scan_guard_count,
                 display_next_due_at=excluded.display_next_due_at,
+                consecutive_failure_reason=excluded.consecutive_failure_reason,
+                consecutive_failure_count=excluded.consecutive_failure_count,
                 updated_at=excluded.updated_at
             """,
             (
@@ -62,6 +65,8 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.last_page_reloaded_at),
                 state.scan_guard_count,
                 encode_datetime(state.display_next_due_at),
+                state.consecutive_failure_reason,
+                state.consecutive_failure_count,
                 encode_datetime(state.updated_at),
             ),
         )

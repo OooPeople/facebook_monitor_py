@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import replace
 
+from facebook_monitor.core.notification_channels import transform_notification_endpoints
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
@@ -47,6 +47,7 @@ class GlobalNotificationSettingsRepository:
     def save(self, settings: GlobalNotificationSettings) -> None:
         """新增或更新通知預設值。"""
 
+        encrypted = transform_notification_endpoints(settings, self.secret_codec.encrypt)
         self.connection.execute(
             """
             INSERT INTO global_notification_settings (
@@ -63,12 +64,12 @@ class GlobalNotificationSettingsRepository:
                 updated_at=excluded.updated_at
             """,
             (
-                int(settings.enable_desktop_notification),
-                int(settings.enable_ntfy),
-                self.secret_codec.encrypt(settings.ntfy_topic),
-                int(settings.enable_discord_notification),
-                self.secret_codec.encrypt(settings.discord_webhook),
-                encode_datetime(settings.updated_at),
+                int(encrypted.enable_desktop_notification),
+                int(encrypted.enable_ntfy),
+                encrypted.ntfy_topic,
+                int(encrypted.enable_discord_notification),
+                encrypted.discord_webhook,
+                encode_datetime(encrypted.updated_at),
             ),
         )
 
@@ -78,8 +79,4 @@ class GlobalNotificationSettingsRepository:
     ) -> GlobalNotificationSettings:
         """還原 repository 對外回傳的全域 notification secrets。"""
 
-        return replace(
-            settings,
-            ntfy_topic=self.secret_codec.decrypt(settings.ntfy_topic),
-            discord_webhook=self.secret_codec.decrypt(settings.discord_webhook),
-        )
+        return transform_notification_endpoints(settings, self.secret_codec.decrypt)

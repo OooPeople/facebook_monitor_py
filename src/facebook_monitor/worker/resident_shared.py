@@ -18,10 +18,17 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
+from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
+from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
+from facebook_monitor.core.scan_failure_policy import decide_scan_failure
 from facebook_monitor.facebook.route_detection import FACEBOOK_HOSTS
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import detect_group_comments_route
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.target_validation import validate_posts_target_route
 
@@ -69,6 +76,8 @@ class ResidentCycleSummary:
     page_pool_size: int = 0
     resident_browser_alive: bool = False
     recovered_runtime_count: int = 0
+    metadata_refresh_count: int = 0
+    cover_image_refresh_count: int = 0
     worker_health_ok: bool = True
 
 
@@ -100,7 +109,7 @@ def load_resident_target(db_path: Path, target_id: str) -> ResidentTarget:
     with SqliteApplicationContext(db_path) as app:
         target = app.repositories.targets.get(target_id)
         if target is None:
-            raise WorkerFailure("target_missing", f"Target not found: {target_id}")
+            raise WorkerFailure(TARGET_MISSING_REASON, f"Target not found: {target_id}")
         validate_resident_target_route(target)
         config = app.services.targets.get_config_for_target(target)
         return ResidentTarget(target=target, config=config)
@@ -116,11 +125,17 @@ def validate_resident_target_route(target: TargetDescriptor) -> None:
         try:
             route = detect_group_comments_route(target.canonical_url)
         except RouteDetectionError as exc:
-            raise WorkerFailure("target_invalid", str(exc)) from exc
+            raise WorkerFailure(TARGET_INVALID_REASON, str(exc)) from exc
         if route.group_id != target.group_id or route.parent_post_id != target.parent_post_id:
-            raise WorkerFailure("target_invalid", "Comments target route does not match saved scope.")
+            raise WorkerFailure(
+                TARGET_INVALID_REASON,
+                "Comments target route does not match saved scope.",
+            )
         return
-    raise WorkerFailure("target_kind_unsupported", f"Unsupported target kind: {target.target_kind.value}")
+    raise WorkerFailure(
+        TARGET_KIND_UNSUPPORTED_REASON,
+        f"Unsupported target kind: {target.target_kind.value}",
+    )
 
 
 def should_reload_resident_page(current_url: str, canonical_url: str) -> bool:
@@ -172,9 +187,13 @@ def record_resident_scan_failure(
     retryable: bool = False,
     exception_class: str = "",
     page_reused: bool | None = None,
+    decision: ScanFailureDecision | None = None,
 ) -> None:
     """記錄 resident main worker 的失敗 scan run。"""
 
+    runtime_action = decision.runtime_action if decision is not None else ""
+    retry_streak = decision.retry_streak if decision is not None else 0
+    retry_limit = decision.retry_limit if decision is not None else 0
     with SqliteApplicationContext(db_path) as app:
         record_scan_failure(
             app=app,
@@ -185,6 +204,10 @@ def record_resident_scan_failure(
             retryable=retryable,
             exception_class=exception_class,
             page_reused=page_reused,
+            runtime_action=runtime_action,
+            retry_streak=retry_streak,
+            retry_limit=retry_limit,
+            force_record=bool(decision and decision.counts_toward_streak),
         )
 
 
@@ -204,3 +227,36 @@ def mark_resident_target_idle(db_path: Path, target_id: str) -> None:
         if app.repositories.targets.get(target_id) is None:
             return
         app.services.targets.mark_target_idle(target_id)
+
+
+def decide_resident_scan_failure(
+    db_path: Path,
+    target_id: str,
+    reason: str,
+    *,
+    source: ScanFailureSource,
+) -> ScanFailureDecision:
+    """依 DB runtime state 取得 resident failure 共用決策。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        if app.repositories.targets.get(target_id) is None:
+            return decide_scan_failure(reason, source=source)
+        return app.services.targets.decide_scan_failure(target_id, reason, source=source)
+
+
+def apply_resident_scan_failure_decision(
+    db_path: Path,
+    target_id: str,
+    decision: ScanFailureDecision,
+    message: str,
+) -> None:
+    """依 resident failure decision 更新 target runtime state。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        if app.repositories.targets.get(target_id) is None:
+            return
+        app.services.targets.apply_scan_failure_decision(
+            target_id,
+            decision,
+            format_scan_failure_message(decision.reason, message),
+        )

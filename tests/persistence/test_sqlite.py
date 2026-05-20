@@ -620,6 +620,16 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
             "target_runtime_state",
             "display_next_due_at",
         )
+        has_runtime_failure_reason = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_failure_reason",
+        )
+        has_runtime_failure_count = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_failure_count",
+        )
         has_target_discord = table_has_column(
             connection,
             "target_configs",
@@ -652,11 +662,70 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
     assert has_runtime_request
     assert has_runtime_guard_count
     assert has_runtime_display_due
+    assert has_runtime_failure_reason
+    assert has_runtime_failure_count
     assert has_target_discord
     assert has_target_exclude_ignore
     assert has_target_metadata_status
     assert has_target_metadata_error
     assert has_group_discord_webhook
+
+
+def test_initialize_schema_migrates_v27_cover_refresh_state_to_current(
+    tmp_path: Path,
+) -> None:
+    """已跑過 v27 的本機 DB 會補上 cover refresh 診斷欄位。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '27');
+            CREATE TABLE target_cover_image_refresh_state (
+                target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                requested_at TEXT NOT NULL DEFAULT '',
+                last_attempted_at TEXT NOT NULL DEFAULT '',
+                last_succeeded_at TEXT NOT NULL DEFAULT '',
+                last_failed_at TEXT NOT NULL DEFAULT '',
+                last_reported_url TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        has_resolved_url = table_has_column(
+            connection,
+            "target_cover_image_refresh_state",
+            "last_resolved_url",
+        )
+        has_result = table_has_column(
+            connection,
+            "target_cover_image_refresh_state",
+            "last_result",
+        )
+        has_changed = table_has_column(
+            connection,
+            "target_cover_image_refresh_state",
+            "changed",
+        )
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_resolved_url
+    assert has_result
+    assert has_changed
 
 
 def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(

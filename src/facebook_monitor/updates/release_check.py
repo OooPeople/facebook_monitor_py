@@ -1,23 +1,27 @@
 """GitHub Release 更新檢查。
 
-職責：查詢受信任 GitHub repository 的 release metadata，判斷目前
-Windows portable build 是否已有新版可下載。此模組只查 metadata，
+職責：查詢受信任 GitHub repository 的 release metadata，依目前平台
+判斷是否已有新版 release artifact 可下載。此模組只查 metadata，
 不下載 zip，也不套用更新。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
-from facebook_monitor.updates.artifacts import current_update_artifact_policy
+from facebook_monitor.updates.artifacts import UpdateRuntimePlatform
+from facebook_monitor.updates.artifacts import current_update_runtime_platform
+from facebook_monitor.updates.artifacts import is_release_asset_name_for_policy
+from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
+from facebook_monitor.versioning import normalize_version_text
+from facebook_monitor.versioning import parse_version
 
 
 DEFAULT_UPDATE_REPOSITORY = "OooPeople/facebook_monitor_py"
@@ -53,21 +57,6 @@ class UpdateCheckResult:
     sha256_asset_name: str
     sha256_asset_download_url: str
     failure_reason: str
-
-
-@dataclass(frozen=True)
-class ParsedVersion:
-    """可比較的簡化版本表示，支援目前 release 使用的 stable / rc 版本。"""
-
-    release: tuple[int, ...]
-    prerelease_label: str
-    prerelease_number: int
-
-    def sort_key(self) -> tuple[tuple[int, ...], int, int]:
-        """回傳版本排序 key；同 release 下 stable 大於 rc。"""
-
-        prerelease_rank = 1 if not self.prerelease_label else 0
-        return (self.release, prerelease_rank, self.prerelease_number)
 
 
 def build_idle_update_check(
@@ -160,10 +149,10 @@ def evaluate_release(
     repository: str,
     release: dict[str, Any],
     artifact_policy: UpdateArtifactPolicy | None = None,
+    runtime_platform: UpdateRuntimePlatform | None = None,
 ) -> UpdateCheckResult:
     """依單筆 GitHub release payload 判斷是否有可用 release asset。"""
 
-    resolved_policy = artifact_policy or current_update_artifact_policy()
     tag_name = str(release.get("tag_name", "")).strip()
     latest_version = normalize_version_text(tag_name)
     release_url = str(release.get("html_url", "")).strip()
@@ -187,13 +176,6 @@ def evaluate_release(
             release_url=release_url,
         )
 
-    assets = parse_release_assets(release.get("assets", []))
-    portable_asset = find_portable_asset(
-        assets,
-        latest_version=latest_version,
-        policy=resolved_policy,
-    )
-    sha256_asset = find_sha256_asset(assets, portable_asset=portable_asset)
     if parsed_latest.sort_key() <= parsed_current.sort_key():
         return UpdateCheckResult(
             checked=True,
@@ -214,6 +196,35 @@ def evaluate_release(
             sha256_asset_download_url="",
             failure_reason="",
         )
+    resolved_platform = runtime_platform or current_update_runtime_platform()
+    resolved_policy = artifact_policy or resolved_platform.artifact_policy
+    if resolved_policy is None:
+        return UpdateCheckResult(
+            checked=True,
+            status="platform_unsupported",
+            channel=channel,
+            repository=repository,
+            current_version=current_version,
+            latest_version=latest_version,
+            update_available=False,
+            summary=f"找到新版 {latest_version}，但目前平台沒有對應更新檔",
+            detail=resolved_platform.unsupported_reason
+            or "目前平台沒有對應的更新檔，只支援檢查版本資訊。",
+            release_url=release_url,
+            asset_name="",
+            asset_download_url="",
+            sha256_asset_name="",
+            sha256_asset_download_url="",
+            failure_reason="platform_unsupported",
+        )
+
+    assets = parse_release_assets(release.get("assets", []))
+    portable_asset = find_portable_asset(
+        assets,
+        latest_version=latest_version,
+        policy=resolved_policy,
+    )
+    sha256_asset = find_sha256_asset(assets, portable_asset=portable_asset)
     if portable_asset is None:
         if has_version_mismatched_portable_asset(
             assets,
@@ -263,7 +274,7 @@ def evaluate_release(
         latest_version=latest_version,
         update_available=True,
         summary=f"有新版 {latest_version}",
-        detail="目前只提供檢查，不會下載或套用更新。",
+        detail="下載與套用能力會依目前 runtime 支援與 SHA256 asset 狀態決定。",
         release_url=release_url,
         asset_name=portable_asset.name,
         asset_download_url=portable_asset.download_url,
@@ -289,32 +300,6 @@ def normalize_channel(channel: str) -> str:
     if normalized not in SUPPORTED_CHANNELS:
         return "stable"
     return normalized
-
-
-def normalize_version_text(value: str) -> str:
-    """移除 Git tag 常見前綴，保留 app version 本體。"""
-
-    normalized = value.strip()
-    if normalized.startswith(("v", "V")):
-        normalized = normalized[1:]
-    return normalized
-
-
-def parse_version(value: str) -> ParsedVersion:
-    """解析專案目前使用的簡化語意版本。"""
-
-    normalized = normalize_version_text(value).replace("-rc", "rc")
-    match = re.fullmatch(r"(\d+(?:\.\d+)*)(?:rc(\d+))?", normalized)
-    if match is None:
-        raise ValueError("invalid_version")
-    release = tuple(int(part) for part in match.group(1).split("."))
-    prerelease_number = int(match.group(2) or 0)
-    prerelease_label = "rc" if match.group(2) else ""
-    return ParsedVersion(
-        release=release,
-        prerelease_label=prerelease_label,
-        prerelease_number=prerelease_number,
-    )
 
 
 def parse_release_assets(value: object) -> tuple[ReleaseAsset, ...]:
@@ -386,7 +371,7 @@ def has_version_mismatched_portable_asset(
 
     expected_name = policy.asset_name(latest_version)
     for asset in assets:
-        if asset.name.startswith("facebook-monitor-") and asset.name.endswith(policy.asset_suffix):
+        if is_release_asset_name_for_policy(asset.name, policy=policy):
             return asset.name != expected_name
     return False
 
@@ -400,7 +385,7 @@ def find_sha256_asset(
 
     if portable_asset is None:
         return None
-    expected_name = portable_asset.name + ".sha256"
+    expected_name = release_sha256_asset_name(portable_asset.name)
     for asset in assets:
         if asset.name == expected_name:
             return asset

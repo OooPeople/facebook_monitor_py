@@ -102,6 +102,17 @@ export const showToast = (text, kind = "success") => {
   }, 3500);
 };
 
+export const formatClientErrorMessage = (error, fallback) => {
+  const message = String(
+    typeof error === "string" ? error : (error?.message || ""),
+  ).trim();
+  if (!message) return fallback;
+  if (/[A-Za-z]/.test(message) && !/[\u4e00-\u9fff]/.test(message)) {
+    return fallback;
+  }
+  return message;
+};
+
 export const closeDialog = (modal) => {
   if (!modal) return;
   if (typeof modal.close === "function") {
@@ -136,10 +147,11 @@ export const bindDialogDismiss = ({ modalSelector, closeSelector }) => {
 };
 
 export const clearFeedbackParams = (pageFeedback) => {
-  if (!pageFeedback.message && !pageFeedback.error) return;
+  if (!pageFeedback.message && !pageFeedback.error && !pageFeedback.feedback) return;
   const url = new URL(window.location.href);
   url.searchParams.delete("message");
   url.searchParams.delete("error");
+  url.searchParams.delete("feedback");
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 };
 

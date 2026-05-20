@@ -82,4 +82,4 @@ def test_one_shot_worker_reports_profile_locked_before_playwright(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
     assert latest_scan is not None
     assert latest_scan.status == ScanStatus.FAILED
-    assert latest_scan.error_message.startswith("profile_locked:")
+    assert latest_scan.error_message.startswith("瀏覽器設定檔使用中：")

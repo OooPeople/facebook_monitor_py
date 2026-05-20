@@ -94,6 +94,37 @@ class TargetMetadataStatus(StrEnum):
     FAILED = "failed"
 
 
+class TargetCoverImageRefreshStatus(StrEnum):
+    """target cover image URL 背景刷新狀態。"""
+
+    IDLE = "idle"
+    PENDING = "pending"
+    FAILED = "failed"
+
+
+class CoverImageRefreshRequestStatus(StrEnum):
+    """UI 壞圖上報轉成 cover refresh 排程的結果狀態。"""
+
+    QUEUED = "queued"
+    PENDING = "pending"
+    THROTTLED = "throttled"
+    NOT_FOUND = "not_found"
+    INVALID_URL = "invalid_url"
+    IGNORED_STALE_URL = "ignored_stale_url"
+
+
+class TargetCoverImageRefreshResult(StrEnum):
+    """target cover image refresh worker 最近一次處理結果。"""
+
+    NONE = ""
+    QUEUED = "queued"
+    ATTEMPTED = "attempted"
+    SUCCEEDED_CHANGED = "succeeded_changed"
+    SUCCEEDED_UNCHANGED = "succeeded_unchanged"
+    STALE_SKIPPED = "stale_skipped"
+    FAILED = "failed"
+
+
 def utc_now() -> datetime:
     """取得 timezone-aware UTC 時間。"""
 
@@ -234,6 +265,24 @@ class TargetDescriptor:
 
 
 @dataclass(frozen=True)
+class TargetCoverImageRefreshState:
+    """保存單一 target cover image URL 刷新排程狀態。"""
+
+    target_id: str
+    status: TargetCoverImageRefreshStatus
+    requested_at: datetime | None = None
+    last_attempted_at: datetime | None = None
+    last_succeeded_at: datetime | None = None
+    last_failed_at: datetime | None = None
+    last_reported_url: str = ""
+    last_resolved_url: str = ""
+    last_result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.NONE
+    changed: bool = False
+    error: str = ""
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
 class TargetConfig:
     """保存單一 target 的監視設定。
 
@@ -283,7 +332,9 @@ class LegacyTargetConfig:
     def to_target_config(self, *, target_id: str | None = None) -> TargetConfig:
         """將舊 target-scoped row 轉成正式 target-scoped config。"""
 
-        return TargetConfig(
+        from facebook_monitor.core.notification_channels import copy_notification_settings
+
+        config = TargetConfig(
             target_id=target_id or self.target_id,
             include_keywords=self.include_keywords,
             exclude_keywords=self.exclude_keywords,
@@ -295,12 +346,8 @@ class LegacyTargetConfig:
             max_items_per_scan=self.max_items_per_scan,
             auto_load_more=self.auto_load_more,
             auto_adjust_sort=self.auto_adjust_sort,
-            enable_desktop_notification=self.enable_desktop_notification,
-            enable_ntfy=self.enable_ntfy,
-            ntfy_topic=self.ntfy_topic,
-            enable_discord_notification=self.enable_discord_notification,
-            discord_webhook=self.discord_webhook,
         )
+        return copy_notification_settings(config, self)
 
 
 @dataclass(frozen=True)
@@ -335,6 +382,8 @@ class TargetRuntimeState:
     last_page_reloaded_at: datetime | None = None
     scan_guard_count: int = 0
     display_next_due_at: datetime | None = None
+    consecutive_failure_reason: str = ""
+    consecutive_failure_count: int = 0
     updated_at: datetime = field(default_factory=utc_now)
 
     @property

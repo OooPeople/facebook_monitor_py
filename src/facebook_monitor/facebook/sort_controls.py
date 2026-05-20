@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 
@@ -21,6 +22,24 @@ COMMENT_SORT_DESCRIPTION_FRAGMENTS = (
     "獲得最多互動的留言",
     "可能是垃圾訊息",
 )
+SORT_REASON_UNSUPPORTED_SCAN_TARGET = "unsupported_scan_target"
+SORT_REASON_ALREADY_PREFERRED_SORT = "already_preferred_sort"
+SORT_REASON_SORT_CONTROL_NOT_FOUND = "sort_control_not_found"
+SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND = "preferred_sort_option_not_found"
+SORT_REASON_UPDATED_TO_PREFERRED_SORT = "updated_to_preferred_sort"
+SORT_REASON_SORT_UPDATE_UNCONFIRMED = "sort_update_unconfirmed"
+SORT_REASON_AUTO_ADJUST_DISABLED = "auto_adjust_sort_disabled"
+SORT_REASON_RESULT_INVALID = "sort_adjust_result_invalid"
+SORT_MUTATION_SUPPRESSION_MS = 3200
+SORT_MUTATION_SUPPRESSION_REASON = "auto_adjust_sort"
+COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS = 1800
+COMMENT_SORT_OPTION_WAIT_INTERVAL_MS = 120
+
+
+def _js_literal(value: object) -> str:
+    """將 Python 常數輸出成 JavaScript literal。"""
+
+    return json.dumps(value, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -60,7 +79,7 @@ def build_disabled_sort_adjust_result(preferred_label: str) -> SortAdjustResult:
         attempted=False,
         changed=False,
         preferred_label=preferred_label,
-        reason="auto_adjust_sort_disabled",
+        reason=SORT_REASON_AUTO_ADJUST_DISABLED,
     )
 
 
@@ -72,7 +91,7 @@ def normalize_sort_adjust_result(result: object, *, preferred_label: str) -> Sor
             attempted=False,
             changed=False,
             preferred_label=preferred_label,
-            reason="sort_adjust_result_invalid",
+            reason=SORT_REASON_RESULT_INVALID,
         )
     raw_menu_candidate_texts = result.get("menuCandidateTexts")
     if isinstance(raw_menu_candidate_texts, list):
@@ -155,12 +174,12 @@ def build_native_comment_sort_result(before_label: str, after_label: str) -> Sor
         before_label=before_label,
         after_label=after_label,
         reason=(
-            "updated_to_preferred_sort"
+            SORT_REASON_UPDATED_TO_PREFERRED_SORT
             if after_label == COMMENT_SORT_NEWEST_LABEL
-            else "sort_update_unconfirmed"
+            else SORT_REASON_SORT_UPDATE_UNCONFIRMED
         ),
-        mutation_suppression_ms=3200,
-        mutation_suppression_reason="auto_adjust_sort",
+        mutation_suppression_ms=SORT_MUTATION_SUPPRESSION_MS,
+        mutation_suppression_reason=SORT_MUTATION_SUPPRESSION_REASON,
     )
 
 
@@ -178,7 +197,7 @@ def try_native_comment_sort_click(page: Any) -> SortAdjustResult | None:
                 preferred_label=COMMENT_SORT_NEWEST_LABEL,
                 before_label=before_label,
                 after_label=before_label,
-                reason="already_preferred_sort",
+                reason=SORT_REASON_ALREADY_PREFERRED_SORT,
             )
         if before_label not in COMMENT_SORT_LABELS:
             return None
@@ -208,7 +227,7 @@ async def try_native_comment_sort_click_async(
                 preferred_label=COMMENT_SORT_NEWEST_LABEL,
                 before_label=before_label,
                 after_label=before_label,
-                reason="already_preferred_sort",
+                reason=SORT_REASON_ALREADY_PREFERRED_SORT,
             )
         if before_label not in COMMENT_SORT_LABELS:
             return None
@@ -224,14 +243,8 @@ async def try_native_comment_sort_click_async(
 
 COMMENT_SORT_CURRENT_LABEL_SCRIPT = """
 () => {
-  const labels = ["由新到舊", "最相關", "所有留言"];
-  const descriptionFragments = [
-    "顯示所有留言",
-    "最新的留言顯示在最上方",
-    "優先顯示朋友的留言",
-    "獲得最多互動的留言",
-    "可能是垃圾訊息",
-  ];
+  const labels = __COMMENT_SORT_LABELS__;
+  const descriptionFragments = __COMMENT_SORT_DESCRIPTION_FRAGMENTS__;
   const normalizeText = (value) => String(value || "").replace(/[\\u200B-\\u200D\\uFEFF]/g, "").replace(/\\s+/g, " ").trim();
   const isGroupPostPermalinkPage = () => {
     if (location.hostname !== "www.facebook.com") return false;
@@ -276,12 +289,18 @@ COMMENT_SORT_CURRENT_LABEL_SCRIPT = """
   }
   return "";
 }
-"""
+""".replace(
+    "__COMMENT_SORT_LABELS__",
+    _js_literal(COMMENT_SORT_LABELS),
+).replace(
+    "__COMMENT_SORT_DESCRIPTION_FRAGMENTS__",
+    _js_literal(COMMENT_SORT_DESCRIPTION_FRAGMENTS),
+)
 
 
 FEED_SORT_ADJUST_SCRIPT = """
 async (preferredLabel) => {
-  const labels = ["新貼文", "最相關", "最新動態"];
+  const labels = __FEED_SORT_LABELS__;
   const normalizeText = (value) => String(value || "").replace(/[\\u200B-\\u200D\\uFEFF]/g, "").replace(/\\s+/g, " ").trim();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const getCurrentGroupId = () => {
@@ -387,9 +406,9 @@ async (preferredLabel) => {
     }
     return null;
   };
-  const findFeedSortMenuOption = (label = "新貼文") => findSortMenuOption(label, { labels });
+  const findFeedSortMenuOption = (label = __FEED_SORT_NEWEST_LABEL__) => findSortMenuOption(label, { labels });
   const getPreferredSortLabelForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "posts" ? (preferredLabel || "新貼文") : "";
+    return scanTarget?.kind === "posts" ? (preferredLabel || __FEED_SORT_NEWEST_LABEL__) : "";
   };
   const getCurrentSortControlForScanTarget = (scanTarget = getCurrentScanTarget()) => {
     return scanTarget?.kind === "posts" ? getCurrentFeedSortControl() : { label: "", control: null };
@@ -416,7 +435,7 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: "",
       afterLabel: "",
-      reason: "unsupported_scan_target",
+      reason: __SORT_REASON_UNSUPPORTED_SCAN_TARGET__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
@@ -430,7 +449,7 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: before.label,
-      reason: "already_preferred_sort",
+      reason: __SORT_REASON_ALREADY_PREFERRED_SORT__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
@@ -442,13 +461,13 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: before.label,
-      reason: "sort_control_not_found",
+      reason: __SORT_REASON_SORT_CONTROL_NOT_FOUND__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
   }
 
-  suppressMutationsForMs(3200, "auto_adjust_sort");
+  suppressMutationsForMs(__SORT_MUTATION_SUPPRESSION_MS__, __SORT_MUTATION_SUPPRESSION_REASON__);
   clickFacebookControl(before.control);
   await sleep(360);
   const option = findPreferredSortMenuOptionForScanTarget(scanTarget);
@@ -459,9 +478,9 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: getCurrentScanSortLabel(scanTarget),
-      reason: "preferred_sort_option_not_found",
-      mutationSuppressionMs: 3200,
-      mutationSuppressionReason: "auto_adjust_sort",
+      reason: __SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__,
+      mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
+      mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
     };
   }
   clickFacebookControl(option);
@@ -473,24 +492,48 @@ async (preferredLabel) => {
     preferredLabel: preferredSortLabel,
     beforeLabel: before.label,
     afterLabel,
-    reason: afterLabel === preferredSortLabel ? "updated_to_preferred_sort" : "sort_update_unconfirmed",
-    mutationSuppressionMs: 3200,
-    mutationSuppressionReason: "auto_adjust_sort",
+    reason: afterLabel === preferredSortLabel ? __SORT_REASON_UPDATED_TO_PREFERRED_SORT__ : __SORT_REASON_SORT_UPDATE_UNCONFIRMED__,
+    mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
+    mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
   };
 }
-"""
+""".replace(
+    "__FEED_SORT_LABELS__",
+    _js_literal(FEED_SORT_LABELS),
+).replace(
+    "__FEED_SORT_NEWEST_LABEL__",
+    _js_literal(FEED_SORT_NEWEST_LABEL),
+).replace(
+    "__SORT_REASON_UNSUPPORTED_SCAN_TARGET__",
+    _js_literal(SORT_REASON_UNSUPPORTED_SCAN_TARGET),
+).replace(
+    "__SORT_REASON_ALREADY_PREFERRED_SORT__",
+    _js_literal(SORT_REASON_ALREADY_PREFERRED_SORT),
+).replace(
+    "__SORT_REASON_SORT_CONTROL_NOT_FOUND__",
+    _js_literal(SORT_REASON_SORT_CONTROL_NOT_FOUND),
+).replace(
+    "__SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__",
+    _js_literal(SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND),
+).replace(
+    "__SORT_REASON_UPDATED_TO_PREFERRED_SORT__",
+    _js_literal(SORT_REASON_UPDATED_TO_PREFERRED_SORT),
+).replace(
+    "__SORT_REASON_SORT_UPDATE_UNCONFIRMED__",
+    _js_literal(SORT_REASON_SORT_UPDATE_UNCONFIRMED),
+).replace(
+    "__SORT_MUTATION_SUPPRESSION_MS__",
+    str(SORT_MUTATION_SUPPRESSION_MS),
+).replace(
+    "__SORT_MUTATION_SUPPRESSION_REASON__",
+    _js_literal(SORT_MUTATION_SUPPRESSION_REASON),
+)
 
 
 COMMENT_SORT_ADJUST_SCRIPT = """
 async (preferredLabel) => {
-  const labels = ["由新到舊", "最相關", "所有留言"];
-  const descriptionFragments = [
-    "顯示所有留言",
-    "最新的留言顯示在最上方",
-    "優先顯示朋友的留言",
-    "獲得最多互動的留言",
-    "可能是垃圾訊息",
-  ];
+  const labels = __COMMENT_SORT_LABELS__;
+  const descriptionFragments = __COMMENT_SORT_DESCRIPTION_FRAGMENTS__;
   const normalizeText = (value) => String(value || "").replace(/[\\u200B-\\u200D\\uFEFF]/g, "").replace(/\\s+/g, " ").trim();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const isGroupPostPermalinkPage = () => {
@@ -595,7 +638,7 @@ async (preferredLabel) => {
     if (isMenuLike) return true;
     return isDescriptionText(text);
   };
-  const findCommentSortMenuOption = (label = "由新到舊") => {
+  const findCommentSortMenuOption = (label = __COMMENT_SORT_NEWEST_LABEL__) => {
     const selectors = [
       '[role="menuitem"]',
       '[role="option"]',
@@ -631,7 +674,7 @@ async (preferredLabel) => {
     return Array.from(new Set(texts)).slice(0, 30);
   };
   const getPreferredSortLabelForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "comments" ? (preferredLabel || "由新到舊") : "";
+    return scanTarget?.kind === "comments" ? (preferredLabel || __COMMENT_SORT_NEWEST_LABEL__) : "";
   };
   const getCurrentSortControlForScanTarget = (scanTarget = getCurrentScanTarget()) => {
     return scanTarget?.kind === "comments" ? getCurrentCommentSortControl() : { label: "", control: null };
@@ -641,8 +684,8 @@ async (preferredLabel) => {
   };
   const waitForPreferredSortOptionForScanTarget = async (
     scanTarget = getCurrentScanTarget(),
-    timeoutMs = 1800,
-    intervalMs = 120,
+    timeoutMs = __COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS__,
+    intervalMs = __COMMENT_SORT_OPTION_WAIT_INTERVAL_MS__,
   ) => {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
     while (Date.now() <= deadline) {
@@ -671,7 +714,7 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: "",
       afterLabel: "",
-      reason: "unsupported_scan_target",
+      reason: __SORT_REASON_UNSUPPORTED_SCAN_TARGET__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
@@ -685,7 +728,7 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: before.label,
-      reason: "already_preferred_sort",
+      reason: __SORT_REASON_ALREADY_PREFERRED_SORT__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
@@ -697,13 +740,13 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: before.label,
-      reason: "sort_control_not_found",
+      reason: __SORT_REASON_SORT_CONTROL_NOT_FOUND__,
       mutationSuppressionMs: 0,
       mutationSuppressionReason: "",
     };
   }
 
-  suppressMutationsForMs(3200, "auto_adjust_sort");
+  suppressMutationsForMs(__SORT_MUTATION_SUPPRESSION_MS__, __SORT_MUTATION_SUPPRESSION_REASON__);
   clickFacebookControl(before.control);
   const option = await waitForPreferredSortOptionForScanTarget(scanTarget);
   if (!(option instanceof HTMLElement)) {
@@ -713,9 +756,9 @@ async (preferredLabel) => {
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
       afterLabel: getCurrentScanSortLabel(scanTarget),
-      reason: "preferred_sort_option_not_found",
-      mutationSuppressionMs: 3200,
-      mutationSuppressionReason: "auto_adjust_sort",
+      reason: __SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__,
+      mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
+      mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
       menuCandidateTexts: collectVisibleSortCandidateTexts(),
     };
   }
@@ -728,9 +771,48 @@ async (preferredLabel) => {
     preferredLabel: preferredSortLabel,
     beforeLabel: before.label,
     afterLabel,
-    reason: afterLabel === preferredSortLabel ? "updated_to_preferred_sort" : "sort_update_unconfirmed",
-    mutationSuppressionMs: 3200,
-    mutationSuppressionReason: "auto_adjust_sort",
+    reason: afterLabel === preferredSortLabel ? __SORT_REASON_UPDATED_TO_PREFERRED_SORT__ : __SORT_REASON_SORT_UPDATE_UNCONFIRMED__,
+    mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
+    mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
   };
 }
-"""
+""".replace(
+    "__COMMENT_SORT_LABELS__",
+    _js_literal(COMMENT_SORT_LABELS),
+).replace(
+    "__COMMENT_SORT_DESCRIPTION_FRAGMENTS__",
+    _js_literal(COMMENT_SORT_DESCRIPTION_FRAGMENTS),
+).replace(
+    "__COMMENT_SORT_NEWEST_LABEL__",
+    _js_literal(COMMENT_SORT_NEWEST_LABEL),
+).replace(
+    "__COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS__",
+    str(COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS),
+).replace(
+    "__COMMENT_SORT_OPTION_WAIT_INTERVAL_MS__",
+    str(COMMENT_SORT_OPTION_WAIT_INTERVAL_MS),
+).replace(
+    "__SORT_REASON_UNSUPPORTED_SCAN_TARGET__",
+    _js_literal(SORT_REASON_UNSUPPORTED_SCAN_TARGET),
+).replace(
+    "__SORT_REASON_ALREADY_PREFERRED_SORT__",
+    _js_literal(SORT_REASON_ALREADY_PREFERRED_SORT),
+).replace(
+    "__SORT_REASON_SORT_CONTROL_NOT_FOUND__",
+    _js_literal(SORT_REASON_SORT_CONTROL_NOT_FOUND),
+).replace(
+    "__SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__",
+    _js_literal(SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND),
+).replace(
+    "__SORT_REASON_UPDATED_TO_PREFERRED_SORT__",
+    _js_literal(SORT_REASON_UPDATED_TO_PREFERRED_SORT),
+).replace(
+    "__SORT_REASON_SORT_UPDATE_UNCONFIRMED__",
+    _js_literal(SORT_REASON_SORT_UPDATE_UNCONFIRMED),
+).replace(
+    "__SORT_MUTATION_SUPPRESSION_MS__",
+    str(SORT_MUTATION_SUPPRESSION_MS),
+).replace(
+    "__SORT_MUTATION_SUPPRESSION_REASON__",
+    _js_literal(SORT_MUTATION_SUPPRESSION_REASON),
+)

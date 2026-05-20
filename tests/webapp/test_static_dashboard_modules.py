@@ -52,6 +52,17 @@ def test_dirty_form_helper_uses_form_elements_for_external_form_controls() -> No
     ).read_text(encoding="utf-8")
 
 
+def test_clear_feedback_params_removes_stable_feedback_code() -> None:
+    """one-shot feedback code 顯示後需從 URL 清除，避免 reload 重播舊提示。"""
+
+    utils_js = Path("src/facebook_monitor/webapp/static/dashboard/utils.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pageFeedback.feedback" in utils_js
+    assert 'url.searchParams.delete("feedback")' in utils_js
+
+
 def test_theme_toggle_contract_is_loaded_by_all_page_entrypoints() -> None:
     """Theme toggle module 必須走 DB-backed API 並被三個正式頁面入口載入。"""
 
@@ -133,6 +144,25 @@ def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     assert "[data-include-keyword-help-modal]" in modals_js
     assert "[data-keyword-help-button]" in modals_js
     assert "[data-keyword-help-modal]" in modals_js
+
+
+def test_cover_image_refresh_handles_avatar_image_errors() -> None:
+    """dashboard 壞圖處理需即時 fallback 並以 JSON hint 排程背景刷新。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    cover_js = (dashboard_dir / "cover_image_refresh.js").read_text(encoding="utf-8")
+    main_js = (dashboard_dir / "main.js").read_text(encoding="utf-8")
+
+    assert "document.addEventListener(\"error\", handleImageError, true)" in cover_js
+    assert "scanAlreadyFailedImages" in cover_js
+    assert "image.complete && image.naturalWidth === 0" in cover_js
+    assert "requestAnimationFrame(scanAlreadyFailedImages)" in cover_js
+    assert "reportedImageFailures" in cover_js
+    assert "fallbackAvatar(image)" in cover_js
+    assert "/cover-image/load-failure" in cover_js
+    assert "requestJson" in cover_js
+    assert '"/static/dashboard/cover_image_refresh.js"' in main_js
+    assert "setupCoverImageRefresh();" in main_js
 
 
 def test_notification_help_is_loaded_by_formal_page_entrypoints() -> None:

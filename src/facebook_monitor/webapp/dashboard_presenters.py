@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
@@ -20,8 +21,9 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
-from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.user_messages import format_failure_message_text
+from facebook_monitor.core.user_messages import split_coded_message
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
@@ -48,24 +50,54 @@ def is_content_unavailable_scan(scan: ScanRun | None) -> bool:
     return (
         metadata.get("reason") == CONTENT_UNAVAILABLE_REASON
         or scan.error_message.startswith(f"{CONTENT_UNAVAILABLE_REASON}:")
+        or scan.error_message.startswith(f"{CONTENT_UNAVAILABLE_LABEL}：")
     )
 
 
 def is_content_unavailable_runtime_error(value: str) -> bool:
     """判斷 runtime error 是否代表 Facebook 內容不可見。"""
 
-    return value.startswith(f"{CONTENT_UNAVAILABLE_REASON}:")
+    code, _detail = split_coded_message(value)
+    return code == CONTENT_UNAVAILABLE_REASON or value.startswith(
+        f"{CONTENT_UNAVAILABLE_LABEL}："
+    )
+
+
+def is_retrying_failure_scan(scan: ScanRun | None) -> bool:
+    """判斷 failed scan 是否為未達上限、將於下輪重試的失敗。"""
+
+    if scan is None:
+        return False
+    metadata = scan.metadata or {}
+    return bool(metadata.get("retryable")) and metadata.get("runtime_action") == "will_retry"
+
+
+def format_retrying_failure_title(scan: ScanRun) -> str:
+    """格式化可重試 failed scan 的 hover 說明。"""
+
+    metadata = scan.metadata or {}
+    retry_streak = metadata.get("retry_streak")
+    retry_limit = metadata.get("retry_limit")
+    if retry_streak and retry_limit:
+        prefix = f"本輪掃描失敗，將於下輪重試（{retry_streak}/{retry_limit}）"
+    else:
+        prefix = "本輪掃描失敗，將於下輪重試"
+    detail = format_failure_message_text(scan.error_message)
+    return f"{prefix}：{detail}" if detail else prefix
 
 
 def format_latest_error_indicator_label(
     scan: ScanRun | None,
     *,
     content_unavailable_current: bool | None = None,
+    retrying_current: bool = False,
 ) -> str:
     """回傳 target header 使用的最近錯誤短標籤。"""
 
     if scan is None:
         return ""
+    if retrying_current:
+        return "將重試"
     current = (
         is_content_unavailable_scan(scan)
         if content_unavailable_current is None
@@ -80,11 +112,14 @@ def format_latest_error_indicator_title(
     scan: ScanRun | None,
     *,
     content_unavailable_current: bool | None = None,
+    retrying_current: bool = False,
 ) -> str:
     """回傳 target header 最近錯誤的 hover 說明。"""
 
     if scan is None:
         return ""
+    if retrying_current:
+        return format_retrying_failure_title(scan)
     current = (
         is_content_unavailable_scan(scan)
         if content_unavailable_current is None
@@ -92,15 +127,15 @@ def format_latest_error_indicator_title(
     )
     if current:
         return CONTENT_UNAVAILABLE_TITLE
-    return scan.error_message
+    return format_failure_message_text(scan.error_message)
 
 
 def format_runtime_error_message(value: str) -> str:
-    """把 runtime error 轉成使用者可讀訊息，保留未知錯誤原文。"""
+    """把 runtime error 轉成使用者可讀訊息。"""
 
     if is_content_unavailable_runtime_error(value):
         return CONTENT_UNAVAILABLE_ERROR_MESSAGE
-    return value
+    return format_failure_message_text(value)
 
 
 @dataclass(frozen=True)
@@ -368,13 +403,11 @@ class TargetSettingsPresenter:
     def notification_summary_label(self) -> str:
         """回傳設定摘要用的通知通道列表。"""
 
-        channels: list[str] = []
-        if self.config.enable_desktop_notification:
-            channels.append(format_notification_channel_label(NotificationChannel.DESKTOP))
-        if self.config.enable_ntfy:
-            channels.append(format_notification_channel_label(NotificationChannel.NTFY))
-        if self.config.enable_discord_notification:
-            channels.append(format_notification_channel_label(NotificationChannel.DISCORD))
+        channels = [
+            format_notification_channel_label(definition.channel)
+            for definition in NOTIFICATION_CHANNEL_DEFINITIONS
+            if getattr(self.config, definition.enabled_field)
+        ]
         return " / ".join(channels) if channels else "關閉"
 
     @property
@@ -438,7 +471,10 @@ class TargetCardSummaryPresenter:
                 f"{CONTENT_UNAVAILABLE_HISTORY_MESSAGE}"
             )
         failed = self.latest_failed_scan_run
-        return f"{format_datetime_for_ui(failed.finished_at)} · {failed.error_message}"
+        return (
+            f"{format_datetime_for_ui(failed.finished_at)} · "
+            f"{format_failure_message_text(failed.error_message)}"
+        )
 
     @property
     def summary(self) -> TargetCardSummary:

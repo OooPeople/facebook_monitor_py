@@ -37,6 +37,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from scripts.admin.create_macos_app_launcher import create_macos_app_launcher
+from facebook_monitor.runtime.bundled_browser import MACOS_BROWSER_APP_EXECUTABLES
 from facebook_monitor.version import APP_VERSION
 
 ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "launcher.py")
@@ -87,10 +88,7 @@ def bundled_chromium_dir():
 
 
 def _contains_macos_chromium(path):
-    return any(
-        (path / app_name / "Contents" / "MacOS" / executable_name).is_file()
-        for app_name, executable_name in _macos_browser_app_executables()
-    )
+    return any((path / relative_path).is_file() for relative_path in MACOS_BROWSER_APP_EXECUTABLES)
 
 
 def _playwright_macos_chromium_dirs(browsers_root):
@@ -102,18 +100,11 @@ def _playwright_macos_chromium_dirs(browsers_root):
             candidates.append(path)
     return candidates
 
-
-def _macos_browser_app_executables():
-    return (
-        ("Chromium.app", "Chromium"),
-        ("Google Chrome for Testing.app", "Google Chrome for Testing"),
-    )
-
-
 os.makedirs(GENERATED_DIR, exist_ok=True)
 with open(BUILD_METADATA_HOOK, "w", encoding="utf-8") as hook_file:
     hook_file.write(
         "import os\n"
+        f"os.environ['FACEBOOK_MONITOR_APP_VERSION'] = {APP_VERSION!r}\n"
         f"os.environ['FACEBOOK_MONITOR_BUILD_DATE'] = {os.environ.get('FACEBOOK_MONITOR_BUILD_DATE', build_date())!r}\n"
         f"os.environ['FACEBOOK_MONITOR_GIT_COMMIT'] = {os.environ.get('FACEBOOK_MONITOR_GIT_COMMIT', read_git_commit())!r}\n"
         f"os.environ['FACEBOOK_MONITOR_PACKAGING_MODE'] = {os.environ.get('FACEBOOK_MONITOR_PACKAGING_MODE', platform_packaging_mode())!r}\n"
@@ -176,7 +167,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
@@ -196,7 +187,7 @@ updater_exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH if os.path.exists(ICON_PATH) else None,

@@ -7,7 +7,7 @@ import sqlite3
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 28
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -198,6 +198,23 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             last_page_reloaded_at TEXT NOT NULL DEFAULT '',
             scan_guard_count INTEGER NOT NULL DEFAULT 0,
             display_next_due_at TEXT NOT NULL DEFAULT '',
+            consecutive_failure_reason TEXT NOT NULL DEFAULT '',
+            consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            requested_at TEXT NOT NULL DEFAULT '',
+            last_attempted_at TEXT NOT NULL DEFAULT '',
+            last_succeeded_at TEXT NOT NULL DEFAULT '',
+            last_failed_at TEXT NOT NULL DEFAULT '',
+            last_reported_url TEXT NOT NULL DEFAULT '',
+            last_resolved_url TEXT NOT NULL DEFAULT '',
+            last_result TEXT NOT NULL DEFAULT '',
+            changed INTEGER NOT NULL DEFAULT 0,
+            error TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL
         );
 
@@ -286,6 +303,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             ON target_runtime_state(desired_state, updated_at);
         CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_updated
             ON notification_outbox(status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_cover_image_refresh_status_requested
+            ON target_cover_image_refresh_state(status, requested_at);
         CREATE INDEX IF NOT EXISTS idx_sidebar_groups_order
             ON sidebar_groups(sort_order);
         CREATE INDEX IF NOT EXISTS idx_sidebar_target_placements_group_order

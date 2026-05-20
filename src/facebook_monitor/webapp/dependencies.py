@@ -219,11 +219,17 @@ def get_target_keyword_defaults(request: Request) -> TargetKeywordDefaultSetting
         return app_context.repositories.app_settings.get_target_keyword_defaults()
 
 
-def redirect_with_message(message: str, *, return_to: str = "") -> RedirectResponse:
+def redirect_with_message(
+    message: str,
+    *,
+    return_to: str = "",
+    feedback: str = "",
+) -> RedirectResponse:
     """回到首頁並帶上成功訊息。"""
 
     return RedirectResponse(
-        f"/?{urlencode({'message': message})}{normalize_return_fragment(return_to)}",
+        f"/?{urlencode(build_feedback_query(message, feedback))}"
+        f"{normalize_return_fragment(return_to)}",
         status_code=303,
     )
 
@@ -261,16 +267,28 @@ def redirect_new_target_with_message(message: str) -> RedirectResponse:
     return RedirectResponse(f"/targets/new?{urlencode({'message': message})}", status_code=303)
 
 
-def redirect_settings_with_message(message: str) -> RedirectResponse:
+def redirect_settings_with_message(message: str, *, feedback: str = "") -> RedirectResponse:
     """回到設定頁並帶上成功訊息。"""
 
-    return RedirectResponse(f"/settings?{urlencode({'message': message})}", status_code=303)
+    return RedirectResponse(
+        f"/settings?{urlencode(build_feedback_query(message, feedback))}",
+        status_code=303,
+    )
 
 
 def redirect_settings_with_error(error: str) -> RedirectResponse:
     """回到設定頁並帶上錯誤訊息。"""
 
     return RedirectResponse(f"/settings?{urlencode({'error': error})}", status_code=303)
+
+
+def build_feedback_query(message: str, feedback: str = "") -> dict[str, str]:
+    """建立 redirect 使用的穩定訊息與機器可讀 feedback code query。"""
+
+    query = {"message": message}
+    if feedback:
+        query["feedback"] = feedback
+    return query
 
 
 def open_profile_options(request: Request) -> ProfileSessionOptions:

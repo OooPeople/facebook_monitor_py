@@ -9,19 +9,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 from time import sleep
 from uuid import uuid4
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
-from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
@@ -73,53 +69,15 @@ def list_schedulable_target_ids(
 ) -> tuple[str, ...]:
     """列出目前 one-shot fallback scheduler 應該掃描的 target ids。"""
 
-    current_time = now or datetime.now(timezone.utc)
-    with SqliteApplicationContext(db_path) as app:
-        target_ids: list[str] = []
-        for target in app.repositories.targets.list_enabled():
-            if target.target_kind != TargetKind.POSTS:
-                continue
-            runtime_state = app.services.targets.ensure_runtime_state(target.id)
-            if runtime_state.desired_state != TargetDesiredState.ACTIVE:
-                continue
-            if runtime_state.runtime_status in {
-                TargetRuntimeStatus.ERROR,
-                TargetRuntimeStatus.QUEUED,
-                TargetRuntimeStatus.RUNNING,
-            }:
-                continue
-            if runtime_state.scan_requested_at is not None:
-                target_ids.append(target.id)
-                continue
-            config = app.services.targets.get_config_for_target(target)
-            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-            latest_finished_at = latest_scan.finished_at if latest_scan else None
-            interval_seconds = resolve_refresh_interval_seconds(
-                config=config,
-                default_interval_seconds=default_interval_seconds,
-                target_id=target.id,
-                latest_finished_at=latest_finished_at,
-            )
-            if is_scan_due(
-                latest_finished_at=latest_finished_at,
-                interval_seconds=interval_seconds,
-                now=current_time,
-            ):
-                target_ids.append(target.id)
-        return tuple(target_ids)
-
-
-def is_scan_due(
-    *,
-    latest_finished_at: datetime | None,
-    interval_seconds: float,
-    now: datetime,
-) -> bool:
-    """判斷 target 是否已到下一次掃描時間。"""
-
-    if latest_finished_at is None:
-        return True
-    return (now - latest_finished_at).total_seconds() >= max(interval_seconds, 1)
+    planner = TargetSchedulePlanner(scannable_target_kinds=frozenset({TargetKind.POSTS}))
+    return tuple(
+        due_target.target_id
+        for due_target in planner.list_due_targets(
+            db_path,
+            default_interval_seconds=default_interval_seconds,
+            now=now,
+        )
+    )
 
 
 def run_one_shot_scheduler_loop(
@@ -163,12 +121,18 @@ def run_one_shot_scheduler_loop(
                         scroll_rounds=options.scroll_rounds,
                         scroll_wait_ms=options.scroll_wait_ms,
                         scan_timeout_seconds=options.scan_timeout_seconds,
+                        record_failures=False,
                     )
                 )
             except WorkerFailure as exc:
                 failure_count += 1
                 with SqliteApplicationContext(options.db_path) as app:
                     target = app.repositories.targets.get(target_id)
+                    decision = app.services.targets.decide_scan_failure(
+                        target_id,
+                        exc.reason,
+                        source="worker_failure",
+                    )
                     if target is not None:
                         record_scan_failure(
                             app=app,
@@ -177,26 +141,45 @@ def run_one_shot_scheduler_loop(
                             message=str(exc),
                             worker_path="one_shot_scheduler",
                             exception_class=exc.__class__.__name__,
-                            retryable=exc.reason in RETRYABLE_IDLE_FAILURE_REASONS,
+                            retryable=decision.retryable,
+                            runtime_action=decision.runtime_action,
+                            retry_streak=decision.retry_streak,
+                            retry_limit=decision.retry_limit,
+                            force_record=decision.counts_toward_streak,
                         )
-                    if exc.reason in RETRYABLE_IDLE_FAILURE_REASONS:
-                        app.services.targets.mark_target_idle(target_id)
-                    else:
-                        app.services.targets.mark_target_error(target_id, f"{exc.reason}: {exc}")
+                    app.services.targets.apply_scan_failure_decision(
+                        target_id,
+                        decision,
+                        str(exc),
+                    )
             except Exception as exc:
                 failure_count += 1
                 with SqliteApplicationContext(options.db_path) as app:
                     target = app.repositories.targets.get(target_id)
+                    decision = app.services.targets.decide_scan_failure(
+                        target_id,
+                        UNKNOWN_REASON,
+                        source="unknown_exception",
+                    )
                     if target is not None:
                         record_scan_failure(
                             app=app,
                             target=target,
-                            reason="unknown",
+                            reason=UNKNOWN_REASON,
                             message=str(exc),
                             worker_path="one_shot_scheduler",
                             exception_class=exc.__class__.__name__,
+                            retryable=decision.retryable,
+                            runtime_action=decision.runtime_action,
+                            retry_streak=decision.retry_streak,
+                            retry_limit=decision.retry_limit,
+                            force_record=decision.counts_toward_streak,
                         )
-                    app.services.targets.mark_target_error(target_id, f"unknown: {exc}")
+                    app.services.targets.apply_scan_failure_decision(
+                        target_id,
+                        decision,
+                        str(exc),
+                    )
             else:
                 success_count += 1
                 with SqliteApplicationContext(options.db_path) as app:

@@ -12,6 +12,9 @@ from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.highlight import build_highlight_segment_dicts
+from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
+from facebook_monitor.webapp.notification_presenters import format_notification_event_message
+from facebook_monitor.webapp.notification_presenters import format_notification_status_label
 from facebook_monitor.webapp.preview_models import trim_preview_text
 
 
@@ -50,8 +53,14 @@ class FullHitRecordRow:
             return "尚無通知事件"
         event = self.notification_event
         event_time = format_datetime_for_ui(event.created_at)
-        message = f" · {event.message}" if event.message else ""
-        return f"{event.channel.value}: {event.status.value} · {event_time}{message}"
+        message = (
+            f" · {format_notification_event_message(event.message)}"
+            if event.message
+            else ""
+        )
+        channel_label = format_notification_channel_label(event.channel)
+        status_label = format_notification_status_label(event.status)
+        return f"{channel_label}: {status_label} · {event_time}{message}"
 
     def to_dict(self) -> dict[str, object]:
         """轉成 API response 使用的純 dict。"""

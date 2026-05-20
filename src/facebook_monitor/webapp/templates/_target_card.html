@@ -185,10 +185,10 @@
           <span class="scan-cycle-result" data-scan-cycle-result title="{{ row.scan_cycle_result_label }}">{{ row.scan_cycle_result_label }}</span>
         </div>
         <div class="preview-tab-panel" data-preview-panel="latest">
-          {{ preview_rows(row.latest_scan_preview_rows, "尚無掃描紀錄") }}
+          {{ preview_rows(row.latest_scan_preview_rows, "尚無掃描紀錄", "latest_scan") }}
         </div>
         <div class="preview-tab-panel" data-preview-panel="hits" hidden>
-          {{ preview_rows(row.hit_record_preview_rows, "尚無命中紀錄") }}
+          {{ preview_rows(row.hit_record_preview_rows, "尚無命中紀錄", "hit_records") }}
         </div>
       </aside>
     </div>

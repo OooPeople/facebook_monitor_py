@@ -1,15 +1,35 @@
 import { csrfHeaders } from "/static/dashboard/csrf.js";
 import { confirmDialog } from "/static/dashboard/dialogs.js";
 import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
-import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
+import {
+  bindDialogDismiss,
+  formatClientErrorMessage,
+  openDialog,
+} from "/static/dashboard/utils.js";
 
 const pageSize = 50;
-const emptyHitRecordsHtml = `
-  <div class="preview-empty">
-    <p>尚無命中紀錄</p>
-    <span>符合關鍵字的貼文或留言會保存於此。</span>
-  </div>
-`;
+const previewEmptyStates = {
+  hitRecordsPreview: {
+    title: "尚無命中紀錄",
+    description: "符合關鍵字的貼文或留言會保存於此。",
+  },
+  hitRecordsModal: {
+    title: "尚無命中紀錄",
+    description: "符合關鍵字的內容會出現在這裡，且可從原文連結回到 Facebook。",
+  },
+};
+
+const createPreviewEmpty = ({ title, description }) => {
+  const empty = document.createElement("div");
+  empty.className = "preview-empty";
+  const titleNode = document.createElement("p");
+  titleNode.textContent = title;
+  const descriptionNode = document.createElement("span");
+  descriptionNode.textContent = description;
+  empty.appendChild(titleNode);
+  empty.appendChild(descriptionNode);
+  return empty;
+};
 
 const hitRecordText = (value) => (
   value === null || value === undefined || value === "" ? "未記錄" : String(value)
@@ -89,15 +109,7 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
   }
   const items = Array.isArray(payload.items) ? payload.items : [];
   if (items.length === 0 && !append) {
-    const empty = document.createElement("div");
-    empty.className = "preview-empty";
-    const title = document.createElement("p");
-    title.textContent = "尚無命中紀錄";
-    const description = document.createElement("span");
-    description.textContent = "符合關鍵字的內容會出現在這裡，且可從原文連結回到 Facebook。";
-    empty.appendChild(title);
-    empty.appendChild(description);
-    list.appendChild(empty);
+    list.appendChild(createPreviewEmpty(previewEmptyStates.hitRecordsModal));
     updatePageStatus(modal, payload, 0);
     return;
   }
@@ -175,7 +187,7 @@ export const setupHitRecords = ({ showToast }) => {
       if (!modal) return;
       openDialog(modal);
       loadHitRecords(modal, targetId).catch((error) => {
-        showToast(error.message || "命中紀錄載入失敗", "error");
+        showToast(formatClientErrorMessage(error, "命中紀錄載入失敗"), "error");
       });
     });
   });
@@ -209,11 +221,11 @@ export const setupHitRecords = ({ showToast }) => {
         const target = document.getElementById(`target-${targetId}`);
         const hitPanel = target?.querySelector('[data-preview-panel="hits"]');
         if (hitPanel) {
-          hitPanel.innerHTML = emptyHitRecordsHtml;
+          hitPanel.replaceChildren(createPreviewEmpty(previewEmptyStates.hitRecordsPreview));
         }
         showToast("命中紀錄已清空", "success");
       } catch (error) {
-        showToast(error.message || "清空紀錄失敗", "error");
+        showToast(formatClientErrorMessage(error, "清空紀錄失敗"), "error");
       }
     });
   });
@@ -225,7 +237,7 @@ export const setupHitRecords = ({ showToast }) => {
       if (!targetId || !modal) return;
       loadHitRecords(modal, targetId, { append: true }).catch((error) => {
         button.disabled = false;
-        showToast(error.message || "命中紀錄載入失敗", "error");
+        showToast(formatClientErrorMessage(error, "命中紀錄載入失敗"), "error");
       });
     });
   });

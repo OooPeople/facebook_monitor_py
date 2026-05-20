@@ -11,7 +11,11 @@ import {
   sidebarRoot,
 } from "/static/dashboard/sidebar_dom.js";
 import { setupSidebarSorting } from "/static/dashboard/sidebar_sorting.js";
-import { bindDialogDismiss, openDialog } from "/static/dashboard/utils.js";
+import {
+  bindDialogDismiss,
+  formatClientErrorMessage,
+  openDialog,
+} from "/static/dashboard/utils.js";
 
 const isSorting = () => sidebarRoot()?.classList.contains("sorting");
 
@@ -144,7 +148,10 @@ const setupGroupControls = (showToast) => {
           payload: { collapsed },
         });
       } catch (error) {
-        showToast?.(`群組狀態更新失敗: ${error.message}`, "error");
+        showToast?.(
+          `群組狀態更新失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
       }
     });
   });
@@ -170,7 +177,10 @@ const setupGroupControls = (showToast) => {
         });
         reloadDashboardPreservingScroll();
       } catch (error) {
-        showToast?.(`群組更名失敗: ${error.message}`, "error");
+        showToast?.(
+          `群組更名失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
       }
     });
   });
@@ -193,7 +203,10 @@ const setupGroupControls = (showToast) => {
         });
         reloadDashboardPreservingScroll();
       } catch (error) {
-        showToast?.(`群組刪除失敗: ${error.message}`, "error");
+        showToast?.(
+          `群組刪除失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
       }
     });
   });
@@ -281,7 +294,10 @@ const setupGroupCreate = (showToast) => {
         await requestJson("/api/sidebar/groups", { payload: { name } });
         reloadDashboardPreservingScroll();
       } catch (error) {
-        showToast?.(`群組建立失敗: ${error.message}`, "error");
+        showToast?.(
+          `群組建立失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
       }
     });
   });
@@ -353,7 +369,10 @@ const setupTemplateModals = (showToast) => {
         });
         showToast?.("群組模板已儲存", "success");
       } catch (error) {
-        showToast?.(`群組模板儲存失敗: ${error.message}`, "error");
+        showToast?.(
+          `群組模板儲存失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
       }
     });
 
@@ -391,7 +410,10 @@ const setupTemplateModals = (showToast) => {
           showToast?.(`已套用到 ${data.updated_count || 0} 個 target`, "success");
           reloadDashboardPreservingScroll();
         } catch (error) {
-          showToast?.(`群組模板套用失敗: ${error.message}`, "error");
+          showToast?.(
+            `群組模板套用失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+            "error",
+          );
         }
       });
     });

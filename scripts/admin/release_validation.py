@@ -18,7 +18,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from facebook_monitor.updates.artifacts import UPDATE_ARTIFACT_POLICIES
 from facebook_monitor.webapp.assets import ASSET_VERSION
+
+
+ARTIFACT_PLATFORM_CHOICES = tuple(
+    policy.platform_key for policy in UPDATE_ARTIFACT_POLICIES
+)
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-artifacts",
         action="store_true",
-        help="Also validate Windows portable release zip, SHA256, and EXE metadata.",
+        help="Also validate release zip, SHA256, and platform-specific artifact metadata.",
+    )
+    parser.add_argument(
+        "--artifact-platform",
+        default="windows",
+        choices=ARTIFACT_PLATFORM_CHOICES,
+        help="Platform artifact to validate when --include-artifacts is set.",
     )
     parser.add_argument(
         "--expected-signer-subject",
@@ -132,6 +144,7 @@ def validation_steps(
     git_checkout: bool,
     include_audit: bool = False,
     include_artifacts: bool = False,
+    artifact_platform: str = "windows",
     expected_signer_subject: str = "",
     expected_tag: str = "",
 ) -> list[ValidationStep]:
@@ -139,7 +152,7 @@ def validation_steps(
 
     steps = [
         ValidationStep("pytest", uv_command("run", "pytest", "-q")),
-        ValidationStep("mypy", uv_command("run", "mypy", "src", "scripts", "tests")),
+        ValidationStep("mypy", uv_command("run", "mypy")),
         ValidationStep(
             "ruff",
             uv_command("run", "ruff", "check", "src", "scripts", "tests"),
@@ -166,6 +179,8 @@ def validation_steps(
                 "run",
                 "python",
                 "scripts/admin/release_artifact_validation.py",
+                "--platform",
+                artifact_platform,
             )
         ]
         if expected_signer_subject:
@@ -221,6 +236,10 @@ def validate_cli_args(args: argparse.Namespace) -> str | None:
         return "--expected-signer-subject requires --include-artifacts"
     if args.expected_tag and not args.include_artifacts:
         return "--expected-tag requires --include-artifacts"
+    if args.artifact_platform != "windows" and not args.include_artifacts:
+        return "--artifact-platform requires --include-artifacts"
+    if args.artifact_platform != "windows" and args.expected_signer_subject:
+        return "--expected-signer-subject is only supported for Windows artifacts"
     return None
 
 
@@ -239,12 +258,13 @@ def main() -> int:
     if args.include_audit:
         print("已啟用 pip-audit；此步驟可能需要網路或 advisory DB。")
     if args.include_artifacts:
-        print("已啟用 Windows release artifact 一致性檢查。")
+        print(f"已啟用 {args.artifact_platform} release artifact 一致性檢查。")
     for step in validation_steps(
         skip_sync=args.skip_sync,
         git_checkout=git_checkout,
         include_audit=args.include_audit,
         include_artifacts=args.include_artifacts,
+        artifact_platform=args.artifact_platform,
         expected_signer_subject=args.expected_signer_subject,
         expected_tag=args.expected_tag,
     ):

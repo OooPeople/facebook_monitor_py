@@ -12,9 +12,17 @@ import sqlite3
 from cryptography.fernet import Fernet
 from cryptography.fernet import InvalidToken
 
+from facebook_monitor.core.notification_channels import NOTIFICATION_ENDPOINT_FIELDS
+
 
 ENCRYPTED_SECRET_PREFIX = "enc:v1:"
 DEFAULT_SECRET_KEY_FILENAME = "secrets.key"
+NOTIFICATION_SECRET_TABLES = (
+    "target_configs",
+    "global_notification_settings",
+    "sidebar_group_config_templates",
+)
+OUTBOX_SECRET_COLUMNS = (("notification_outbox", "endpoint"),)
 
 
 class SecretCodec:
@@ -91,15 +99,7 @@ def reencrypt_plaintext_secrets(
     """將 legacy plaintext notification secrets 原地改寫為 enc:v1 密文。"""
 
     updated_count = 0
-    for table_name, column_name in (
-        ("target_configs", "ntfy_topic"),
-        ("target_configs", "discord_webhook"),
-        ("global_notification_settings", "ntfy_topic"),
-        ("global_notification_settings", "discord_webhook"),
-        ("notification_outbox", "endpoint"),
-        ("sidebar_group_config_templates", "ntfy_topic"),
-        ("sidebar_group_config_templates", "discord_webhook"),
-    ):
+    for table_name, column_name in _notification_secret_columns():
         if not _table_has_column(connection, table_name, column_name):
             continue
         rows = connection.execute(
@@ -118,6 +118,19 @@ def reencrypt_plaintext_secrets(
             )
             updated_count += 1
     return updated_count
+
+
+def _notification_secret_columns() -> tuple[tuple[str, str], ...]:
+    """回傳需要 DB-at-rest 加密的 notification secret 欄位。"""
+
+    return (
+        *(
+            (table_name, column_name)
+            for table_name in NOTIFICATION_SECRET_TABLES
+            for column_name in NOTIFICATION_ENDPOINT_FIELDS
+        ),
+        *OUTBOX_SECRET_COLUMNS,
+    )
 
 
 def _table_has_column(

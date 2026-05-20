@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
@@ -17,7 +18,7 @@ from facebook_monitor.notifications.safe_messages import safe_exception_message
 class NtfyConfig:
     """保存 ntfy 發送所需設定。"""
 
-    server: str = "https://ntfy.sh"
+    server: str = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_server
     topic: str = ""
     click_url: str = ""
 
@@ -38,11 +39,17 @@ def send_ntfy_notification(config: NtfyConfig, title: str, message: str) -> Ntfy
     if not topic:
         return NtfyResult(ok=False, status_code=None, message="ntfy topic is empty")
 
-    server = config.server.strip().rstrip("/") or "https://ntfy.sh"
+    server = (
+        config.server.strip().rstrip("/")
+        or PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_server
+    )
     url = f"{server}/{quote(topic, safe='')}"
     headers = {
         "Content-Type": "text/plain; charset=utf-8",
-        "Title": to_ascii_header_value(title, fallback="Facebook group match"),
+        "Title": to_ascii_header_value(
+            title,
+            fallback=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_ascii_title_fallback,
+        ),
         "Priority": "default",
         "Tags": "bell",
     }
@@ -50,7 +57,12 @@ def send_ntfy_notification(config: NtfyConfig, title: str, message: str) -> Ntfy
     if click_url:
         headers["Click"] = click_url
     try:
-        response = httpx.post(url, content=message.encode("utf-8"), headers=headers, timeout=15)
+        response = httpx.post(
+            url,
+            content=message.encode("utf-8"),
+            headers=headers,
+            timeout=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_timeout_seconds,
+        )
         if 200 <= response.status_code < 300:
             return NtfyResult(ok=True, status_code=response.status_code, message="sent")
         return NtfyResult(

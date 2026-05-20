@@ -5,12 +5,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import plistlib
 from pathlib import PurePosixPath
-import re
-import struct
 import subprocess
 import sys
 import tempfile
@@ -21,72 +18,74 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from facebook_monitor.version import APP_VERSION
-from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_SUFFIX
-from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_SUFFIX
+from facebook_monitor.updates.artifacts import RELEASE_ARCHIVE_ROOT_NAME
+from facebook_monitor.updates.artifacts import UPDATE_ARTIFACT_POLICIES
+from facebook_monitor.updates.artifacts import release_sha256_asset_name
+from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
+from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
+from facebook_monitor.updates.platforms import WINDOWS_LAYOUT_POLICY
+from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
-from facebook_monitor.updates.platforms import MACOS_APP_ENTRY
 from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
-from facebook_monitor.updates.platforms import MACOS_UPDATER_ENTRY
+from facebook_monitor.updates.platforms import macos_app_executable_staging_paths
+from facebook_monitor.updates.platforms import macos_optional_executable_staging_paths
+from facebook_monitor.updates.checksum import calculate_sha256
+from facebook_monitor.updates.checksum import render_sha256_sidecar
+from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
+from facebook_monitor.updates.validation import is_macho_arm64
+from facebook_monitor.updates.validation import plist_value_is_true
+from facebook_monitor.updates.validation import zip_member_has_executable_bit
+from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
+from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
+from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
+from facebook_monitor.version import APP_VERSION
+from scripts.admin.windows_version_resource import windows_file_version
+from scripts.admin.windows_version_resource import windows_version_tuple
 
 
-VERSION_INFO_FILE = ROOT / "packaging" / "pyinstaller" / "version_info.txt"
-MAX_ZIP_ENTRIES = 50_000
-MAX_ZIP_SINGLE_FILE_BYTES = 1024 * 1024 * 1024
-MAX_ZIP_UNCOMPRESSED_BYTES = 3 * 1024 * 1024 * 1024
-MACOS_ZIP_ROOT = "facebook-monitor"
-CPU_TYPE_ARM64 = 0x0100000C
-MACHO_MAGIC_64 = 0xFEEDFACF
-MACHO_CIGAM_64 = 0xCFFAEDFE
-FAT_MAGIC = 0xCAFEBABE
-FAT_MAGIC_64 = 0xCAFEBABF
-FAT_CIGAM = 0xBEBAFECA
-FAT_CIGAM_64 = 0xBFBAFECA
-REQUIRED_ZIP_ENTRIES = frozenset(
-    {
-        "facebook-monitor/facebook-monitor.exe",
-        "facebook-monitor/facebook-monitor-updater.exe",
-        "facebook-monitor/_internal/python313.dll",
-        "facebook-monitor/_internal/browser/chrome.exe",
-        "facebook-monitor/_internal/assets/facebook-monitor.ico",
-        "facebook-monitor/_internal/assets/facebook-monitor-tray.ico",
-    }
+WINDOWS_APP_VERSION_INFO_FILE = (
+    ROOT / "build" / "pyinstaller_generated" / "windows_app_version_info.txt"
 )
-ZIP_EXE_ENTRIES = (
-    "facebook-monitor/facebook-monitor.exe",
-    "facebook-monitor/facebook-monitor-updater.exe",
+WINDOWS_UPDATER_VERSION_INFO_FILE = (
+    ROOT / "build" / "pyinstaller_generated" / "windows_updater_version_info.txt"
+)
+ARTIFACT_PLATFORM_CHOICES = tuple(
+    policy.platform_key for policy in UPDATE_ARTIFACT_POLICIES
+)
+WINDOWS_ZIP_ROOT = RELEASE_ARCHIVE_ROOT_NAME
+MACOS_ZIP_ROOT = RELEASE_ARCHIVE_ROOT_NAME
+MACHO_PROBE_BYTES = 4096
+WINDOWS_REQUIRED_ZIP_ENTRIES = frozenset(
+    f"{WINDOWS_ZIP_ROOT}/{path}"
+    for path in WINDOWS_LAYOUT_POLICY.required_staging_files
+)
+WINDOWS_ZIP_EXE_ENTRIES = (
+    f"{WINDOWS_ZIP_ROOT}/{WINDOWS_APP_ENTRY}",
+    f"{WINDOWS_ZIP_ROOT}/{WINDOWS_UPDATER_ENTRY}",
 )
 MACOS_REQUIRED_ZIP_ENTRIES = frozenset(
     f"{MACOS_ZIP_ROOT}/{path}"
     for path in MACOS_ARM64_LAYOUT_POLICY.required_staging_files
 )
 MACOS_EXECUTABLE_ENTRIES = (
-    f"{MACOS_ZIP_ROOT}/{MACOS_APP_ENTRY}",
-    f"{MACOS_ZIP_ROOT}/{MACOS_UPDATER_ENTRY}",
-    f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_LAUNCHER}",
+    *(
+        f"{MACOS_ZIP_ROOT}/{path}"
+        for path in macos_app_executable_staging_paths(MACOS_ARM64_LAYOUT_POLICY)
+    ),
 )
 MACOS_APP_INFO_PLIST_ENTRY = f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_INFO_PLIST}"
-MACOS_APP_LAUNCHER_ENTRY = f"{MACOS_ZIP_ROOT}/{MACOS_APP_BUNDLE_LAUNCHER}"
 MACOS_APP_LAUNCHER_NAME = PurePosixPath(MACOS_APP_BUNDLE_LAUNCHER).name
-MACOS_BROWSER_ENTRY_SUFFIXES = tuple(
-    suffix
-    for group in MACOS_ARM64_LAYOUT_POLICY.required_staging_any_groups
-    for suffix in group
+MACOS_BROWSER_ENTRY_SUFFIXES = macos_optional_executable_staging_paths(
+    MACOS_ARM64_LAYOUT_POLICY
 )
-SENSITIVE_RELEASE_PATH_PARTS = frozenset(
-    {
-        "data",
-        "profiles",
-        "logs",
-        "cookies",
-        "tokens",
-        "session",
-        "sessions",
-    }
+MACOS_BROWSER_ENTRIES = tuple(
+    f"{MACOS_ZIP_ROOT}/{suffix}" for suffix in MACOS_BROWSER_ENTRY_SUFFIXES
 )
 
 
@@ -96,6 +95,38 @@ class ArtifactValidationResult:
 
     ok: bool
     messages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WindowsVersionResourceFile:
+    """描述 PyInstaller 產生的單一 Windows version resource 檔。"""
+
+    path: Path
+    internal_name: str
+    original_filename: str
+
+
+WINDOWS_VERSION_RESOURCE_FILES = (
+    WindowsVersionResourceFile(
+        path=WINDOWS_APP_VERSION_INFO_FILE,
+        internal_name=Path(WINDOWS_APP_ENTRY).stem,
+        original_filename=WINDOWS_APP_ENTRY,
+    ),
+    WindowsVersionResourceFile(
+        path=WINDOWS_UPDATER_VERSION_INFO_FILE,
+        internal_name=Path(WINDOWS_UPDATER_ENTRY).stem,
+        original_filename=WINDOWS_UPDATER_ENTRY,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class WindowsExeVersionInfo:
+    """保存 Windows EXE version resource 主要欄位。"""
+
+    file_version: str
+    product_version: str
+    original_filename: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--platform",
         default="windows",
-        choices=("windows", "macos-arm64"),
+        choices=ARTIFACT_PLATFORM_CHOICES,
         help="Artifact platform to validate.",
     )
     parser.add_argument(
@@ -145,19 +176,25 @@ def validate_release_artifacts(
     """驗證 release zip、SHA256、version metadata 與必要內容。"""
 
     messages: list[str] = []
-    normalized_platform = _normalize_platform_name(platform_name)
-    zip_name = f"facebook-monitor-{version}{_artifact_suffix(normalized_platform)}"
+    artifact_policy = update_artifact_policy_for_key(platform_name)
+    normalized_platform = artifact_policy.platform_key
+    zip_name = artifact_policy.asset_name(version)
     zip_path = dist_dir / zip_name
-    sha_path = zip_path.with_name(zip_path.name + ".sha256")
+    sha_path = zip_path.with_name(release_sha256_asset_name(zip_path.name))
 
     _require_file(zip_path, messages)
     _require_file(sha_path, messages)
     _validate_expected_tag(version, expected_tag, messages)
     if normalized_platform == "windows":
-        _validate_version_info_file(version, messages)
+        _validate_windows_version_resources(version, messages)
     if zip_path.is_file() and normalized_platform == "windows":
-        _validate_zip_contents(zip_path, messages)
-        _validate_zipped_exes(zip_path, version, expected_signer_subject, messages)
+        _validate_windows_zip_contents(zip_path, messages)
+        _validate_zipped_windows_exes(
+            zip_path,
+            version,
+            expected_signer_subject,
+            messages,
+        )
     elif zip_path.is_file():
         _validate_macos_zip_contents(zip_path, version, messages)
     if zip_path.is_file() and sha_path.is_file():
@@ -171,25 +208,6 @@ def validate_release_artifacts(
     )
 
 
-def _normalize_platform_name(platform_name: str) -> str:
-    """整理 artifact platform 名稱。"""
-
-    normalized = platform_name.strip().casefold()
-    if normalized in {"windows", "win32"}:
-        return "windows"
-    if normalized in {"macos-arm64", "darwin-arm64"}:
-        return "macos-arm64"
-    raise ValueError(f"unsupported artifact platform: {platform_name}")
-
-
-def _artifact_suffix(platform_name: str) -> str:
-    """回傳 artifact platform 對應的 release 檔名 suffix。"""
-
-    if platform_name == "macos-arm64":
-        return MACOS_ARM64_ONEDIR_SUFFIX
-    return WINDOWS_PORTABLE_SUFFIX
-
-
 def _require_file(path: Path, messages: list[str]) -> None:
     """確認檔案存在。"""
 
@@ -197,24 +215,55 @@ def _require_file(path: Path, messages: list[str]) -> None:
         messages.append(f"missing file: {path}")
 
 
-def _validate_version_info_file(version: str, messages: list[str]) -> None:
-    """確認 PyInstaller version resource template 與 app version 對齊。"""
+def _validate_windows_version_resources(version: str, messages: list[str]) -> None:
+    """確認 Windows PyInstaller version resources 會由 app version 產生。"""
 
-    if not VERSION_INFO_FILE.is_file():
-        messages.append(f"missing version info file: {VERSION_INFO_FILE}")
-        return
-    text = VERSION_INFO_FILE.read_text(encoding="utf-8")
-    expected_file_version = _windows_file_version(version)
-    expected_version_tuple = _windows_version_tuple(version)
+    for resource in WINDOWS_VERSION_RESOURCE_FILES:
+        if not resource.path.is_file():
+            messages.append(f"missing Windows version resource: {resource.path}")
+            continue
+        _validate_windows_version_resource_text(
+            resource.path.read_text(encoding="utf-8"),
+            version,
+            resource=resource,
+            messages=messages,
+        )
+
+
+def _validate_windows_version_resource_text(
+    text: str,
+    version: str,
+    *,
+    resource: WindowsVersionResourceFile,
+    messages: list[str],
+) -> None:
+    """確認單一 Windows version resource 的版本與 EXE identity。"""
+
+    expected_file_version = windows_file_version(version)
+    expected_version_tuple = windows_version_tuple(version)
     expected_tuple_text = ", ".join(str(part) for part in expected_version_tuple)
     if f"StringStruct('ProductVersion', '{version}')" not in text:
-        messages.append("version_info ProductVersion does not match app version")
+        messages.append(
+            "windows version resource ProductVersion does not match app version"
+        )
     if f"StringStruct('FileVersion', '{expected_file_version}')" not in text:
-        messages.append("version_info FileVersion does not match app version")
+        messages.append(
+            "windows version resource FileVersion does not match app version"
+        )
     if f"filevers=({expected_tuple_text})" not in text:
-        messages.append("version_info filevers does not match app version")
+        messages.append("windows version resource filevers does not match app version")
     if f"prodvers=({expected_tuple_text})" not in text:
-        messages.append("version_info prodvers does not match app version")
+        messages.append("windows version resource prodvers does not match app version")
+    if f"StringStruct('InternalName', '{resource.internal_name}')" not in text:
+        messages.append(
+            f"windows version resource InternalName does not match "
+            f"{resource.original_filename}"
+        )
+    if f"StringStruct('OriginalFilename', '{resource.original_filename}')" not in text:
+        messages.append(
+            f"windows version resource OriginalFilename does not match "
+            f"{resource.original_filename}"
+        )
 
 
 def _validate_expected_tag(
@@ -228,8 +277,8 @@ def _validate_expected_tag(
         messages.append(f"expected tag mismatch: {expected_tag} != v{version}")
 
 
-def _validate_zip_contents(zip_path: Path, messages: list[str]) -> None:
-    """確認 portable zip 內含必要 onedir 檔案且不含 data dir。"""
+def _validate_windows_zip_contents(zip_path: Path, messages: list[str]) -> None:
+    """確認 Windows portable zip 內含必要 onedir 檔案且不含 data dir。"""
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
@@ -237,11 +286,12 @@ def _validate_zip_contents(zip_path: Path, messages: list[str]) -> None:
     except zipfile.BadZipFile:
         messages.append(f"bad zip file: {zip_path}")
         return
-    missing = sorted(REQUIRED_ZIP_ENTRIES - names)
+    missing = sorted(WINDOWS_REQUIRED_ZIP_ENTRIES - names)
     for name in missing:
         messages.append(f"zip missing required entry: {name}")
     if any(name.startswith("facebook-monitor/data/") for name in names):
         messages.append("zip must not include portable data directory")
+    _validate_no_sensitive_runtime_paths(names, messages)
 
 
 def _validate_macos_zip_contents(
@@ -256,28 +306,27 @@ def _validate_macos_zip_contents(
             names = _validated_zip_names(archive, messages)
             infos = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
             _validate_macos_app_bundle_metadata(archive, names, version, messages)
+            missing = sorted(MACOS_REQUIRED_ZIP_ENTRIES - names)
+            for name in missing:
+                messages.append(f"zip missing required entry: {name}")
+            for entry in MACOS_EXECUTABLE_ENTRIES:
+                info = infos.get(entry)
+                if info is not None and not zip_member_has_executable_bit(info):
+                    messages.append(f"zip executable bit missing: {entry}")
+                if info is not None and not _zip_member_is_macho_arm64(archive, entry):
+                    messages.append(f"zip executable must be arm64 Mach-O: {entry}")
+            browser_entries = [name for name in MACOS_BROWSER_ENTRIES if name in names]
+            if not browser_entries:
+                messages.append("zip missing required macOS Chromium executable")
+            for entry in browser_entries:
+                info = infos.get(entry)
+                if info is not None and not zip_member_has_executable_bit(info):
+                    messages.append(f"zip executable bit missing: {entry}")
+                if info is not None and not _zip_member_is_macho_arm64(archive, entry):
+                    messages.append(f"zip executable must be arm64 Mach-O: {entry}")
+            _validate_no_sensitive_runtime_paths(names, messages)
     except zipfile.BadZipFile:
         messages.append(f"bad zip file: {zip_path}")
-        return
-    missing = sorted(MACOS_REQUIRED_ZIP_ENTRIES - names)
-    for name in missing:
-        messages.append(f"zip missing required entry: {name}")
-    for entry in MACOS_EXECUTABLE_ENTRIES:
-        info = infos.get(entry)
-        if info is not None and not _zip_member_has_executable_bit(info):
-            messages.append(f"zip executable bit missing: {entry}")
-    browser_entries = [
-        name
-        for name in names
-        if any(name.endswith(suffix) for suffix in MACOS_BROWSER_ENTRY_SUFFIXES)
-    ]
-    if not browser_entries:
-        messages.append("zip missing required macOS Chromium executable")
-    for entry in browser_entries:
-        info = infos.get(entry)
-        if info is not None and not _zip_member_has_executable_bit(info):
-            messages.append(f"zip executable bit missing: {entry}")
-    _validate_no_sensitive_runtime_paths(names, messages)
 
 
 def _validate_macos_app_bundle_metadata(
@@ -299,7 +348,9 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle CFBundlePackageType must be APPL")
     if plist.get("CFBundleExecutable") != MACOS_APP_LAUNCHER_NAME:
         messages.append("macOS app bundle executable does not match launcher")
-    if plist.get("LSUIElement") is True or plist.get("LSBackgroundOnly") is True:
+    if plist_value_is_true(plist.get("LSUIElement")) or plist_value_is_true(
+        plist.get("LSBackgroundOnly")
+    ):
         messages.append("macOS app bundle must remain visible in Dock")
     if not plist.get("CFBundleIconFile"):
         messages.append("macOS app bundle icon is missing")
@@ -307,58 +358,15 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle short version does not match app version")
     if plist.get("CFBundleVersion") != version:
         messages.append("macOS app bundle version does not match app version")
+
+def _zip_member_is_macho_arm64(archive: zipfile.ZipFile, name: str) -> bool:
+    """讀取 zip member 前段並確認是 arm64 Mach-O。"""
+
     try:
-        launcher_data = archive.read(MACOS_APP_LAUNCHER_ENTRY)
-    except (OSError, KeyError):
-        return
-    if not _is_macho_arm64(launcher_data):
-        messages.append("macOS app bundle launcher must be an arm64 Mach-O executable")
-
-
-def _is_macho_arm64(data: bytes) -> bool:
-    """判斷 bytes 是否為 arm64 Mach-O 或包含 arm64 slice 的 universal binary。"""
-
-    if len(data) < 8:
+        with archive.open(name) as file:
+            return is_macho_arm64(file.read(MACHO_PROBE_BYTES))
+    except (OSError, KeyError, zipfile.BadZipFile):
         return False
-    little_magic = struct.unpack_from("<I", data, 0)[0]
-    big_magic = struct.unpack_from(">I", data, 0)[0]
-    if little_magic == MACHO_MAGIC_64:
-        return struct.unpack_from("<i", data, 4)[0] == CPU_TYPE_ARM64
-    if big_magic in {MACHO_MAGIC_64, MACHO_CIGAM_64}:
-        return struct.unpack_from(">i", data, 4)[0] == CPU_TYPE_ARM64
-    if big_magic in {FAT_MAGIC, FAT_MAGIC_64}:
-        return _fat_binary_contains_arm64(data, endian=">")
-    if little_magic in {FAT_CIGAM, FAT_CIGAM_64}:
-        return _fat_binary_contains_arm64(data, endian="<")
-    return False
-
-
-def _fat_binary_contains_arm64(data: bytes, *, endian: str) -> bool:
-    """檢查 universal binary 的 fat_arch / fat_arch_64 table 是否包含 arm64。"""
-
-    if len(data) < 8:
-        return False
-    magic = struct.unpack_from(f"{endian}I", data, 0)[0]
-    arch_size = 32 if magic in {FAT_MAGIC_64, FAT_CIGAM_64} else 20
-    arch_count = struct.unpack_from(f"{endian}I", data, 4)[0]
-    if arch_count > 64:
-        return False
-    offset = 8
-    for _ in range(arch_count):
-        if len(data) < offset + arch_size:
-            return False
-        cpu_type = struct.unpack_from(f"{endian}i", data, offset)[0]
-        if cpu_type == CPU_TYPE_ARM64:
-            return True
-        offset += arch_size
-    return False
-
-
-def _zip_member_has_executable_bit(info: zipfile.ZipInfo) -> bool:
-    """檢查 zip member 是否保留 POSIX executable bit。"""
-
-    mode = (info.external_attr >> 16) & 0o777
-    return bool(mode & 0o111)
 
 
 def _validate_no_sensitive_runtime_paths(names: set[str], messages: list[str]) -> None:
@@ -371,26 +379,31 @@ def _validate_no_sensitive_runtime_paths(names: set[str], messages: list[str]) -
             messages.append(f"zip must not include runtime/private data: {name}")
 
 
-def _validate_zipped_exes(
+def _validate_zipped_windows_exes(
     zip_path: Path,
     version: str,
     expected_signer_subject: str,
     messages: list[str],
 ) -> None:
-    """解出 zip 內 EXE 後驗證 metadata，避免 loose dist 目錄掩蓋 stale zip。"""
+    """解出 Windows zip 內 EXE 後驗證 metadata，避免 loose dist 掩蓋 stale zip。"""
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
             names = _validated_zip_names(archive, messages)
-            missing = [entry for entry in ZIP_EXE_ENTRIES if entry not in names]
+            missing = [entry for entry in WINDOWS_ZIP_EXE_ENTRIES if entry not in names]
             if missing:
                 return
             with tempfile.TemporaryDirectory(prefix="facebook-monitor-artifact-") as temp:
                 temp_dir = Path(temp)
-                for entry in ZIP_EXE_ENTRIES:
+                for entry in WINDOWS_ZIP_EXE_ENTRIES:
                     exe_path = temp_dir / Path(entry).name
                     exe_path.write_bytes(archive.read(entry))
-                    _validate_exe_version(exe_path, version, messages)
+                    _validate_exe_version(
+                        exe_path,
+                        version,
+                        expected_original_filename=Path(entry).name,
+                        messages=messages,
+                    )
                     _validate_authenticode(
                         exe_path,
                         expected_signer_subject,
@@ -437,12 +450,8 @@ def _validated_zip_names(
 def _validate_sha256(zip_path: Path, sha_path: Path, messages: list[str]) -> None:
     """確認 `.sha256` 內容與 zip hash / 檔名一致。"""
 
-    digest = hashlib.sha256()
-    with zip_path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    actual = digest.hexdigest()
-    expected_line = f"{actual}  {zip_path.name}"
+    actual = calculate_sha256(zip_path)
+    expected_line = render_sha256_sidecar(actual, zip_path.name).strip()
     content = sha_path.read_text(encoding="ascii").strip()
     if content != expected_line:
         messages.append(
@@ -450,23 +459,57 @@ def _validate_sha256(zip_path: Path, sha_path: Path, messages: list[str]) -> Non
         )
 
 
-def _validate_exe_version(exe_path: Path, version: str, messages: list[str]) -> None:
+def _validate_exe_version(
+    exe_path: Path,
+    version: str,
+    *,
+    expected_original_filename: str,
+    messages: list[str],
+) -> None:
     """確認 EXE version resource 與 app version 對齊。"""
 
     try:
-        file_version, product_version = _read_windows_version_info(exe_path)
+        info = _normalize_windows_version_info(
+            _read_windows_version_info(exe_path),
+            fallback_original_filename=expected_original_filename,
+        )
     except (OSError, subprocess.CalledProcessError) as exc:
         messages.append(f"cannot read EXE version for {exe_path}: {exc}")
         return
-    expected_file_version = _windows_file_version(version)
-    if file_version != expected_file_version:
+    expected_file_version = windows_file_version(version)
+    if info.file_version != expected_file_version:
         messages.append(
-            f"{exe_path.name} FileVersion mismatch: {file_version} != {expected_file_version}"
+            f"{exe_path.name} FileVersion mismatch: {info.file_version} != {expected_file_version}"
         )
-    if product_version != version:
+    if info.product_version != version:
         messages.append(
-            f"{exe_path.name} ProductVersion mismatch: {product_version} != {version}"
+            f"{exe_path.name} ProductVersion mismatch: {info.product_version} != {version}"
         )
+    if info.original_filename != expected_original_filename:
+        messages.append(
+            f"{exe_path.name} OriginalFilename mismatch: "
+            f"{info.original_filename} != {expected_original_filename}"
+        )
+
+
+def _normalize_windows_version_info(
+    value: object,
+    *,
+    fallback_original_filename: str = "",
+) -> WindowsExeVersionInfo:
+    """整理測試替身與 PowerShell 實作回傳的 Windows version info。"""
+
+    if isinstance(value, WindowsExeVersionInfo):
+        return value
+    if isinstance(value, tuple) and len(value) >= 2:
+        return WindowsExeVersionInfo(
+            file_version=str(value[0]),
+            product_version=str(value[1]),
+            original_filename=(
+                str(value[2]) if len(value) >= 3 else fallback_original_filename
+            ),
+        )
+    raise OSError("missing version info output")
 
 
 def _validate_authenticode(
@@ -492,13 +535,14 @@ def _validate_authenticode(
         )
 
 
-def _read_windows_version_info(exe_path: Path) -> tuple[str, str]:
+def _read_windows_version_info(exe_path: Path) -> WindowsExeVersionInfo:
     """透過 PowerShell 讀取 Windows EXE version resource。"""
 
     command = (
         f"$v=(Get-Item -LiteralPath {_powershell_literal(exe_path)}).VersionInfo; "
         "[Console]::WriteLine($v.FileVersion); "
-        "[Console]::WriteLine($v.ProductVersion)"
+        "[Console]::WriteLine($v.ProductVersion); "
+        "[Console]::WriteLine($v.OriginalFilename)"
     )
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-Command", command],
@@ -509,7 +553,12 @@ def _read_windows_version_info(exe_path: Path) -> tuple[str, str]:
     lines = completed.stdout.splitlines()
     if len(lines) < 2:
         raise OSError("missing version info output")
-    return lines[0].strip(), lines[1].strip()
+    original_filename = lines[2].strip() if len(lines) >= 3 else ""
+    return WindowsExeVersionInfo(
+        file_version=lines[0].strip(),
+        product_version=lines[1].strip(),
+        original_filename=original_filename,
+    )
 
 
 def _read_authenticode_signature(exe_path: Path) -> tuple[str, str]:
@@ -536,28 +585,6 @@ def _powershell_literal(path: Path) -> str:
     """回傳 PowerShell single-quoted literal path。"""
 
     return "'" + str(path).replace("'", "''") + "'"
-
-
-def _windows_file_version(version: str) -> str:
-    """將 semver/rc 轉成 Windows FileVersion 字串。"""
-
-    major, minor, patch, build = _windows_version_tuple(version)
-    return f"{major}.{minor}.{patch}.{build}"
-
-
-def _windows_version_tuple(version: str) -> tuple[int, int, int, int]:
-    """將 semver/rc 轉成 Windows FixedFileInfo tuple。"""
-
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?", version)
-    if match is None:
-        raise ValueError(f"unsupported release version: {version}")
-    build = match.group(4) or "0"
-    return (
-        int(match.group(1)),
-        int(match.group(2)),
-        int(match.group(3)),
-        int(build),
-    )
 
 
 def main() -> int:

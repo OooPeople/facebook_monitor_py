@@ -4,11 +4,15 @@
 避免多個 template 或 JS import 各自手動維護版本字串。
 """
 
-ASSET_VERSION = "0.3.1"
+from facebook_monitor.version import APP_VERSION
+
+
+ASSET_VERSION = APP_VERSION
 
 DASHBOARD_MODULE_FILENAMES = (
     "api.js",
     "card_collapse.js",
+    "cover_image_refresh.js",
     "csrf.js",
     "debug_tools.js",
     "dialogs.js",

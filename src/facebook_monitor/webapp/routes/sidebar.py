@@ -8,7 +8,9 @@ from fastapi import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.form_models import NotificationFormKwargs
 from facebook_monitor.webapp.form_models import TargetConfigForm
 
 
@@ -252,15 +254,32 @@ def _target_config_form_from_payload(payload: dict[str, object]) -> TargetConfig
         ),
         auto_load_more=_checkbox_payload(payload.get("auto_load_more")),
         auto_adjust_sort=_checkbox_payload(payload.get("auto_adjust_sort")),
+        **_notification_payload_kwargs(payload),
+    )
+
+
+def _notification_payload_kwargs(payload: dict[str, object]) -> NotificationFormKwargs:
+    """依 notification channel definitions 解析 sidebar JSON notification 欄位。"""
+
+    kwargs: dict[str, object] = {}
+    for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
+        kwargs[definition.enabled_field] = _checkbox_payload(
+            payload.get(definition.enabled_field)
+        )
+        if definition.endpoint_field:
+            kwargs[definition.endpoint_field] = str(
+                payload.get(definition.endpoint_field, "") or ""
+            )
+    return NotificationFormKwargs(
         enable_desktop_notification=_checkbox_payload(
-            payload.get("enable_desktop_notification")
+            kwargs.get("enable_desktop_notification")
         ),
-        enable_ntfy=_checkbox_payload(payload.get("enable_ntfy")),
-        ntfy_topic=str(payload.get("ntfy_topic", "")),
+        enable_ntfy=_checkbox_payload(kwargs.get("enable_ntfy")),
+        ntfy_topic=str(kwargs.get("ntfy_topic", "")),
         enable_discord_notification=_checkbox_payload(
-            payload.get("enable_discord_notification")
+            kwargs.get("enable_discord_notification")
         ),
-        discord_webhook=str(payload.get("discord_webhook", "")),
+        discord_webhook=str(kwargs.get("discord_webhook", "")),
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
@@ -94,6 +95,51 @@ def test_write_pending_update_rejects_missing_verified_file(tmp_path: Path) -> N
         assert str(exc) == "download_result_file_missing"
     else:
         raise AssertionError("expected missing verified file to fail")
+
+
+def test_write_pending_update_rejects_existing_tmp_symlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """pending handoff 暫存檔若已是 symlink，不可 follow 後覆寫外部檔案。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    zip_path = paths.updates_dir / "0.1.0" / "facebook-monitor-0.1.0-windows-portable.zip"
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_bytes(b"zip")
+    paths.runtime_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    tmp_handoff = paths.runtime_dir / ".pending_update.json.fixed.tmp"
+    try:
+        tmp_handoff.symlink_to(outside)
+    except (NotImplementedError, OSError):
+        return
+    monkeypatch.setattr(
+        "facebook_monitor.updates.handoff.uuid.uuid4",
+        lambda: SimpleNamespace(hex="fixed"),
+    )
+
+    try:
+        write_pending_update(
+            update_check=update_check(),
+            download_result=UpdateDownloadResult(
+                status="verified",
+                downloaded=True,
+                verified=True,
+                file_path=zip_path,
+                sha256_path=zip_path.with_suffix(zip_path.suffix + ".sha256"),
+                expected_sha256="a" * 64,
+                actual_sha256="a" * 64,
+                failure_reason="",
+            ),
+            paths=paths,
+        )
+    except ValueError as exc:
+        assert str(exc) == "pending_update_tmp_unsafe"
+    else:
+        raise AssertionError("expected symlinked handoff temp file to fail")
+    assert outside.read_text(encoding="utf-8") == "keep"
 
 
 def test_load_pending_update_rejects_moved_handoff_file(tmp_path: Path) -> None:

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from facebook_monitor.facebook.scroll_controls import SCROLL_LOAD_MORE_SCRIPT
 from facebook_monitor.facebook.scroll_controls import COMMENT_SCROLL_LOAD_MORE_SCRIPT
@@ -73,6 +77,47 @@ class FakeCommentSortLocator:
         assert timeout == 3000
         if self._kind == "option":
             self._page.current_label = "由新到舊"
+
+
+def _run_comment_mutation_direct_signal_cases(values: list[str]) -> list[bool]:
+    """用 Node 執行 comments mutation helper，驗證共用清理後的實際判斷。"""
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        pytest.skip("node is required for comment mutation behavior tests")
+    script = f"""
+globalThis.window = {{}};
+class FakeElement {{
+    constructor(text) {{
+        this.innerText = text;
+        this.textContent = text;
+        this.parentElement = null;
+    }}
+    closest(selector) {{
+        return null;
+    }}
+    matches(selector) {{
+        if (selector.includes("a[href")) return false;
+        return selector.includes('div[dir="auto"]') || selector.includes('span[dir="auto"]');
+    }}
+}}
+globalThis.HTMLElement = FakeElement;
+globalThis.HTMLAnchorElement = FakeElement;
+const helpers = ({COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT})();
+const values = {json.dumps(values, ensure_ascii=False)};
+const results = values.map((text) => (
+    helpers.mutationTargetHasDirectCommentSignal({{ target: new FakeElement(text) }})
+));
+console.log(JSON.stringify(results));
+"""
+    result = subprocess.run(
+        [node_bin, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def test_feed_sort_labels_match_product_labels() -> None:
@@ -218,10 +263,24 @@ def test_comment_mutation_relevance_helpers_match_product_chain() -> None:
 
     assert "elementHasCommentMutationSignal" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
     assert "elementHasCommentTextMutationSignal" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
+    assert "cleanSharedFacebookText" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
+    assert "顯示較少" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
     assert "mutationTargetHasDirectCommentSignal" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
     assert "mutationsHaveRelevantCommentNodes" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
     assert "shouldRescanForCommentMutation" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
     assert "__facebookMonitorMutationSuppression" in COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
+
+
+def test_comment_mutation_relevance_ignores_pure_expand_label_but_keeps_text() -> None:
+    """comments mutation relevance 不應被純 UI label 觸發，也不可誤殺正常文字。"""
+
+    assert _run_comment_mutation_direct_signal_cases(
+        [
+            "顯示較少",
+            "這是一則有票券關鍵字的留言 顯示較少",
+            "顯示更多資訊請看留言",
+        ]
+    ) == [False, True, True]
 
 
 def test_feed_dom_returns_collected_meta_shape() -> None:

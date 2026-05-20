@@ -18,6 +18,9 @@ from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepositor
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.sidebar_layout import SidebarLayoutRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
+from facebook_monitor.persistence.repositories.target_cover_image_refresh import (
+    TargetCoverImageRefreshRepository,
+)
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
@@ -47,6 +50,7 @@ __all__ = [
     "SidebarLayoutRepository",
     "SqliteConnection",
     "TargetConfigRepository",
+    "TargetCoverImageRefreshRepository",
     "TargetRepository",
     "TargetRuntimeStateRepository",
     "decode_datetime",

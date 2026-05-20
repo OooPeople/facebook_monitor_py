@@ -5,10 +5,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -22,9 +22,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
+from facebook_monitor.updates.artifacts import release_sha256_asset_name
+from facebook_monitor.updates.checksum import calculate_sha256
+from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import missing_required_paths
+from facebook_monitor.updates.validation import has_posix_executable_bit
+from facebook_monitor.version import APP_VERSION
 
 APP_DIR_NAME = "facebook-monitor"
 
@@ -89,8 +94,8 @@ def run_smoke(
 
     old_app = smoke_root / "installed-app"
     new_app = smoke_root / "new-app" / APP_DIR_NAME
-    shutil.copytree(built_app, old_app)
-    shutil.copytree(built_app, new_app)
+    shutil.copytree(built_app, old_app, symlinks=True)
+    shutil.copytree(built_app, new_app, symlinks=True)
     (old_app / "updater-smoke-marker.txt").write_text(
         "old-app-files",
         encoding="utf-8",
@@ -103,18 +108,18 @@ def run_smoke(
     data_dir = old_app / "data"
     runtime_dir = data_dir / "runtime"
     logs_dir = data_dir / "logs"
-    updates_dir = data_dir / "updates" / "0.2.0-smoke"
+    updates_dir = data_dir / "updates" / f"{APP_VERSION}-smoke"
     profile_dir = data_dir / "profiles" / "automation_default"
     for directory in (runtime_dir, logs_dir, updates_dir, profile_dir):
         directory.mkdir(parents=True, exist_ok=True)
     (data_dir / "app.db").write_text("smoke-user-db", encoding="utf-8")
     (profile_dir / "profile-marker.txt").write_text("smoke-profile", encoding="utf-8")
 
-    zip_path = updates_dir / f"facebook-monitor-0.2.0-smoke-{layout_policy.platform_key}.zip"
+    zip_path = updates_dir / f"facebook-monitor-{APP_VERSION}-smoke-{layout_policy.platform_key}.zip"
     _write_app_zip(new_app, zip_path)
-    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
-    zip_path.with_name(zip_path.name + ".sha256").write_text(
-        f"{digest}  {zip_path.name}\n",
+    digest = calculate_sha256(zip_path)
+    zip_path.with_name(release_sha256_asset_name(zip_path.name)).write_text(
+        render_sha256_sidecar(digest, zip_path.name),
         encoding="ascii",
     )
     pending_path = runtime_dir / "pending_update.json"
@@ -122,7 +127,7 @@ def run_smoke(
         json.dumps(
             {
                 "schema_version": 1,
-                "version": "0.2.0-smoke",
+                "version": APP_VERSION,
                 "asset_name": zip_path.name,
                 "zip_path": str(zip_path),
                 "expected_sha256": digest,
@@ -149,7 +154,7 @@ def run_smoke(
     for dirname in layout_policy.temp_copy_dirs:
         source = old_app / dirname
         if source.exists():
-            shutil.copytree(source, temp_updater_dir / dirname)
+            shutil.copytree(source, temp_updater_dir / dirname, symlinks=True)
     command = [
         str(temp_updater),
         "--data-dir",
@@ -186,6 +191,7 @@ def run_smoke(
     ).strip()
     log_path = logs_dir / "updater.log"
     updater_log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    executable_checks = _post_update_executable_checks(old_app, layout_policy)
     ok = (
         process.returncode == 0
         and marker == "new-app-files"
@@ -194,7 +200,8 @@ def run_smoke(
         and "status=applied applied=true message=updated" in updater_log
         and not pending_path.exists()
         and not zip_path.exists()
-        and not zip_path.with_name(zip_path.name + ".sha256").exists()
+        and not zip_path.with_name(release_sha256_asset_name(zip_path.name)).exists()
+        and all(executable_checks.values())
     )
     return {
         "ok": ok,
@@ -207,10 +214,13 @@ def run_smoke(
         "profile_preserved": profile_text == "smoke-profile",
         "pending_removed": not pending_path.exists(),
         "zip_removed": not zip_path.exists(),
-        "sha256_removed": not zip_path.with_name(zip_path.name + ".sha256").exists(),
+        "sha256_removed": not zip_path.with_name(
+            release_sha256_asset_name(zip_path.name)
+        ).exists(),
         "updater_log_contains_applied": (
             "status=applied applied=true message=updated" in updater_log
         ),
+        "executable_checks": executable_checks,
         "old_app": str(old_app),
     }
 
@@ -242,8 +252,35 @@ def _write_app_zip(app_root: Path, zip_path: Path) -> None:
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in app_root.rglob("*"):
-            if path.is_file():
+            if path.is_symlink():
+                info = zipfile.ZipInfo((Path(APP_DIR_NAME) / path.relative_to(app_root)).as_posix())
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(info, path.readlink().as_posix())
+            elif path.is_file():
                 archive.write(path, Path(APP_DIR_NAME) / path.relative_to(app_root))
+
+
+def _post_update_executable_checks(
+    app_root: Path,
+    layout_policy: UpdaterLayoutPolicy,
+) -> dict[str, bool]:
+    """macOS smoke 套用後確認必要 executable bit 仍存在。"""
+
+    if layout_policy.platform_key != "macos-arm64":
+        return {}
+    checks: dict[str, bool] = {}
+    executable_paths = [layout_policy.app_entry_name, layout_policy.updater_entry_name]
+    if layout_policy.restart_entry_name:
+        executable_paths.append(layout_policy.restart_entry_name)
+    for relative_path in executable_paths:
+        checks[relative_path] = has_posix_executable_bit(app_root / relative_path)
+    for group in layout_policy.required_staging_any_groups:
+        for relative_path in group:
+            path = app_root / relative_path
+            if path.is_file():
+                checks[relative_path] = has_posix_executable_bit(path)
+                break
+    return checks
 
 
 def _hidden_creation_flags() -> int:

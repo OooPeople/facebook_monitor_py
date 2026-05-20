@@ -11,6 +11,7 @@ from scripts.admin.create_macos_app_launcher import create_macos_app_launcher
 from scripts.admin import create_macos_app_launcher as launcher_builder
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
+from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 
 
 def test_create_macos_app_launcher_builds_dock_visible_bundle(
@@ -37,11 +38,14 @@ def test_create_macos_app_launcher_builds_dock_visible_bundle(
         del kwargs
         assert check
         compile_commands.append(command)
-        source = Path(command[-3])
+        source_args = [arg for arg in command if arg.endswith(".m")]
+        assert len(source_args) == 1
+        source = Path(source_args[0])
         assert "NSTask" in source.read_text(encoding="utf-8")
         assert "applicationShouldTerminate" in source.read_text(encoding="utf-8")
         assert "InstallTerminationSignalHandler" in source.read_text(encoding="utf-8")
-        Path(command[-1]).write_bytes(b"native-launcher")
+        output = Path(command[command.index("-o") + 1])
+        output.write_bytes(b"native-launcher")
 
     monkeypatch.setattr(launcher_builder.shutil, "which", fake_which)
     monkeypatch.setattr(launcher_builder.subprocess, "run", fake_run)
@@ -55,22 +59,17 @@ def test_create_macos_app_launcher_builds_dock_visible_bundle(
 
     assert bundle == app_root / BUNDLE_NAME
     launcher = bundle / "Contents" / "MacOS" / "facebook-monitor-launcher"
-    assert launcher.is_file()
-    assert launcher.stat().st_mode & 0o111
+    assert_posix_executable_when_supported(launcher)
     assert launcher.read_bytes() == b"native-launcher"
-    assert compile_commands == [
-        [
-            "/usr/bin/clang",
-            "-fobjc-arc",
-            "-arch",
-            "arm64",
-            "-framework",
-            "Cocoa",
-            compile_commands[0][-3],
-            "-o",
-            str(launcher),
-        ]
+    assert len(compile_commands) == 1
+    command = compile_commands[0]
+    assert command[0] == "/usr/bin/clang"
+    assert "-fobjc-arc" in command
+    assert ["-arch", "arm64"] == command[command.index("-arch") : command.index("-arch") + 2]
+    assert ["-framework", "Cocoa"] == command[
+        command.index("-framework") : command.index("-framework") + 2
     ]
+    assert command[command.index("-o") + 1] == str(launcher)
     plist = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
     assert plist["CFBundleExecutable"] == "facebook-monitor-launcher"
     assert plist["CFBundleIconFile"] == "facebook-monitor"

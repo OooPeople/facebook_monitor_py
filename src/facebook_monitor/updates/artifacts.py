@@ -11,8 +11,13 @@ import platform
 import sys
 
 
+RELEASE_ASSET_PREFIX = "facebook-monitor"
+RELEASE_ARCHIVE_ROOT_NAME = RELEASE_ASSET_PREFIX
+SHA256_SIDECAR_SUFFIX = ".sha256"
 WINDOWS_PORTABLE_SUFFIX = "-windows-portable.zip"
 MACOS_ARM64_ONEDIR_SUFFIX = "-macos-arm64-onedir.zip"
+MACOS_ARM64_MACHINE_ALIASES = frozenset({"arm64", "arm64e", "aarch64"})
+UNSUPPORTED_PLATFORM_REASON = "目前平台沒有對應的更新檔，只支援檢查版本資訊"
 
 
 @dataclass(frozen=True)
@@ -28,7 +33,27 @@ class UpdateArtifactPolicy:
     def asset_name(self, version: str) -> str:
         """回傳指定 version 的完整 release asset 檔名。"""
 
-        return f"facebook-monitor-{version}{self.asset_suffix}"
+        return f"{RELEASE_ASSET_PREFIX}-{version}{self.asset_suffix}"
+
+    def sha256_asset_name(self, version: str) -> str:
+        """回傳指定 version 的 SHA256 sidecar release asset 檔名。"""
+
+        return release_sha256_asset_name(self.asset_name(version))
+
+
+@dataclass(frozen=True)
+class UpdateRuntimePlatform:
+    """描述目前 runtime 平台對應的 release artifact 能力。"""
+
+    platform_key: str
+    artifact_policy: UpdateArtifactPolicy | None
+    unsupported_reason: str = ""
+
+    @property
+    def supported(self) -> bool:
+        """回傳目前平台是否有對應 release artifact。"""
+
+        return self.artifact_policy is not None
 
 
 WINDOWS_PORTABLE_POLICY = UpdateArtifactPolicy(
@@ -45,10 +70,31 @@ MACOS_ARM64_ONEDIR_POLICY = UpdateArtifactPolicy(
     download_supported=True,
     apply_supported=True,
 )
-def current_update_artifact_policy() -> UpdateArtifactPolicy:
-    """依目前執行平台取得 release artifact 策略。"""
+UPDATE_ARTIFACT_POLICIES = (
+    WINDOWS_PORTABLE_POLICY,
+    MACOS_ARM64_ONEDIR_POLICY,
+)
+UPDATE_ARTIFACT_PLATFORM_ALIASES = {
+    "windows": WINDOWS_PORTABLE_POLICY,
+    "win32": WINDOWS_PORTABLE_POLICY,
+    "macos-arm64": MACOS_ARM64_ONEDIR_POLICY,
+    "darwin-arm64": MACOS_ARM64_ONEDIR_POLICY,
+}
 
-    return update_artifact_policy_for_platform(
+
+def current_update_artifact_policy() -> UpdateArtifactPolicy:
+    """依目前執行平台取得 release artifact 策略；不支援平台會丟出錯誤。"""
+
+    current_platform = current_update_runtime_platform()
+    if current_platform.artifact_policy is None:
+        raise ValueError(f"unsupported artifact platform: {current_platform.platform_key}")
+    return current_platform.artifact_policy
+
+
+def current_update_runtime_platform() -> UpdateRuntimePlatform:
+    """依目前執行平台取得 release artifact runtime 平台資訊。"""
+
+    return update_runtime_platform_for_system(
         system=sys.platform,
         machine=platform.machine(),
     )
@@ -58,15 +104,76 @@ def update_artifact_policy_for_platform(
     *,
     system: str,
     machine: str = "",
-) -> UpdateArtifactPolicy:
-    """依平台字串回傳 release artifact 策略；未知平台退回 Windows 既有語義。"""
+) -> UpdateArtifactPolicy | None:
+    """依平台字串回傳 release artifact 策略；未知平台回傳 None。"""
 
-    normalized_system = system.casefold()
+    return update_runtime_platform_for_system(
+        system=system,
+        machine=machine,
+    ).artifact_policy
+
+
+def update_runtime_platform_for_system(
+    *,
+    system: str,
+    machine: str = "",
+) -> UpdateRuntimePlatform:
+    """依平台字串回傳 updater runtime 平台資訊。"""
+
+    normalized_system = system.strip().casefold()
+    normalized_machine = machine.strip().casefold()
     if normalized_system == "win32" or normalized_system.startswith("windows"):
-        return WINDOWS_PORTABLE_POLICY
+        return UpdateRuntimePlatform(
+            platform_key=WINDOWS_PORTABLE_POLICY.platform_key,
+            artifact_policy=WINDOWS_PORTABLE_POLICY,
+        )
     if normalized_system == "darwin" or normalized_system.startswith("macos"):
-        return MACOS_ARM64_ONEDIR_POLICY
-    return WINDOWS_PORTABLE_POLICY
+        if normalized_machine in MACOS_ARM64_MACHINE_ALIASES:
+            return UpdateRuntimePlatform(
+                platform_key=MACOS_ARM64_ONEDIR_POLICY.platform_key,
+                artifact_policy=MACOS_ARM64_ONEDIR_POLICY,
+            )
+        suffix = f"-{normalized_machine}" if normalized_machine else ""
+        return UpdateRuntimePlatform(
+            platform_key=f"unsupported-{normalized_system or 'unknown'}{suffix}",
+            artifact_policy=None,
+            unsupported_reason=UNSUPPORTED_PLATFORM_REASON,
+        )
+    suffix = f"-{normalized_machine}" if normalized_machine else ""
+    return UpdateRuntimePlatform(
+        platform_key=f"unsupported-{normalized_system or 'unknown'}{suffix}",
+        artifact_policy=None,
+        unsupported_reason=UNSUPPORTED_PLATFORM_REASON,
+    )
+
+
+def update_artifact_policy_for_key(platform_name: str) -> UpdateArtifactPolicy:
+    """依 CLI / validation 使用的平台 key 回傳 release artifact 策略。"""
+
+    normalized = platform_name.strip().casefold()
+    try:
+        return UPDATE_ARTIFACT_PLATFORM_ALIASES[normalized]
+    except KeyError as exc:
+        raise ValueError(f"unsupported artifact platform: {platform_name}") from exc
+
+
+def release_sha256_asset_name(asset_name: str) -> str:
+    """回傳 release zip 對應的 `.sha256` asset 名稱。"""
+
+    return asset_name + SHA256_SIDECAR_SUFFIX
+
+
+def is_release_asset_name_for_policy(
+    asset_name: str,
+    *,
+    policy: UpdateArtifactPolicy,
+) -> bool:
+    """判斷 asset name 是否像指定平台的 release zip。"""
+
+    return (
+        asset_name.startswith(f"{RELEASE_ASSET_PREFIX}-")
+        and asset_name.endswith(policy.asset_suffix)
+    )
 
 
 def release_asset_name(*, version: str, policy: UpdateArtifactPolicy | None = None) -> str:

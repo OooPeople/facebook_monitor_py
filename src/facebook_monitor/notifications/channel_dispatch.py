@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
+from facebook_monitor.core.notification_channels import NotificationChannelDefinition
+from facebook_monitor.core.notification_channels import get_channel_definition
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxEntry
@@ -23,6 +26,20 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
+
+
+__all__ = [
+    "DesktopSender",
+    "DiscordSender",
+    "NOTIFICATION_CHANNEL_DEFINITIONS",
+    "NotificationChannelDefinition",
+    "NtfySender",
+    "dispatch_notification_outbox_entry",
+    "get_channel_definition",
+    "is_channel_enabled",
+    "record_failed_notification_event_for_outbox_error",
+    "record_notification_event",
+]
 
 
 class NtfySender(Protocol):
@@ -47,37 +64,6 @@ class DiscordSender(Protocol):
 
 
 @dataclass(frozen=True)
-class NotificationChannelDefinition:
-    """描述單一通知通道的設定欄位與 skipped 狀態。"""
-
-    channel: NotificationChannel
-    enabled_field: str
-    endpoint_field: str = ""
-    skipped_message: str = ""
-
-
-NOTIFICATION_CHANNEL_DEFINITIONS: tuple[NotificationChannelDefinition, ...] = (
-    NotificationChannelDefinition(
-        channel=NotificationChannel.DESKTOP,
-        enabled_field="enable_desktop_notification",
-        skipped_message="desktop_skipped",
-    ),
-    NotificationChannelDefinition(
-        channel=NotificationChannel.NTFY,
-        enabled_field="enable_ntfy",
-        endpoint_field="ntfy_topic",
-        skipped_message="ntfy_skipped",
-    ),
-    NotificationChannelDefinition(
-        channel=NotificationChannel.DISCORD,
-        enabled_field="enable_discord_notification",
-        endpoint_field="discord_webhook",
-        skipped_message="discord_skipped",
-    ),
-)
-
-
-@dataclass(frozen=True)
 class NotificationSenders:
     """集中保存外部通知 sender，供 channel handler registry 使用。"""
 
@@ -98,16 +84,8 @@ def is_channel_enabled(
 ) -> bool:
     """判斷指定通知通道是否已由使用者啟用。"""
 
+    # Backward-compatible facade；新程式碼優先使用 channel_plan。
     return bool(getattr(config, definition.enabled_field))
-
-
-def get_channel_definition(channel: NotificationChannel) -> NotificationChannelDefinition:
-    """依 channel 取得定義，集中 skipped/error 訊息來源。"""
-
-    for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
-        if definition.channel == channel:
-            return definition
-    raise ValueError(f"Unsupported notification channel: {channel}")
 
 
 def _result_to_status(ok: bool) -> tuple[NotificationStatus, NotificationOutboxStatus]:

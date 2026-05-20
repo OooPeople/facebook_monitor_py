@@ -5,18 +5,15 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
+from facebook_monitor.application.target_config_merge import build_target_config_from_patch
+from facebook_monitor.application.target_config_merge import merge_target_config_patch
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import TargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
-from facebook_monitor.application.target_requests import provided_or_default
-from facebook_monitor.application.target_requests import provided_or_existing
-from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.notification_channels import copy_notification_settings
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.core.scan_limits import clamp_target_post_count
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 
@@ -54,68 +51,7 @@ class TargetConfigService:
     ) -> TargetConfig:
         """將 target config patch 轉成 target-scoped config。"""
 
-        return TargetConfig(
-            target_id=target_id,
-            include_keywords=provided_or_default(patch.include_keywords, ()),
-            exclude_keywords=provided_or_default(
-                patch.exclude_keywords,
-                PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords,
-            ),
-            exclude_ignore_phrases=provided_or_default(
-                patch.exclude_ignore_phrases,
-                PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases,
-            ),
-            fixed_refresh_sec=provided_or_default(
-                patch.fixed_refresh_sec,
-                PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec,
-            ),
-            min_refresh_sec=provided_or_default(
-                patch.min_refresh_sec,
-                PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
-            ),
-            max_refresh_sec=provided_or_default(
-                patch.max_refresh_sec,
-                PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
-            ),
-            jitter_enabled=provided_or_default(
-                patch.jitter_enabled,
-                PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled,
-            ),
-            max_items_per_scan=clamp_target_post_count(
-                provided_or_default(
-                    patch.max_items_per_scan,
-                    PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
-                )
-            ),
-            auto_load_more=provided_or_default(
-                patch.auto_load_more,
-                PYTHON_TARGET_CONFIG_DEFAULTS.auto_load_more,
-            ),
-            auto_adjust_sort=provided_or_default(
-                patch.auto_adjust_sort,
-                PYTHON_TARGET_CONFIG_DEFAULTS.auto_adjust_sort,
-            ),
-            enable_ntfy=provided_or_default(
-                patch.enable_ntfy,
-                PYTHON_TARGET_CONFIG_DEFAULTS.enable_ntfy,
-            ),
-            ntfy_topic=provided_or_default(
-                patch.ntfy_topic,
-                PYTHON_TARGET_CONFIG_DEFAULTS.ntfy_topic,
-            ),
-            enable_desktop_notification=provided_or_default(
-                patch.enable_desktop_notification,
-                PYTHON_TARGET_CONFIG_DEFAULTS.enable_desktop_notification,
-            ),
-            enable_discord_notification=provided_or_default(
-                patch.enable_discord_notification,
-                PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification,
-            ),
-            discord_webhook=provided_or_default(
-                patch.discord_webhook,
-                PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook,
-            ),
-        )
+        return build_target_config_from_patch(target_id, patch)
 
     def build_config_from_request(
         self,
@@ -133,71 +69,7 @@ class TargetConfigService:
     ) -> TargetConfig:
         """將 config patch 合併到既有 target-scoped config。"""
 
-        return replace(
-            existing_config,
-            include_keywords=provided_or_existing(
-                patch.include_keywords,
-                existing_config.include_keywords,
-            ),
-            exclude_keywords=provided_or_existing(
-                patch.exclude_keywords,
-                existing_config.exclude_keywords,
-            ),
-            exclude_ignore_phrases=provided_or_existing(
-                patch.exclude_ignore_phrases,
-                existing_config.exclude_ignore_phrases,
-            ),
-            fixed_refresh_sec=provided_or_existing(
-                patch.fixed_refresh_sec,
-                existing_config.fixed_refresh_sec,
-            ),
-            min_refresh_sec=provided_or_existing(
-                patch.min_refresh_sec,
-                existing_config.min_refresh_sec,
-            ),
-            max_refresh_sec=provided_or_existing(
-                patch.max_refresh_sec,
-                existing_config.max_refresh_sec,
-            ),
-            jitter_enabled=provided_or_existing(
-                patch.jitter_enabled,
-                existing_config.jitter_enabled,
-            ),
-            max_items_per_scan=clamp_target_post_count(
-                provided_or_existing(
-                    patch.max_items_per_scan,
-                    existing_config.max_items_per_scan,
-                )
-            ),
-            auto_load_more=provided_or_existing(
-                patch.auto_load_more,
-                existing_config.auto_load_more,
-            ),
-            auto_adjust_sort=provided_or_existing(
-                patch.auto_adjust_sort,
-                existing_config.auto_adjust_sort,
-            ),
-            enable_desktop_notification=provided_or_existing(
-                patch.enable_desktop_notification,
-                existing_config.enable_desktop_notification,
-            ),
-            enable_ntfy=provided_or_existing(
-                patch.enable_ntfy,
-                existing_config.enable_ntfy,
-            ),
-            ntfy_topic=provided_or_existing(
-                patch.ntfy_topic,
-                existing_config.ntfy_topic,
-            ),
-            enable_discord_notification=provided_or_existing(
-                patch.enable_discord_notification,
-                existing_config.enable_discord_notification,
-            ),
-            discord_webhook=provided_or_existing(
-                patch.discord_webhook,
-                existing_config.discord_webhook,
-            ),
-        )
+        return merge_target_config_patch(existing_config, patch)
 
     def merge_config_request(
         self,
@@ -243,14 +115,7 @@ class TargetConfigService:
             current = self.get_config_for_target(target)
             self.save_config_for_target(
                 target,
-                replace(
-                    current,
-                    enable_desktop_notification=settings.enable_desktop_notification,
-                    enable_ntfy=settings.enable_ntfy,
-                    ntfy_topic=settings.ntfy_topic,
-                    enable_discord_notification=settings.enable_discord_notification,
-                    discord_webhook=settings.discord_webhook,
-                ),
+                copy_notification_settings(current, settings),
             )
             count += 1
         return count

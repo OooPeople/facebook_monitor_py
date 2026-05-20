@@ -9,6 +9,7 @@ from pathlib import Path
 import zipfile
 
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
+from facebook_monitor.updates import apply as updater_apply
 from facebook_monitor.updates.apply import apply_loaded_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update
@@ -17,16 +18,14 @@ from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
 from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
+from tests.helpers.macos_bundle import assert_posix_executable_when_supported
+from tests.helpers.macos_bundle import assert_zip_member_executable
+from tests.helpers.macos_bundle import macos_app_plist
 from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import write_path_to_zip_with_mode
 from tests.helpers.macos_bundle import write_macos_app_bundle
-
-
-def assert_posix_executable_when_supported(path: Path) -> None:
-    """在支援 POSIX mode 的平台確認 executable bit。"""
-
-    assert path.is_file()
-    if os.name != "nt":
-        assert path.stat().st_mode & 0o111
+from tests.helpers.macos_bundle import writestr_symlink
 
 
 def make_app_root(root: Path, *, exe_text: str) -> None:
@@ -35,6 +34,7 @@ def make_app_root(root: Path, *, exe_text: str) -> None:
     (root / "_internal" / "browser").mkdir(parents=True)
     (root / "_internal" / "assets").mkdir(parents=True)
     (root / "_internal" / "browser" / "chrome.exe").write_text("chrome", encoding="utf-8")
+    (root / "_internal" / "python313.dll").write_text("runtime", encoding="utf-8")
     (root / "_internal" / "assets" / "facebook-monitor.ico").write_text(
         "icon",
         encoding="utf-8",
@@ -53,14 +53,14 @@ def make_macos_app_root(root: Path, *, app_text: str) -> None:
     browser = root / "browser" / "Chromium.app" / "Contents" / "MacOS"
     browser.mkdir(parents=True)
     browser_exe = browser / "Chromium"
-    browser_exe.write_text("chromium", encoding="utf-8")
+    browser_exe.write_bytes(MACHO_ARM64_BYTES + b"chromium")
     browser_exe.chmod(0o755)
     (root / "_internal").mkdir(parents=True)
     (root / "_internal" / "python").write_text("runtime", encoding="utf-8")
     app_entry = root / "facebook-monitor"
     updater_entry = root / "facebook-monitor-updater"
-    app_entry.write_text(app_text, encoding="utf-8")
-    updater_entry.write_text("updater", encoding="utf-8")
+    app_entry.write_bytes(MACHO_ARM64_BYTES + app_text.encode("utf-8"))
+    updater_entry.write_bytes(MACHO_ARM64_BYTES + b"updater")
     app_entry.chmod(0o755)
     updater_entry.chmod(0o755)
     make_macos_app_bundle(root)
@@ -72,14 +72,14 @@ def make_macos_chrome_for_testing_app_root(root: Path, *, app_text: str) -> None
     browser = root / "browser" / "Google Chrome for Testing.app" / "Contents" / "MacOS"
     browser.mkdir(parents=True)
     browser_exe = browser / "Google Chrome for Testing"
-    browser_exe.write_text("chromium", encoding="utf-8")
+    browser_exe.write_bytes(MACHO_ARM64_BYTES + b"chromium")
     browser_exe.chmod(0o755)
     (root / "_internal").mkdir(parents=True)
     (root / "_internal" / "python").write_text("runtime", encoding="utf-8")
     app_entry = root / "facebook-monitor"
     updater_entry = root / "facebook-monitor-updater"
-    app_entry.write_text(app_text, encoding="utf-8")
-    updater_entry.write_text("updater", encoding="utf-8")
+    app_entry.write_bytes(MACHO_ARM64_BYTES + app_text.encode("utf-8"))
+    updater_entry.write_bytes(MACHO_ARM64_BYTES + b"updater")
     app_entry.chmod(0o755)
     updater_entry.chmod(0o755)
     make_macos_app_bundle(root)
@@ -111,8 +111,19 @@ def make_macos_update_zip(zip_path: Path, *, app_text: str) -> str:
     make_macos_app_root(source_root, app_text=app_text)
     with zipfile.ZipFile(zip_path, "w") as archive:
         for file_path in source_root.rglob("*"):
-            if file_path.is_file():
-                archive.write(file_path, file_path.relative_to(source_root.parent))
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     return digest
 
@@ -124,10 +135,59 @@ def make_macos_chrome_for_testing_update_zip(zip_path: Path, *, app_text: str) -
     make_macos_chrome_for_testing_app_root(source_root, app_text=app_text)
     with zipfile.ZipFile(zip_path, "w") as archive:
         for file_path in source_root.rglob("*"):
-            if file_path.is_file():
-                archive.write(file_path, file_path.relative_to(source_root.parent))
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     return digest
+
+
+def make_macos_root_level_update_zip(zip_path: Path, *, app_text: str) -> str:
+    """建立 app files 直接位於 zip root 的 macOS update zip。"""
+
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text=app_text)
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root),
+                    _macos_zip_mode(file_path),
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    return digest
+
+
+def _macos_zip_mode(path: Path) -> int:
+    """測試用 macOS artifact zip mode。"""
+
+    if path.name in {
+        "facebook-monitor",
+        "facebook-monitor-updater",
+        "facebook-monitor-launcher",
+        "Chromium",
+        "Google Chrome for Testing",
+    }:
+        return 0o755
+    return 0o644
 
 
 def pending_update(tmp_path: Path, *, zip_path: Path, digest: str) -> PendingUpdate:
@@ -190,7 +250,7 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
 
     assert result.status == "applied"
     assert result.applied
-    assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"new")
     assert_posix_executable_when_supported(app_root / "facebook-monitor")
     assert_posix_executable_when_supported(app_root / "facebook-monitor-updater")
     assert_posix_executable_when_supported(
@@ -202,7 +262,152 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
     )
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
     assert result.backup_dir is not None
-    assert (result.backup_dir / "facebook-monitor").read_text(encoding="utf-8") == "old"
+    assert (result.backup_dir / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_supports_macos_root_level_zip_layout(
+    tmp_path: Path,
+) -> None:
+    """macOS executable bit 驗證需支援 app files 直接位於 zip root 的布局。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    (data_dir / "app.db").write_text("user data", encoding="utf-8")
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_root_level_update_zip(zip_path, app_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "applied"
+    assert result.applied
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"new")
+    assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
+
+
+def test_apply_pending_update_rejects_macos_zip_without_executable_bit_metadata(
+    tmp_path: Path,
+) -> None:
+    """Windows 也要用 zip metadata 擋下缺 executable bit 的 macOS 更新包。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text="new")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                mode = 0o644 if file_path.name == "facebook-monitor" else _macos_zip_mode(file_path)
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    mode,
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "staging_executable_bit_missing:facebook-monitor/facebook-monitor"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_rejects_macos_browser_without_executable_bit_metadata(
+    tmp_path: Path,
+) -> None:
+    """Windows 也要檢查 macOS browser executable 的 zip metadata。"""
+
+    app_root = tmp_path / "app"
+    make_macos_chrome_for_testing_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_chrome_for_testing_app_root(source_root, app_text="new")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                mode = (
+                    0o644
+                    if file_path.name == "Google Chrome for Testing"
+                    else _macos_zip_mode(file_path)
+                )
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    mode,
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == (
+        "staging_executable_bit_missing:"
+        "facebook-monitor/browser/Google Chrome for Testing.app/Contents/MacOS/"
+        "Google Chrome for Testing"
+    )
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_preserves_safe_macos_symlinks(tmp_path: Path) -> None:
+    """macOS PyInstaller onedir 內安全的相對 symlink 應被保留。"""
+
+    if os.name == "nt":
+        return
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text="new")
+    (source_root / "python-link").symlink_to("_internal/python")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    link = app_root / "python-link"
+    assert result.status == "applied"
+    assert link.is_symlink()
+    assert link.readlink() == Path("_internal/python")
 
 
 def test_apply_pending_update_replaces_legacy_macos_shell_launcher(
@@ -260,7 +465,7 @@ def test_apply_pending_update_supports_macos_chrome_for_testing_layout(
 
     assert result.status == "applied"
     assert result.applied
-    assert (app_root / "facebook-monitor").read_text(encoding="utf-8") == "new"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"new")
     assert_posix_executable_when_supported(app_root / "facebook-monitor")
     assert_posix_executable_when_supported(app_root / "facebook-monitor-updater")
     assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
@@ -272,7 +477,7 @@ def test_apply_pending_update_supports_macos_chrome_for_testing_layout(
         / "MacOS"
         / "Google Chrome for Testing"
     )
-    assert browser_exe.read_text(encoding="utf-8") == "chromium"
+    assert browser_exe.read_bytes().endswith(b"chromium")
     assert_posix_executable_when_supported(browser_exe)
 
 
@@ -292,6 +497,229 @@ def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> N
     assert result.status == "app_running"
     assert not result.applied
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_refuses_symlinked_staging_dir(tmp_path: Path) -> None:
+    """staging dir 若被 symlink 到外部，updater 不可 follow 後刪除 target。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    keep = outside / "keep.txt"
+    keep.write_text("do not delete", encoding="utf-8")
+    staging_dir = data_dir / "runtime" / "update_staging" / "0.1.0"
+    staging_dir.parent.mkdir(parents=True)
+    try:
+        staging_dir.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "update_work_dir_unsafe"
+    assert keep.read_text(encoding="utf-8") == "do not delete"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_refuses_symlinked_staging_parent(tmp_path: Path) -> None:
+    """staging parent 若是 symlink，updater 不可 follow 後寫入外部目錄。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    staging_parent = data_dir / "runtime" / "update_staging"
+    staging_parent.parent.mkdir(parents=True)
+    try:
+        staging_parent.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "update_work_dir_unsafe"
+    assert list(outside.iterdir()) == []
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_refuses_symlinked_backup_parent(tmp_path: Path) -> None:
+    """backup parent 若是 symlink，updater 不可 follow 後寫入外部目錄。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backup_parent = data_dir / "runtime" / "update_backups"
+    backup_parent.parent.mkdir(parents=True)
+    try:
+        backup_parent.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        return
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "update_work_dir_unsafe"
+    assert list(outside.iterdir()) == []
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_rejects_current_symlink_to_data(tmp_path: Path) -> None:
+    """目前 app root 內的 symlink 不可指向 preserved data/profile 路徑。"""
+
+    if os.name == "nt":
+        return
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    (data_dir / "profiles").mkdir(parents=True)
+    (app_root / "profile-link").symlink_to("data/profiles")
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message.startswith("app_path_unsafe:")
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_rejects_macos_plist_hidden_string(
+    tmp_path: Path,
+) -> None:
+    """LSUIElement 用字串表示 true 時也不可通過。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text="new")
+    (source_root / MACOS_APP_BUNDLE_INFO_PLIST).write_bytes(
+        macos_app_plist(version="0.1.0", extra_values={"LSUIElement": "1"})
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "staging_macos_bundle_hidden_from_dock"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_rejects_macos_background_only_integer(
+    tmp_path: Path,
+) -> None:
+    """LSBackgroundOnly 用非零 integer 表示 true 時也不可通過。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text="new")
+    (source_root / MACOS_APP_BUNDLE_INFO_PLIST).write_bytes(
+        macos_app_plist(version="0.1.0", extra_values={"LSBackgroundOnly": 2})
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "staging_macos_bundle_hidden_from_dock"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
+def test_apply_pending_update_restores_backup_when_replace_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """replace 中途失敗時應還原舊 app files 並保留 data。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    (data_dir / "app.db").write_text("user data", encoding="utf-8")
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_macos_update_zip(zip_path, app_text="new")
+    original_copy_path = updater_apply._copy_path
+
+    def flaky_copy_path(source: Path, destination: Path, *, source_root: Path) -> None:
+        if source.name == "facebook-monitor" and source.read_bytes().endswith(b"new"):
+            raise OSError("copy failed")
+        original_copy_path(source, destination, source_root=source_root)
+
+    monkeypatch.setattr(updater_apply, "_copy_path", flaky_copy_path)
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "copy failed"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+    assert (data_dir / "app.db").read_text(encoding="utf-8") == "user data"
+    launcher = (
+        app_root
+        / "Facebook Monitor.app"
+        / "Contents"
+        / "MacOS"
+        / "facebook-monitor-launcher"
+    )
+    assert launcher.read_bytes() == MACHO_ARM64_BYTES
 
 
 def test_apply_pending_update_file_writes_result_log(tmp_path: Path) -> None:
@@ -561,13 +989,81 @@ def test_safe_extract_zip_preserves_executable_bit(tmp_path: Path) -> None:
     source.chmod(0o755)
     zip_path = tmp_path / "app.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.write(source, "facebook-monitor/facebook-monitor")
+        write_path_to_zip_with_mode(archive, source, "facebook-monitor/facebook-monitor", 0o755)
+        assert_zip_member_executable(archive, "facebook-monitor/facebook-monitor")
 
     safe_extract_zip(zip_path, tmp_path / "staging")
 
     extracted = tmp_path / "staging" / "facebook-monitor" / "facebook-monitor"
     assert extracted.read_text(encoding="utf-8") == "app"
     assert_posix_executable_when_supported(extracted)
+
+
+def test_safe_extract_zip_preserves_safe_symlink(tmp_path: Path) -> None:
+    """POSIX zip symlink 若留在 staging tree 內，updater 會保留 symlink。"""
+
+    if os.name == "nt":
+        return
+    zip_path = tmp_path / "app.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/_internal/lib.dylib", "lib")
+        writestr_symlink(
+            archive,
+            "facebook-monitor/lib.dylib",
+            "_internal/lib.dylib",
+        )
+
+    safe_extract_zip(zip_path, tmp_path / "staging")
+
+    link = tmp_path / "staging" / "facebook-monitor" / "lib.dylib"
+    assert link.is_symlink()
+    assert link.readlink() == Path("_internal/lib.dylib")
+
+
+def test_safe_extract_zip_rejects_escaping_symlink(tmp_path: Path) -> None:
+    """zip symlink target 不可逃出 staging tree。"""
+
+    zip_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/link", "../../outside")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_symlink_target_unsafe"
+    else:
+        raise AssertionError("expected escaping symlink to fail")
+
+
+def test_safe_extract_zip_rejects_symlink_to_private_data(tmp_path: Path) -> None:
+    """zip symlink 不可指向更新後會變成 preserved data/profile 的路徑。"""
+
+    zip_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/profile-link", "data/profiles")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_symlink_target_unsafe"
+    else:
+        raise AssertionError("expected symlink to private data to fail")
+
+
+def test_safe_extract_zip_rejects_member_under_symlink(tmp_path: Path) -> None:
+    """zip 不可先建立 symlink directory 再把 member 寫入該路徑底下。"""
+
+    zip_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/link", "_internal")
+        archive.writestr("facebook-monitor/link/file.txt", "bad")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_member_path_unsafe"
+    else:
+        raise AssertionError("expected member under symlink to fail")
 
 
 def test_apply_pending_update_rejects_zip_outside_updates_dir(tmp_path: Path) -> None:

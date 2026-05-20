@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationChannel
@@ -12,7 +13,9 @@ from facebook_monitor.persistence.row_mappers import notification_event_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
-NOTIFICATION_EVENTS_PER_TARGET_LIMIT = 500
+NOTIFICATION_EVENTS_PER_TARGET_LIMIT = (
+    PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.events_per_target_limit
+)
 
 
 class NotificationEventRepository:

@@ -16,7 +16,8 @@ from facebook_monitor.application.scan_recording_service import RecordScanReques
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import WorkerMode
-from facebook_monitor.worker.scan_orchestration import PROFILE_SESSION_FAILURE_REASONS
+from facebook_monitor.core.scan_failures import PROFILE_SESSION_FAILURE_REASONS
+from facebook_monitor.core.user_messages import format_failure_message
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,10 @@ class ScanFailureMetadata:
     profile_lease_state: str = ""
     page_reused: bool | None = None
     scan_request_id: str = ""
+    runtime_action: str = ""
+    retry_streak: int = 0
+    retry_limit: int = 0
+    raw_failure_detail: str = ""
 
     def to_metadata(self) -> dict[str, Any]:
         """轉成 scan run JSON metadata。"""
@@ -48,6 +53,14 @@ class ScanFailureMetadata:
         }
         if self.page_reused is not None:
             metadata["page_reused"] = self.page_reused
+        if self.runtime_action:
+            metadata["runtime_action"] = self.runtime_action
+        if self.retry_limit > 0:
+            metadata["retry_streak"] = max(self.retry_streak, 0)
+            metadata["retry_limit"] = self.retry_limit
+        raw_failure_detail = self.raw_failure_detail.strip()
+        if raw_failure_detail:
+            metadata["raw_failure_detail"] = raw_failure_detail
         return metadata
 
 
@@ -64,6 +77,10 @@ def record_scan_failure(
     profile_lease_state: str = "",
     page_reused: bool | None = None,
     scan_request_id: str = "",
+    runtime_action: str = "",
+    retry_streak: int = 0,
+    retry_limit: int = 0,
+    force_record: bool = False,
 ) -> int:
     """透過 application context 記錄一筆標準失敗 scan run。"""
 
@@ -75,7 +92,8 @@ def record_scan_failure(
     error_message = format_scan_failure_message(reason, message)
     latest = app.repositories.scan_runs.latest_by_target(target.id)
     if (
-        latest is not None
+        not force_record
+        and latest is not None
         and latest.status == ScanStatus.FAILED
         and latest.error_message == error_message
     ):
@@ -96,6 +114,10 @@ def record_scan_failure(
                 profile_lease_state=profile_lease_state,
                 page_reused=page_reused,
                 scan_request_id=scan_request_id,
+                runtime_action=runtime_action,
+                retry_streak=retry_streak,
+                retry_limit=retry_limit,
+                raw_failure_detail=message,
             ).to_metadata(),
         )
     )
@@ -114,6 +136,10 @@ def record_scan_failure_for_db(
     profile_lease_state: str = "",
     page_reused: bool | None = None,
     scan_request_id: str = "",
+    runtime_action: str = "",
+    retry_streak: int = 0,
+    retry_limit: int = 0,
+    force_record: bool = False,
 ) -> int:
     """用 DB path 記錄標準失敗 scan run；未知 target 時不寫入。"""
 
@@ -132,10 +158,14 @@ def record_scan_failure_for_db(
             profile_lease_state=profile_lease_state,
             page_reused=page_reused,
             scan_request_id=scan_request_id,
+            runtime_action=runtime_action,
+            retry_streak=retry_streak,
+            retry_limit=retry_limit,
+            force_record=force_record,
         )
 
 
 def format_scan_failure_message(reason: str, message: str) -> str:
     """建立一致的 scan failure error_message。"""
 
-    return f"{reason}: {message}"
+    return format_failure_message(reason, message)

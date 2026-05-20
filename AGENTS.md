@@ -40,6 +40,7 @@
 
 - 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
+- 需要臨時讀取正式 SQLite DB（`<data-dir>\app.db`，例如 `C:\Users\ooo\facebook_monitor_data\app.db`）時，優先用專案 venv Python 直接執行唯讀查詢：`& .\.venv\Scripts\python.exe -c $code`，連線使用 `sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)`；不要用系統 Python / Anaconda，也不要把 heredoc 腳本 pipe 給 `.\scripts\uv.ps1 run python -`，避免 sqlite DLL 或 stdin 等待問題造成排查變慢。
 - 每次打包 Windows portable zip 時，必須同時產生同名 `.sha256` 檔，並確認 zip 檔名、GitHub tag、`APP_VERSION`、PyInstaller version resource 與 SHA256 檔內容互相對齊。
 - 正式日常入口是 package entrypoint：`facebook-monitor`；profile 登入 / 檢查入口是 `facebook-monitor-login`。
 - scripts 已依角色分層：低頻管理在 `scripts/admin/`，除錯工具在 `scripts/debug/`，內部工具在 `scripts/internal/`。
@@ -47,13 +48,13 @@
 - 不得把 debug / internal 工具描述成正式日常入口；新功能預設先接 Web UI + async resident 正式主路徑。
 - 每次 probe 失敗都要留下清楚分類：login/session、headless DOM、page load、selector/extractor、notification 或 unknown。
 - headless 失敗時，先測 persistent-context 行為，再評估 headed compatibility mode。
-- 不要提前建立正式 DB / repository / UI 架構。
+- 不得為 speculative 功能提前建立正式 DB / repository / UI 架構；若需求已確認且需要持久狀態，必須走完整 schema / migration / repository / service / test 鏈。
 - 新增或修改模組、類別、函式時，補繁體中文 docstring 或必要註解，說明職責即可，避免逐行解說。
 - 讀取或修改 `.md` 時使用 UTF-8。
-- 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
+- 測試 macOS / POSIX executable bit 時，不得在 Windows 上無條件 assert `Path.stat().st_mode & 0o111`；單元測試需使用平台 guard / helper，只在支援 POSIX mode 的平台檢查 executable bit。若要在 Windows 驗證 macOS release zip 權限，應檢查 zip metadata 或交由 artifact validation。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源，不得作為正式 read/write path。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。
-- Python 版預設值必須集中於 `src/facebook_monitor/core/defaults.py`，不得在 Web UI、service 或 worker 另寫一套常數。
+- 跨層產品預設值必須集中於 `src/facebook_monitor/core/defaults.py`，不得在 Web UI、service 或 worker 另寫一套同語義常數；模組內部演算法常數可留在該 module，但不得形成跨層重複來源。
 - UI 重構時不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
 
 ---
@@ -259,6 +260,82 @@ UI 重構不得讓已封口的架構邊界回歸：
 
 ## Review / Handoff 規則
 
+### 1. 預設審查範圍
+使用者只要說「審查」、「review」、「架構審查」、「幫我看這次變更」或類似要求，除非明確限定只看某一項，預設都要用完整工程審查視角，而不是只看語法或測試是否通過。
+
+本專案審查清單參考：
+
+- Google Engineering Practices: design、functionality、complexity、tests、naming、comments、style、documentation。
+- GitLab Code Review Guidelines: quality、performance、reliability、security、observability、maintainability、backwards compatibility、deployment。
+- OWASP Code Review Guide / Secure Code Review Cheat Sheet: manual security review、trust boundary、input validation、authentication / authorization、data flow、error handling、configuration、dependency risk。
+
+每次審查預設至少檢查：
+
+1. **需求與產品語義**
+   - 是否真的解決使用者問題，而不是只補 UI、欄位或函式名稱。
+   - 是否符合本專案 Python 版既有 target、scheduler、worker、notification、Web UI 語義。
+   - 是否有改變使用者可見行為；若有，原因與風險是否講清楚。
+
+2. **架構邊界與依賴方向**
+   - 是否遵守 domain / application / infrastructure / webapp / worker / scripts 的既有責任邊界。
+   - UI 變更是否偷改 worker scan pipeline、notification outbox、scheduler recovery、persistence migration 或 Facebook DOM helper。
+   - 新 helper / service / repository 是否放在正確層級，沒有形成平行流程或繞過正式入口。
+
+3. **單一來源與狀態流程**
+   - 版本、預設值、enum / status 字串、schema version、打包檔名、runtime 門檻、UI cache key 是否有單一權威來源。
+   - 狀態 owner 是否清楚；同一語義不得同時散在 UI state、DB 欄位、worker local state、service return string、diagnostics JSON 而沒有同步規則。
+   - 若存在必要分散，必須說明語義差異，例如 app version 與 schema version 可分離、產品資料與 maintenance job state 可分離。
+
+4. **資料模型、migration 與相容性**
+   - schema bootstrap 與 migration chain 是否一致；已發布版本的 migration 不得被倒改成另一個歷史。
+   - 舊資料、缺欄、空值、異常值、使用者自訂名稱 / 設定是否會被覆蓋或破壞。
+   - 是否需要 backfill、節流、去重、FK cascade、index 或 revision trigger。
+
+5. **正確性與邊界條件**
+   - 成功、失敗、重試、取消、停止、target 不存在、登入失效、Facebook 暫時錯誤、網路錯誤、空資料、stale DOM / stale DB 狀態是否都有明確行為。
+   - 是否有 race condition、重複排程、重複通知、卡在 pending/running、資源未關閉或跨輪狀態污染。
+
+6. **安全、隱私與信任邊界**
+   - 是否處理外部輸入驗證、輸出 escaping、CSRF / auth / authorization、路徑 traversal、命令注入、SQL 注入、URL redirect、secret/token/cookie/profile/log 外洩。
+   - 是否新增第三方依賴、下載、解壓、更新套用、subprocess、browser profile 操作；若有，要提高審查等級。
+
+7. **效能、可靠性與資源使用**
+   - 是否造成每輪掃描額外重負擔、無界迴圈、無界 query、過度開頁、未關閉 browser page/context、過高 timeout、過度 polling。
+   - 是否對大量 targets、長時間 resident worker、低規格機器、失敗重試與 app shutdown 仍可靠。
+
+8. **可維護性、可讀性與擴充性**
+   - 名稱是否準確，抽象是否必要，重複是否合理，未來新增通道 / target kind / platform / status 是否需要到處改。
+   - 是否有半套 abstraction、過早 abstraction、過深 call chain 或難以測試的隱式副作用。
+
+9. **可觀測性與診斷**
+   - 重要行為是否能從 latest_scan metadata、worker log、runtime diagnostics、DB state 或 UI debug 看出 attempted / changed / before / after / reason / count / worker。
+   - 失敗是否保留可行動的 reason，而不是只留下 `False`、`None` 或泛用錯誤字串。
+
+10. **測試與驗證**
+    - 是否有覆蓋正常路徑、失敗路徑、stale/race、migration/backcompat、UI route/JS contract、worker end-to-end 的測試。
+    - 測試是否真的驗證語義，不只是確認函式被呼叫。
+    - 若未跑某類測試，必須說明原因與剩餘風險。
+
+11. **文件、打包與操作**
+    - 使用者操作、packaging、release、update、diagnostics、AGENTS 守則是否需要同步。
+    - 打包檔名、version resource、SHA256、GitHub tag、APP_VERSION、platform policy 是否仍對齊。
+
+### 2. 審查輸出格式
+審查結果必須 findings first，依嚴重度排序。每個 finding 要包含：
+
+- 嚴重度
+- 檔案與行號
+- 具體問題與可能後果
+- 建議修正方向
+
+若沒有阻塞問題，也要明確說明：
+
+- 審查了哪些面向
+- 哪些必要分散是可接受的
+- 還有哪些低風險後續整理項目
+- 驗證了哪些測試 / 指令
+
+### 3. Handoff 內容
 每次完成一段功能後，review / handoff 內容必須包含：
 
 1. **對照了哪些 Python 模組、資料模型、測試或文件契約**
@@ -292,9 +369,9 @@ Python 版優先維持這種方向：
 
 ---
 
-## 初期專案優先順序
+## 未封口功能缺口優先順序
 
-若功能尚未完整，實作優先順序應遵守：
+若功能尚未完整，且使用者沒有指定更高優先工作，實作優先順序應參考：
 
 1. 先讓 posts target 的語義完整
 2. 再補 auto_adjust_sort / auto_load_more 這種目前已露出的高風險功能缺口

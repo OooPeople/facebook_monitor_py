@@ -9,13 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
+from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
 from facebook_monitor.facebook.collection_policy import get_effective_scroll_rounds
 from facebook_monitor.worker.errors import WorkerFailure
-
-PROFILE_SESSION_FAILURE_REASONS = frozenset(
-    {"login_required", "checkpoint_required", "session_invalid"}
-)
 
 
 def classify_facebook_session_failure(
@@ -27,11 +26,11 @@ def classify_facebook_session_failure(
     normalized_text = body_text.lower()
     normalized_url = current_url.lower()
     if _looks_like_checkpoint(normalized_text, normalized_url):
-        return "checkpoint_required"
+        return CHECKPOINT_REQUIRED_REASON
     if _looks_like_session_invalid(normalized_text, normalized_url):
-        return "session_invalid"
+        return SESSION_INVALID_REASON
     if _looks_like_login_page(normalized_text, normalized_url):
-        return "login_required"
+        return LOGIN_REQUIRED_REASON
     return None
 
 

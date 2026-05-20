@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from facebook_monitor.facebook.text_cleanup import collapse_repeated_adjacent_text
+from facebook_monitor.facebook.text_cleanup import clean_facebook_text
 
 MISSING_KEYWORD_LABEL = "(未指定)"
 
@@ -48,7 +48,7 @@ def normalize_notification_fields(fields: MatchNotificationFields) -> MatchNotif
         item_kind=str(fields.item_kind or "post"),
         author=fields.author or "(作者未知)",
         include_rule=fields.include_rule or MISSING_KEYWORD_LABEL,
-        text=truncate_text(collapse_repeated_adjacent_text(fields.text), 220) or "(空白)",
+        text=truncate_text(clean_facebook_text(fields.text), 220) or "(空白)",
         permalink=fields.permalink,
     )
 

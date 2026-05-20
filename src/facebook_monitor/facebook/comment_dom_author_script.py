@@ -17,7 +17,13 @@ COMMENT_DOM_AUTHOR_SCRIPT = r'''  function isLikelyCommentAuthorHref(value) {
       const href = anchor.href || anchor.getAttribute("href") || "";
       if (!isLikelyCommentAuthorHref(href)) continue;
       const text = normalizeText(anchor.innerText || anchor.textContent || "");
-      if (!text || text.length > 80 || text.startsWith("#") || nonBodyLabels.has(text)) continue;
+      if (
+        !text ||
+        text.length > 80 ||
+        text.startsWith("#") ||
+        nonBodyLabels.has(text) ||
+        isFacebookExpandCollapseLabelText(text)
+      ) continue;
       const authorRect = anchor.getBoundingClientRect();
       const commentRect = commentAnchor?.getBoundingClientRect?.();
       const distance = commentRect ? Math.abs(authorRect.top - commentRect.top) : 0;

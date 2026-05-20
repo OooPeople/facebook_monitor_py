@@ -10,6 +10,7 @@ environment:
 
 import os
 import subprocess
+import sys
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -21,11 +22,28 @@ from PyInstaller.building.datastruct import TOC
 
 ROOT_DIR = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from facebook_monitor.version import APP_VERSION
+from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
+from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
+from scripts.admin.windows_version_resource import write_windows_version_info
+
 ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "launcher.py")
 UPDATER_ENTRYPOINT = os.path.join(SRC_DIR, "facebook_monitor", "updater.py")
 GENERATED_DIR = os.path.join(ROOT_DIR, "build", "pyinstaller_generated")
 BUILD_METADATA_HOOK = os.path.join(GENERATED_DIR, "facebook_monitor_build_metadata.py")
-VERSION_INFO_FILE = os.path.join(SPECPATH, "version_info.txt")
+WINDOWS_APP_VERSION_INFO_FILE = os.path.join(
+    GENERATED_DIR,
+    "windows_app_version_info.txt",
+)
+WINDOWS_UPDATER_VERSION_INFO_FILE = os.path.join(
+    GENERATED_DIR,
+    "windows_updater_version_info.txt",
+)
 ICON_PATH = os.path.join(ROOT_DIR, "packaging", "assets", "facebook-monitor.ico")
 TRAY_ICON_PATH = os.path.join(ROOT_DIR, "packaging", "assets", "facebook-monitor-tray.ico")
 
@@ -71,9 +89,22 @@ def bundled_chromium_dir():
 
 
 os.makedirs(GENERATED_DIR, exist_ok=True)
+write_windows_version_info(
+    Path(WINDOWS_APP_VERSION_INFO_FILE),
+    version=APP_VERSION,
+    internal_name=Path(WINDOWS_APP_ENTRY).stem,
+    original_filename=WINDOWS_APP_ENTRY,
+)
+write_windows_version_info(
+    Path(WINDOWS_UPDATER_VERSION_INFO_FILE),
+    version=APP_VERSION,
+    internal_name=Path(WINDOWS_UPDATER_ENTRY).stem,
+    original_filename=WINDOWS_UPDATER_ENTRY,
+)
 with open(BUILD_METADATA_HOOK, "w", encoding="utf-8") as hook_file:
     hook_file.write(
         "import os\n"
+        f"os.environ['FACEBOOK_MONITOR_APP_VERSION'] = {APP_VERSION!r}\n"
         f"os.environ['FACEBOOK_MONITOR_BUILD_DATE'] = {os.environ.get('FACEBOOK_MONITOR_BUILD_DATE', build_date())!r}\n"
         f"os.environ['FACEBOOK_MONITOR_GIT_COMMIT'] = {os.environ.get('FACEBOOK_MONITOR_GIT_COMMIT', read_git_commit())!r}\n"
         f"os.environ['FACEBOOK_MONITOR_PACKAGING_MODE'] = {os.environ.get('FACEBOOK_MONITOR_PACKAGING_MODE', 'pyinstaller')!r}\n"
@@ -128,7 +159,7 @@ exe = EXE(
     TOC(runtime_script_entries + [launcher_script_entry]),
     [],
     exclude_binaries=True,
-    name="facebook-monitor",
+    name=Path(WINDOWS_APP_ENTRY).stem,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -142,14 +173,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
-    version=VERSION_INFO_FILE,
+    version=WINDOWS_APP_VERSION_INFO_FILE,
 )
 updater_exe = EXE(
     pyz,
     TOC(runtime_script_entries + [updater_script_entry]),
     [],
     exclude_binaries=True,
-    name="facebook-monitor-updater",
+    name=Path(WINDOWS_UPDATER_ENTRY).stem,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -163,7 +194,7 @@ updater_exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
-    version=VERSION_INFO_FILE,
+    version=WINDOWS_UPDATER_VERSION_INFO_FILE,
 )
 coll = COLLECT(
     exe,

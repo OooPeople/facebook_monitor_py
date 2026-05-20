@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
+from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import send_discord_notification
@@ -29,33 +31,34 @@ def send_manual_test_notification(
     fields = MatchNotificationFields(
         group_name="Facebook Monitor",
         item_kind=ItemKind.POST.value,
-        author="Test",
-        include_rule="manual test",
-        text="This is a test notification from facebook_monitor_py.",
+        author="測試",
+        include_rule="測試",
+        text="這是 Facebook Monitor 的測試通知。",
         permalink="",
     )
     title, message = build_match_notification_payload(fields)
     compact_message = build_compact_notification_body(fields)
     results: list[str] = []
-    if config.enable_desktop_notification:
-        desktop_result = desktop_sender(title, compact_message)
-        results.append(desktop_result.message)
-    if config.enable_ntfy:
-        if config.ntfy_topic.strip():
-            ntfy_result = ntfy_sender(NtfyConfig(topic=config.ntfy_topic), title, message)
-            results.append("ntfy_sent" if ntfy_result.ok else f"ntfy_failed: {ntfy_result.message}")
-        else:
-            results.append("ntfy_skipped")
-    if config.enable_discord_notification:
-        if config.discord_webhook.strip():
-            discord_result = discord_sender(
-                DiscordConfig(webhook_url=config.discord_webhook),
-                title,
-                message,
-            )
-            results.append(discord_result.message)
-        else:
-            results.append("discord_skipped")
+    for plan in build_enabled_channel_plans(config):
+        if plan.channel == NotificationChannel.DESKTOP:
+            desktop_result = desktop_sender(title, compact_message)
+            results.append(desktop_result.message)
+        elif plan.channel == NotificationChannel.NTFY:
+            if plan.endpoint.strip():
+                ntfy_result = ntfy_sender(NtfyConfig(topic=plan.endpoint), title, message)
+                results.append("ntfy_sent" if ntfy_result.ok else f"ntfy_failed: {ntfy_result.message}")
+            else:
+                results.append(plan.definition.skipped_message)
+        elif plan.channel == NotificationChannel.DISCORD:
+            if plan.endpoint.strip():
+                discord_result = discord_sender(
+                    DiscordConfig(webhook_url=plan.endpoint),
+                    title,
+                    message,
+                )
+                results.append(discord_result.message)
+            else:
+                results.append(plan.definition.skipped_message)
     if not results:
         results.append("notification_skipped: no channel enabled")
     return results

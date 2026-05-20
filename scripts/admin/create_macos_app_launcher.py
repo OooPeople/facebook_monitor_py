@@ -19,13 +19,14 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.version import APP_VERSION
+from facebook_monitor.updates.platforms import MACOS_APP_ENTRY
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_NAME
 
 
-APP_ROOT_NAME = "facebook-monitor"
+APP_ROOT_NAME = MACOS_APP_ENTRY
 BUNDLE_NAME = MACOS_APP_BUNDLE_NAME
 BUNDLE_DISPLAY_NAME = "Facebook Monitor"
 BUNDLE_IDENTIFIER = "com.ooopeople.facebook-monitor"
@@ -210,12 +211,12 @@ static dispatch_source_t InstallTerminationSignalHandler(int signalNumber) {
     (void)notification;
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     NSString *appRoot = [bundlePath stringByDeletingLastPathComponent];
-    NSString *executable = [appRoot stringByAppendingPathComponent:@"facebook-monitor"];
+    NSString *executable = [appRoot stringByAppendingPathComponent:@"__FACEBOOK_MONITOR_APP_ENTRY__"];
 
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:executable]) {
         NSAlert *alert = [[NSAlert alloc] init];
         [alert setMessageText:@"Facebook Monitor"];
-        [alert setInformativeText:@"找不到 facebook-monitor executable。請確認 Facebook Monitor.app 仍在 facebook-monitor 資料夾內。"];
+        [alert setInformativeText:@"找不到 __FACEBOOK_MONITOR_APP_ENTRY__ executable。請確認 Facebook Monitor.app 仍在 facebook-monitor 資料夾內。"];
         [alert setAlertStyle:NSAlertStyleCritical];
         [alert runModal];
         [NSApp terminate:nil];
@@ -252,7 +253,7 @@ static dispatch_source_t InstallTerminationSignalHandler(int signalNumber) {
     if (![self.task launchAndReturnError:&error]) {
         NSAlert *alert = [[NSAlert alloc] init];
         [alert setMessageText:@"Facebook Monitor"];
-        [alert setInformativeText:[NSString stringWithFormat:@"無法啟動 facebook-monitor：%@", [error localizedDescription]]];
+        [alert setInformativeText:[NSString stringWithFormat:@"無法啟動 __FACEBOOK_MONITOR_APP_ENTRY__：%@", [error localizedDescription]]];
         [alert setAlertStyle:NSAlertStyleCritical];
         [alert runModal];
         [NSApp terminate:nil];
@@ -303,6 +304,7 @@ int main(int argc, const char * argv[]) {
             "__FACEBOOK_MONITOR_LAUNCHER_ENV_VALUE__",
             MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE,
         )
+        .replace("__FACEBOOK_MONITOR_APP_ENTRY__", MACOS_APP_ENTRY)
     )
 
 

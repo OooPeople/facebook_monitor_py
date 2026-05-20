@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 
+from facebook_monitor.core.notification_channels import transform_notification_endpoints
 from facebook_monitor.core.models import LegacyTargetConfig
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -33,7 +34,10 @@ class TargetConfigRepository:
         normalized_target_id = target_id.strip()
         if not normalized_target_id:
             raise ValueError("target_id is required for target-scoped config")
-        target_config = replace(config, target_id=normalized_target_id)
+        target_config = transform_notification_endpoints(
+            replace(config, target_id=normalized_target_id),
+            self.secret_codec.encrypt,
+        )
         self.connection.execute(
             """
             INSERT INTO target_configs (
@@ -74,12 +78,12 @@ class TargetConfigRepository:
                 int(target_config.auto_adjust_sort),
                 int(target_config.enable_desktop_notification),
                 int(target_config.enable_ntfy),
-                self.secret_codec.encrypt(target_config.ntfy_topic),
+                target_config.ntfy_topic,
                 int(target_config.enable_discord_notification),
-                self.secret_codec.encrypt(target_config.discord_webhook),
+                target_config.discord_webhook,
             ),
         )
-        return target_config
+        return replace(config, target_id=normalized_target_id)
 
     def save_for_target(self, target: TargetDescriptor, config: TargetConfig) -> TargetConfig:
         """依 target id 保存 target-scoped config。"""
@@ -144,17 +148,9 @@ class TargetConfigRepository:
     def _decrypt_target_config(self, config: TargetConfig) -> TargetConfig:
         """還原 repository 對外回傳的 target notification secrets。"""
 
-        return replace(
-            config,
-            ntfy_topic=self.secret_codec.decrypt(config.ntfy_topic),
-            discord_webhook=self.secret_codec.decrypt(config.discord_webhook),
-        )
+        return transform_notification_endpoints(config, self.secret_codec.decrypt)
 
     def _decrypt_legacy_target_config(self, config: LegacyTargetConfig) -> LegacyTargetConfig:
         """還原 migration helper DTO 內的 notification secrets。"""
 
-        return replace(
-            config,
-            ntfy_topic=self.secret_codec.decrypt(config.ntfy_topic),
-            discord_webhook=self.secret_codec.decrypt(config.discord_webhook),
-        )
+        return transform_notification_endpoints(config, self.secret_codec.decrypt)

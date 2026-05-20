@@ -35,32 +35,6 @@ FEED_DOM_TEXT_SCRIPT = '''
                 }
                 return normalizeText(text);
             };
-            const collapseRepeatedAdjacentText = (value) => {
-                let text = normalizeText(value);
-                if (!text) return "";
-                while (true) {
-                    const tokens = text.split(" ");
-                    if (tokens.length > 1 && tokens.length % 2 === 0) {
-                        const halfLength = tokens.length / 2;
-                        const left = tokens.slice(0, halfLength).join(" ");
-                        const right = tokens.slice(halfLength).join(" ");
-                        if (left.length >= 8 && left === right) {
-                            text = left;
-                            continue;
-                        }
-                    }
-                    if (text.length % 2 === 0) {
-                        const halfLength = text.length / 2;
-                        const left = text.slice(0, halfLength);
-                        const right = text.slice(halfLength);
-                        if (left.length >= 8 && left === right) {
-                            text = left;
-                            continue;
-                        }
-                    }
-                    return text;
-                }
-            };
             const cleanExtractedText = (value) => {
                 let text = stripCommentActionTrail(value);
                 if (!text) return "";
@@ -70,7 +44,7 @@ FEED_DOM_TEXT_SCRIPT = '''
                 for (const pattern of cleanedTextNoise) {
                     text = text.replace(pattern, " ");
                 }
-                return collapseRepeatedAdjacentText(text.replace(/\\s+/g, " ").trim());
+                return cleanSharedFacebookText(text);
             };
             const isFeedSortControlText = (value) =>
                 normalizeText(value).includes("社團動態消息排序方式");
@@ -153,7 +127,7 @@ FEED_DOM_TEXT_SCRIPT = '''
                 if (!(element instanceof HTMLElement) || !(container instanceof HTMLElement)) return false;
                 if (!isVisible(element)) return false;
                 const text = getElementText(element);
-                if (!["顯示更多", "查看更多", "See more"].includes(text)) return false;
+                if (!isFacebookExpandMoreLabelText(text)) return false;
                 const containerRect = container.getBoundingClientRect();
                 const elementRect = element.getBoundingClientRect();
                 const relativeTop = elementRect.top - containerRect.top;

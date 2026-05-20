@@ -1,7 +1,8 @@
 {% set scan_source = scan_source if scan_source is defined else none %}
 {% set scan_form_id = scan_form_id|default("") %}
 {% set scan_input_attrs = scan_input_attrs|default("") %}
-{% set scan_max_items_default = scan_max_items_default|default(5) %}
+{% set scan_defaults = target_defaults %}
+{% set scan_max_items_default = scan_max_items_default|default(scan_defaults.max_items_per_scan) %}
 {% set auto_load_more_checked = scan_source and scan_source.auto_load_more %}
 {% set auto_adjust_sort_checked = scan_source and scan_source.auto_adjust_sort %}
 {% set max_items_value = scan_source.max_items_per_scan if scan_source else scan_max_items_default %}
@@ -16,6 +17,6 @@
   </label>
 </div>
 <label>
-  目標掃描項目數（最多 10 筆）
-  <input name="max_items_per_scan" type="number" min="1" max="10" value="{{ max_items_value }}" {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %} {{ scan_input_attrs|safe }}>
+  目標掃描項目數（最多 {{ max_target_posts }} 筆）
+  <input name="max_items_per_scan" type="number" min="{{ min_target_posts }}" max="{{ max_target_posts }}" value="{{ max_items_value }}" {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %} {{ scan_input_attrs|safe }}>
 </label>

@@ -192,6 +192,8 @@ def runtime_state_from_row(row: sqlite3.Row) -> TargetRuntimeState:
         last_page_reloaded_at=decode_datetime(row["last_page_reloaded_at"]),
         scan_guard_count=row["scan_guard_count"],
         display_next_due_at=decode_datetime(row["display_next_due_at"]),
+        consecutive_failure_reason=row["consecutive_failure_reason"],
+        consecutive_failure_count=row["consecutive_failure_count"],
         updated_at=updated_at,
     )
 

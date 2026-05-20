@@ -20,8 +20,13 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
+from facebook_monitor.core.defaults import PYTHON_BROWSER_RUNTIME_DEFAULTS
+from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
+
+
+GROUP_METADATA_WAIT_MS = PYTHON_BROWSER_RUNTIME_DEFAULTS.group_metadata_wait_ms
 
 
 class GroupMetadataError(RuntimeError):
@@ -73,7 +78,7 @@ async def resolve_group_name_with_context(
     context: AsyncBrowserContextLike,
     *,
     canonical_url: str,
-    wait_ms: int = 3000,
+    wait_ms: int = GROUP_METADATA_WAIT_MS,
 ) -> str:
     """使用既有 async browser context 解析 Facebook group name。"""
 
@@ -90,7 +95,7 @@ async def resolve_group_metadata_with_context(
     context: AsyncBrowserContextLike,
     *,
     canonical_url: str,
-    wait_ms: int = 3000,
+    wait_ms: int = GROUP_METADATA_WAIT_MS,
 ) -> GroupMetadata:
     """使用既有 async browser context 解析 Facebook group name 與 cover image URL。"""
 
@@ -109,7 +114,10 @@ async def resolve_group_metadata_with_context(
     except GroupMetadataError:
         raise
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
-        raise GroupMetadataError(f"無法自動抓取社團名稱: {exc}") from exc
+        raise GroupMetadataError(
+            "無法自動抓取社團名稱："
+            + format_failure_message_text(str(exc))
+        ) from exc
 
     if not group_name:
         raise GroupMetadataError("無法自動抓取社團名稱，請稍後重試或填入自訂顯示名稱")
@@ -119,11 +127,42 @@ async def resolve_group_metadata_with_context(
     )
 
 
+async def resolve_group_cover_image_with_context(
+    context: AsyncBrowserContextLike,
+    *,
+    canonical_url: str,
+    wait_ms: int = GROUP_METADATA_WAIT_MS,
+) -> str:
+    """使用既有 async browser context 只解析 Facebook group cover image URL。"""
+
+    try:
+        page = await context.new_page()
+        try:
+            await page.goto(canonical_url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(wait_ms)
+            body_text = await page.locator("body").inner_text(timeout=10000)
+            if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
+                raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
+            cover_image_url = await _extract_cover_image_url_async(page)
+        finally:
+            await page.close()
+    except GroupMetadataError:
+        raise
+    except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
+        raise GroupMetadataError(
+            "無法自動抓取社團封面："
+            + format_failure_message_text(str(exc))
+        ) from exc
+    if not cover_image_url:
+        raise GroupMetadataError("無法自動抓取社團封面，請稍後重試")
+    return cover_image_url
+
+
 def resolve_group_name_with_profile(
     *,
     profile_dir: Path,
     canonical_url: str,
-    wait_ms: int = 3000,
+    wait_ms: int = GROUP_METADATA_WAIT_MS,
 ) -> str:
     """使用 automation profile 開啟 group URL 並回傳清理後的社團名稱。"""
 
@@ -138,7 +177,7 @@ def resolve_group_metadata_with_profile(
     *,
     profile_dir: Path,
     canonical_url: str,
-    wait_ms: int = 3000,
+    wait_ms: int = GROUP_METADATA_WAIT_MS,
 ) -> GroupMetadata:
     """使用 automation profile 開啟 group URL 並回傳社團名稱與 cover image URL。"""
 
@@ -166,12 +205,15 @@ def resolve_group_metadata_with_profile(
     except GroupMetadataError:
         raise
     except ProfileLeaseError as exc:
-        raise GroupMetadataError(str(exc)) from exc
+        raise GroupMetadataError(format_failure_message_text(str(exc))) from exc
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
         message = str(exc).lower()
         if "user data directory is already in use" in message or "processsingleton" in message:
             raise GroupMetadataError("automation profile 目前被其他 Playwright 視窗使用中") from exc
-        raise GroupMetadataError(f"無法自動抓取社團名稱: {exc}") from exc
+        raise GroupMetadataError(
+            "無法自動抓取社團名稱："
+            + format_failure_message_text(str(exc))
+        ) from exc
 
     if not group_name:
         raise GroupMetadataError("無法自動抓取社團名稱，請稍後重試或填入自訂顯示名稱")

@@ -13,11 +13,15 @@ from facebook_monitor.facebook.feed_dom_permalink_script import FEED_DOM_PERMALI
 from facebook_monitor.facebook.feed_dom_scope_script import FEED_DOM_SCOPE_SCRIPT
 from facebook_monitor.facebook.feed_dom_text_script import FEED_DOM_TEXT_SCRIPT
 from facebook_monitor.facebook.feed_dom_warmup_script import FEED_DOM_WARMUP_SCRIPT
+from facebook_monitor.facebook.permalink_dom import PERMALINK_DOM_HELPERS_SCRIPT
+from facebook_monitor.facebook.text_cleanup_dom import TEXT_CLEANUP_HELPERS_SCRIPT
 from facebook_monitor.facebook.text_snippet_dom import TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
 
 POST_LIKE_ITEMS_SCRIPT = (
     FEED_DOM_BOOTSTRAP_SCRIPT
+    + TEXT_CLEANUP_HELPERS_SCRIPT
     + TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
+    + PERMALINK_DOM_HELPERS_SCRIPT
     + FEED_DOM_TEXT_SCRIPT
     + FEED_DOM_PERMALINK_SCRIPT
     + FEED_DOM_DIAGNOSTICS_SCRIPT

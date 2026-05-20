@@ -37,9 +37,6 @@ FEED_DOM_BOOTSTRAP_SCRIPT = '''async (maxItems) => {
             const noisyTextFragments = [
                 "Facebook",
                 "貼文的相片",
-                "顯示更多",
-                "查看更多",
-                "See more",
                 "Most relevant",
                 "Like",
                 "Comment",
@@ -50,10 +47,6 @@ FEED_DOM_BOOTSTRAP_SCRIPT = '''async (maxItems) => {
                 /\\bsnproSet[a-z0-9]+\\b/gi,
                 /\\bsotoeSrdpn[a-z0-9]+\\b/gi,
             ];
-            const normalizeText = (value) => String(value || "")
-                .replace(/[\\u200B-\\u200D\\uFEFF]/g, "")
-                .replace(/\\s+/g, " ")
-                .trim();
 '''
 
 __all__ = ["FEED_DOM_BOOTSTRAP_SCRIPT"]

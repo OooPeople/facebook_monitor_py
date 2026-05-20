@@ -393,7 +393,10 @@ def _run_uvicorn_with_shutdown_hook(app: Any, **uvicorn_kwargs: Any) -> None:
     config = uvicorn.Config(app, **uvicorn_kwargs)
     server = uvicorn.Server(config)
     app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        return
 
 
 def _server_is_healthy(url: str) -> bool:

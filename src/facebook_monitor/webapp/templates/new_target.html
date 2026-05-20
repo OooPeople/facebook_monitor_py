@@ -33,8 +33,12 @@
       <form class="config-form new-target-form" method="post" action="/targets" data-new-target-form>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="max_items_per_scan" type="hidden" value="{{ target_defaults.max_items_per_scan }}">
-        <input name="auto_load_more" type="hidden" value="on">
-        <input name="auto_adjust_sort" type="hidden" value="on">
+        {% if target_defaults.auto_load_more %}
+          <input name="auto_load_more" type="hidden" value="on">
+        {% endif %}
+        {% if target_defaults.auto_adjust_sort %}
+          <input name="auto_adjust_sort" type="hidden" value="on">
+        {% endif %}
         <input name="exclude_keywords" type="hidden" value="{{ target_keyword_defaults.exclude_keywords_text }}">
         <input name="exclude_ignore_phrases" type="hidden" value="{{ target_keyword_defaults.exclude_ignore_phrases_text }}">
         <section class="new-target-section">

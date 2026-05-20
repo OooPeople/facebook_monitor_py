@@ -7,6 +7,7 @@ one-shot dispatch 模組。
 from __future__ import annotations
 
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import detect_group_posts_route
 from facebook_monitor.worker.errors import WorkerFailure
@@ -18,7 +19,7 @@ def validate_posts_target_route(target: TargetDescriptor) -> None:
     try:
         detect_group_posts_route(target.canonical_url)
     except RouteDetectionError as exc:
-        raise WorkerFailure("target_invalid", str(exc)) from exc
+        raise WorkerFailure(TARGET_INVALID_REASON, str(exc)) from exc
 
 
 def is_valid_posts_target_route(target: TargetDescriptor) -> bool:

@@ -14,8 +14,6 @@ from facebook_monitor.application.target_runtime_service import TargetRuntimeSer
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
-from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
@@ -66,17 +64,13 @@ class TargetMonitoringCommands:
             updated_at=utc_now(),
         )
         self.targets.save(updated_target)
-        self.runtime_states.save(
-            TargetRuntimeState(
-                target_id=target.id,
-                desired_state=(
-                    TargetDesiredState.ACTIVE
-                    if request.enabled and not request.paused
-                    else TargetDesiredState.STOPPED
-                ),
-                runtime_status=TargetRuntimeStatus.IDLE,
-                display_next_due_at=None,
-            )
+        self.runtime.reset_target_desired_state(
+            target.id,
+            (
+                TargetDesiredState.ACTIVE
+                if request.enabled and not request.paused
+                else TargetDesiredState.STOPPED
+            ),
         )
         return updated_target
 
@@ -100,26 +94,7 @@ class TargetMonitoringCommands:
             updated_at=utc_now(),
         )
         self.targets.save(updated_target)
-        existing_state = self.runtime.ensure_runtime_state(target_id)
-        self.runtime_states.save(
-            replace(
-                existing_state,
-                desired_state=TargetDesiredState.ACTIVE,
-                runtime_status=TargetRuntimeStatus.IDLE,
-                scan_requested_at=utc_now(),
-                last_enqueued_at=None,
-                last_started_at=None,
-                last_finished_at=None,
-                last_heartbeat_at=None,
-                last_error="",
-                last_skip_reason="",
-                enqueue_reason="",
-                active_worker_id="",
-                active_page_id="",
-                display_next_due_at=None,
-                updated_at=utc_now(),
-            )
-        )
+        self.runtime.restart_target_runtime(target_id)
         return updated_target
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:

@@ -10,7 +10,44 @@ import pytest
 
 from scripts.admin import release_artifact_validation as validation
 from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import writestr_with_mode
 from tests.helpers.macos_bundle import write_macos_app_bundle_to_zip
+
+
+def _set_windows_version_resources(monkeypatch, version_info: Path) -> None:
+    """將舊測試 fixture 轉成 app/updater 兩份 generated version resource。"""
+
+    text = version_info.read_text(encoding="utf-8")
+    app_info = version_info.with_name("windows_app_version_info.txt")
+    updater_info = version_info.with_name("windows_updater_version_info.txt")
+    app_info.write_text(
+        text
+        + "StringStruct('InternalName', 'facebook-monitor')\n"
+        + "StringStruct('OriginalFilename', 'facebook-monitor.exe')\n",
+        encoding="utf-8",
+    )
+    updater_info.write_text(
+        text
+        + "StringStruct('InternalName', 'facebook-monitor-updater')\n"
+        + "StringStruct('OriginalFilename', 'facebook-monitor-updater.exe')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        validation,
+        "WINDOWS_VERSION_RESOURCE_FILES",
+        (
+            validation.WindowsVersionResourceFile(
+                path=app_info,
+                internal_name="facebook-monitor",
+                original_filename="facebook-monitor.exe",
+            ),
+            validation.WindowsVersionResourceFile(
+                path=updater_info,
+                internal_name="facebook-monitor-updater",
+                original_filename="facebook-monitor-updater.exe",
+            ),
+        ),
+    )
 
 
 def test_validate_release_artifacts_accepts_matching_zip_and_sha(
@@ -20,7 +57,7 @@ def test_validate_release_artifacts_accepts_matching_zip_and_sha(
     """zip、sha、版本資訊與必要檔案一致時通過。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -56,11 +93,60 @@ def test_validate_release_artifacts_accepts_matching_zip_and_sha(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
     assert result.ok
+
+
+def test_validate_release_artifacts_rejects_generated_resource_identity_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """generated version resource 檔也必須分別對齊 app/updater identity。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
+            archive.writestr(entry, "x")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+    version_info = tmp_path / "windows_version_info.txt"
+    version_info.write_text(
+        "filevers=(0, 1, 0, 0)\n"
+        "prodvers=(0, 1, 0, 0)\n"
+        "StringStruct('ProductVersion', '0.1.0')\n"
+        "StringStruct('FileVersion', '0.1.0.0')\n",
+        encoding="utf-8",
+    )
+    _set_windows_version_resources(monkeypatch, version_info)
+    updater_resource = validation.WINDOWS_VERSION_RESOURCE_FILES[1]
+    updater_resource.path.write_text(
+        version_info.read_text(encoding="utf-8")
+        + "StringStruct('InternalName', 'facebook-monitor-updater')\n"
+        + "StringStruct('OriginalFilename', 'facebook-monitor.exe')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        validation,
+        "_read_windows_version_info",
+        lambda path: ("0.1.0.0", "0.1.0"),
+    )
+
+    result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
+
+    assert not result.ok
+    assert any(
+        "windows version resource OriginalFilename does not match"
+        in message
+        for message in result.messages
+    )
 
 
 def test_validate_release_artifacts_rejects_sha_mismatch(
@@ -70,7 +156,7 @@ def test_validate_release_artifacts_rejects_sha_mismatch(
     """`.sha256` 內容不一致時要失敗。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -104,12 +190,58 @@ def test_validate_release_artifacts_rejects_sha_mismatch(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
     assert not result.ok
     assert any("sha256 file mismatch" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_windows_zip_with_private_data(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Windows artifact 也不可夾帶 profiles/logs/session 類 runtime 私人資料。"""
+
+    dist_dir = tmp_path / "dist"
+    version_info = tmp_path / "windows_version_info.txt"
+    version_info.write_text(
+        "filevers=(0, 1, 0, 0)\n"
+        "prodvers=(0, 1, 0, 0)\n"
+        "StringStruct('ProductVersion', '0.1.0')\n"
+        "StringStruct('FileVersion', '0.1.0.0')\n",
+        encoding="utf-8",
+    )
+    zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
+    dist_dir.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for name in (
+            "facebook-monitor/facebook-monitor.exe",
+            "facebook-monitor/facebook-monitor-updater.exe",
+            "facebook-monitor/_internal/python313.dll",
+            "facebook-monitor/_internal/browser/chrome.exe",
+            "facebook-monitor/_internal/assets/facebook-monitor.ico",
+            "facebook-monitor/_internal/assets/facebook-monitor-tray.ico",
+        ):
+            archive.writestr(name, "x")
+        archive.writestr("facebook-monitor/profiles/automation_default/Cookies", "private")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(
+        validation,
+        "_read_windows_version_info",
+        lambda path: ("0.1.0.0", "0.1.0"),
+    )
+    _set_windows_version_resources(monkeypatch, version_info)
+
+    result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
+
+    assert not result.ok
+    assert any("runtime/private data" in message for message in result.messages)
 
 
 def test_validate_release_artifacts_checks_exe_metadata_inside_zip(
@@ -119,7 +251,7 @@ def test_validate_release_artifacts_checks_exe_metadata_inside_zip(
     """zip 內 EXE stale 時，即使 loose dist 目錄是新版也不能通過。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -159,12 +291,59 @@ def test_validate_release_artifacts_checks_exe_metadata_inside_zip(
         return "0.0.9.0", "0.0.9"
 
     monkeypatch.setattr(validation, "_read_windows_version_info", fake_version_info)
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
     assert not result.ok
     assert any("FileVersion mismatch" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_updater_original_filename_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """updater EXE 的 OriginalFilename 不可沿用主程式檔名。"""
+
+    dist_dir = tmp_path / "dist"
+    version_info = tmp_path / "windows_version_info.txt"
+    version_info.write_text(
+        "filevers=(0, 1, 0, 0)\n"
+        "prodvers=(0, 1, 0, 0)\n"
+        "StringStruct('ProductVersion', '0.1.0')\n"
+        "StringStruct('FileVersion', '0.1.0.0')\n",
+        encoding="utf-8",
+    )
+    zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
+    dist_dir.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
+            archive.writestr(entry, entry)
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    def fake_version_info(path: Path) -> validation.WindowsExeVersionInfo:
+        original_filename = (
+            ""
+            if path.name == "facebook-monitor-updater.exe"
+            else path.name
+        )
+        return validation.WindowsExeVersionInfo(
+            file_version="0.1.0.0",
+            product_version="0.1.0",
+            original_filename=original_filename,
+        )
+
+    monkeypatch.setattr(validation, "_read_windows_version_info", fake_version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
+
+    result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
+
+    assert not result.ok
+    assert any("OriginalFilename mismatch" in message for message in result.messages)
 
 
 def test_validate_release_artifacts_rejects_stale_fixed_file_info(
@@ -174,7 +353,7 @@ def test_validate_release_artifacts_rejects_stale_fixed_file_info(
     """StringStruct 正確但 FixedFileInfo stale 時仍要失敗。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 0, 9, 0)\n"
         "prodvers=(0, 0, 9, 0)\n"
@@ -209,7 +388,7 @@ def test_validate_release_artifacts_rejects_stale_fixed_file_info(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
@@ -224,7 +403,7 @@ def test_validate_release_artifacts_rejects_duplicate_zip_entries(
     """duplicate normalized zip entries 應失敗，避免 release 內容不確定。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -235,7 +414,7 @@ def test_validate_release_artifacts_rejects_duplicate_zip_entries(
     zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
     dist_dir.mkdir()
     with zipfile.ZipFile(zip_path, "w") as archive:
-        for entry in validation.REQUIRED_ZIP_ENTRIES:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
             archive.writestr(entry, "x")
         with pytest.warns(UserWarning, match="Duplicate name"):
             archive.writestr("facebook-monitor/facebook-monitor.exe", "duplicate")
@@ -249,7 +428,7 @@ def test_validate_release_artifacts_rejects_duplicate_zip_entries(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
@@ -264,7 +443,7 @@ def test_validate_release_artifacts_rejects_expected_tag_mismatch(
     """呼叫端提供 tag 時，必須與 version 對齊。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -275,7 +454,7 @@ def test_validate_release_artifacts_rejects_expected_tag_mismatch(
     zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
     dist_dir.mkdir()
     with zipfile.ZipFile(zip_path, "w") as archive:
-        for entry in validation.REQUIRED_ZIP_ENTRIES:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
             archive.writestr(entry, "x")
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -287,7 +466,7 @@ def test_validate_release_artifacts_rejects_expected_tag_mismatch(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(
         version="0.1.0",
@@ -306,7 +485,7 @@ def test_validate_release_artifacts_accepts_zip_without_loose_dist_app(
     """artifact validation 的 source of truth 是 zip，不依賴 loose dist app 目錄。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -317,7 +496,7 @@ def test_validate_release_artifacts_accepts_zip_without_loose_dist_app(
     zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
     dist_dir.mkdir()
     with zipfile.ZipFile(zip_path, "w") as archive:
-        for entry in validation.REQUIRED_ZIP_ENTRIES:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
             archive.writestr(entry, "x")
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -329,7 +508,7 @@ def test_validate_release_artifacts_accepts_zip_without_loose_dist_app(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
@@ -343,7 +522,7 @@ def test_validate_release_artifacts_rejects_missing_python_runtime(
     """zip 缺 Python runtime DLL 時必須失敗。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -354,7 +533,7 @@ def test_validate_release_artifacts_rejects_missing_python_runtime(
     zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
     dist_dir.mkdir()
     with zipfile.ZipFile(zip_path, "w") as archive:
-        for entry in validation.REQUIRED_ZIP_ENTRIES:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
             if entry.endswith("python313.dll"):
                 continue
             archive.writestr(entry, "x")
@@ -368,7 +547,7 @@ def test_validate_release_artifacts_rejects_missing_python_runtime(
         "_read_windows_version_info",
         lambda path: ("0.1.0.0", "0.1.0"),
     )
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
 
@@ -383,7 +562,7 @@ def test_validate_release_artifacts_checks_signer_on_zipped_exes(
     """signer validation 應套用到 zip 內 EXE，不是 loose dist app。"""
 
     dist_dir = tmp_path / "dist"
-    version_info = tmp_path / "version_info.txt"
+    version_info = tmp_path / "windows_version_info.txt"
     version_info.write_text(
         "filevers=(0, 1, 0, 0)\n"
         "prodvers=(0, 1, 0, 0)\n"
@@ -394,7 +573,7 @@ def test_validate_release_artifacts_checks_signer_on_zipped_exes(
     zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
     dist_dir.mkdir()
     with zipfile.ZipFile(zip_path, "w") as archive:
-        for entry in validation.REQUIRED_ZIP_ENTRIES:
+        for entry in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
             content = "bad-signer" if entry.endswith(".exe") else "x"
             archive.writestr(entry, content)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
@@ -414,7 +593,7 @@ def test_validate_release_artifacts_checks_signer_on_zipped_exes(
         return "Valid", "CN=Expected Publisher"
 
     monkeypatch.setattr(validation, "_read_authenticode_signature", fake_signature)
-    monkeypatch.setattr(validation, "VERSION_INFO_FILE", version_info)
+    _set_windows_version_resources(monkeypatch, version_info)
 
     result = validation.validate_release_artifacts(
         version="0.1.0",
@@ -435,17 +614,22 @@ def test_validate_release_artifacts_accepts_macos_arm64_onedir_zip(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
-            "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
             archive,
             "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         archive.writestr(
@@ -477,20 +661,25 @@ def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
-            "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
             archive,
             (
                 "facebook-monitor/browser/Google Chrome for Testing.app/"
                 "Contents/MacOS/Google Chrome for Testing"
             ),
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         _write_macos_app_bundle(archive)
@@ -509,6 +698,50 @@ def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
     assert result.ok
 
 
+def test_validate_release_artifacts_rejects_macos_browser_outside_layout(
+    tmp_path: Path,
+) -> None:
+    """macOS bundled browser 必須位於 updater layout policy 接受的精確路徑。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/not-browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("macOS Chromium executable" in message for message in result.messages)
+
+
 def test_validate_release_artifacts_rejects_macos_zip_without_executable_bit(
     tmp_path: Path,
 ) -> None:
@@ -518,17 +751,22 @@ def test_validate_release_artifacts_rejects_macos_zip_without_executable_bit(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o644)
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o644,
+        )
+        writestr_with_mode(
             archive,
             "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            MACHO_ARM64_BYTES + b"updater",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
             "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         _write_macos_app_bundle(archive)
@@ -557,17 +795,22 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
-            "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
             archive,
             "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         _write_macos_app_bundle(archive)
@@ -597,17 +840,22 @@ def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
-            "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
             archive,
             "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         _write_macos_app_bundle(archive, launcher_content=b"#!/bin/sh\nexec app\n")
@@ -627,6 +875,45 @@ def test_validate_release_artifacts_rejects_macos_shell_app_launcher(
     assert any("arm64 Mach-O" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_macos_non_macho_root_executable(
+    tmp_path: Path,
+) -> None:
+    """macOS root app/updater/browser 不能只是有 executable bit，還要是 arm64 Mach-O。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(archive, "facebook-monitor/facebook-monitor", b"not macho", 0o755)
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip executable must be arm64 Mach-O" in message for message in result.messages)
+
+
 def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
     tmp_path: Path,
 ) -> None:
@@ -636,17 +923,22 @@ def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
     dist_dir.mkdir()
     zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        _writestr_with_mode(archive, "facebook-monitor/facebook-monitor", "app", 0o755)
-        _writestr_with_mode(
+        writestr_with_mode(
             archive,
-            "facebook-monitor/facebook-monitor-updater",
-            "updater",
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
             0o755,
         )
-        _writestr_with_mode(
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
             archive,
             "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
-            "chromium",
+            MACHO_ARM64_BYTES + b"chromium",
             0o755,
         )
         _write_macos_app_bundle(archive, version="0.0.9")
@@ -667,17 +959,92 @@ def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
     assert any("bundle version" in message for message in result.messages)
 
 
-def _writestr_with_mode(
-    archive: zipfile.ZipFile,
-    name: str,
-    content: str | bytes,
-    mode: int,
+def test_validate_release_artifacts_rejects_macos_string_hidden_dock_plist(
+    tmp_path: Path,
 ) -> None:
-    """寫入帶 POSIX mode 的 zip member。"""
+    """macOS Info.plist 用字串表示 LSUIElement 也不可讓 app 隱藏 Dock。"""
 
-    info = zipfile.ZipInfo(name)
-    info.external_attr = (mode & 0o777) << 16
-    archive.writestr(info, content)
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, extra_plist_values={"LSUIElement": "1"})
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("visible in Dock" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_macos_integer_background_only_plist(
+    tmp_path: Path,
+) -> None:
+    """macOS Info.plist 用非零 integer 表示 LSBackgroundOnly 也不可隱藏 Dock。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, extra_plist_values={"LSBackgroundOnly": 2})
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("visible in Dock" in message for message in result.messages)
 
 
 def _write_macos_app_bundle(
@@ -685,6 +1052,7 @@ def _write_macos_app_bundle(
     *,
     version: str = "0.1.0",
     launcher_content: bytes = MACHO_ARM64_BYTES,
+    extra_plist_values: dict[str, object] | None = None,
 ) -> None:
     """寫入測試用 Finder/Dock `.app` launcher bundle。"""
 
@@ -692,4 +1060,5 @@ def _write_macos_app_bundle(
         archive,
         version=version,
         launcher_content=launcher_content,
+        extra_plist_values=extra_plist_values,
     )

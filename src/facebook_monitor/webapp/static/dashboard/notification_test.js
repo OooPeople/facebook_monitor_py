@@ -1,5 +1,8 @@
 import { csrfHeaders } from "/static/dashboard/csrf.js";
-import { showInlineStatus } from "/static/dashboard/utils.js";
+import {
+  formatClientErrorMessage,
+  showInlineStatus,
+} from "/static/dashboard/utils.js";
 
 const readJsonResponse = async (response) => {
   try {
@@ -44,7 +47,12 @@ export const setupNotificationTest = () => {
       }
       showInlineStatus(statusElement, payload.message || "測試通知已發送", "saved", 3500);
     } catch (error) {
-      showInlineStatus(statusElement, error?.message || "測試通知失敗", "dirty", 5000);
+      showInlineStatus(
+        statusElement,
+        formatClientErrorMessage(error, "測試通知失敗"),
+        "dirty",
+        5000,
+      );
     } finally {
       setButtonBusy(button, false);
     }

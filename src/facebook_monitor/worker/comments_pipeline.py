@@ -16,6 +16,9 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
+from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
+from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.facebook.comment_extractor import CommentCollectionMeta
 from facebook_monitor.facebook.comment_extractor import CommentExtractRoundStats
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_diagnostics
@@ -35,6 +38,9 @@ from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannabl
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
 from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata
+from facebook_monitor.worker.scan_metadata import SORT_ADJUST_SKIP_COLLECTION_MODE
+from facebook_monitor.worker.scan_metadata import build_sort_adjust_skip_meta
+from facebook_monitor.worker.scan_metadata import with_scan_skipped_reason
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
@@ -131,9 +137,9 @@ def build_comments_sort_unconfirmed_skip_metadata(
 ) -> dict[str, Any]:
     """建立留言排序未確認時的保護性跳過診斷。"""
 
-    return CommentScanMetadata(
+    metadata = CommentScanMetadata(
         worker="comments_scan",
-        collection_strategy="sort_adjust_skip",
+        collection_strategy=SORT_ADJUST_SKIP_COLLECTION_MODE,
         comment_count=0,
         target_count=config.max_items_per_scan,
         candidate_count=0,
@@ -147,14 +153,14 @@ def build_comments_sort_unconfirmed_skip_metadata(
         stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
         comment_sort=sort_adjust_result.to_metadata(),
         comment_extract_rounds=(),
-        comments_meta={
-            "mode": "sort_adjust_skip",
-            "stopReason": SORT_ADJUST_UNCONFIRMED_STOP_REASON,
-        },
-    ).to_metadata() | {
-        "scan_skipped": True,
-        "skip_reason": SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
-    }
+        comments_meta=build_sort_adjust_skip_meta(
+            stop_reason=SORT_ADJUST_UNCONFIRMED_STOP_REASON,
+        ),
+    ).to_metadata()
+    return with_scan_skipped_reason(
+        metadata,
+        skip_reason=SORT_ADJUST_UNCONFIRMED_SKIP_REASON,
+    )
 
 
 def scan_comments_target_page(
@@ -216,7 +222,7 @@ def scan_comments_target_page(
         auto_load_more=config.auto_load_more,
     )
     if not items:
-        raise WorkerFailure("extractor_empty", "No comment-like items were extracted.")
+        raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No comment-like items were extracted.")
     return finalize_comments_pipeline_scan(
         page_url=str(page.url),
         app=app,
@@ -295,7 +301,7 @@ async def scan_comments_target_page_async(
         auto_load_more=config.auto_load_more,
     )
     if not items:
-        raise WorkerFailure("extractor_empty", "No comment-like items were extracted.")
+        raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No comment-like items were extracted.")
     return finalize_comments_pipeline_scan(
         page_url=str(page.url),
         app=app,
@@ -319,9 +325,15 @@ def ensure_comments_target(target: TargetDescriptor) -> None:
     """確認呼叫端傳入 comments target。"""
 
     if target.target_kind != TargetKind.COMMENTS:
-        raise WorkerFailure("target_kind_unsupported", "Only comments targets are supported.")
+        raise WorkerFailure(
+            TARGET_KIND_UNSUPPORTED_REASON,
+            "Only comments targets are supported.",
+        )
     if not target.parent_post_id or not target.scope_id:
-        raise WorkerFailure("target_invalid", "Comments target requires parent_post_id and scope_id.")
+        raise WorkerFailure(
+            TARGET_INVALID_REASON,
+            "Comments target requires parent_post_id and scope_id.",
+        )
 
 
 def finalize_comments_pipeline_scan(

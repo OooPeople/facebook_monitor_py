@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from facebook_monitor.core.scan_limits import DEFAULT_TARGET_POSTS
+
 
 DEFAULT_REFRESH_SECONDS = 60
 
@@ -23,7 +25,7 @@ class TargetConfigDefaults:
     jitter_enabled: bool = True
     exclude_keywords: tuple[str, ...] = ("徵", "收", "已售")
     exclude_ignore_phrases: tuple[str, ...] = ("全收", "回收")
-    max_items_per_scan: int = 5
+    max_items_per_scan: int = DEFAULT_TARGET_POSTS
     auto_load_more: bool = True
     auto_adjust_sort: bool = True
     enable_desktop_notification: bool = False
@@ -49,6 +51,9 @@ class SchedulerRuntimeDefaults:
     stale_running_after_seconds: float = 180
     heartbeat_interval_seconds: float = 30
     metadata_refresh_target_limit_per_tick: int = 1
+    cover_image_refresh_target_limit_per_tick: int = 1
+    cover_image_load_failure_min_interval_seconds: int = 21600
+    page_load_timeout_failure_limit: int = 3
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class BrowserRuntimeDefaults:
     viewport_width: int = 1366
     viewport_height: int = 900
     timeout_seconds: float = 120.0
+    group_metadata_wait_ms: int = 3000
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,26 @@ class UpdaterRuntimeDefaults:
 
 
 @dataclass(frozen=True)
+class NotificationRuntimeDefaults:
+    """保存 notification sender、outbox 與 event retention 預設值。"""
+
+    stale_processing_seconds: int = 300
+    dispatch_batch_limit: int = 10
+    events_per_target_limit: int = 500
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_timeout_seconds: float = 15.0
+    ntfy_ascii_title_fallback: str = "Facebook group match"
+    discord_username: str = "facebook_monitor_py"
+    discord_content_limit: int = 1900
+    discord_timeout_seconds: float = 15.0
+    discord_rate_limit_retry_limit: int = 1
+    discord_rate_limit_retry_after_cap_seconds: float = 5.0
+    desktop_balloon_tip_milliseconds: int = 5000
+    desktop_cleanup_sleep_milliseconds: int = 1000
+    desktop_command_timeout_seconds: float = 10.0
+
+
+@dataclass(frozen=True)
 class PersistenceQueryDefaults:
     """保存 repository read/query fallback 的 Python 版預設值。"""
 
@@ -105,4 +131,5 @@ PYTHON_BROWSER_RUNTIME_DEFAULTS = BrowserRuntimeDefaults()
 PYTHON_WEBUI_RUNTIME_DEFAULTS = WebUiRuntimeDefaults()
 PYTHON_PROFILE_LOGIN_DEFAULTS = ProfileLoginDefaults()
 PYTHON_UPDATER_RUNTIME_DEFAULTS = UpdaterRuntimeDefaults()
+PYTHON_NOTIFICATION_RUNTIME_DEFAULTS = NotificationRuntimeDefaults()
 PYTHON_PERSISTENCE_QUERY_DEFAULTS = PersistenceQueryDefaults()

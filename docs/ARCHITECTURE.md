@@ -80,12 +80,12 @@
 - Web UI 只負責下載、驗證 SHA256、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
 - `facebook-monitor-updater.exe` / `facebook-monitor-updater` 是獨立 PyInstaller onedir entrypoint。從 Web UI 啟動時會複製 updater binary 與同層 `_internal/` 到唯一 temp 目錄，避免 updater 鎖住原 app base dir；舊 temp updater runtime copy 會依保留時間清理。
 - updater 在主程式釋放 app instance lock 後，會重驗 SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、備份目前 app files、替換 app files，並保留 `data/`。
-- macOS updater 解壓 staging 時會保留 zip 內 POSIX executable bit，避免覆蓋後的 `facebook-monitor`、`facebook-monitor-updater` 或 bundled browser 失去執行權限。
+- macOS updater 解壓 staging 時會保留 zip 內 POSIX executable bit 與安全的 tree-internal symlink，避免覆蓋後的 `facebook-monitor`、`facebook-monitor-updater`、bundled browser 或 PyInstaller runtime layout 失效；指向 app tree 外部的 symlink 會被拒絕。
 - pending update path 必須受 runtime path resolver 管理；`zip_path` 必須位於 `<data-dir>/updates/`，`runtime_dir` 必須是 `<data-dir>/runtime`，DB/profile 路徑必須留在 data tree 內，logs 路徑若在 app root 內則必須位於 data tree 內。
 - 成功套用後 updater 會清除本次下載 zip、`.sha256`、pending handoff 與 staging，並保留最近 3 份 app backup 供人工追查或 rollback；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
 - 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
 - updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
-- release artifact validation 會檢查 app version、Windows version metadata、platform zip 檔名、`.sha256` 內容、zip 內必要 onedir 檔案、Windows EXE metadata、macOS `.app` Info.plist version、arm64 Mach-O launcher、macOS executable bit、可選 tag 與可選 Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
+- release artifact validation 會檢查 app version、Windows version metadata、platform zip 檔名、`.sha256` 內容、zip 內必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE metadata、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 tag 與可選 Windows Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
 - SHA256 只驗證下載完整性，不驗證發布者身分；尚未加入 signed manifest 或 detached signature。Authenticode signer validation hook 已存在，但實際簽章需要正式 code signing 憑證。
 
 ## Persistence

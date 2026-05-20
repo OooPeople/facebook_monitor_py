@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.notification_channels import copy_notification_settings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import new_id
 from facebook_monitor.core.models import utc_now
@@ -72,7 +73,7 @@ class SidebarGroupConfigTemplate:
     def to_target_config(self, *, target_id: str) -> TargetConfig:
         """將模板內容複製成 target-scoped config。"""
 
-        return TargetConfig(
+        config = TargetConfig(
             target_id=target_id,
             include_keywords=self.include_keywords,
             exclude_keywords=self.exclude_keywords,
@@ -84,9 +85,5 @@ class SidebarGroupConfigTemplate:
             max_items_per_scan=self.max_items_per_scan,
             auto_load_more=self.auto_load_more,
             auto_adjust_sort=self.auto_adjust_sort,
-            enable_desktop_notification=self.enable_desktop_notification,
-            enable_ntfy=self.enable_ntfy,
-            ntfy_topic=self.ntfy_topic,
-            enable_discord_notification=self.enable_discord_notification,
-            discord_webhook=self.discord_webhook,
         )
+        return copy_notification_settings(config, self)

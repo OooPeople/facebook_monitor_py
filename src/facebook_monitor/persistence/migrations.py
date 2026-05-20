@@ -543,6 +543,69 @@ def migrate_24_to_25(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_25_to_26(connection: sqlite3.Connection) -> None:
+    """新增 scan failure 連續失敗計數欄位。"""
+
+    for column in (
+        MigrationColumn(
+            "target_runtime_state",
+            "consecutive_failure_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "target_runtime_state",
+            "consecutive_failure_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+
+
+def migrate_26_to_27(connection: sqlite3.Connection) -> None:
+    """新增 target cover image URL 背景刷新狀態表。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            requested_at TEXT NOT NULL DEFAULT '',
+            last_attempted_at TEXT NOT NULL DEFAULT '',
+            last_succeeded_at TEXT NOT NULL DEFAULT '',
+            last_failed_at TEXT NOT NULL DEFAULT '',
+            last_reported_url TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cover_image_refresh_status_requested
+            ON target_cover_image_refresh_state(status, requested_at);
+        """
+    )
+
+
+def migrate_27_to_28(connection: sqlite3.Connection) -> None:
+    """補上 cover image refresh 的診斷欄位。"""
+
+    for column in (
+        MigrationColumn(
+            "target_cover_image_refresh_state",
+            "last_resolved_url",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "target_cover_image_refresh_state",
+            "last_result",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "target_cover_image_refresh_state",
+            "changed",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+
+
 MIGRATIONS: dict[int, Migration] = {
     10: migrate_10_to_11,
     11: migrate_11_to_12,
@@ -559,6 +622,9 @@ MIGRATIONS: dict[int, Migration] = {
     22: migrate_22_to_23,
     23: migrate_23_to_24,
     24: migrate_24_to_25,
+    25: migrate_25_to_26,
+    26: migrate_26_to_27,
+    27: migrate_27_to_28,
 }
 
 
@@ -658,5 +724,8 @@ __all__ = [
     "migrate_22_to_23",
     "migrate_23_to_24",
     "migrate_24_to_25",
+    "migrate_25_to_26",
+    "migrate_26_to_27",
+    "migrate_27_to_28",
     "run_known_migrations",
 ]

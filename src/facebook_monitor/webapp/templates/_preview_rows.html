@@ -1,4 +1,4 @@
-{% macro preview_rows(rows, empty_text) %}
+{% macro preview_rows(rows, empty_text, empty_kind="") %}
   {% if rows %}
     <ol class="preview-list">
       {% for preview in rows %}
@@ -29,9 +29,9 @@
   {% else %}
     <div class="preview-empty">
       <p>{{ empty_text }}</p>
-      {% if empty_text == "尚無掃描紀錄" %}
+      {% if empty_kind == "latest_scan" %}
         <span>啟動 target 後，最近掃描到的內容會顯示在這裡。</span>
-      {% elif empty_text == "尚無命中紀錄" %}
+      {% elif empty_kind == "hit_records" %}
         <span>符合關鍵字的貼文或留言會保存於此。</span>
       {% endif %}
     </div>

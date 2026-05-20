@@ -6,6 +6,7 @@ target registry/config/runtime/monitoring command services。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
@@ -24,19 +25,36 @@ from facebook_monitor.application.target_requests import UpdateTargetConfigReque
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.models import CoverImageRefreshRequestStatus
+from facebook_monitor.core.models import TargetCoverImageRefreshState
+from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
+from facebook_monitor.persistence.repositories.target_cover_image_refresh import (
+    TargetCoverImageRefreshRepository,
+)
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+
+
+@dataclass(frozen=True)
+class CoverImageRefreshRequestResult:
+    """描述 UI 壞圖上報轉成背景刷新排程的結果。"""
+
+    status: CoverImageRefreshRequestStatus
+    queued: bool = False
+    reason: str = ""
 
 
 class TargetApplicationService:
@@ -46,6 +64,7 @@ class TargetApplicationService:
         self,
         targets: TargetRepository,
         configs: TargetConfigRepository,
+        cover_image_refreshes: TargetCoverImageRefreshRepository,
         runtime_states: TargetRuntimeStateRepository,
         seen_items: SeenItemRepository,
         scan_scope_state: ScanScopeStateRepository,
@@ -53,6 +72,7 @@ class TargetApplicationService:
     ) -> None:
         self.targets = targets
         self.configs = configs
+        self.cover_image_refreshes = cover_image_refreshes
         self.runtime_states = runtime_states
         self.seen_items = seen_items
         self.scan_scope_state = scan_scope_state
@@ -109,6 +129,109 @@ class TargetApplicationService:
             group_cover_image_url=group_cover_image_url,
             overwrite_name=overwrite_name,
         )
+
+    def refresh_target_group_cover_image(
+        self,
+        target_id: str,
+        group_cover_image_url: str,
+    ) -> TargetDescriptor:
+        """只更新 target 社團封面圖 URL，不覆蓋名稱或 metadata status。"""
+
+        return self.registry_service.refresh_target_group_cover_image(
+            target_id,
+            group_cover_image_url,
+        )
+
+    def request_target_cover_image_refresh(
+        self,
+        target_id: str,
+        *,
+        reported_url: str,
+        min_interval_seconds: int,
+    ) -> CoverImageRefreshRequestResult:
+        """依 UI 壞圖 hint 排程 image-only cover refresh。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            return CoverImageRefreshRequestResult(
+                status=CoverImageRefreshRequestStatus.NOT_FOUND,
+                reason="target_not_found",
+            )
+        normalized_reported_url = reported_url.strip()
+        if not normalized_reported_url:
+            return CoverImageRefreshRequestResult(
+                status=CoverImageRefreshRequestStatus.INVALID_URL,
+                reason="missing_reported_url",
+            )
+        if normalized_reported_url != target.group_cover_image_url.strip():
+            return CoverImageRefreshRequestResult(
+                status=CoverImageRefreshRequestStatus.IGNORED_STALE_URL,
+                reason="reported_url_is_not_current",
+            )
+        status = self.cover_image_refreshes.request_refresh(
+            target_id=target.id,
+            reported_url=normalized_reported_url,
+            min_interval_seconds=min_interval_seconds,
+        )
+        return CoverImageRefreshRequestResult(
+            status=status,
+            queued=status == CoverImageRefreshRequestStatus.QUEUED,
+        )
+
+    def list_pending_cover_image_refreshes(
+        self,
+        *,
+        limit: int,
+    ) -> list[TargetCoverImageRefreshState]:
+        """列出等待 resident worker 消化的 image-only cover refresh jobs。"""
+
+        return self.cover_image_refreshes.list_pending(limit=limit)
+
+    def mark_target_cover_image_refresh_attempted(self, target_id: str) -> None:
+        """記錄 target cover image refresh 已開始嘗試。"""
+
+        self.cover_image_refreshes.mark_attempted(target_id)
+
+    def mark_target_cover_image_refresh_succeeded(
+        self,
+        target_id: str,
+        *,
+        resolved_url: str,
+        changed: bool,
+        result: TargetCoverImageRefreshResult | None = None,
+    ) -> None:
+        """標記 target cover image refresh 成功。"""
+
+        self.cover_image_refreshes.mark_succeeded(
+            target_id,
+            resolved_url=resolved_url,
+            changed=changed,
+            result=result,
+        )
+
+    def mark_target_cover_image_refresh_stale_skipped(
+        self,
+        target_id: str,
+        *,
+        current_url: str,
+    ) -> None:
+        """現行圖片 URL 已非 UI 上報 URL 時，清除過期 cover refresh job。"""
+
+        self.cover_image_refreshes.mark_stale_skipped(
+            target_id,
+            current_url=current_url,
+        )
+
+    def mark_target_cover_image_refresh_failed(
+        self,
+        target_id: str,
+        error: str,
+        *,
+        result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.FAILED,
+    ) -> None:
+        """標記 target cover image refresh 失敗。"""
+
+        self.cover_image_refreshes.mark_failed(target_id, error, result=result)
 
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
         """標記 target 正等待 resident worker 補齊 metadata。"""
@@ -257,10 +380,43 @@ class TargetApplicationService:
 
         return self.runtime_service.mark_target_idle(target_id)
 
-    def mark_target_error(self, target_id: str, error: str) -> TargetRuntimeState:
+    def mark_target_error(
+        self,
+        target_id: str,
+        error: str,
+        *,
+        failure_reason: str = "",
+        failure_count: int = 0,
+    ) -> TargetRuntimeState:
         """標記單一 target 本輪掃描發生錯誤。"""
 
-        return self.runtime_service.mark_target_error(target_id, error)
+        return self.runtime_service.mark_target_error(
+            target_id,
+            error,
+            failure_reason=failure_reason,
+            failure_count=failure_count,
+        )
+
+    def decide_scan_failure(
+        self,
+        target_id: str,
+        reason: str,
+        *,
+        source: ScanFailureSource,
+    ) -> ScanFailureDecision:
+        """依目前 runtime streak 決定 scan failure 處置。"""
+
+        return self.runtime_service.decide_scan_failure(target_id, reason, source=source)
+
+    def apply_scan_failure_decision(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+        error: str,
+    ) -> TargetRuntimeState:
+        """依共用 failure decision 更新 target runtime state。"""
+
+        return self.runtime_service.apply_scan_failure_decision(target_id, decision, error)
 
     def recover_stale_running_targets(
         self,
@@ -326,6 +482,7 @@ class TargetApplicationService:
 
 
 __all__ = [
+    "CoverImageRefreshRequestResult",
     "DEFAULT_WEBUI_FIXED_REFRESH_SECONDS",
     "RecordScanRequest",
     "ScanApplicationService",

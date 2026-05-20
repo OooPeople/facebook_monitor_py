@@ -1,151 +1,57 @@
 # macOS Apple Silicon Packaging Handoff
 
-本文件是可追蹤的 macOS Apple Silicon 打包接手文件，供 Mac 端 Codex 或人工測試使用。它記錄目前 macOS frozen artifact 的狀態與下一步。
+本文件只保留 macOS 打包接手所需的「目前狀態、最近驗證與後續邊界」。
+穩定打包命令、zip / SHA256 產生方式與 frozen smoke checklist 的主來源是
+`packaging/README.md`；使用者操作看 `docs/USAGE.md`；updater 架構語義看
+`docs/ARCHITECTURE.md#frozen-updater`。
 
-## Scope
+## Current Status
 
-- 目前只支援 macOS Apple Silicon / arm64。
-- Intel Mac 不列入目前打包與 updater 範圍。
-- onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；使用者應從這個 `.app` 啟動，避免 Finder 直接執行 Unix executable 時跳出 Terminal，並讓 Dock item 在主程式執行期間持續存在。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版會自動轉交給 `.app` launcher。
-- macOS Web UI 支援「檢查、下載、SHA256 驗證、handoff、temp updater 套用」。
-- 尚未做 Developer ID signing / notarization。
+- 目前只支援 macOS Apple Silicon / arm64；Intel Mac 不在目前 artifact 範圍。
+- macOS artifact 是 PyInstaller onedir zip，內含 `Facebook Monitor.app`
+  Finder / Dock native launcher。
+- `Facebook Monitor.app` 是 Dock 母程序，會啟動同一個 onedir 內的
+  `facebook-monitor` child process；Dock Quit 會終止 child process。
+- 若舊版 updater 或 Finder 直接啟動 root `facebook-monitor` binary，新版
+  frozen launcher 會自動轉交給 `.app` native launcher，避免 Dock item 消失。
+- macOS Web UI 已支援 stable Release 檢查、下載、SHA256 驗證、handoff、
+  temp updater 套用與重啟。
+- 尚未做 Developer ID signing / notarization；測試或使用者環境可能仍需處理
+  Gatekeeper / quarantine。
 
-## Current State
+## Recent Verification
 
-已完成：
+- 2026-05-20 已發布 macOS `v0.3.2` release，包含
+  `facebook-monitor-0.3.2-macos-arm64-onedir.zip` 與同名 `.sha256`。
+- 2026-05-20 使用者已實機驗證：測試用 `0.3.1` frozen app 可透過設定頁
+  「檢查更新 / 下載並套用」更新到 `0.3.2`。
+- 同次實機驗證確認：更新後 Dock 圖示會持續顯示，且從 Dock Quit 可成功關閉
+  主程式。
+- 本地驗證曾覆蓋 artifact validation、frozen updater smoke、direct root
+  binary self-redirect 與 `.app` launcher / child process lifecycle。
+- 目前 release / runtime 驗證也覆蓋 macOS staging app root 的 arm64 Mach-O、
+  executable bit、Info.plist version / Dock visibility、私密 runtime data 排除，
+  安全的 tree-internal symlink 保留，以及 temp updater 目錄 symlink / ownership /
+  permission 防護。
 
-- `packaging/pyinstaller/facebook_monitor_macos.spec`
-- `src/facebook_monitor/updates/artifacts.py`
-- `src/facebook_monitor/updates/platforms.py`
-- macOS artifact validation：`scripts/admin/release_artifact_validation.py --platform macos-arm64`
-- settings macOS download-and-apply UI
-- macOS apply / launcher policy 單元測試
-- macOS PyInstaller build 可收進 Playwright Apple Silicon `Google Chrome for Testing.app`
-- PyInstaller macOS build 會從 `packaging/assets/facebook-monitor.png` 產生 `.app` Dock icon，並編譯 arm64 native launcher 作為 Dock 母程序
-- frozen updater smoke 可替換 app files、保留 data/profile、清除 handoff/zip，並保留 executable bit
+## Build Notes
 
-Mac 端已知狀態：
+- macOS build machine 需先有 Playwright Chromium cache，或用
+  `FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR` 指到含 `.app` browser executable 的目錄。
+- 目前 Mac 實測 Playwright cache 形狀是
+  `chromium-*/chrome-mac-arm64/Google Chrome for Testing.app`。
+- `packaging/pyinstaller/facebook_monitor_macos.spec` 會在 `dist/facebook-monitor/`
+  內建立 `.app` native launcher，圖示來源為
+  `packaging/assets/facebook-monitor.png`。
+- release 前必跑：
+  - `scripts/admin/release_artifact_validation.py --platform macos-arm64`
+  - `scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor`
 
-- 使用者已在 Mac 上跑過 `uv run playwright install chromium` 與 `uv run facebook-monitor`。
-- Facebook login 視窗可開。
-- 目前 Mac 實測 Playwright cache 形狀是 `chromium-*/chrome-mac-arm64/Google Chrome for Testing.app`。
-- PyInstaller build 已通過，產物在 `dist/facebook-monitor`。
-- release zip 與 `.sha256` 已可由 validation 通過。
+## Deferred
 
-## Diagnostics On Mac
-
-在 repo 根目錄先跑：
-
-```bash
-pwd
-git branch --show-current
-git status --short
-find ~/Library/Caches/ms-playwright -path "*/Chromium.app/Contents/MacOS/Chromium" -type f
-find ~/Library/Caches/ms-playwright -path "*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" -type f
-find ~/Library/Caches/ms-playwright -maxdepth 5 -name "Chromium.app" -print
-find ~/Library/Caches/ms-playwright -maxdepth 5 -name "Google Chrome for Testing.app" -print
-```
-
-## Focused Verification
-
-```bash
-uv run python -m py_compile packaging/pyinstaller/facebook_monitor_macos.spec
-uv run ruff check packaging/pyinstaller/facebook_monitor_macos.spec
-uv run pytest tests/automation/test_browser_runtime.py tests/updates/test_apply.py tests/admin/test_release_artifact_validation.py tests/admin/test_smoke_frozen_updater.py tests/webapp/test_app.py -q
-uv run python scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor
-```
-
-## Build Commands
-
-```bash
-uv sync
-uv run mypy
-uv run pytest -q
-uv run ruff check src scripts tests
-uv run python -m compileall -q src scripts tests
-uv run python -m pip install pyinstaller
-uv run playwright install chromium
-export FACEBOOK_MONITOR_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export FACEBOOK_MONITOR_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
-uv run python -m PyInstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean --noconfirm
-```
-
-## Create ZIP And SHA256
-
-```bash
-python - <<'PY'
-from pathlib import Path
-import hashlib
-import zipfile
-
-version = "0.3.1"
-arch = "arm64"
-dist = Path("dist")
-source = dist / "facebook-monitor"
-zip_path = dist / f"facebook-monitor-{version}-macos-{arch}-onedir.zip"
-
-if zip_path.exists():
-    zip_path.unlink()
-
-with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-    for path in source.rglob("*"):
-        arcname = path.relative_to(dist).as_posix()
-        info = zipfile.ZipInfo.from_file(path, arcname)
-        if path.is_file():
-            info.compress_type = zipfile.ZIP_DEFLATED
-            with path.open("rb") as file:
-                archive.writestr(info, file.read())
-        else:
-            archive.writestr(info, b"")
-
-digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
-zip_path.with_name(zip_path.name + ".sha256").write_text(
-    f"{digest}  {zip_path.name}\n",
-    encoding="ascii",
-)
-print(zip_path)
-print(digest)
-PY
-```
-
-## Validate Artifact
-
-```bash
-uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64
-```
-
-## Frozen Web UI Smoke
-
-```bash
-rm -rf ~/dev/fb-monitor-frozen-test
-mkdir -p ~/dev/fb-monitor-frozen-test
-ditto -x -k dist/facebook-monitor-0.3.1-macos-arm64-onedir.zip ~/dev/fb-monitor-frozen-test
-cd ~/dev/fb-monitor-frozen-test/facebook-monitor
-open "Facebook Monitor.app" --args --data-dir ~/dev/fb-monitor-frozen-test/data
-```
-
-若 Gatekeeper / quarantine 擋住，測試用可先跑：
-
-```bash
-xattr -dr com.apple.quarantine ~/dev/fb-monitor-frozen-test/facebook-monitor
-open "Facebook Monitor.app" --args --data-dir ~/dev/fb-monitor-frozen-test/data
-```
-
-Smoke 至少確認：
-
-- Web UI 可開，`/health` 正常。
-- static assets 正常。
-- Finder 開啟 `Facebook Monitor.app` 不跳 Terminal，執行期間持續顯示在 Dock，從 Dock Quit 可關閉主程式。
-- `~/dev/fb-monitor-frozen-test/data/logs/startup.log` 與 `app.log` 無 fatal error。
-- bundled Chromium 可開 Facebook login/profile 視窗。
-- posts/comments target 至少做一個基本 metadata refresh 或 scan smoke。
-- `scripts/admin/release_artifact_validation.py --platform macos-arm64` 通過。
-
-如果失敗，回報：
-
-```bash
-cat ~/dev/fb-monitor-frozen-test/data/logs/startup.log
-cat ~/dev/fb-monitor-frozen-test/data/logs/app.log
-```
-
-同時附上 PyInstaller build log 末段與 `find ~/Library/Caches/ms-playwright ...` 的輸出。
+- Developer ID signing / notarization 尚未導入。
+- Intel Mac / universal binary artifact 尚未納入範圍。
+- signed manifest / detached signature 尚未導入；目前 release download 只做 SHA256
+  完整性驗證。
+- Windows release asset 可在 macOS updater release 之後由人工補上，但正式 release
+  asset 命名仍必須與 tag version 對齊。

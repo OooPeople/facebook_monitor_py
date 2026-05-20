@@ -15,10 +15,13 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+import uuid
 
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.release_check import UpdateCheckResult
+from facebook_monitor.updates.validation import is_dangerous_root
+from facebook_monitor.updates.validation import is_reparse_or_symlink
 
 
 PENDING_UPDATE_FILE_NAME = "pending_update.json"
@@ -135,7 +138,7 @@ def validate_pending_update_paths(
     updates_dir = data_dir / "updates"
     profiles_dir = data_dir / "profiles"
 
-    if _is_dangerous_root(app_base_dir) or _is_dangerous_root(data_dir):
+    if is_dangerous_root(app_base_dir) or is_dangerous_root(data_dir):
         raise ValueError("pending_update_path_dangerous")
     if app_base_dir == data_dir:
         raise ValueError("pending_update_app_data_overlap")
@@ -180,23 +183,23 @@ def _pending_to_json_dict(pending: PendingUpdate) -> dict[str, Any]:
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     """同目錄 atomic replace，避免 updater 讀到半寫入 JSON。"""
 
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    tmp_path.replace(path)
-
-
-def _is_dangerous_root(path: Path) -> bool:
-    """避免 pending 指向磁碟根目錄或 home 這類過寬路徑。"""
-
-    resolved = path.resolve()
-    if resolved == resolved.parent:
-        return True
+    if is_reparse_or_symlink(path.parent):
+        raise ValueError("pending_update_dir_unsafe")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        if resolved == Path.home().resolve():
-            return True
-    except RuntimeError:
-        return False
-    return False
+        with tmp_path.open("x", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            file.write("\n")
+    except FileExistsError as exc:
+        raise ValueError("pending_update_tmp_unsafe") from exc
+    try:
+        tmp_path.chmod(0o600)
+    except OSError:
+        pass
+    try:
+        tmp_path.replace(path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass

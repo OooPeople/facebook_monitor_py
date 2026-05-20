@@ -21,13 +21,18 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
-from facebook_monitor.scheduler.runtime_recovery import RETRYABLE_IDLE_FAILURE_REASONS
+from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.resident_shared import apply_resident_scan_failure_decision
+from facebook_monitor.worker.resident_shared import decide_resident_scan_failure
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_error
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle
@@ -38,6 +43,7 @@ from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
+from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
 
 
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
@@ -245,18 +251,29 @@ class ExecutorWorkerPool:
                 reused_page=not opened,
             )
         except WorkerFailure as exc:
+            decision = decide_resident_scan_failure(
+                self.options.db_path,
+                target_id,
+                exc.reason,
+                source="worker_failure",
+            )
             self._record_failure_for_known_target(
                 target_id,
                 exc.reason,
                 str(exc),
-                retryable=exc.reason in RETRYABLE_IDLE_FAILURE_REASONS,
+                retryable=decision.retryable,
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
+                decision=decision,
             )
-            if exc.reason in RETRYABLE_IDLE_FAILURE_REASONS:
-                mark_resident_target_idle(self.options.db_path, target_id)
-            else:
-                mark_resident_target_error(self.options.db_path, target_id, f"{exc.reason}: {exc}")
+            apply_resident_scan_failure_decision(
+                self.options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(
                 target_id=target_id,
                 failure=True,
@@ -264,41 +281,77 @@ class ExecutorWorkerPool:
                 reused_page=not opened and bool(page_id),
             )
         except asyncio.CancelledError:
+            decision = decide_resident_scan_failure(
+                self.options.db_path,
+                target_id,
+                "scheduler_stopping",
+                source="scheduler_cancel",
+            )
             self._record_failure_for_known_target(
                 target_id,
                 "scheduler_stopping",
                 "resident scheduler is stopping",
                 exception_class="CancelledError",
                 page_reused=not opened and bool(page_id),
+                decision=decision,
             )
-            mark_resident_target_error(
+            apply_resident_scan_failure_decision(
                 self.options.db_path,
                 target_id,
-                "scheduler_stopping: resident scheduler is stopping",
+                decision,
+                "resident scheduler is stopping",
             )
             raise
         except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
             reason = classify_playwright_exception(exc)
+            decision = decide_resident_scan_failure(
+                self.options.db_path,
+                target_id,
+                reason,
+                source="playwright",
+            )
             self._record_failure_for_known_target(
                 target_id,
                 reason,
                 str(exc),
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
+                retryable=decision.retryable,
+                decision=decision,
             )
-            mark_resident_target_error(self.options.db_path, target_id, f"{reason}: {exc}")
-            await self.page_pool.discard(target_id)
+            apply_resident_scan_failure_decision(
+                self.options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         except Exception as exc:
+            decision = decide_resident_scan_failure(
+                self.options.db_path,
+                target_id,
+                UNKNOWN_REASON,
+                source="unknown_exception",
+            )
             self._record_failure_for_known_target(
                 target_id,
-                "unknown",
+                UNKNOWN_REASON,
                 str(exc),
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
+                retryable=decision.retryable,
+                decision=decision,
             )
-            mark_resident_target_error(self.options.db_path, target_id, f"unknown: {exc}")
-            await self.page_pool.discard(target_id)
+            apply_resident_scan_failure_decision(
+                self.options.db_path,
+                target_id,
+                decision,
+                str(exc),
+            )
+            if decision.discard_page:
+                await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         finally:
             await self.page_pool.release(target_id)
@@ -348,12 +401,15 @@ class ExecutorWorkerPool:
             )
         except TimeoutError as exc:
             raise WorkerFailure(
-                "scan_timeout",
+                SCAN_TIMEOUT_REASON,
                 f"scan exceeded {timeout_seconds:g} seconds",
             ) from exc
         except asyncio.CancelledError:
             if not self._target_still_active(target_id):
-                raise WorkerFailure("target_stopped", "target stopped during scan") from None
+                raise WorkerFailure(
+                    TARGET_STOPPED_REASON,
+                    "target stopped during scan",
+                ) from None
             raise
         finally:
             heartbeat_task.cancel()
@@ -409,13 +465,18 @@ class ExecutorWorkerPool:
         retryable: bool = False,
         exception_class: str = "",
         page_reused: bool | None = None,
+        decision: ScanFailureDecision | None = None,
     ) -> None:
         """target 仍存在時記錄 resident failure scan run。"""
 
         try:
             resident_target = load_resident_target(self.options.db_path, target_id)
         except WorkerFailure:
-            mark_resident_target_error(self.options.db_path, target_id, f"{reason}: {message}")
+            mark_resident_target_error(
+                self.options.db_path,
+                target_id,
+                format_scan_failure_message(reason, message),
+            )
             return
         record_resident_scan_failure(
             self.options.db_path,
@@ -425,6 +486,7 @@ class ExecutorWorkerPool:
             retryable=retryable,
             exception_class=exception_class,
             page_reused=page_reused,
+            decision=decision,
         )
 
     def _target_still_active(self, target_id: str) -> bool:

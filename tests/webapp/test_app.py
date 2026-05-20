@@ -26,9 +26,12 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
+from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
+from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.discord import DiscordConfig
@@ -47,6 +50,7 @@ from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.webapp.assets import ASSET_VERSION
+from facebook_monitor.version import APP_VERSION
 from tests.helpers.webapp import FakeProfileManager
 from tests.helpers.webapp import FakeSchedulerManager
 from tests.helpers.notifications import NotificationRecorder
@@ -57,6 +61,20 @@ def create_app(**kwargs):
 
     kwargs.setdefault("enforce_csrf", False)
     return create_production_app(**kwargs)
+
+
+def page_feedback(response_text: str) -> dict[str, object]:
+    """讀取頁面 toast feedback JSON。"""
+
+    match = re.search(
+        r'<script id="page-feedback" type="application/json">(.+?)</script>',
+        response_text,
+        re.DOTALL,
+    )
+    assert match is not None
+    payload = json.loads(match.group(1))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def make_supported_update_paths(tmp_path: Path):
@@ -135,7 +153,7 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "app": "Facebook Monitor",
-        "version": "0.3.1",
+        "version": APP_VERSION,
         "asset_version": ASSET_VERSION,
         "python_version": payload["python_version"],
         "packaging_mode": "source",
@@ -286,7 +304,7 @@ def test_settings_update_check_uses_github_release_presenter(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.3.1"
+        assert current_version == APP_VERSION
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -297,7 +315,7 @@ def test_settings_update_check_uses_github_release_presenter(
             latest_version="0.1.1",
             update_available=True,
             summary="有新版 0.1.1",
-            detail="目前只提供檢查，不會下載或套用更新。",
+            detail="下載與套用能力會依目前 runtime 支援與 SHA256 asset 狀態決定。",
             release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
             asset_name="facebook-monitor-0.1.1-windows-portable.zip",
             asset_download_url=(
@@ -388,6 +406,10 @@ def test_settings_update_check_shows_macos_apply_action_when_updater_exists(
     monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "arm64",
+    )
 
     async def fake_check_github_release_updates(
         *,
@@ -438,6 +460,10 @@ def test_settings_update_check_shows_macos_download_only_when_updater_missing(
     monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "arm64",
+    )
 
     async def fake_check_github_release_updates(
         *,
@@ -478,6 +504,60 @@ def test_settings_update_check_shows_macos_download_only_when_updater_missing(
     assert 'action="/settings/updates/download-and-apply"' not in response.text
 
 
+def test_settings_update_check_hides_download_action_on_intel_macos(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Intel macOS 不顯示 Apple Silicon 更新檔下載或套用入口。"""
+
+    paths = make_supported_macos_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "x86_64",
+    )
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert "目前平台沒有對應的更新檔" in response.text
+    assert 'action="/settings/updates/download"' not in response.text
+    assert 'action="/settings/updates/download-and-apply"' not in response.text
+
+
 def test_settings_download_update_verifies_asset_and_opens_folder(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -494,7 +574,7 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.3.1"
+        assert current_version == APP_VERSION
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -583,6 +663,10 @@ def test_settings_macos_download_update_does_not_create_pending_update(
     monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "arm64",
+    )
     checked_update: dict[str, object] = {}
 
     async def fake_check_github_release_updates(
@@ -668,7 +752,7 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
         current_version: str,
         channel: str = "stable",
     ) -> UpdateCheckResult:
-        assert current_version == "0.3.1"
+        assert current_version == APP_VERSION
         assert channel == "stable"
         return UpdateCheckResult(
             checked=True,
@@ -767,6 +851,10 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
     monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
     monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "arm64",
+    )
     checked_update: dict[str, object] = {}
 
     async def fake_check_github_release_updates(
@@ -853,6 +941,109 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
     assert (paths.runtime_dir / "pending_update.json").is_file()
     assert launched_paths == [paths.runtime_dir]
     assert shutdown_requested == [True]
+
+
+def test_settings_macos_download_and_apply_uses_macos_release_asset_policy(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """macOS settings 更新流程應從同一個 release 中選 macOS artifact。"""
+
+    paths = make_supported_macos_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-macos-arm64-onedir")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: False)
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_macos", lambda: True)
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings._current_update_machine",
+        lambda: "arm64",
+    )
+    monkeypatch.setattr("facebook_monitor.updates.artifacts.sys.platform", "darwin")
+    monkeypatch.setattr("facebook_monitor.updates.artifacts.platform.machine", lambda: "arm64")
+    checked_update: dict[str, object] = {}
+
+    async def fake_fetch_release(*, client, repository: str, channel: str):
+        del client
+        assert repository == "OooPeople/facebook_monitor_py"
+        assert channel == "stable"
+        return {
+            "tag_name": "v9.9.9",
+            "html_url": "https://github.com/OooPeople/facebook_monitor_py/releases/tag/v9.9.9",
+            "assets": [
+                {
+                    "name": "facebook-monitor-9.9.9-windows-portable.zip",
+                    "browser_download_url": "https://downloads.example.test/windows.zip",
+                },
+                {
+                    "name": "facebook-monitor-9.9.9-windows-portable.zip.sha256",
+                    "browser_download_url": "https://downloads.example.test/windows.zip.sha256",
+                },
+                {
+                    "name": "facebook-monitor-9.9.9-macos-arm64-onedir.zip",
+                    "browser_download_url": "https://downloads.example.test/macos.zip",
+                },
+                {
+                    "name": "facebook-monitor-9.9.9-macos-arm64-onedir.zip.sha256",
+                    "browser_download_url": "https://downloads.example.test/macos.zip.sha256",
+                },
+            ],
+        }
+
+    async def fake_download_and_verify_update(
+        *,
+        update_check: UpdateCheckResult,
+        updates_dir: Path,
+    ) -> UpdateDownloadResult:
+        checked_update["asset_name"] = update_check.asset_name
+        checked_update["asset_download_url"] = update_check.asset_download_url
+        file_path = updates_dir / "9.9.9" / update_check.asset_name
+        file_path.parent.mkdir(parents=True)
+        file_path.write_bytes(b"verified zip")
+        return UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=file_path,
+            sha256_path=file_path.with_name(file_path.name + ".sha256"),
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+        )
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        del paths, wait_seconds
+        from facebook_monitor.updates.launcher import UpdaterLaunchResult
+
+        return UpdaterLaunchResult(
+            launched=True,
+            status="launched",
+            message="updater launched",
+            pid=123,
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.updates.release_check._fetch_release",
+        fake_fetch_release,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    app.state.request_shutdown = lambda: None
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/download-and-apply")
+
+    assert response.status_code == 200
+    assert checked_update == {
+        "asset_name": "facebook-monitor-9.9.9-macos-arm64-onedir.zip",
+        "asset_download_url": "https://downloads.example.test/macos.zip",
+    }
 
 
 def test_settings_download_update_rejects_source_mode(tmp_path: Path) -> None:
@@ -1245,7 +1436,9 @@ def test_index_renders_runtime_state_and_error(tmp_path: Path) -> None:
     assert "已啟用" in response.text
     assert "掃描中" in response.text
     assert "錯誤" in response.text
-    assert "login_required: 需要登入" in response.text
+    assert "需要重新登入" in response.text
+    assert "Facebook 要求重新登入" in response.text
+    assert "login_required: 需要登入" not in response.text
     assert "已停止" in response.text
     assert "閒置" not in response.text
     assert "執行中" not in response.text
@@ -1603,6 +1796,108 @@ def test_dashboard_card_payload_does_not_keep_content_unavailable_after_success(
     ]
 
 
+def test_dashboard_card_payload_localizes_page_load_timeout_errors(
+    tmp_path: Path,
+) -> None:
+    """Playwright raw navigation error 不應直接出現在 dashboard payload。"""
+
+    db_path = tmp_path / "app.db"
+    raw_error = (
+        "page_load_timeout: Page.evaluate: Execution context was destroyed, "
+        "most likely because of a navigation."
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+            )
+        )
+        app_context.services.scans.record_scan(
+            RecordScanRequest(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                error_message=raw_error,
+                metadata={
+                    "reason": "page_load_timeout",
+                    "worker": "resident_main",
+                    "target_kind": "posts",
+                    "retryable": False,
+                },
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        app_context.services.targets.mark_target_error(target.id, raw_error)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    card_payload = response.json()["cards"][0]
+    assert "頁面載入逾時" in card_payload["runtime_error"]
+    assert "頁面載入逾時" in card_payload["latest_error_indicator_title"]
+    assert "error=頁面載入逾時" in card_payload["latest_scan_diagnostics_text"]
+    assert "Page.evaluate" not in card_payload["runtime_error"]
+    assert "Execution context was destroyed" not in card_payload["latest_error_indicator_title"]
+    assert "most likely because of a navigation" not in card_payload[
+        "latest_scan_diagnostics_text"
+    ]
+
+
+def test_dashboard_card_payload_shows_retrying_page_load_timeout(
+    tmp_path: Path,
+) -> None:
+    """未達上限的 page_load_timeout 只顯示將重試，不顯示 runtime error。"""
+
+    db_path = tmp_path / "app.db"
+    raw_error = (
+        "page_load_timeout: Page.evaluate: Execution context was destroyed, "
+        "most likely because of a navigation."
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        app_context.services.scans.record_scan(
+            RecordScanRequest(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                error_message=raw_error,
+                metadata={
+                    "reason": "page_load_timeout",
+                    "worker": "resident_main",
+                    "target_kind": "posts",
+                    "retryable": True,
+                    "runtime_action": "will_retry",
+                    "retry_streak": 1,
+                    "retry_limit": 3,
+                },
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    card_payload = response.json()["cards"][0]
+    assert card_payload["runtime_error"] == ""
+    assert card_payload["latest_error_indicator_label"] == "將重試"
+    assert card_payload["latest_error_indicator_kind"] == "retrying"
+    assert "1/3" in card_payload["latest_error_indicator_title"]
+    assert "頁面載入逾時" in card_payload["latest_error_indicator_title"]
+    assert "retryable=True" in card_payload["latest_scan_diagnostics_text"]
+    assert "runtime_action=will_retry" in card_payload["latest_scan_diagnostics_text"]
+    assert "retry_streak=1" in card_payload["latest_scan_diagnostics_text"]
+    assert "Page.evaluate" not in card_payload["latest_error_indicator_title"]
+    assert "Execution context was destroyed" not in card_payload["latest_scan_diagnostics_text"]
+
+
 def test_hit_record_preview_splits_multiple_matched_keyword_badges(tmp_path: Path) -> None:
     """命中紀錄 preview 會把多組命中 keyword 拆成多個 badge 並全部高亮。"""
 
@@ -1837,8 +2132,8 @@ def test_index_renders_scan_guard_skip_reason(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "重入測試社團" in response.text
-    assert "scan_guard_skipped: target_already_running" in response.text
-    assert "active_worker_id=worker-a" in response.text
+    assert "監視項目已在掃描中，本輪排程已略過。" in response.text
+    assert "scan_guard_skipped: target_already_running" not in response.text
 
 
 def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
@@ -2622,7 +2917,10 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     assert "value=\"phase0test\"" in form_response.text
     assert "https://discord.com/api/webhooks/example" in form_response.text
     assert test_response.status_code == 200
-    assert "desktop_sent / ntfy_sent / discord_sent" in test_response.text
+    assert (
+        page_feedback(test_response.text)["message"]
+        == "測試通知結果：桌面通知已送出 / ntfy 通知已送出 / Discord 通知已送出"
+    )
     assert any(item.startswith("desktop:") for item in notifications.sent)
     assert any(item.startswith("ntfy:phase0test:") for item in notifications.sent)
     assert any(
@@ -2716,14 +3014,21 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert f'name="refresh_mode" type="radio" value="fixed" form="config-{target.id}"' in (
         index_response.text
     )
-    assert f'name="fixed_refresh_sec" type="number" min="5" value="60" form="config-{target.id}"' in (
+    assert (
+        f'name="fixed_refresh_sec" type="number" min="{MIN_REFRESH_SECONDS}" '
+        f'value="60" form="config-{target.id}"'
+    ) in index_response.text
+    assert f'name="max_items_per_scan" type="number" min="{MIN_TARGET_POSTS}"' in (
         index_response.text
     )
     assert test_response.status_code == 200
-    assert "desktop_sent / ntfy_sent / discord_sent" in test_response.text
+    assert (
+        page_feedback(test_response.text)["message"]
+        == "測試通知結果：桌面通知已送出 / ntfy 通知已送出 / Discord 通知已送出"
+    )
     assert json_test_response.status_code == 200
     assert json_test_response.json()["ok"] is True
-    assert json_test_response.json()["results"] == ["desktop_sent", "ntfy_sent"]
+    assert json_test_response.json()["results"] == ["桌面通知已送出", "ntfy 通知已送出"]
     assert any(item.startswith("desktop:") for item in notifications.sent)
     assert any(item.startswith("ntfy:modal-topic:") for item in notifications.sent)
     assert any(
@@ -2768,7 +3073,8 @@ def test_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert "notification_test_failed:RuntimeError" in response.text
+    assert "通知測試發生錯誤" in response.text
+    assert "notification_test_failed:RuntimeError" not in response.text
     assert "private-topic" not in response.text
 
 
@@ -2812,7 +3118,8 @@ def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert "notification_test_failed:RuntimeError" in response.text
+    assert "通知測試發生錯誤" in response.text
+    assert "notification_test_failed:RuntimeError" not in response.text
     assert "private-token" not in response.text
 
 
@@ -2967,6 +3274,101 @@ def test_manual_metadata_refresh_marks_pending_and_wakes_scheduler(
     assert updated is not None
     assert updated.metadata_status == TargetMetadataStatus.PENDING
     assert updated.metadata_error == ""
+
+
+def test_cover_image_load_failure_queues_image_only_refresh(
+    tmp_path: Path,
+) -> None:
+    """壞圖上報只排 image-only cover refresh，不改名稱 metadata 狀態。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = FakeSchedulerManager()
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="舊名稱",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+    response = client.post(
+        f"/api/targets/{target.id}/cover-image/load-failure",
+        json={"url": "https://scontent.example.test/old.jpg", "source": "card"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["queued"] is True
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.woken_count == 1
+    assert scheduler_manager.metadata_refresh_target_ids == []
+    second_response = client.post(
+        f"/api/targets/{target.id}/cover-image/load-failure",
+        json={"url": "https://scontent.example.test/old.jpg", "source": "card"},
+    )
+    assert second_response.status_code == 200
+    assert second_response.json()["status"] == "pending"
+    assert second_response.json()["queued"] is False
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.woken_count == 2
+    with SqliteApplicationContext(db_path) as app_context:
+        updated = app_context.repositories.targets.get(target.id)
+        state = app_context.repositories.cover_image_refreshes.get(target.id)
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_result == "queued"
+
+
+def test_cover_image_load_failure_ignores_stale_reported_url(
+    tmp_path: Path,
+) -> None:
+    """舊 DOM 回報的壞圖 URL 若已非 DB 目前 URL，不應排新工作。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = FakeSchedulerManager()
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_cover_image_url="https://scontent.example.test/new.jpg",
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+    response = client.post(
+        f"/api/targets/{target.id}/cover-image/load-failure",
+        json={"url": "https://scontent.example.test/old.jpg", "source": "sidebar"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored_stale_url"
+    assert response.json()["queued"] is False
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        state = app_context.repositories.cover_image_refreshes.get(target.id)
+    assert state is None
 
 
 def test_settings_modal_keeps_metadata_refresh_entry_hidden_for_later_placement(

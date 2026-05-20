@@ -9,10 +9,16 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
+from facebook_monitor.core.scan_failure_policy import decide_scan_failure
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.core.user_messages import format_failure_retry_exhausted_message
+from facebook_monitor.core.user_messages import format_runtime_skip_message
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
@@ -196,6 +202,51 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
+    def reset_target_desired_state(
+        self,
+        target_id: str,
+        desired_state: TargetDesiredState,
+    ) -> TargetRuntimeState:
+        """重設 target runtime state，供啟停 command 對齊 desired state。"""
+
+        self._require_target(target_id)
+        state = TargetRuntimeState(
+            target_id=target_id,
+            desired_state=desired_state,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            display_next_due_at=None,
+        )
+        self.runtime_states.save(state)
+        return state
+
+    def restart_target_runtime(self, target_id: str) -> TargetRuntimeState:
+        """套用 target「開始」時需要的 runtime reset 與立即掃描要求。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        now = utc_now()
+        state = replace(
+            existing_state,
+            desired_state=TargetDesiredState.ACTIVE,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=now,
+            last_enqueued_at=None,
+            last_started_at=None,
+            last_finished_at=None,
+            last_heartbeat_at=None,
+            last_error="",
+            last_skip_reason="",
+            enqueue_reason="",
+            active_worker_id="",
+            active_page_id="",
+            display_next_due_at=None,
+            consecutive_failure_reason="",
+            consecutive_failure_count=0,
+            updated_at=now,
+        )
+        self.runtime_states.save(state)
+        return state
+
     def mark_target_idle(self, target_id: str) -> TargetRuntimeState:
         """標記單一 target 已完成本輪掃描並回到 idle。"""
 
@@ -212,12 +263,49 @@ class TargetRuntimeService:
             enqueue_reason="",
             active_worker_id="",
             active_page_id="",
+            consecutive_failure_reason="",
+            consecutive_failure_count=0,
             updated_at=utc_now(),
         )
         self.runtime_states.save(state)
         return state
 
-    def mark_target_error(self, target_id: str, error: str) -> TargetRuntimeState:
+    def mark_target_retriable_failure(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+    ) -> TargetRuntimeState:
+        """記錄本輪可重試失敗，讓 target 回到 idle 供下一輪排程。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        now = utc_now()
+        state = replace(
+            existing_state,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=None,
+            last_finished_at=now,
+            last_heartbeat_at=now,
+            last_error="",
+            last_skip_reason="",
+            enqueue_reason="",
+            active_worker_id="",
+            active_page_id="",
+            consecutive_failure_reason=decision.reason,
+            consecutive_failure_count=decision.retry_streak,
+            updated_at=now,
+        )
+        self.runtime_states.save(state)
+        return state
+
+    def mark_target_error(
+        self,
+        target_id: str,
+        error: str,
+        *,
+        failure_reason: str = "",
+        failure_count: int = 0,
+    ) -> TargetRuntimeState:
         """標記單一 target 本輪掃描發生錯誤。"""
 
         self._require_target(target_id)
@@ -233,10 +321,56 @@ class TargetRuntimeService:
             enqueue_reason="",
             active_worker_id="",
             active_page_id="",
+            consecutive_failure_reason=failure_reason,
+            consecutive_failure_count=max(failure_count, 0),
             updated_at=utc_now(),
         )
         self.runtime_states.save(state)
         return state
+
+    def decide_scan_failure(
+        self,
+        target_id: str,
+        reason: str,
+        *,
+        source: ScanFailureSource,
+    ) -> ScanFailureDecision:
+        """依目前 runtime streak 決定本輪 scan failure 的處置。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        return decide_scan_failure(
+            reason,
+            source=source,
+            previous_failure_reason=existing_state.consecutive_failure_reason,
+            previous_failure_count=existing_state.consecutive_failure_count,
+        )
+
+    def apply_scan_failure_decision(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+        error: str,
+    ) -> TargetRuntimeState:
+        """依共用 failure decision 更新 target runtime state。"""
+
+        if decision.target_action == "idle":
+            if decision.counts_toward_streak:
+                return self.mark_target_retriable_failure(target_id, decision)
+            return self.mark_target_idle(target_id)
+        resolved_error = error
+        if decision.counts_toward_streak:
+            resolved_error = format_failure_retry_exhausted_message(
+                decision.reason,
+                retry_streak=decision.retry_streak,
+                retry_limit=decision.retry_limit,
+            )
+        return self.mark_target_error(
+            target_id,
+            resolved_error,
+            failure_reason=decision.reason if decision.counts_toward_streak else "",
+            failure_count=decision.retry_streak if decision.counts_toward_streak else 0,
+        )
 
     def recover_stale_running_targets(
         self,
@@ -260,14 +394,16 @@ class TargetRuntimeService:
                 runtime_status=TargetRuntimeStatus.ERROR,
                 scan_requested_at=None,
                 last_finished_at=current_time,
-                last_error=(
-                    "stale_running: worker heartbeat expired "
-                    f"after {int(stale_after)} seconds"
+                last_error=format_failure_message(
+                    "stale_running",
+                    f"worker heartbeat expired after {int(stale_after)} seconds",
                 ),
                 last_skip_reason="",
                 enqueue_reason="",
                 active_worker_id="",
                 active_page_id="",
+                consecutive_failure_reason="",
+                consecutive_failure_count=0,
                 updated_at=current_time,
             )
             self.runtime_states.save(recovered_state)
@@ -295,7 +431,7 @@ class TargetRuntimeService:
                 state,
                 runtime_status=TargetRuntimeStatus.IDLE,
                 last_error="",
-                last_skip_reason=(
+                last_skip_reason=format_runtime_skip_message(
                     "stale_queued_recovered: executor queue wait expired "
                     f"after {int(stale_after)} seconds"
                 ),

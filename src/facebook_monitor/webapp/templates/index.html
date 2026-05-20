@@ -54,7 +54,7 @@
       </section>
     </div>
   </main>
-  <script id="page-feedback" type="application/json">{{ {"message": message, "error": error} | tojson }}</script>
+  <script id="page-feedback" type="application/json">{{ {"message": message, "feedback": feedback, "error": error} | tojson }}</script>
   <script id="dashboard-revision" type="application/json">{{ dashboard_revision.revision | tojson }}</script>
   {% include "_dashboard_scroll_restore_body.html" %}
   {% include "_dashboard_importmap.html" %}

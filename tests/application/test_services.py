@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_config_merge import TARGET_CONFIG_PATCH_FIELDS
+from facebook_monitor.application.target_config_merge import build_target_config_from_patch
+from facebook_monitor.application.target_config_merge import merge_target_config_patch
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
@@ -17,6 +21,8 @@ from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import TargetCoverImageRefreshStatus
+from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import ScanStatus
@@ -33,6 +39,213 @@ def test_target_runtime_state_default_is_stopped() -> None:
     state = TargetRuntimeState(target_id="target-1")
 
     assert state.desired_state == TargetDesiredState.STOPPED
+
+
+def test_page_load_timeout_failure_streak_marks_error_on_third_failure(
+    tmp_path: Path,
+) -> None:
+    """page_load_timeout 連續失敗由 runtime state 累計，第三次才停止 target。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+        first = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, first, "timeout")
+        first_state = app.repositories.runtime_states.get(target.id)
+
+        second = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, second, "timeout")
+        second_state = app.repositories.runtime_states.get(target.id)
+
+        third = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, third, "timeout")
+        third_state = app.repositories.runtime_states.get(target.id)
+
+    assert first_state is not None
+    assert first_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert first_state.last_error == ""
+    assert first_state.consecutive_failure_reason == "page_load_timeout"
+    assert first_state.consecutive_failure_count == 1
+    assert second_state is not None
+    assert second_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert second_state.consecutive_failure_count == 2
+    assert third_state is not None
+    assert third_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert third_state.consecutive_failure_reason == "page_load_timeout"
+    assert third_state.consecutive_failure_count == 3
+    assert "已連續 3 次失敗" in third_state.last_error
+
+
+def test_success_idle_resets_failure_streak(tmp_path: Path) -> None:
+    """成功回 idle 時需清除先前可重試失敗 streak。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        decision = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, decision, "timeout")
+        app.services.targets.mark_target_idle(target.id)
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.consecutive_failure_reason == ""
+    assert state.consecutive_failure_count == 0
+
+
+def test_target_status_update_resets_runtime_state(tmp_path: Path) -> None:
+    """target 停止時 runtime reset 需清除錯誤與 retry streak。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        decision = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, decision, "timeout")
+        app.services.targets.pause_target_monitoring(target.id)
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.desired_state == TargetDesiredState.STOPPED
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.scan_requested_at is None
+    assert state.last_error == ""
+    assert state.consecutive_failure_reason == ""
+    assert state.consecutive_failure_count == 0
+
+
+def test_restart_target_monitoring_resets_runtime_and_requests_scan(
+    tmp_path: Path,
+) -> None:
+    """target 開始時需清 runtime failure 並要求下一輪立即掃描。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.mark_target_error(
+            target.id,
+            "timeout",
+            failure_reason="page_load_timeout",
+            failure_count=3,
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.desired_state == TargetDesiredState.ACTIVE
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.scan_requested_at is not None
+    assert state.last_error == ""
+    assert state.consecutive_failure_reason == ""
+    assert state.consecutive_failure_count == 0
+
+
+def test_target_config_patch_fields_track_request_model() -> None:
+    """config merge 欄位清單需能安全套用到 TargetConfig。"""
+
+    assert TARGET_CONFIG_PATCH_FIELDS == tuple(field.name for field in fields(TargetConfigPatch))
+    target_config_fields = {field.name for field in fields(TargetConfig)}
+    assert set(TARGET_CONFIG_PATCH_FIELDS) <= target_config_fields
+
+
+def test_build_target_config_from_patch_preserves_explicit_values_and_defaults() -> None:
+    """建立新 target config 時，未提供欄位走正式預設，明確 false/空值要保留。"""
+
+    config = build_target_config_from_patch(
+        "target-1",
+        TargetConfigPatch(
+            include_keywords=(),
+            exclude_keywords=(),
+            enable_ntfy=False,
+            ntfy_topic="",
+            max_items_per_scan=30,
+            auto_load_more=False,
+        ),
+    )
+
+    assert config.target_id == "target-1"
+    assert config.include_keywords == ()
+    assert config.exclude_keywords == ()
+    assert config.exclude_ignore_phrases == (
+        PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
+    )
+    assert config.enable_ntfy is False
+    assert config.ntfy_topic == ""
+    assert config.max_items_per_scan == 10
+    assert config.auto_load_more is False
+
+
+def test_merge_target_config_patch_preserves_omitted_values_and_clamps() -> None:
+    """更新既有 target config 時，只改 patch 欄位，並保留 max items clamp。"""
+
+    existing = TargetConfig(
+        target_id="target-1",
+        include_keywords=("old",),
+        exclude_keywords=("old-exclude",),
+        enable_ntfy=True,
+        ntfy_topic="old-topic",
+        max_items_per_scan=4,
+        auto_load_more=True,
+    )
+
+    merged = merge_target_config_patch(
+        existing,
+        TargetConfigPatch(
+            include_keywords=(),
+            max_items_per_scan=30,
+            auto_load_more=False,
+        ),
+    )
+
+    assert merged.target_id == "target-1"
+    assert merged.include_keywords == ()
+    assert merged.exclude_keywords == ("old-exclude",)
+    assert merged.enable_ntfy is True
+    assert merged.ntfy_topic == "old-topic"
+    assert merged.max_items_per_scan == 10
+    assert merged.auto_load_more is False
 
 
 def test_target_facade_exposes_display_next_due_update(tmp_path: Path) -> None:
@@ -181,6 +394,80 @@ def test_upsert_group_posts_target_stores_group_cover_image_url(tmp_path: Path) 
     assert second.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
     assert loaded is not None
     assert loaded.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+
+
+def test_refresh_target_group_cover_image_does_not_overwrite_custom_name(
+    tmp_path: Path,
+) -> None:
+    """image-only cover refresh 只更新封面 URL，不覆蓋使用者自訂名稱。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="舊社團名稱",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+        updated = app.services.targets.refresh_target_group_cover_image(
+            target.id,
+            "https://scontent.example.test/new.jpg",
+        )
+
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_name == "舊社團名稱"
+    assert updated.group_cover_image_url == "https://scontent.example.test/new.jpg"
+
+
+def test_cover_image_load_failure_request_uses_url_scoped_throttle(
+    tmp_path: Path,
+) -> None:
+    """同一 URL 壞圖上報會節流；目前 DB URL 已變更時忽略舊 DOM 上報。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+        first = app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+        second = app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+        state = app.repositories.cover_image_refreshes.get(target.id)
+        app.services.targets.refresh_target_group_cover_image(
+            target.id,
+            "https://scontent.example.test/new.jpg",
+        )
+        stale = app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    assert first.status == "queued"
+    assert first.queued
+    assert second.status == "pending"
+    assert not second.queued
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_resolved_url == ""
+    assert state.last_result == "queued"
+    assert state.changed is False
+    assert stale.status == "ignored_stale_url"
 
 
 def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> None:
@@ -968,7 +1255,7 @@ def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Pa
     assert loaded_fresh is not None
     assert loaded_stale.runtime_status == TargetRuntimeStatus.ERROR
     assert loaded_stale.active_worker_id == ""
-    assert "stale_running" in loaded_stale.last_error
+    assert "掃描狀態逾時" in loaded_stale.last_error
     assert loaded_fresh.runtime_status == TargetRuntimeStatus.RUNNING
 
 
@@ -1004,7 +1291,7 @@ def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) 
     assert loaded is not None
     assert loaded.runtime_status == TargetRuntimeStatus.IDLE
     assert loaded.scan_requested_at is not None
-    assert "stale_queued_recovered" in loaded.last_skip_reason
+    assert "監視項目排隊等待過久" in loaded.last_skip_reason
 
 
 def test_delete_target_does_not_touch_other_targets(tmp_path: Path) -> None:

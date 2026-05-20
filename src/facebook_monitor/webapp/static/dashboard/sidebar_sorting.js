@@ -2,6 +2,7 @@ import {
   listTargetIds,
   prefersReducedMotion,
 } from "/static/dashboard/sidebar_dom.js";
+import { formatClientErrorMessage } from "/static/dashboard/utils.js";
 
 const SORTABLE_ANIMATION_MS = 160;
 const SORTABLE_SWAP_THRESHOLD = 0.75;
@@ -163,7 +164,10 @@ export const setupSidebarSorting = ({
       await setupSortables();
       setSortMode(true);
     } catch (error) {
-      showToast?.(`排序功能載入失敗: ${error.message}`, "error");
+      showToast?.(
+        `排序功能載入失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+        "error",
+      );
     }
   });
   document.querySelector("[data-sidebar-cancel-sort]")?.addEventListener("click", () => {
@@ -179,7 +183,10 @@ export const setupSidebarSorting = ({
     try {
       await saveLayout();
     } catch (error) {
-      showToast?.(`排序更新失敗: ${error.message}`, "error");
+      showToast?.(
+        `排序更新失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+        "error",
+      );
       window.location.reload();
     }
   });

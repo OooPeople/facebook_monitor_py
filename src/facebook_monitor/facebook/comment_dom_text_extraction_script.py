@@ -29,6 +29,7 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
     if (!normalized) return "empty_after_clean";
     if (normalized.length < 2) return "too_short";
     if (nonBodyLabels.has(normalized)) return "non_body_label";
+    if (isFacebookExpandCollapseLabelText(normalized)) return "non_body_label";
     if (node.closest("a[href]")) return "inside_anchor";
     return "";
   }

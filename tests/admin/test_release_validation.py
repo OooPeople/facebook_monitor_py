@@ -46,6 +46,18 @@ def test_validation_steps_include_pip_audit_only_when_requested() -> None:
     assert "pip-audit" in [step.label for step in audit_steps]
 
 
+def test_validation_steps_use_project_mypy_config() -> None:
+    """release validation 的 mypy 指令必須與 CI 一樣讀取專案設定。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=True,
+    )
+
+    mypy_step = next(step for step in steps if step.label == "mypy")
+    assert mypy_step.command == ["uv", "run", "mypy"]
+
+
 def test_validation_steps_include_artifact_validation_when_requested() -> None:
     """artifact validation 只在明確要求時加入，並可傳遞 signer subject。"""
 
@@ -63,6 +75,8 @@ def test_validation_steps_include_artifact_validation_when_requested() -> None:
     assert "release artifacts" not in [step.label for step in default_steps]
     artifact_step = next(step for step in artifact_steps if step.label == "release artifacts")
     assert "scripts/admin/release_artifact_validation.py" in artifact_step.command
+    assert "--platform" in artifact_step.command
+    assert "windows" in artifact_step.command
     assert "--expected-signer-subject" in artifact_step.command
     assert "Example Publisher" in artifact_step.command
 
@@ -82,12 +96,28 @@ def test_validation_steps_pass_expected_tag_to_artifact_validation() -> None:
     assert "v0.1.0" in artifact_step.command
 
 
+def test_validation_steps_pass_artifact_platform_to_artifact_validation() -> None:
+    """release validation 可明確驗證 macOS artifact。"""
+
+    artifact_steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=False,
+        include_artifacts=True,
+        artifact_platform="macos-arm64",
+    )
+
+    artifact_step = next(step for step in artifact_steps if step.label == "release artifacts")
+    assert "--platform" in artifact_step.command
+    assert "macos-arm64" in artifact_step.command
+
+
 def test_validate_cli_args_rejects_signer_without_artifacts() -> None:
     """signer subject 沒有 artifact validation 時不可被靜默忽略。"""
 
     error = release_validation.validate_cli_args(
         argparse.Namespace(
             include_artifacts=False,
+            artifact_platform="windows",
             expected_signer_subject="Example Publisher",
             expected_tag="",
         )
@@ -102,9 +132,40 @@ def test_validate_cli_args_rejects_tag_without_artifacts() -> None:
     error = release_validation.validate_cli_args(
         argparse.Namespace(
             include_artifacts=False,
+            artifact_platform="windows",
             expected_signer_subject="",
             expected_tag="v0.1.0",
         )
     )
 
     assert error == "--expected-tag requires --include-artifacts"
+
+
+def test_validate_cli_args_rejects_platform_without_artifacts() -> None:
+    """artifact platform 沒有 artifact validation 時不可被靜默忽略。"""
+
+    error = release_validation.validate_cli_args(
+        argparse.Namespace(
+            include_artifacts=False,
+            artifact_platform="macos-arm64",
+            expected_signer_subject="",
+            expected_tag="",
+        )
+    )
+
+    assert error == "--artifact-platform requires --include-artifacts"
+
+
+def test_validate_cli_args_rejects_macos_signer_subject() -> None:
+    """Authenticode signer 只適用 Windows artifact。"""
+
+    error = release_validation.validate_cli_args(
+        argparse.Namespace(
+            include_artifacts=True,
+            artifact_platform="macos-arm64",
+            expected_signer_subject="Example Publisher",
+            expected_tag="",
+        )
+    )
+
+    assert error == "--expected-signer-subject is only supported for Windows artifacts"

@@ -6,10 +6,13 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from playwright.async_api import Error as AsyncPlaywrightError
+
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -239,6 +242,8 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
 
         assert summary.selected_count == 0
         assert summary.closed_page_count == 1
+        assert summary.metadata_refresh_count == 1
+        assert summary.cover_image_refresh_count == 0
         assert len(metadata_context.pages) == 1
         assert metadata_context.pages[0].url == "https://www.facebook.com/groups/222518561920110"
         assert metadata_context.pages[0].closed
@@ -312,6 +317,8 @@ def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
 
         assert summary.selected_count == 0
         assert summary.closed_page_count == 1
+        assert summary.metadata_refresh_count == 1
+        assert summary.cover_image_refresh_count == 0
         assert len(metadata_context.pages) == 1
         assert metadata_context.pages[0].url == "https://www.facebook.com/groups/1370511589953459"
 
@@ -325,6 +332,250 @@ def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
     assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
+
+
+def test_resident_scheduler_tick_refreshes_cover_image_without_renaming_target(
+    tmp_path: Path,
+) -> None:
+    """自動 cover-only refresh 不覆蓋使用者自訂 target 名稱。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("cover image refresh should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 1
+        assert summary.metadata_refresh_count == 0
+        assert summary.cover_image_refresh_count == 1
+        assert len(metadata_context.pages) == 1
+        assert metadata_context.pages[0].url == "https://www.facebook.com/groups/222518561920110"
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_name == "既有社團名稱"
+    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.IDLE
+    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_resolved_url == "https://scontent.example.test/group-cover.jpg"
+    assert state.last_result == "succeeded_changed"
+    assert state.changed is True
+
+
+def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
+    tmp_path: Path,
+) -> None:
+    """worker 消化前 URL 已被更新時，不應用舊壞圖 job 再開 Facebook。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+        app.services.targets.refresh_target_group_cover_image(
+            target.id,
+            "https://scontent.example.test/manual-new.jpg",
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("stale cover image refresh should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 0
+        assert summary.metadata_refresh_count == 0
+        assert summary.cover_image_refresh_count == 0
+        assert metadata_context.pages == []
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_cover_image_url == "https://scontent.example.test/manual-new.jpg"
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.IDLE
+    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_resolved_url == "https://scontent.example.test/manual-new.jpg"
+    assert state.last_result == "stale_skipped"
+    assert state.changed is False
+
+
+def test_resident_scheduler_tick_records_cover_image_refresh_failure(
+    tmp_path: Path,
+) -> None:
+    """cover-only refresh 失敗要留在獨立狀態，不污染 target metadata 狀態。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.example.test/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.example.test/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("cover image refresh failure should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeLoggedOutMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.closed_page_count == 0
+        assert summary.metadata_refresh_count == 0
+        assert summary.cover_image_refresh_count == 0
+        assert len(metadata_context.pages) == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_cover_image_url == "https://scontent.example.test/old.jpg"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert updated.metadata_error == ""
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.FAILED
+    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_resolved_url == ""
+    assert state.last_result == "failed"
+    assert state.changed is False
+    assert "Facebook 尚未登入" in state.error
 
 
 def test_resident_scheduler_tick_marks_pending_metadata_failed(tmp_path: Path) -> None:
@@ -894,7 +1145,68 @@ def test_resident_main_scan_timeout_marks_target_error(tmp_path: Path) -> None:
         state = app.repositories.runtime_states.get(target.id)
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.ERROR
-    assert "scan_timeout" in state.last_error
+    assert "掃描逾時" in state.last_error
+
+
+def test_resident_main_page_load_timeout_retries_until_third_failure(
+    tmp_path: Path,
+) -> None:
+    """page_load_timeout 前兩次只略過本輪，第三次才讓 target 進 error。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def failing_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise AsyncPlaywrightError(
+            "Page.evaluate: Execution context was destroyed, "
+            "most likely because of a navigation."
+        )
+
+    async def run_test() -> None:
+        context = FakeAsyncBrowserContext()
+        page_pool = AsyncResidentPagePool(context)
+        for attempt in range(1, 4):
+            with SqliteApplicationContext(db_path) as app:
+                app.services.targets.request_target_scan(target.id)
+            summary = await run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                ),
+                page_pool=page_pool,
+                scan_page=failing_scan_page,
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=attempt,
+            )
+            assert summary.failure_count == 1
+            assert await page_pool.size() == 0
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.ERROR
+    assert state.consecutive_failure_count == 3
+    assert "已連續 3 次失敗" in state.last_error
+    assert latest_scan is not None
+    assert "Execution context was destroyed" not in latest_scan.error_message
+    assert latest_scan.metadata["reason"] == "page_load_timeout"
+    assert latest_scan.metadata["retryable"] is False
+    assert latest_scan.metadata["runtime_action"] == "error"
+    assert latest_scan.metadata["retry_streak"] == 3
+    assert latest_scan.metadata["retry_limit"] == 3
+    assert "Execution context was destroyed" in latest_scan.metadata["raw_failure_detail"]
 
 
 def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> None:

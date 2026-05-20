@@ -11,8 +11,8 @@ from functools import cached_property
 from math import ceil
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.notification_channels import notification_channel_sort_key
 from facebook_monitor.core.models import TargetDesiredState
-from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
@@ -24,6 +24,7 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
+from facebook_monitor.core.user_messages import format_runtime_skip_message
 from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresenter
@@ -35,10 +36,13 @@ from facebook_monitor.webapp.dashboard_presenters import format_latest_error_ind
 from facebook_monitor.webapp.dashboard_presenters import format_runtime_error_message
 from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_runtime_error
 from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_scan
+from facebook_monitor.webapp.dashboard_presenters import is_retrying_failure_scan
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
+from facebook_monitor.webapp.notification_presenters import format_notification_event_message
+from facebook_monitor.webapp.notification_presenters import format_notification_status_label
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
@@ -354,7 +358,7 @@ class TargetRow:
     def runtime_skip_reason(self) -> str:
         """回傳最近一次 scan guard skip 原因。"""
 
-        return self.runtime_state.last_skip_reason
+        return format_runtime_skip_message(self.runtime_state.last_skip_reason)
 
     @property
     def latest_scan_label(self) -> str:
@@ -498,6 +502,7 @@ class TargetRow:
         return format_latest_error_indicator_label(
             self.latest_failed_scan_run,
             content_unavailable_current=self.content_unavailable_current,
+            retrying_current=self.retrying_failure_current,
         )
 
     @property
@@ -507,6 +512,7 @@ class TargetRow:
         return format_latest_error_indicator_title(
             self.latest_failed_scan_run,
             content_unavailable_current=self.content_unavailable_current,
+            retrying_current=self.retrying_failure_current,
         )
 
     @property
@@ -515,7 +521,23 @@ class TargetRow:
 
         if self.content_unavailable_current:
             return "content-unavailable"
+        if self.retrying_failure_current:
+            return "retrying"
         return "error" if self.latest_failed_scan_run else ""
+
+    @property
+    def retrying_failure_current(self) -> bool:
+        """回傳最近 failed scan 是否仍代表等待下輪重試的目前狀態。"""
+
+        failed_scan = self.latest_failed_scan_run
+        if not is_retrying_failure_scan(failed_scan):
+            return False
+        latest_scan = self.latest_scan_run
+        if latest_scan is None:
+            return True
+        if failed_scan is None:
+            return False
+        return failed_scan.finished_at >= latest_scan.finished_at
 
     @property
     def content_unavailable_current(self) -> bool:
@@ -547,9 +569,14 @@ class TargetRow:
         if not events:
             return "尚無通知"
         return " / ".join(
-            f"{format_notification_channel_label(event.channel)}: {event.status.value} · "
+            f"{format_notification_channel_label(event.channel)}: "
+            f"{format_notification_status_label(event.status)} · "
             f"{format_datetime_for_ui(event.created_at)}"
-            + (f" · {event.message}" if event.message else "")
+            + (
+                f" · {format_notification_event_message(event.message)}"
+                if event.message
+                else ""
+            )
             for event in events
         )
 
@@ -557,15 +584,10 @@ class TargetRow:
         """依固定通道順序回傳最近通知事件，讓 UI 顯示多通道狀態。"""
 
         if self.latest_notification_events:
-            order = {
-                NotificationChannel.DESKTOP: 0,
-                NotificationChannel.NTFY: 1,
-                NotificationChannel.DISCORD: 2,
-            }
             return tuple(
                 sorted(
                     self.latest_notification_events,
-                    key=lambda event: order.get(event.channel, 99),
+                    key=lambda event: notification_channel_sort_key(event.channel),
                 )
             )
         if self.latest_notification_event:

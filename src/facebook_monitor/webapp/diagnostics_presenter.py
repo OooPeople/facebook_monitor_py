@@ -19,7 +19,9 @@ from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.user_messages import format_failure_message_text
+from facebook_monitor.core.user_messages import format_failure_reason as _format_failure_reason
+from facebook_monitor.core.user_messages import format_runtime_skip_message
 
 
 _LATEST_SCAN_ITEM_DEBUG_KEYS = (
@@ -163,10 +165,27 @@ def _build_scan_diagnostics_text(
         f"last_started_at={format_optional_datetime_for_ui(runtime_state.last_started_at)}",
         f"last_finished_at={format_optional_datetime_for_ui(runtime_state.last_finished_at)}",
         f"scan_guard_count={runtime_state.scan_guard_count}",
-        f"last_skip_reason={runtime_state.last_skip_reason or '(none)'}",
+        "last_skip_reason="
+        + (
+            format_runtime_skip_message(runtime_state.last_skip_reason)
+            if runtime_state.last_skip_reason
+            else "(none)"
+        ),
         _format_outbox_summary_line(notification_outbox_summary),
         f"scan_status={scan.status.value}",
         f"failure_reason={format_scan_failure_reason(str(metadata.get('reason') or ''))}"
+        if scan.status == ScanStatus.FAILED
+        else "",
+        f"retryable={metadata.get('retryable', '(unknown)')}"
+        if scan.status == ScanStatus.FAILED
+        else "",
+        f"runtime_action={metadata.get('runtime_action', '(unknown)')}"
+        if scan.status == ScanStatus.FAILED
+        else "",
+        f"retry_streak={metadata.get('retry_streak', '(none)')}"
+        if scan.status == ScanStatus.FAILED
+        else "",
+        f"retry_limit={metadata.get('retry_limit', '(none)')}"
         if scan.status == ScanStatus.FAILED
         else "",
         f"finished_at={format_datetime_for_ui(scan.finished_at)}",
@@ -202,7 +221,12 @@ def _build_scan_diagnostics_text(
                 + format_scan_failure_reason(
                     str((latest_failed_scan_run.metadata or {}).get("reason") or "")
                 ),
-                f"error={latest_failed_scan_run.error_message or '(none)'}",
+                "error="
+                + (
+                    format_failure_message_text(latest_failed_scan_run.error_message)
+                    if latest_failed_scan_run.error_message
+                    else "(none)"
+                ),
             ]
         )
     _append_rounds(lines, "rounds", metadata.get("rounds"), format_scan_round_debug)
@@ -421,17 +445,7 @@ def format_scan_stop_reason(value: str) -> str:
 def format_scan_failure_reason(value: str) -> str:
     """把 failed scan reason 轉成 UI 可讀文字。"""
 
-    labels = {
-        CONTENT_UNAVAILABLE_REASON: "連結已失效",
-        "login_required": "需要重新登入",
-        "checkpoint_required": "需要完成 Facebook 驗證",
-        "session_invalid": "Facebook 工作階段失效",
-        "extractor_empty": "未抽取到可用項目",
-        "scan_timeout": "掃描逾時",
-        "page_load_timeout": "頁面載入逾時",
-        "target_stopped": "target 已停止",
-    }
-    return labels.get(value, value or "(未知)")
+    return _format_failure_reason(value)
 
 
 def format_scan_cycle_result_reason(value: str) -> str:

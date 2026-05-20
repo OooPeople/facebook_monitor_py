@@ -11,9 +11,6 @@ from pathlib import Path
 from facebook_monitor.application.context import SqliteApplicationContext
 
 
-RETRYABLE_IDLE_FAILURE_REASONS = frozenset({"extractor_empty", "target_stopped"})
-
-
 def recover_stale_running_targets(db_path: Path, stale_after_seconds: float) -> int:
     """修復過舊的 running runtime state，回傳修復筆數。"""
 

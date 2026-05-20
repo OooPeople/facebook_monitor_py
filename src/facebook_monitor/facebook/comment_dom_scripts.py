@@ -14,11 +14,15 @@ from facebook_monitor.facebook.comment_dom_text_extraction_script import (
     COMMENT_DOM_TEXT_EXTRACTION_SCRIPT,
 )
 from facebook_monitor.facebook.comment_dom_text_script import COMMENT_DOM_TEXT_CLEANUP_SCRIPT
+from facebook_monitor.facebook.permalink_dom import PERMALINK_DOM_HELPERS_SCRIPT
+from facebook_monitor.facebook.text_cleanup_dom import TEXT_CLEANUP_HELPERS_SCRIPT
 from facebook_monitor.facebook.text_snippet_dom import TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
 
 COMMENTS_LIKE_ITEMS_SCRIPT = (
     COMMENT_DOM_BOOTSTRAP_SCRIPT
+    + TEXT_CLEANUP_HELPERS_SCRIPT
     + TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
+    + PERMALINK_DOM_HELPERS_SCRIPT
     + COMMENT_DOM_TEXT_CLEANUP_SCRIPT
     + COMMENT_DOM_PERMALINK_SCRIPT
     + COMMENT_DOM_SCOPE_SCRIPT

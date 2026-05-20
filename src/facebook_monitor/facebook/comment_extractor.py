@@ -29,7 +29,7 @@ from facebook_monitor.facebook.scroll_controls import restore_comment_scroll_sna
 from facebook_monitor.facebook.scroll_controls import restore_comment_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more_async
-from facebook_monitor.facebook.text_cleanup import collapse_repeated_adjacent_text
+from facebook_monitor.facebook.text_cleanup import clean_facebook_text
 
 COMMENT_DOM_SETTLE_INITIAL_WAIT_MS = 700
 COMMENT_DOM_SETTLE_POLL_INTERVAL_MS = 500
@@ -528,7 +528,7 @@ def normalize_comment_extraction_payload(
     for raw_item in raw_items:
         if not isinstance(raw_item, Mapping):
             continue
-        cleaned_text = collapse_repeated_adjacent_text(raw_item.get("text") or "")
+        cleaned_text = clean_facebook_text(raw_item.get("text") or "")
         item = ExtractedItem(
             text=cleaned_text,
             text_length=len(cleaned_text),

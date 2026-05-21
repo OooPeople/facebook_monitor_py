@@ -10,6 +10,7 @@ import pytest
 
 from scripts.admin import release_artifact_validation as validation
 from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
+from tests.helpers.macos_bundle import writestr_symlink
 from tests.helpers.macos_bundle import writestr_with_mode
 from tests.helpers.macos_bundle import write_macos_app_bundle_to_zip
 
@@ -652,6 +653,54 @@ def test_validate_release_artifacts_accepts_macos_arm64_onedir_zip(
     assert result.ok
 
 
+def test_validate_release_artifacts_accepts_macos_symlink_to_sibling_in_root(
+    tmp_path: Path,
+) -> None:
+    """release validation 與 runtime extraction 共用 zip symlink 相對路徑規則。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(
+            archive,
+            "facebook-monitor/bin/updater-link",
+            "../facebook-monitor-updater",
+        )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert result.ok, result.messages
+
+
 def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
     tmp_path: Path,
 ) -> None:
@@ -829,6 +878,195 @@ def test_validate_release_artifacts_rejects_macos_zip_with_private_data(
 
     assert not result.ok
     assert any("runtime/private data" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_macos_symlink_to_private_data(
+    tmp_path: Path,
+) -> None:
+    """release validation 也要擋下 symlink 指向 runtime private data。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(archive, "facebook-monitor/profile-link", "data/profiles")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip symlink target unsafe" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_macos_backslash_symlink_target(
+    tmp_path: Path,
+) -> None:
+    """release validation 不把 backslash target 正規化成另一條 POSIX symlink。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(
+            archive,
+            "facebook-monitor/lib-link",
+            "_internal\\lib.dylib",
+        )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip symlink target invalid" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_member_under_symlink(
+    tmp_path: Path,
+) -> None:
+    """release validation 不可接受 symlink path 下另有 member。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(archive, "facebook-monitor/link", "_internal")
+        archive.writestr("facebook-monitor/link/file.txt", "unsafe")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip member path unsafe" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_oversized_symlink_target(
+    tmp_path: Path,
+) -> None:
+    """release validation 讀取 symlink target 前需先套用大小限制。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(
+            archive,
+            "facebook-monitor/huge-link",
+            "a" * (validation.MAX_ZIP_SYMLINK_TARGET_BYTES + 1),
+        )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip symlink target too large" in message for message in result.messages)
 
 
 def test_validate_release_artifacts_rejects_macos_shell_app_launcher(

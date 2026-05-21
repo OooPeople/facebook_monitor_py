@@ -7,11 +7,9 @@ from fastapi import HTTPException
 from fastapi import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.form_models import NotificationFormKwargs
 from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.request_payloads import json_object_payload
 
 
 def register_sidebar_routes(app: FastAPI) -> None:
@@ -21,7 +19,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def save_sidebar_order(request: Request) -> dict[str, object]:
         """保存平面 target order，供排序第一階段與 fallback 使用。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         target_ids = _string_list(payload.get("target_ids"))
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
@@ -34,7 +32,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def create_sidebar_group(request: Request) -> dict[str, object]:
         """建立 sidebar UI group。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 group = app_context.services.sidebar_layout.create_group(str(payload.get("name", "")))
@@ -46,7 +44,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def update_sidebar_group(request: Request, group_id: str) -> dict[str, object]:
         """更新 sidebar group name 或 collapsed 狀態。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 group = app_context.repositories.sidebar_layout.get_group(group_id)
@@ -81,7 +79,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def save_sidebar_group_order(request: Request) -> dict[str, object]:
         """保存 sidebar group order。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         group_ids = _string_list(payload.get("group_ids"))
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
@@ -94,7 +92,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def save_sidebar_layout(request: Request) -> dict[str, object]:
         """以單一 transaction 保存 sidebar group order 與 target placements。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         group_ids = _string_list(payload.get("group_ids"))
         grouped_target_ids = _grouped_target_ids(payload.get("groups"))
         try:
@@ -111,7 +109,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def save_sidebar_placements(request: Request) -> dict[str, object]:
         """保存 sidebar group + target placements。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         grouped_target_ids = _grouped_target_ids(payload.get("groups"))
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
@@ -126,8 +124,8 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def save_sidebar_group_template(request: Request, group_id: str) -> dict[str, object]:
         """保存 sidebar group config template。"""
 
-        payload = await _json_payload(request)
-        form = _target_config_form_from_payload(payload)
+        payload = await json_object_payload(request)
+        form = TargetConfigForm.from_sidebar_template_payload(payload)
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 template = app_context.services.sidebar_layout.save_template(
@@ -141,7 +139,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
     async def apply_sidebar_group_template(request: Request, group_id: str) -> dict[str, object]:
         """將 sidebar group template 明確套用到該 group 內 target configs。"""
 
-        payload = await _json_payload(request)
+        payload = await json_object_payload(request)
         sections = _string_list(payload.get("sections") or ["all"])
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
@@ -191,18 +189,6 @@ def _sidebar_error_detail(exc: ValueError) -> str:
     return "sidebar 資料無法儲存，請重新整理後再試"
 
 
-async def _json_payload(request: Request) -> dict[str, object]:
-    """讀取 JSON payload 並確認為 object。"""
-
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="JSON 格式不正確") from exc
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSON payload 必須是物件")
-    return payload
-
-
 def _string_list(value: object) -> list[str]:
     """將 payload 欄位轉為字串清單。"""
 
@@ -226,80 +212,3 @@ def _grouped_target_ids(value: object) -> list[tuple[str | None, list[str]]]:
             group_id = None
         groups.append((group_id, _string_list(item.get("target_ids"))))
     return groups
-
-
-def _target_config_form_from_payload(payload: dict[str, object]) -> TargetConfigForm:
-    """將 JSON template payload 轉成共用 TargetConfigForm。"""
-
-    return TargetConfigForm(
-        include_keywords=str(payload.get("include_keywords", "")),
-        exclude_keywords=str(payload.get("exclude_keywords", "")),
-        exclude_ignore_phrases=str(payload.get("exclude_ignore_phrases", "")),
-        refresh_mode=str(payload.get("refresh_mode", "floating")),
-        fixed_refresh_sec=_int_payload(
-            payload.get("fixed_refresh_sec"),
-            PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
-        ),
-        min_refresh_sec=_int_payload(
-            payload.get("min_refresh_sec"),
-            PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
-        ),
-        max_refresh_sec=_int_payload(
-            payload.get("max_refresh_sec"),
-            PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
-        ),
-        max_items_per_scan=_int_payload(
-            payload.get("max_items_per_scan"),
-            PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
-        ),
-        auto_load_more=_checkbox_payload(payload.get("auto_load_more")),
-        auto_adjust_sort=_checkbox_payload(payload.get("auto_adjust_sort")),
-        **_notification_payload_kwargs(payload),
-    )
-
-
-def _notification_payload_kwargs(payload: dict[str, object]) -> NotificationFormKwargs:
-    """依 notification channel definitions 解析 sidebar JSON notification 欄位。"""
-
-    kwargs: dict[str, object] = {}
-    for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
-        kwargs[definition.enabled_field] = _checkbox_payload(
-            payload.get(definition.enabled_field)
-        )
-        if definition.endpoint_field:
-            kwargs[definition.endpoint_field] = str(
-                payload.get(definition.endpoint_field, "") or ""
-            )
-    return NotificationFormKwargs(
-        enable_desktop_notification=_checkbox_payload(
-            kwargs.get("enable_desktop_notification")
-        ),
-        enable_ntfy=_checkbox_payload(kwargs.get("enable_ntfy")),
-        ntfy_topic=str(kwargs.get("ntfy_topic", "")),
-        enable_discord_notification=_checkbox_payload(
-            kwargs.get("enable_discord_notification")
-        ),
-        discord_webhook=str(kwargs.get("discord_webhook", "")),
-    )
-
-
-def _checkbox_payload(value: object) -> str | None:
-    """將 JSON boolean 轉成 TargetConfigForm checkbox 表示。"""
-
-    return "on" if bool(value) else None
-
-
-def _int_payload(value: object, fallback: int) -> int:
-    """解析整數 payload。"""
-
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return fallback
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return fallback

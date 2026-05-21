@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
@@ -22,7 +23,11 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetDesiredState
+from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
@@ -33,6 +38,7 @@ from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.outbox_service import queue_match_notifications_after_commit
+from facebook_monitor.worker.errors import WorkerFailure
 
 
 @dataclass(frozen=True)
@@ -112,8 +118,34 @@ class ScanFinalizeResult:
         return bool(self.scan_summary.get("baseline_mode"))
 
 
+@dataclass(frozen=True)
+class ScanCommitGuard:
+    """保存本輪 scan admission identity，避免 stop/start 後舊掃描寫回。"""
+
+    worker_id: str
+    started_at: datetime
+    page_id: str = ""
+
+
+UNGUARDED_SCAN_COMMIT: ScanCommitGuard | None = None
+"""明確標示 debug / one-shot 入口允許不綁定 runtime admission identity。"""
+
 SORT_ADJUST_UNCONFIRMED_STOP_REASON = "sort_adjust_unconfirmed_skip"
 SORT_ADJUST_UNCONFIRMED_SKIP_REASON = "sort_adjust_unconfirmed"
+
+
+def scan_commit_guard_from_runtime_state(
+    state: TargetRuntimeState,
+) -> ScanCommitGuard:
+    """由 running runtime state 建立本輪 scan commit guard。"""
+
+    if state.last_started_at is None:
+        raise ValueError("scan commit guard requires last_started_at")
+    return ScanCommitGuard(
+        worker_id=state.active_worker_id,
+        page_id=state.active_page_id,
+        started_at=state.last_started_at,
+    )
 
 
 def record_skipped_scan(
@@ -121,9 +153,12 @@ def record_skipped_scan(
     app: ApplicationContext,
     target: TargetDescriptor,
     metadata: dict[str, Any],
+    commit_guard: ScanCommitGuard | None,
 ) -> ScanFinalizeResult:
     """記錄保護性跳過的 scan run，且清空本輪 latest scan 快照。"""
 
+    begin_scan_commit_transaction(app)
+    ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
     scan_metadata = dict(metadata)
     scan_metadata.setdefault("scan_skipped", True)
     scan_metadata.setdefault("skip_reason", SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
@@ -195,9 +230,12 @@ def finalize_scan_items(
     notification_sender: NtfySender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
+    commit_guard: ScanCommitGuard | None,
 ) -> ScanFinalizeResult:
     """完成 target-kind-independent 的 scan 後處理與持久化。"""
 
+    begin_scan_commit_transaction(app)
+    ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
     app.repositories.app_settings.mark_profile_ok(source="scan_success")
     match_results: list[ScanMatchResult] = []
     new_items: list[NormalizedScanItem] = []
@@ -322,6 +360,100 @@ def finalize_scan_items(
         latest_items=tuple(latest_items),
         scan_summary=scan_metadata,
     )
+
+
+def target_matches_scan_commit_guard(
+    *,
+    app: ApplicationContext,
+    target_id: str,
+    commit_guard: ScanCommitGuard | None,
+) -> bool:
+    """確認 runtime state 仍是本輪 scan admission。"""
+
+    if commit_guard is None:
+        return True
+    runtime_state = app.services.targets.ensure_runtime_state(target_id)
+    return _runtime_state_matches_commit_guard(runtime_state, commit_guard)
+
+
+def begin_scan_commit_transaction(app: ApplicationContext) -> None:
+    """開始 guarded scan write transaction，避免 guard check 後被 stop/start 穿插。"""
+
+    connection = app.repositories.runtime_states.connection
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+
+
+def mark_target_idle_for_scan_commit(
+    *,
+    app: ApplicationContext,
+    target_id: str,
+    commit_guard: ScanCommitGuard | None,
+) -> bool:
+    """在同一個 write transaction 內確認 guard 後才將 target 標回 idle。"""
+
+    begin_scan_commit_transaction(app)
+    target = app.repositories.targets.get(target_id)
+    if target is None:
+        return False
+    if not _target_allows_scan_commit(
+        app=app,
+        target=target,
+        commit_guard=commit_guard,
+    ):
+        return False
+    app.services.targets.mark_target_idle(target_id)
+    return True
+
+
+def ensure_target_allows_scan_commit(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    commit_guard: ScanCommitGuard | None,
+) -> None:
+    """確認 target 仍可接受本輪 scan commit，否則丟出停止錯誤。"""
+
+    if not _target_allows_scan_commit(
+        app=app,
+        target=target,
+        commit_guard=commit_guard,
+    ):
+        raise WorkerFailure(TARGET_STOPPED_REASON, "target stopped before scan finalize")
+
+
+def _target_allows_scan_commit(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    commit_guard: ScanCommitGuard | None,
+) -> bool:
+    """確認 target 仍是 active 且未換成另一輪 scan attempt。"""
+
+    current_target = app.repositories.targets.get(target.id)
+    if current_target is None or not current_target.enabled or current_target.paused:
+        return False
+    runtime_state = app.services.targets.ensure_runtime_state(target.id)
+    if runtime_state.desired_state != TargetDesiredState.ACTIVE:
+        return False
+    return _runtime_state_matches_commit_guard(runtime_state, commit_guard)
+
+
+def _runtime_state_matches_commit_guard(
+    runtime_state: TargetRuntimeState,
+    commit_guard: ScanCommitGuard | None,
+) -> bool:
+    """比對 runtime 是否仍是同一個 running attempt。"""
+
+    if commit_guard is None:
+        return True
+    if runtime_state.runtime_status != TargetRuntimeStatus.RUNNING:
+        return False
+    if runtime_state.active_worker_id != commit_guard.worker_id:
+        return False
+    if runtime_state.last_started_at != commit_guard.started_at:
+        return False
+    return not commit_guard.page_id or runtime_state.active_page_id == commit_guard.page_id
 
 
 def build_scan_match_result(

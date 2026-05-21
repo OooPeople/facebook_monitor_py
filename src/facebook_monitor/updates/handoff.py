@@ -18,6 +18,7 @@ from typing import Any
 import uuid
 
 from facebook_monitor.runtime.paths import RuntimePaths
+from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.updates.validation import is_dangerous_root
@@ -131,6 +132,8 @@ def validate_pending_update_paths(
 ) -> None:
     """驗證 pending update 的路徑仍落在 updater 可接受的安全邊界內。"""
 
+    sanitize_release_asset_name(pending.version)
+    sanitize_release_asset_name(pending.asset_name)
     app_base_dir = pending.app_base_dir.resolve()
     data_dir = pending.data_dir.resolve()
     runtime_dir = pending.runtime_dir.resolve()

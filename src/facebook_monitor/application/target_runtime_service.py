@@ -119,6 +119,18 @@ class TargetRuntimeService:
             )
             self.runtime_states.save(skipped_state)
             return None
+        if existing_state.desired_state != TargetDesiredState.ACTIVE:
+            skipped_state = replace(
+                existing_state,
+                last_skip_reason=(
+                    "scan_guard_skipped: target_not_active "
+                    f"desired_state={existing_state.desired_state.value}"
+                ),
+                scan_guard_count=existing_state.scan_guard_count + 1,
+                updated_at=utc_now(),
+            )
+            self.runtime_states.save(skipped_state)
+            return None
         return self.mark_target_running(target_id, worker_id, page_id=page_id)
 
     def mark_target_page_reloaded(
@@ -255,7 +267,7 @@ class TargetRuntimeService:
         state = replace(
             existing_state,
             runtime_status=TargetRuntimeStatus.IDLE,
-            scan_requested_at=None,
+            scan_requested_at=_scan_request_after_current_attempt(existing_state),
             last_finished_at=utc_now(),
             last_heartbeat_at=utc_now(),
             last_error="",
@@ -283,7 +295,7 @@ class TargetRuntimeService:
         state = replace(
             existing_state,
             runtime_status=TargetRuntimeStatus.IDLE,
-            scan_requested_at=None,
+            scan_requested_at=_scan_request_after_current_attempt(existing_state),
             last_finished_at=now,
             last_heartbeat_at=now,
             last_error="",
@@ -470,8 +482,48 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
+    def clear_target_scan_request_if_not_newer(
+        self,
+        target_id: str,
+        consumed_at: datetime | None,
+    ) -> TargetRuntimeState:
+        """清除已入隊的 scan request，但保留入隊後新送出的 request。"""
+
+        if consumed_at is None:
+            return self.clear_target_scan_request(target_id)
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        if (
+            existing_state.scan_requested_at is not None
+            and existing_state.scan_requested_at > consumed_at
+        ):
+            return existing_state
+        state = replace(
+            existing_state,
+            scan_requested_at=None,
+            updated_at=utc_now(),
+        )
+        self.runtime_states.save(state)
+        return state
+
     def _require_target(self, target_id: str) -> None:
         """確認 target 存在。"""
 
         if self.targets.get(target_id) is None:
             raise ValueError(f"Target not found: {target_id}")
+
+
+def _scan_request_after_current_attempt(
+    state: TargetRuntimeState,
+) -> datetime | None:
+    """保留掃描進行中才新送出的 scan-once 要求。"""
+
+    if state.scan_requested_at is None:
+        return None
+    if state.last_enqueued_at is None and state.last_started_at is None:
+        return state.scan_requested_at
+    if state.last_enqueued_at is not None and state.scan_requested_at > state.last_enqueued_at:
+        return state.scan_requested_at
+    if state.last_started_at is not None and state.scan_requested_at > state.last_started_at:
+        return state.scan_requested_at
+    return None

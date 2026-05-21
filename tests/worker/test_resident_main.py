@@ -728,6 +728,66 @@ def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -
     asyncio.run(run_test())
 
 
+def test_async_resident_consumes_manual_scan_request_when_enqueued(
+    tmp_path: Path,
+) -> None:
+    """manual scan request 進入 executor queue 時先清除，避免目前掃描完成後重跑。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=TargetSchedulePlanner(),
+            scan_page=fake_scan_page,
+        )
+        enqueued_count = await executor.enqueue_due_targets(
+            (
+                DueTarget(
+                    target_id=target.id,
+                    interval_seconds=60,
+                    due_at=utc_now(),
+                    scan_requested=True,
+                ),
+            )
+        )
+
+        assert enqueued_count == 1
+        with SqliteApplicationContext(db_path) as app:
+            queued_state = app.repositories.runtime_states.get(target.id)
+        assert queued_state is not None
+        assert queued_state.runtime_status == TargetRuntimeStatus.QUEUED
+        assert queued_state.scan_requested_at is None
+
+    asyncio.run(run_test())
+
+
 def test_resident_main_page_reload_keeps_same_group_feed_sorting_url() -> None:
     """resident main 同一 group feed 帶 sorting query 時應 reload，不應 goto。"""
 
@@ -1210,7 +1270,7 @@ def test_resident_main_page_load_timeout_retries_until_third_failure(
 
 
 def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> None:
-    """target 停止後，正在跑的 resident scan 會被 watchdog 取消並回到 idle。"""
+    """target 停止後，正在跑的 resident scan 會被 watchdog 取消且不寫失敗。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -1257,7 +1317,8 @@ def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> No
         with SqliteApplicationContext(db_path) as app:
             app.services.targets.pause_target_monitoring(target.id)
         summary = await asyncio.wait_for(task, timeout=1)
-        assert summary.failure_count == 1
+        assert summary.failure_count == 0
+        assert summary.skipped_count == 1
 
     asyncio.run(run_test())
 

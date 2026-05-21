@@ -64,3 +64,15 @@ def test_scan_timeout_still_errors_immediately() -> None:
     assert decision.runtime_action == "error"
     assert decision.counts_toward_streak is False
     assert decision.discard_page is False
+
+
+def test_scheduler_cancel_keeps_target_idle() -> None:
+    """scheduler stop 取消中的掃描不應把 target 變成終止 error。"""
+
+    decision = decide_scan_failure("scheduler_stopping", source="scheduler_cancel")
+
+    assert decision.retryable is True
+    assert decision.target_action == "idle"
+    assert decision.runtime_action == "idle"
+    assert decision.counts_toward_streak is False
+    assert decision.discard_page is False

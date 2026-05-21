@@ -452,8 +452,18 @@ def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, dup
 
     if keep_id == duplicate_id:
         return
-    connection.execute("DELETE FROM target_configs WHERE target_id = ?", (duplicate_id,))
-    connection.execute("DELETE FROM target_runtime_state WHERE target_id = ?", (duplicate_id,))
+    for table_name in (
+        "target_configs",
+        "target_runtime_state",
+        "target_cover_image_refresh_state",
+        "sidebar_target_placements",
+    ):
+        _move_single_target_row_if_keep_missing(
+            connection,
+            table_name=table_name,
+            keep_id=keep_id,
+            duplicate_id=duplicate_id,
+        )
     connection.execute(
         """
         DELETE FROM latest_scan_items
@@ -476,6 +486,28 @@ def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, dup
             (keep_id, duplicate_id),
         )
     connection.execute("DELETE FROM targets WHERE id = ?", (duplicate_id,))
+
+
+def _move_single_target_row_if_keep_missing(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    keep_id: str,
+    duplicate_id: str,
+) -> None:
+    """搬移單列 target-scoped state；保留端已有資料時才刪 duplicate row。"""
+
+    keep_row = connection.execute(
+        f"SELECT 1 FROM {table_name} WHERE target_id = ?",
+        (keep_id,),
+    ).fetchone()
+    if keep_row is None:
+        connection.execute(
+            f"UPDATE {table_name} SET target_id = ? WHERE target_id = ?",
+            (keep_id, duplicate_id),
+        )
+        return
+    connection.execute(f"DELETE FROM {table_name} WHERE target_id = ?", (duplicate_id,))
 
 
 

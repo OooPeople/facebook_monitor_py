@@ -47,6 +47,7 @@ from facebook_monitor.worker.scan_metadata import with_scan_skipped_reason
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
@@ -210,6 +211,7 @@ def scan_posts_page(
     notification_sender: NotificationSender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
+    commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
     """掃描目前 page，並把結果寫入 application context。"""
 
@@ -230,6 +232,7 @@ def scan_posts_page(
         finalize_result = record_skipped_scan(
             app=app,
             target=target,
+            commit_guard=commit_guard,
             metadata=build_sort_unconfirmed_skip_metadata(
                 config=config,
                 sort_adjust_result=sort_adjust_result,
@@ -279,6 +282,7 @@ def scan_posts_page(
         notification_sender=notification_sender,
         desktop_notification_sender=desktop_notification_sender,
         discord_notification_sender=discord_notification_sender,
+        commit_guard=commit_guard,
     )
 
 
@@ -293,6 +297,7 @@ async def scan_posts_page_async(
     notification_sender: NotificationSender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
+    commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
     """resident main worker 掃描目前 page，並寫入 application context。"""
 
@@ -313,6 +318,7 @@ async def scan_posts_page_async(
         finalize_result = record_skipped_scan(
             app=app,
             target=target,
+            commit_guard=commit_guard,
             metadata=build_sort_unconfirmed_skip_metadata(
                 config=config,
                 sort_adjust_result=sort_adjust_result,
@@ -362,6 +368,7 @@ async def scan_posts_page_async(
         notification_sender=notification_sender,
         desktop_notification_sender=desktop_notification_sender,
         discord_notification_sender=discord_notification_sender,
+        commit_guard=commit_guard,
     )
 
 
@@ -382,6 +389,7 @@ def finalize_posts_pipeline_scan(
     notification_sender: NotificationSender,
     desktop_notification_sender: DesktopSender,
     discord_notification_sender: DiscordSender,
+    commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
     """將 posts scan items 交給 shared finalize 層寫入後處理狀態。"""
 
@@ -409,6 +417,7 @@ def finalize_posts_pipeline_scan(
         notification_sender=notification_sender,
         desktop_notification_sender=desktop_notification_sender,
         discord_notification_sender=discord_notification_sender,
+        commit_guard=commit_guard,
     )
     return PostsScanSummary(
         target_id=target.id,

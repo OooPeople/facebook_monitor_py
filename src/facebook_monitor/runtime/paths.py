@@ -154,11 +154,12 @@ def resolve_runtime_paths(
         default=resolved_data_dir / "app.db",
     )
     profiles_dir = resolved_data_dir / "profiles"
-    resolved_profile_dir = _resolve_path(
+    raw_profile_dir = _resolve_input_path(
         profile_dir,
         base_dir=resolved_app_base_dir,
         default=profiles_dir / _normalize_profile_name(profile_name),
     )
+    resolved_profile_dir = raw_profile_dir.resolve()
     if profile_dir is not None:
         if allow_external_profile_dir:
             _reject_common_browser_profile_dir(resolved_profile_dir)
@@ -167,6 +168,13 @@ def resolve_runtime_paths(
                 "--profile-dir must stay under <data-dir>/profiles; "
                 "use --unsafe-profile-dir for debug-only external profiles"
             )
+    if not allow_external_profile_dir:
+        _validate_managed_profile_path(
+            raw_profile_dir,
+            profiles_dir=profiles_dir,
+            data_dir=resolved_data_dir,
+        )
+        _reject_common_browser_profile_dir(resolved_profile_dir)
     resolved_logs_dir = _resolve_path(
         logs_dir,
         base_dir=resolved_app_base_dir,
@@ -263,12 +271,18 @@ def _find_project_root() -> Path | None:
 def _resolve_path(value: Path | str | None, *, base_dir: Path, default: Path) -> Path:
     """解析 CLI path；相對路徑以 app base dir 為基準。"""
 
+    return _resolve_input_path(value, base_dir=base_dir, default=default).resolve()
+
+
+def _resolve_input_path(value: Path | str | None, *, base_dir: Path, default: Path) -> Path:
+    """解析 CLI path 但先不跟隨 symlink，供 profile 邊界檢查使用。"""
+
     if value is None:
-        return default.resolve()
+        return default.absolute()
     expanded = Path(value).expanduser()
     if expanded.is_absolute():
-        return expanded.resolve()
-    return (base_dir / expanded).resolve()
+        return expanded.absolute()
+    return (base_dir / expanded).absolute()
 
 
 def _normalize_profile_name(profile_name: str) -> str:
@@ -297,3 +311,52 @@ def _reject_common_browser_profile_dir(profile_dir: Path) -> None:
         raise ValueError(
             "--unsafe-profile-dir must not point to a common Chrome/Edge/Chromium profile"
         )
+
+
+def _validate_managed_profile_path(
+    profile_dir: Path,
+    *,
+    profiles_dir: Path,
+    data_dir: Path,
+) -> None:
+    """確認正式 profile path 沒有透過 symlink/junction 逃出 data profiles。"""
+
+    if _has_unsafe_existing_path_component(profiles_dir, root=data_dir):
+        raise ValueError("--profile-dir must not pass through symlink or junction profiles dir")
+    if _has_unsafe_existing_path_component(profile_dir, root=profiles_dir):
+        raise ValueError("--profile-dir must not pass through symlink or junction")
+    resolved_profiles_dir = profiles_dir.resolve(strict=False)
+    resolved_profile_dir = profile_dir.resolve(strict=False)
+    if not resolved_profile_dir.is_relative_to(resolved_profiles_dir):
+        raise ValueError(
+            "--profile-dir must stay under <data-dir>/profiles; "
+            "use --unsafe-profile-dir for debug-only external profiles"
+        )
+
+
+def _has_unsafe_existing_path_component(path: Path, *, root: Path) -> bool:
+    """檢查 root 到 path 之間既有 component 是否包含 symlink/junction。"""
+
+    path = path.absolute()
+    root = root.absolute()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    if (current.exists() or current.is_symlink()) and _is_reparse_or_symlink(current):
+        return True
+    for part in relative.parts:
+        current = current / part
+        if (current.exists() or current.is_symlink()) and _is_reparse_or_symlink(current):
+            return True
+    return False
+
+
+def _is_reparse_or_symlink(path: Path) -> bool:
+    """判斷 path 是否為 symlink 或 Windows junction / reparse point。"""
+
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())

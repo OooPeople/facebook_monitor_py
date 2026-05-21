@@ -1268,6 +1268,32 @@ def test_theme_preference_rejects_unknown_value(tmp_path: Path) -> None:
     assert response.status_code == 400
 
 
+def test_theme_preference_rejects_malformed_json(tmp_path: Path) -> None:
+    """theme API 壞 JSON 應回 400，不可讓解析例外冒成 500。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post(
+        "/settings/theme",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "JSON 格式不正確"
+
+
+def test_theme_preference_rejects_non_object_json_payload(tmp_path: Path) -> None:
+    """共用 JSON payload helper 不接受 array/string 這類非物件 payload。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.post("/settings/theme", json=["dark"])
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "JSON payload 必須是物件"
+
+
 def test_index_and_partial_payload_show_profile_needs_login_warning(
     tmp_path: Path,
 ) -> None:
@@ -1505,7 +1531,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 item_key="first-1",
                 author="王小明",
                 text="這是一筆有票券關鍵字的命中紀錄",
-                permalink="https://www.facebook.com/groups/111/posts/1",
+                permalink="https://www.facebook.com/groups/111/posts/1234567890",
                 include_rule="票券",
             )
         )
@@ -1518,7 +1544,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 item_key="first-2",
                 author="陳小華",
                 text="留言也有票券關鍵字",
-                permalink="https://www.facebook.com/groups/111/posts/1?comment_id=2",
+                permalink="https://www.facebook.com/groups/111/posts/1234567890?comment_id=2222222222",
                 include_rule="票券",
             )
         )
@@ -1594,7 +1620,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 item_key="first-current",
                 author="林本次",
                 text="本次啟動期間的票券命中",
-                permalink="https://www.facebook.com/groups/111/posts/current",
+                permalink="https://www.facebook.com/groups/111/posts/3333333333",
                 include_rule="票券",
                 notified_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
@@ -1676,6 +1702,75 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
             )
             is not None
         )
+
+
+def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> None:
+    """Web read model 不把非 Facebook permalink 輸出成可點擊連結。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                group_name="第一個社團",
+            )
+        )
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="latest-unsafe",
+                    item_index=0,
+                    text="unsafe latest permalink",
+                    permalink="https://www.facebook.com/l.php?u=https%3A%2F%2Fevil.example",
+                    matched_keyword="",
+                ),
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="latest-safe-mobile",
+                    item_index=1,
+                    text="safe latest permalink",
+                    permalink="https://m.facebook.com/groups/111/posts/2222222222",
+                    matched_keyword="",
+                ),
+            ],
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name="第一個社團",
+                item_kind=ItemKind.POST,
+                item_key="hit-unsafe",
+                text="unsafe hit permalink",
+                permalink="javascript:alert(1)",
+                include_rule="unsafe",
+                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                created_at=app.state.session_started_at + timedelta(seconds=1),
+            )
+        )
+
+    client = TestClient(app)
+    preview_payload = client.get(f"/api/targets/{target.id}/hit-records/preview").json()
+    full_payload = client.get(f"/api/targets/{target.id}/hit-records").json()
+    card_payload = client.get(f"/api/targets/{target.id}/card").json()
+
+    assert preview_payload["items"][0]["permalink"] == ""
+    assert full_payload["items"][0]["permalink"] == ""
+    assert "javascript:alert" not in card_payload["hit_record_preview_html"]
+    assert "l.php" not in card_payload["latest_scan_preview_html"]
+    assert "https://evil.example" not in card_payload["latest_scan_preview_html"]
+    assert "https://www.facebook.com/groups/111/posts/2222222222" in card_payload[
+        "latest_scan_preview_html"
+    ]
 
 
 def test_dashboard_card_payload_labels_content_unavailable_failure(
@@ -2186,6 +2281,60 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
     assert config.discord_webhook == "https://discord.com/api/webhooks/example"
 
 
+def test_update_config_route_clears_unchecked_flags_and_notification_fields(
+    tmp_path: Path,
+) -> None:
+    """HTML checkbox 缺欄時應清成 false，通知 endpoint 可被清空。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                    enable_desktop_notification=True,
+                    enable_ntfy=True,
+                    ntfy_topic="old-topic",
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.example/old",
+                ),
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        f"/targets/{target.id}/config",
+        data={
+            "include_keywords": "票",
+            "exclude_keywords": "",
+            "exclude_ignore_phrases": "",
+            "refresh_mode": "floating",
+            "fixed_refresh_sec": "60",
+            "min_refresh_sec": "20",
+            "max_refresh_sec": "40",
+            "max_items_per_scan": "5",
+            "ntfy_topic": "",
+            "discord_webhook": "",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        config = app_context.repositories.configs.get_for_target(target)
+    assert config is not None
+    assert not config.auto_load_more
+    assert not config.auto_adjust_sort
+    assert not config.enable_desktop_notification
+    assert not config.enable_ntfy
+    assert config.ntfy_topic == ""
+    assert not config.enable_discord_notification
+    assert config.discord_webhook == ""
+
+
 def test_update_config_route_supports_fixed_and_floating_refresh_modes(
     tmp_path: Path,
 ) -> None:
@@ -2280,6 +2429,131 @@ def test_update_config_route_rejects_invalid_floating_refresh_range(
     assert config.jitter_enabled
 
 
+def test_update_config_route_preserves_existing_config_after_invalid_range(
+    tmp_path: Path,
+) -> None:
+    """浮動刷新 range 驗證失敗時，不得寫入部分設定。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("原本",),
+                    fixed_refresh_sec=120,
+                    min_refresh_sec=15,
+                    max_refresh_sec=45,
+                    auto_load_more=True,
+                    enable_ntfy=True,
+                    ntfy_topic="keep-topic",
+                ),
+            )
+        )
+        before = app_context.repositories.configs.get_for_target(target)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        f"/targets/{target.id}/config",
+        data={
+            "include_keywords": "改掉",
+            "refresh_mode": "floating",
+            "fixed_refresh_sec": "60",
+            "min_refresh_sec": "35",
+            "max_refresh_sec": "25",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        after = app_context.repositories.configs.get_for_target(target)
+    assert after == before
+
+
+def test_update_config_route_rejects_unknown_refresh_mode_without_mutation(
+    tmp_path: Path,
+) -> None:
+    """未知 refresh mode 不可默默 fallback 並覆蓋既有 config。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(include_keywords=("原本",)),
+            )
+        )
+        before = app_context.repositories.configs.get_for_target(target)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        f"/targets/{target.id}/config",
+        data={
+            "include_keywords": "改掉",
+            "refresh_mode": "unexpected",
+            "fixed_refresh_sec": "60",
+            "min_refresh_sec": "20",
+            "max_refresh_sec": "40",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        after = app_context.repositories.configs.get_for_target(target)
+    assert after == before
+
+
+def test_update_config_route_does_not_touch_scheduler_runtime(
+    tmp_path: Path,
+) -> None:
+    """設定更新只寫 target config，不喚醒 scheduler 或排下一輪掃描。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = FakeSchedulerManager()
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        before_runtime = app_context.services.targets.ensure_runtime_state(target.id)
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+    response = client.post(
+        f"/targets/{target.id}/config",
+        data={
+            "include_keywords": "票",
+            "refresh_mode": "fixed",
+            "fixed_refresh_sec": "90",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.stopped_count == 0
+    assert scheduler_manager.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        after_runtime = app_context.repositories.runtime_states.get(target.id)
+    assert after_runtime == before_runtime
+
+
 def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     """Web UI 會依 Facebook group URL 自動建立 posts target 並補社團名稱。"""
 
@@ -2352,7 +2626,7 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config is not None
     assert config.include_keywords == ("票",)
     assert config.exclude_keywords == ("售完",)
-    assert config.exclude_ignore_phrases == ("全收", "回收")
+    assert config.exclude_ignore_phrases == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
     assert config.fixed_refresh_sec is None
     assert config.jitter_enabled
     assert config.min_refresh_sec == PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
@@ -2365,6 +2639,75 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.ntfy_topic == "phase0test"
     assert config.enable_discord_notification
     assert config.discord_webhook == "https://discord.com/api/webhooks/example"
+
+
+def test_create_target_route_supports_fixed_refresh_mode(tmp_path: Path) -> None:
+    """新增 target 時 fixed refresh mode 也要走同一個 config form 語義。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=lambda _profile_dir, _url: "測試社團",
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "include_keywords": "票",
+            "refresh_mode": "fixed",
+            "fixed_refresh_sec": "95",
+            "min_refresh_sec": "20",
+            "max_refresh_sec": "40",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+        assert target is not None
+        config = app_context.repositories.configs.get_for_target(target)
+    assert config is not None
+    assert config.fixed_refresh_sec == 95
+    assert not config.jitter_enabled
+    assert config.min_refresh_sec == 20
+    assert config.max_refresh_sec == 40
+
+
+def test_create_target_route_rejects_invalid_floating_refresh_range_without_creating_target(
+    tmp_path: Path,
+) -> None:
+    """新增 target 時 refresh range 驗證失敗不得留下半套 target。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "display_name": "測試 target",
+            "refresh_mode": "floating",
+            "fixed_refresh_sec": "60",
+            "min_refresh_sec": "50",
+            "max_refresh_sec": "20",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        assert app_context.repositories.targets.list_all() == []
 
 
 def test_create_target_route_preserves_form_body_after_csrf_validation(
@@ -2938,6 +3281,53 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     assert config.discord_webhook == "https://discord.com/api/webhooks/example"
 
 
+def test_settings_notification_test_does_not_save_global_defaults(
+    tmp_path: Path,
+) -> None:
+    """全域測試通知使用表單值，但不得保存為通知預設值。"""
+
+    db_path = tmp_path / "app.db"
+    notifications = NotificationRecorder()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            desktop_sender=notifications.desktop_sender,
+            ntfy_sender=notifications.ntfy_sender,
+            discord_sender=notifications.discord_sender,
+        )
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        before = app_context.repositories.global_notification_settings.get()
+
+    response = client.post(
+        "/settings/notifications/test",
+        data={
+            "enable_desktop_notification": "on",
+            "enable_ntfy": "on",
+            "ntfy_topic": "test-only-topic",
+            "enable_discord_notification": "on",
+            "discord_webhook": "https://discord.example/test-only",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert any(item.startswith("desktop:") for item in notifications.sent)
+    assert any(item.startswith("ntfy:test-only-topic:") for item in notifications.sent)
+    assert any(
+        item.startswith("discord:https://discord.example/test-only:")
+        for item in notifications.sent
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        after = app_context.repositories.global_notification_settings.get()
+    assert after.enable_desktop_notification == before.enable_desktop_notification
+    assert after.enable_ntfy == before.enable_ntfy
+    assert after.ntfy_topic == before.ntfy_topic
+    assert after.enable_discord_notification == before.enable_discord_notification
+    assert after.discord_webhook == before.discord_webhook
+
+
 def test_target_settings_modal_can_test_notifications_without_saving(
     tmp_path: Path,
 ) -> None:
@@ -3369,6 +3759,32 @@ def test_cover_image_load_failure_ignores_stale_reported_url(
     with SqliteApplicationContext(db_path) as app_context:
         state = app_context.repositories.cover_image_refreshes.get(target.id)
     assert state is None
+
+
+def test_cover_image_load_failure_rejects_malformed_json(
+    tmp_path: Path,
+) -> None:
+    """壞圖上報壞 JSON 應回 400，不留下 route 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_cover_image_url="https://scontent.example.test/new.jpg",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.post(
+        f"/api/targets/{target.id}/cover-image/load-failure",
+        content="{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "JSON 格式不正確"
 
 
 def test_settings_modal_keeps_metadata_refresh_entry_hidden_for_later_placement(
@@ -4136,6 +4552,175 @@ def test_sidebar_api_errors_use_safe_traditional_chinese_messages(
     assert grouped_order.json()["detail"] == "已有群組排序狀態，請使用調整順序後的確認保存"
     assert missing_group.status_code == 404
     assert missing_group.json()["detail"] == "找不到指定的 sidebar 群組"
+
+
+def test_sidebar_group_template_route_saves_json_config_payload(
+    tmp_path: Path,
+) -> None:
+    """sidebar template JSON route 要沿用 TargetConfigForm 的設定語義。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        group = app_context.services.sidebar_layout.create_group("模板群組")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "include_keywords": "票,交換",
+            "exclude_keywords": "售完",
+            "exclude_ignore_phrases": "全收,回收",
+            "refresh_mode": "fixed",
+            "fixed_refresh_sec": "90",
+            "min_refresh_sec": "20",
+            "max_refresh_sec": "40",
+            "max_items_per_scan": "30",
+            "auto_load_more": True,
+            "auto_adjust_sort": False,
+            "enable_desktop_notification": True,
+            "enable_ntfy": True,
+            "ntfy_topic": "topic",
+            "enable_discord_notification": True,
+            "discord_webhook": "https://discord.example/webhook",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "group_id": group.id}
+    with SqliteApplicationContext(db_path) as app_context:
+        template = app_context.repositories.sidebar_layout.get_template(group.id)
+    assert template is not None
+    assert template.include_keywords == ("票", "交換")
+    assert template.exclude_keywords == ("售完",)
+    assert template.exclude_ignore_phrases == ("全收", "回收")
+    assert template.fixed_refresh_sec == 90
+    assert not template.jitter_enabled
+    assert template.min_refresh_sec == 20
+    assert template.max_refresh_sec == 40
+    assert template.max_items_per_scan == 10
+    assert template.auto_load_more
+    assert not template.auto_adjust_sort
+    assert template.enable_desktop_notification
+    assert template.enable_ntfy
+    assert template.ntfy_topic == "topic"
+    assert template.enable_discord_notification
+    assert template.discord_webhook == "https://discord.example/webhook"
+
+
+def test_sidebar_group_template_route_preserves_json_coercion_defaults(
+    tmp_path: Path,
+) -> None:
+    """JSON template parser 的既有 fallback 與 truthy checkbox 行為不得漂移。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        group = app_context.services.sidebar_layout.create_group("模板群組")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "fixed_refresh_sec": "not-an-int",
+            "min_refresh_sec": "bad",
+            "max_refresh_sec": None,
+            "max_items_per_scan": "bad",
+            "auto_load_more": "false",
+        },
+    )
+
+    assert response.status_code == 200
+    with SqliteApplicationContext(db_path) as app_context:
+        template = app_context.repositories.sidebar_layout.get_template(group.id)
+    assert template is not None
+    assert template.fixed_refresh_sec is None
+    assert template.jitter_enabled
+    assert template.min_refresh_sec == PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+    assert template.max_refresh_sec == PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+    assert template.max_items_per_scan == PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
+    assert template.auto_load_more
+    assert not template.auto_adjust_sort
+    assert not template.enable_desktop_notification
+    assert not template.enable_ntfy
+    assert template.ntfy_topic == ""
+    assert not template.enable_discord_notification
+    assert template.discord_webhook == ""
+
+
+def test_sidebar_group_template_route_rejects_invalid_range_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    """sidebar template range 驗證失敗時，不得覆蓋既有模板。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        group = app_context.services.sidebar_layout.create_group("模板群組")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    valid_response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "include_keywords": "原本",
+            "refresh_mode": "fixed",
+            "fixed_refresh_sec": "90",
+            "max_items_per_scan": "5",
+        },
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        before = app_context.repositories.sidebar_layout.get_template(group.id)
+    invalid_response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "include_keywords": "改掉",
+            "refresh_mode": "floating",
+            "min_refresh_sec": "50",
+            "max_refresh_sec": "20",
+            "max_items_per_scan": "5",
+        },
+    )
+
+    assert valid_response.status_code == 200
+    assert invalid_response.status_code == 400
+    with SqliteApplicationContext(db_path) as app_context:
+        after = app_context.repositories.sidebar_layout.get_template(group.id)
+    assert after == before
+
+
+def test_sidebar_group_template_route_rejects_unknown_refresh_mode_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    """sidebar template 未知 refresh mode 不得 fallback 後覆蓋既有模板。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        group = app_context.services.sidebar_layout.create_group("模板群組")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    valid_response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "include_keywords": "原本",
+            "refresh_mode": "fixed",
+            "fixed_refresh_sec": "90",
+            "max_items_per_scan": "5",
+        },
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        before = app_context.repositories.sidebar_layout.get_template(group.id)
+    invalid_response = client.put(
+        f"/api/sidebar/groups/{group.id}/template",
+        json={
+            "include_keywords": "改掉",
+            "refresh_mode": "unexpected",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+    )
+
+    assert valid_response.status_code == 200
+    assert invalid_response.status_code == 400
+    with SqliteApplicationContext(db_path) as app_context:
+        after = app_context.repositories.sidebar_layout.get_template(group.id)
+    assert after == before
 
 
 def test_dashboard_events_streams_revision_event(tmp_path: Path) -> None:

@@ -11,9 +11,7 @@ from functools import cached_property
 from math import ceil
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.notification_channels import notification_channel_sort_key
 from facebook_monitor.core.models import TargetDesiredState
-from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
@@ -40,9 +38,7 @@ from facebook_monitor.webapp.dashboard_presenters import is_retrying_failure_sca
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
-from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
-from facebook_monitor.webapp.notification_presenters import format_notification_event_message
-from facebook_monitor.webapp.notification_presenters import format_notification_status_label
+from facebook_monitor.webapp.form_models import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
@@ -124,7 +120,7 @@ class SidebarGroupSection:
         """回傳 template refresh mode。"""
 
         presenter = self.template_presenter
-        return presenter.refresh_mode if presenter else "floating"
+        return presenter.refresh_mode if presenter else FLOATING_REFRESH_MODE
 
     @property
     def fixed_refresh_value(self) -> int:
@@ -177,8 +173,6 @@ class TargetRow:
     runtime_state: TargetRuntimeState
     latest_scan_run: ScanRun | None = None
     latest_failed_scan_run: ScanRun | None = None
-    latest_notification_event: NotificationEvent | None = None
-    latest_notification_events: tuple[NotificationEvent, ...] = ()
     notification_outbox_summary: NotificationOutboxSummary | None = None
     latest_scan_items: tuple[LatestScanItemRow, ...] = ()
     hit_record_preview_items: tuple[HitRecordPreviewRow, ...] = ()
@@ -243,18 +237,6 @@ class TargetRow:
         return TargetIdentityPresenter(self.target).rename_value
 
     @property
-    def kind_label(self) -> str:
-        """回傳 target 類型顯示文字。"""
-
-        return TargetIdentityPresenter(self.target).kind_label
-
-    @property
-    def target_type_label(self) -> str:
-        """回傳主畫面使用的 target 類型文字。"""
-
-        return TargetIdentityPresenter(self.target).target_type_label
-
-    @property
     def thumbnail_url(self) -> str:
         """回傳 target header / sidebar 使用的社團縮圖 URL。"""
 
@@ -299,27 +281,12 @@ class TargetRow:
         """回傳收合卡片摘要 presenter。"""
 
         return TargetCardSummaryPresenter(
-            target_type_label=self.target_type_label,
-            status_label=self.status_label,
             settings=self.settings_presenter,
             latest_scan_run=self.latest_scan_run,
             latest_failed_scan_run=self.latest_failed_scan_run,
-            latest_notification_event=self.latest_notification_event,
             hit_record_total_count=self.hit_record_total_count,
             content_unavailable_current=self.content_unavailable_current,
         )
-
-    @property
-    def target_identity_label(self) -> str:
-        """回傳 target 的 group/post/scope 診斷摘要。"""
-
-        if self.target.target_kind == TargetKind.COMMENTS:
-            return (
-                f"group={self.target.group_id} · "
-                f"parent_post={self.target.parent_post_id or '(none)'} · "
-                f"scope={self.target.scope_id}"
-            )
-        return f"group={self.target.group_id} · scope={self.target.scope_id}"
 
     @property
     def header_summary_label(self) -> str:
@@ -359,14 +326,6 @@ class TargetRow:
         """回傳最近一次 scan guard skip 原因。"""
 
         return format_runtime_skip_message(self.runtime_state.last_skip_reason)
-
-    @property
-    def latest_scan_label(self) -> str:
-        """回傳最近掃描完成時間。"""
-
-        if not self.latest_scan_run:
-            return "尚無掃描"
-        return format_datetime_for_ui(self.latest_scan_run.finished_at)
 
     @property
     def latest_scan_header_time_label(self) -> str:
@@ -557,42 +516,6 @@ class TargetRow:
         if failed_scan is None:
             return False
         return failed_scan.finished_at >= latest_scan.finished_at
-
-    @property
-    def latest_notification_label(self) -> str:
-        """回傳最近通知通道狀態。"""
-
-        if not self.latest_notification_event:
-            if not self.latest_notification_events:
-                return "尚無通知"
-        events = self._latest_notification_events_for_display()
-        if not events:
-            return "尚無通知"
-        return " / ".join(
-            f"{format_notification_channel_label(event.channel)}: "
-            f"{format_notification_status_label(event.status)} · "
-            f"{format_datetime_for_ui(event.created_at)}"
-            + (
-                f" · {format_notification_event_message(event.message)}"
-                if event.message
-                else ""
-            )
-            for event in events
-        )
-
-    def _latest_notification_events_for_display(self) -> tuple[NotificationEvent, ...]:
-        """依固定通道順序回傳最近通知事件，讓 UI 顯示多通道狀態。"""
-
-        if self.latest_notification_events:
-            return tuple(
-                sorted(
-                    self.latest_notification_events,
-                    key=lambda event: notification_channel_sort_key(event.channel),
-                )
-            )
-        if self.latest_notification_event:
-            return (self.latest_notification_event,)
-        return ()
 
     @property
     def notification_summary_label(self) -> str:

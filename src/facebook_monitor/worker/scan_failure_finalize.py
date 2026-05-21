@@ -16,8 +16,14 @@ from facebook_monitor.application.scan_recording_service import RecordScanReques
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import WorkerMode
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failures import PROFILE_SESSION_FAILURE_REASONS
 from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
+from facebook_monitor.worker.scan_finalize import ensure_target_allows_scan_commit
 
 
 @dataclass(frozen=True)
@@ -123,45 +129,99 @@ def record_scan_failure(
     )
 
 
-def record_scan_failure_for_db(
+def record_guarded_scan_failure(
     *,
-    db_path: Path,
-    target: TargetDescriptor | None,
+    app: ApplicationContext,
+    target_id: str,
     reason: str,
     message: str,
+    source: ScanFailureSource,
     worker_path: str,
+    commit_guard: ScanCommitGuard | None,
     worker_mode: WorkerMode = WorkerMode.HEADLESS,
     exception_class: str = "",
-    retryable: bool = False,
     profile_lease_state: str = "",
     page_reused: bool | None = None,
     scan_request_id: str = "",
-    runtime_action: str = "",
-    retry_streak: int = 0,
-    retry_limit: int = 0,
-    force_record: bool = False,
-) -> int:
-    """用 DB path 記錄標準失敗 scan run；未知 target 時不寫入。"""
+    runtime_error_message: str | None = None,
+) -> ScanFailureDecision | None:
+    """在同一 transaction 內確認 attempt guard、記錄 failure 並更新 runtime。"""
 
+    begin_scan_commit_transaction(app)
+    target = app.repositories.targets.get(target_id)
     if target is None:
-        return 0
-    with SqliteApplicationContext(db_path) as app:
-        return record_scan_failure(
+        return None
+    try:
+        ensure_target_allows_scan_commit(
             app=app,
             target=target,
+            commit_guard=commit_guard,
+        )
+    except WorkerFailure:
+        return None
+    decision = app.services.targets.decide_scan_failure(
+        target_id,
+        reason,
+        source=source,
+    )
+    record_scan_failure(
+        app=app,
+        target=target,
+        reason=reason,
+        message=message,
+        worker_path=worker_path,
+        worker_mode=worker_mode,
+        exception_class=exception_class,
+        retryable=decision.retryable,
+        profile_lease_state=profile_lease_state,
+        page_reused=page_reused,
+        scan_request_id=scan_request_id,
+        runtime_action=decision.runtime_action,
+        retry_streak=decision.retry_streak,
+        retry_limit=decision.retry_limit,
+        force_record=decision.counts_toward_streak,
+    )
+    app.services.targets.apply_scan_failure_decision(
+        target_id,
+        decision,
+        runtime_error_message or format_scan_failure_message(decision.reason, message),
+    )
+    return decision
+
+
+def record_guarded_scan_failure_for_db(
+    *,
+    db_path: Path,
+    target_id: str,
+    reason: str,
+    message: str,
+    source: ScanFailureSource,
+    worker_path: str,
+    commit_guard: ScanCommitGuard | None,
+    worker_mode: WorkerMode = WorkerMode.HEADLESS,
+    exception_class: str = "",
+    profile_lease_state: str = "",
+    page_reused: bool | None = None,
+    scan_request_id: str = "",
+    runtime_error_message: str | None = None,
+) -> ScanFailureDecision | None:
+    """用 DB path 執行 guarded failure finalize；stale attempt 回傳 None。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        return record_guarded_scan_failure(
+            app=app,
+            target_id=target_id,
             reason=reason,
             message=message,
+            source=source,
             worker_path=worker_path,
+            commit_guard=commit_guard,
             worker_mode=worker_mode,
             exception_class=exception_class,
-            retryable=retryable,
             profile_lease_state=profile_lease_state,
             page_reused=page_reused,
             scan_request_id=scan_request_id,
-            runtime_action=runtime_action,
-            retry_streak=retry_streak,
-            retry_limit=retry_limit,
-            force_record=force_record,
+            runtime_error_message=runtime_error_message,
         )
 
 

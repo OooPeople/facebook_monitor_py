@@ -17,8 +17,8 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.facebook.group_metadata import GroupMetadata
@@ -117,7 +117,7 @@ def build_scheduler_options(request: Request) -> SchedulerSessionOptions:
             getattr(
                 request.app.state,
                 "scheduler_interval_seconds",
-                DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
+                PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
             )
         ),
         scheduler_tick_seconds=float(

@@ -67,11 +67,13 @@ uv run facebook-monitor
 
 ## 文件
 
+- [文件索引](docs/README.md)：公開文件職責邊界與更新規則。
 - [使用說明](docs/USAGE.md)：安裝、啟動、target 建立、通知、資料路徑與 troubleshooting。
 - [架構說明](docs/ARCHITECTURE.md)：穩定系統邊界與產品語義。
+- [工程審查指南](docs/ENGINEERING_REVIEW.md)：預設 review 範圍、輸出格式與 handoff 要求。
 - [工具索引](docs/tooling.md)：admin、debug、internal scripts。
 - [打包說明](packaging/README.md)：Windows portable EXE、macOS Apple Silicon onedir、Release asset 與 frozen smoke checklist。
-- [協作規則](AGENTS.md)：協作規則、產品語義守護與 UI 重構邊界。
+- [協作規則](AGENTS.md)：代理開工守則、禁止事項與文件查找索引。
 
 ## 驗證
 

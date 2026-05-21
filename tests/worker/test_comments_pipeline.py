@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
@@ -14,6 +15,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
 
@@ -265,6 +267,15 @@ class FakeDuplicatedCommentTextPage(FakeCommentsPage):
         return result
 
 
+def _activate_target(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+) -> TargetDescriptor:
+    """讓 comments pipeline 測試明確模擬正式 worker 正在掃描 active target。"""
+
+    return app.services.targets.restart_target_monitoring(target.id)
+
+
 def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: Path) -> None:
     """comments worker 會寫入 seen/history/latest scan，且使用 comments scope。"""
 
@@ -292,6 +303,7 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -358,6 +370,7 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
                 ),
             )
         )
+        target = _activate_target(app, target)
         app.repositories.latest_scan_items.replace_for_target(
             target.id,
             [
@@ -429,6 +442,7 @@ def test_scan_comments_target_page_raises_content_unavailable_before_sort(
                 config=TargetConfigPatch(auto_adjust_sort=True),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -475,6 +489,7 @@ def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notificat
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -514,6 +529,7 @@ def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) 
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
         assert config.max_items_per_scan == 2

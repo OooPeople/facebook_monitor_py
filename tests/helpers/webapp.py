@@ -176,7 +176,7 @@ def seed_dashboard_index_target(db_path: Path) -> TargetDescriptor:
                     item_index=0,
                     author="王小明",
                     text="這是一篇有票券關鍵字的貼文",
-                    permalink="https://www.facebook.com/groups/222518561920110/posts/1",
+                    permalink="https://www.facebook.com/groups/222518561920110/posts/1234567890",
                     matched_keyword="票券",
                     debug_metadata={
                         "textSource": "primary",

@@ -245,6 +245,12 @@ def test_launcher_rejects_non_loopback_host(tmp_path, monkeypatch) -> None:
         launcher.main(["--data-dir", str(tmp_path / "data"), "--host", "0.0.0.0"])
 
 
+def test_local_url_formats_ipv6_loopback_host() -> None:
+    """IPv6 loopback URL 必須加上方括號，server.json 與開瀏覽器才可用。"""
+
+    assert launcher._local_url("::1", 4818) == "http://[::1]:4818"
+
+
 def test_launcher_opens_existing_healthy_instance(
     tmp_path,
     monkeypatch,

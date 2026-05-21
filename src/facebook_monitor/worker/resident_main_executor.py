@@ -24,26 +24,25 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
-from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.resident_shared import apply_resident_scan_failure_decision
-from facebook_monitor.worker.resident_shared import decide_resident_scan_failure
 from facebook_monitor.worker.resident_shared import load_resident_target
-from facebook_monitor.worker.resident_shared import mark_resident_target_error
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle
-from facebook_monitor.worker.resident_shared import record_resident_scan_failure
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
-from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
+from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_guard
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
 
 
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
@@ -163,6 +162,11 @@ class ExecutorWorkerPool:
                 continue
             with SqliteApplicationContext(self.options.db_path) as app:
                 app.services.targets.mark_target_queued(due_target.target_id, reason)
+                if due_target.scan_requested:
+                    app.services.targets.clear_target_scan_request_if_not_newer(
+                        due_target.target_id,
+                        due_target.scan_requested_at,
+                    )
             enqueued_count += 1
         return enqueued_count
 
@@ -198,6 +202,7 @@ class ExecutorWorkerPool:
         target_id = item.due_target.target_id
         opened = False
         page_id = ""
+        commit_guard: ScanCommitGuard | None = None
         try:
             resident_target = load_resident_target(self.options.db_path, target_id)
             if not self._target_still_active(target_id):
@@ -213,6 +218,7 @@ class ExecutorWorkerPool:
                 )
             if locked_state is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
+            commit_guard = scan_commit_guard_from_runtime_state(locked_state)
             self.schedule_planner.mark_dispatched(item.due_target)
 
             await prepare_resident_main_page(
@@ -242,8 +248,17 @@ class ExecutorWorkerPool:
                     scroll_wait_ms=self.options.scroll_wait_ms,
                     worker_id=worker_id,
                     page_id=page_id,
+                    commit_guard=commit_guard,
                 )
-                app.services.targets.mark_target_idle(target_id)
+                committed_current_attempt = False
+                if mark_target_idle_for_scan_commit(
+                    app=app,
+                    target_id=target_id,
+                    commit_guard=commit_guard,
+                ):
+                    committed_current_attempt = True
+            if not committed_current_attempt:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
             return AsyncTargetScanResult(
                 target_id=target_id,
                 success=True,
@@ -251,27 +266,19 @@ class ExecutorWorkerPool:
                 reused_page=not opened,
             )
         except WorkerFailure as exc:
-            decision = decide_resident_scan_failure(
-                self.options.db_path,
-                target_id,
-                exc.reason,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=self.options.db_path,
+                target_id=target_id,
+                reason=exc.reason,
+                message=str(exc),
                 source="worker_failure",
-            )
-            self._record_failure_for_known_target(
-                target_id,
-                exc.reason,
-                str(exc),
-                retryable=decision.retryable,
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                self.options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(
@@ -281,75 +288,50 @@ class ExecutorWorkerPool:
                 reused_page=not opened and bool(page_id),
             )
         except asyncio.CancelledError:
-            decision = decide_resident_scan_failure(
-                self.options.db_path,
-                target_id,
-                "scheduler_stopping",
+            record_guarded_scan_failure_for_db(
+                db_path=self.options.db_path,
+                target_id=target_id,
+                reason="scheduler_stopping",
+                message="resident scheduler is stopping",
                 source="scheduler_cancel",
-            )
-            self._record_failure_for_known_target(
-                target_id,
-                "scheduler_stopping",
-                "resident scheduler is stopping",
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class="CancelledError",
                 page_reused=not opened and bool(page_id),
-                decision=decision,
-            )
-            apply_resident_scan_failure_decision(
-                self.options.db_path,
-                target_id,
-                decision,
-                "resident scheduler is stopping",
             )
             raise
         except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
             reason = classify_playwright_exception(exc)
-            decision = decide_resident_scan_failure(
-                self.options.db_path,
-                target_id,
-                reason,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=self.options.db_path,
+                target_id=target_id,
+                reason=reason,
+                message=str(exc),
                 source="playwright",
-            )
-            self._record_failure_for_known_target(
-                target_id,
-                reason,
-                str(exc),
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
-                retryable=decision.retryable,
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                self.options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         except Exception as exc:
-            decision = decide_resident_scan_failure(
-                self.options.db_path,
-                target_id,
-                UNKNOWN_REASON,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=self.options.db_path,
+                target_id=target_id,
+                reason=UNKNOWN_REASON,
+                message=str(exc),
                 source="unknown_exception",
-            )
-            self._record_failure_for_known_target(
-                target_id,
-                UNKNOWN_REASON,
-                str(exc),
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
                 page_reused=not opened and bool(page_id),
-                retryable=decision.retryable,
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                self.options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(target_id=target_id, failure=True)
@@ -381,12 +363,14 @@ class ExecutorWorkerPool:
         target_id = target.id
         worker_id = str(kwargs.pop("worker_id"))
         page_id = str(kwargs.pop("page_id"))
+        commit_guard = kwargs["commit_guard"]
         scan_task: asyncio.Task[Any] = asyncio.create_task(scan_page(**kwargs))
         heartbeat_task = asyncio.create_task(
             self._scan_heartbeat_loop(
                 target_id=target_id,
                 worker_id=worker_id,
                 page_id=page_id,
+                commit_guard=commit_guard,
                 scan_task=scan_task,
             )
         )
@@ -405,7 +389,7 @@ class ExecutorWorkerPool:
                 f"scan exceeded {timeout_seconds:g} seconds",
             ) from exc
         except asyncio.CancelledError:
-            if not self._target_still_active(target_id):
+            if not self._target_matches_commit_guard(target_id, commit_guard):
                 raise WorkerFailure(
                     TARGET_STOPPED_REASON,
                     "target stopped during scan",
@@ -421,6 +405,7 @@ class ExecutorWorkerPool:
         target_id: str,
         worker_id: str,
         page_id: str,
+        commit_guard: ScanCommitGuard,
         scan_task: asyncio.Task[Any],
     ) -> None:
         """掃描期間刷新 heartbeat，並在 target 被停止時取消本輪 scan。"""
@@ -436,7 +421,7 @@ class ExecutorWorkerPool:
             await asyncio.sleep(interval_seconds)
             if scan_task.done():
                 return
-            if not self._target_still_active(target_id):
+            if not self._target_matches_commit_guard(target_id, commit_guard):
                 scan_task.cancel()
                 return
             with SqliteApplicationContext(self.options.db_path) as app:
@@ -456,39 +441,6 @@ class ExecutorWorkerPool:
                 return
             app.services.targets.record_scan_guard_skip(target_id, reason)
 
-    def _record_failure_for_known_target(
-        self,
-        target_id: str,
-        reason: str,
-        message: str,
-        *,
-        retryable: bool = False,
-        exception_class: str = "",
-        page_reused: bool | None = None,
-        decision: ScanFailureDecision | None = None,
-    ) -> None:
-        """target 仍存在時記錄 resident failure scan run。"""
-
-        try:
-            resident_target = load_resident_target(self.options.db_path, target_id)
-        except WorkerFailure:
-            mark_resident_target_error(
-                self.options.db_path,
-                target_id,
-                format_scan_failure_message(reason, message),
-            )
-            return
-        record_resident_scan_failure(
-            self.options.db_path,
-            resident_target.target,
-            reason,
-            message,
-            retryable=retryable,
-            exception_class=exception_class,
-            page_reused=page_reused,
-            decision=decision,
-        )
-
     def _target_still_active(self, target_id: str) -> bool:
         """確認 target 從 enqueue 到執行前仍保持 desired active。"""
 
@@ -498,6 +450,22 @@ class ExecutorWorkerPool:
                 return False
             state = app.services.targets.ensure_runtime_state(target_id)
             return state.desired_state == TargetDesiredState.ACTIVE
+
+    def _target_matches_commit_guard(
+        self,
+        target_id: str,
+        commit_guard: ScanCommitGuard,
+    ) -> bool:
+        """確認 target runtime 仍是同一輪 running attempt。"""
+
+        with SqliteApplicationContext(self.options.db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return False
+            return target_matches_scan_commit_guard(
+                app=app,
+                target_id=target_id,
+                commit_guard=commit_guard,
+            )
 
     def _select_scan_page(self, target_kind: TargetKind) -> AsyncScanCallable:
         """依 target kind 選擇 resident main 掃描函式。"""

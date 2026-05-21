@@ -514,6 +514,98 @@ def test_target_scan_guard_records_skip_reason(tmp_path: Path) -> None:
     assert "worker-a" in state.last_skip_reason
 
 
+def test_scheduler_loop_skips_stale_success_after_target_restart(tmp_path: Path) -> None:
+    """舊 scan attempt 成功返回時，不可把 stop/start 後的新 runtime 標成完成。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def fake_scan_once(options: OneShotScanOptions) -> PostsScanSummary:
+        """模擬掃描期間使用者先停止又重新開始。"""
+
+        assert options.commit_guard is not None
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.pause_target_monitoring(target.id)
+            app.services.targets.restart_target_monitoring(target.id)
+        return PostsScanSummary(
+            target_id=target.id,
+            url="https://www.facebook.com/groups/111",
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    summaries = run_one_shot_scheduler_loop(
+        SchedulerOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            max_cycles=1,
+        ),
+        scan_once=fake_scan_once,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert summaries[0].success_count == 0
+    assert summaries[0].skipped_count == 1
+    assert state is not None
+    assert state.scan_requested_at is not None
+
+
+def test_scheduler_loop_skips_stale_failure_after_target_restart(tmp_path: Path) -> None:
+    """舊 scan attempt 失敗返回時，也不可寫入 stop/start 後的新 runtime。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def fake_scan_once(options: OneShotScanOptions) -> PostsScanSummary:
+        """模擬掃描期間使用者先停止又重新開始，然後舊 attempt 才丟錯。"""
+
+        assert options.commit_guard is not None
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.pause_target_monitoring(target.id)
+            app.services.targets.restart_target_monitoring(target.id)
+        raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
+
+    summaries = run_one_shot_scheduler_loop(
+        SchedulerOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            max_cycles=1,
+        ),
+        scan_once=fake_scan_once,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert summaries[0].failure_count == 0
+    assert summaries[0].skipped_count == 1
+    assert latest_scan is None
+    assert state is not None
+    assert state.scan_requested_at is not None
+
+
 def test_scheduler_loop_marks_extractor_empty_as_idle_after_failed_scan(
     tmp_path: Path,
 ) -> None:

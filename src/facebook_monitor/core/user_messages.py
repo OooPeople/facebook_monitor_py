@@ -116,6 +116,8 @@ _UPDATE_REASON_LABELS = {
     "update_not_available": "目前沒有可下載的更新",
     "asset_download_url_missing": "缺少更新檔下載網址",
     "invalid_asset_name": "更新檔名不安全",
+    "download_path_unsafe": "更新檔下載路徑不安全",
+    "download_too_large": "更新檔超過大小限制",
     "download_http_404": "更新檔下載位址不存在",
     "updater_missing": "找不到內建更新器",
     "pending_update_missing": "找不到更新交接檔",
@@ -253,6 +255,8 @@ def format_update_reason_message(value: str) -> str:
         return "無法連線到更新服務"
     if text.startswith("download_error:"):
         return "下載更新時連線失敗"
+    if text.startswith("download_io_error:"):
+        return "寫入更新檔失敗"
     if text.startswith("http_"):
         status_code = text.removeprefix("http_")
         return f"更新服務回傳狀態碼 {status_code}"

@@ -41,7 +41,7 @@ from facebook_monitor.persistence.schema import initialize_schema
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.secret_storage import load_or_create_secret_codec
-from facebook_monitor.persistence.secret_storage import reencrypt_plaintext_secrets
+from facebook_monitor.persistence.secret_storage import reencrypt_plaintext_secrets_if_needed
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 
 
@@ -200,8 +200,8 @@ class SqliteApplicationContext:
             connection = sqlite_context.require_connection()
             if self.initialize_schema_on_enter:
                 ensure_schema_initialized_once(connection, self.db_path)
-            secret_codec = load_or_create_secret_codec(self.db_path)
-            reencrypt_plaintext_secrets(connection, secret_codec)
+            secret_codec = load_or_create_secret_codec(self.db_path, connection=connection)
+            reencrypt_plaintext_secrets_if_needed(connection, secret_codec)
             self.context = build_application_context(
                 connection,
                 secret_codec=secret_codec,

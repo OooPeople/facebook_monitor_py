@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import platform
+import re
 import sys
 
 
@@ -161,6 +163,19 @@ def release_sha256_asset_name(asset_name: str) -> str:
     """回傳 release zip 對應的 `.sha256` asset 名稱。"""
 
     return asset_name + SHA256_SIDECAR_SUFFIX
+
+
+def sanitize_release_asset_name(value: str) -> str:
+    """限制 release artifact 名稱，避免 runtime path 由外部字串跳出工作目錄。"""
+
+    name = Path(value).name.strip()
+    if name != value.strip() or not name:
+        raise ValueError("invalid_asset_name")
+    if name in {".", ".."}:
+        raise ValueError("invalid_asset_name")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise ValueError("invalid_asset_name")
+    return name
 
 
 def is_release_asset_name_for_policy(

@@ -38,11 +38,15 @@ from facebook_monitor.updates.platforms import macos_optional_executable_staging
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
+from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import is_macho_arm64
 from facebook_monitor.updates.validation import plist_value_is_true
+from facebook_monitor.updates.validation import resolve_zip_symlink_target
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
+from facebook_monitor.updates.validation import zip_member_is_symlink
 from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
+from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
 from facebook_monitor.version import APP_VERSION
 from scripts.admin.windows_version_resource import windows_file_version
@@ -423,6 +427,8 @@ def _validated_zip_names(
 
     members = archive.infolist()
     names: set[str] = set()
+    paths: set[PurePosixPath] = set()
+    symlink_paths: set[PurePosixPath] = set()
     total_uncompressed = 0
     if len(members) > MAX_ZIP_ENTRIES:
         messages.append("zip too many entries")
@@ -436,6 +442,18 @@ def _validated_zip_names(
             messages.append(f"zip duplicate entry: {normalized}")
             continue
         names.add(normalized)
+        paths.add(path)
+        if zip_member_is_symlink(member):
+            symlink_paths.add(path)
+            if member.file_size > MAX_ZIP_SYMLINK_TARGET_BYTES:
+                messages.append(f"zip symlink target too large: {normalized}")
+                continue
+            total_uncompressed += member.file_size
+            if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
+                messages.append("zip uncompressed size too large")
+                break
+            _validate_zip_symlink_member(archive, member, path, messages)
+            continue
         if member.is_dir():
             continue
         if member.file_size > MAX_ZIP_SINGLE_FILE_BYTES:
@@ -444,7 +462,37 @@ def _validated_zip_names(
         if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
             messages.append("zip uncompressed size too large")
             break
+    for path in paths:
+        if any(parent in symlink_paths for parent in path.parents):
+            messages.append(f"zip member path unsafe: {path.as_posix()}")
     return names
+
+
+def _validate_zip_symlink_member(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    path: PurePosixPath,
+    messages: list[str],
+) -> None:
+    """檢查 zip symlink 目標不會逃出 artifact root 或指向私人資料。"""
+
+    try:
+        raw_target = archive.read(member)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        messages.append(f"zip symlink target unreadable: {member.filename}")
+        return
+    try:
+        target_text = decode_zip_symlink_target(raw_target)
+    except ValueError:
+        messages.append(f"zip symlink target invalid: {member.filename}")
+        return
+    resolved = resolve_zip_symlink_target(path, target_text)
+    if resolved is None:
+        messages.append(f"zip symlink target unsafe: {member.filename}")
+        return
+    lower_parts = {part.casefold() for part in resolved.parts}
+    if SENSITIVE_RELEASE_PATH_PARTS & lower_parts:
+        messages.append(f"zip symlink target unsafe: {member.filename}")
 
 
 def _validate_sha256(zip_path: Path, sha_path: Path, messages: list[str]) -> None:

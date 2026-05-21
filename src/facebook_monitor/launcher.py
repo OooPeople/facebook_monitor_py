@@ -27,7 +27,7 @@ import uvicorn
 import uvicorn.server
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.profile_login import GuidedLoginError
@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scheduler-interval-seconds",
         type=float,
-        default=DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
+        default=PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
         help="Web UI background scheduler interval seconds.",
     )
     parser.add_argument(
@@ -431,6 +431,8 @@ def _local_url(host: str, port: int) -> str:
     """建立瀏覽器可開啟的 local URL。"""
 
     browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    if ":" in browser_host and not browser_host.startswith("["):
+        browser_host = f"[{browser_host}]"
     return f"http://{browser_host}:{port}"
 
 

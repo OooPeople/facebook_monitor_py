@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from typing import cast
 
+import pytest
+
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpdateTargetConfigRequest
@@ -17,6 +22,8 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
@@ -27,9 +34,78 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
 from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
 from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
+from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
-from facebook_monitor.worker.scan_finalize import finalize_scan_items
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
+from facebook_monitor.worker.scan_finalize import finalize_scan_items as _finalize_scan_items
+from facebook_monitor.worker.scan_finalize import record_skipped_scan as _record_skipped_scan
+from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure
+from facebook_monitor.worker.errors import WorkerFailure
+
+
+def finalize_scan_items(**kwargs: Any) -> Any:
+    """測試預設走明確 unguarded finalize；guard 案例可覆寫 commit_guard。"""
+
+    kwargs.setdefault("commit_guard", UNGUARDED_SCAN_COMMIT)
+    return _finalize_scan_items(**kwargs)
+
+
+def record_skipped_scan(**kwargs: Any) -> Any:
+    """測試預設走明確 unguarded skip finalize；guard 案例可覆寫 commit_guard。"""
+
+    kwargs.setdefault("commit_guard", UNGUARDED_SCAN_COMMIT)
+    return _record_skipped_scan(**kwargs)
+
+
+def _activate_target(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+) -> TargetDescriptor:
+    """讓 finalize 測試明確模擬正式 worker 正在處理 active target。"""
+
+    return app.services.targets.restart_target_monitoring(target.id)
+
+
+@dataclass(frozen=True)
+class RunningTargetFixture:
+    """保存已取得 scan admission 的 target 測試資料。"""
+
+    target: TargetDescriptor
+    config: TargetConfig
+    commit_guard: ScanCommitGuard
+
+
+def _create_running_target_with_guard(
+    app: ApplicationContext,
+    *,
+    include_keywords: tuple[str, ...] = (),
+) -> RunningTargetFixture:
+    """建立 active target、初始化 scope，並回傳目前 running attempt guard。"""
+
+    target = app.services.targets.upsert_group_posts_target(
+        UpsertGroupPostsTargetRequest(
+            group_id="123",
+            canonical_url="https://www.facebook.com/groups/123",
+            group_name="測試社團",
+            config=TargetConfigPatch(include_keywords=include_keywords),
+        )
+    )
+    target = _activate_target(app, target)
+    config = app.services.targets.get_config_for_target(target)
+    app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+    running_state = app.services.targets.mark_target_running(
+        target.id,
+        "worker-a",
+        page_id="page-a",
+    )
+    return RunningTargetFixture(
+        target=target,
+        config=config,
+        commit_guard=scan_commit_guard_from_runtime_state(running_state),
+    )
 
 
 def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) -> None:
@@ -74,6 +150,7 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
 
         result = finalize_scan_items(
@@ -166,6 +243,322 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert app.repositories.notification_outbox.list_pending() == []
 
 
+def test_finalize_scan_items_refuses_stopped_target_commit(tmp_path: Path) -> None:
+    """target 停止後才完成的掃描不得寫入 seen/history/latest/notification。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+        target = app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.pause_target_monitoring(target.id)
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            finalize_scan_items(
+                app=app,
+                target=target,
+                config=config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:1",
+                        alias_keys=("post:1",),
+                        group_id="123",
+                        author="作者",
+                        text="票券",
+                        permalink="https://www.facebook.com/groups/123/posts/1",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+            )
+
+        assert excinfo.value.reason == "target_stopped"
+        assert app.repositories.match_history.list_by_target(target.id) == []
+        assert app.repositories.latest_scan_items.list_by_target(target.id) == []
+        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+
+
+def test_finalize_scan_items_refuses_paused_descriptor_commit(tmp_path: Path) -> None:
+    """即使呼叫端傳入的是 paused descriptor，finalize 仍不得寫入結果。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            finalize_scan_items(
+                app=app,
+                target=target,
+                config=config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:1",
+                        alias_keys=("post:1",),
+                        group_id="123",
+                        author="作者",
+                        text="票券",
+                        permalink="https://www.facebook.com/groups/123/posts/1234567890",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+            )
+
+        assert excinfo.value.reason == "target_stopped"
+        assert app.repositories.match_history.list_by_target(target.id) == []
+        assert app.repositories.latest_scan_items.list_by_target(target.id) == []
+        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+
+
+def test_finalize_scan_items_refuses_restarted_attempt_commit(tmp_path: Path) -> None:
+    """target stop/start 後，舊掃描 attempt 不得再寫入結果。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(
+            app,
+            include_keywords=("票券",),
+        )
+        app.services.targets.pause_target_monitoring(fixture.target.id)
+        app.services.targets.restart_target_monitoring(fixture.target.id)
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            finalize_scan_items(
+                app=app,
+                target=fixture.target,
+                config=fixture.config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:restart-race",
+                        alias_keys=("post:restart-race",),
+                        group_id="123",
+                        author="作者",
+                        text="票券",
+                        permalink="https://www.facebook.com/groups/123/posts/1234567890",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+                commit_guard=fixture.commit_guard,
+            )
+
+        assert excinfo.value.reason == "target_stopped"
+        assert app.repositories.match_history.list_by_target(fixture.target.id) == []
+        assert app.repositories.latest_scan_items.list_by_target(fixture.target.id) == []
+        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+
+
+def test_record_skipped_scan_refuses_restarted_attempt_commit(tmp_path: Path) -> None:
+    """sort-adjust skip 也不得在 stop/start 後清掉新一輪 latest snapshot。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        app.repositories.latest_scan_items.replace_for_target(
+            fixture.target.id,
+            [
+                LatestScanItem(
+                    target_id=fixture.target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.POST,
+                    item_key="previous",
+                    item_index=0,
+                    text="新一輪已存在的 snapshot",
+                )
+            ],
+        )
+        app.services.targets.pause_target_monitoring(fixture.target.id)
+        app.services.targets.restart_target_monitoring(fixture.target.id)
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            record_skipped_scan(
+                app=app,
+                target=fixture.target,
+                metadata={"worker": "test_worker"},
+                commit_guard=fixture.commit_guard,
+            )
+
+        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
+        assert excinfo.value.reason == "target_stopped"
+        assert len(latest_items) == 1
+        assert latest_items[0].item_key == "previous"
+
+
+def test_finalize_scan_items_refuses_reused_worker_with_different_page(
+    tmp_path: Path,
+) -> None:
+    """同 worker / started_at 但 page identity 已換掉時，舊頁面不得寫回。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(
+            app,
+            include_keywords=("票券",),
+        )
+        runtime_state = app.services.targets.ensure_runtime_state(fixture.target.id)
+        app.repositories.runtime_states.save(
+            replace(runtime_state, active_page_id="page-b")
+        )
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            finalize_scan_items(
+                app=app,
+                target=fixture.target,
+                config=fixture.config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:page-drift",
+                        alias_keys=("post:page-drift",),
+                        group_id="123",
+                        author="作者",
+                        text="票券",
+                        permalink="https://www.facebook.com/groups/123/posts/1234567890",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+                commit_guard=fixture.commit_guard,
+            )
+
+        assert excinfo.value.reason == "target_stopped"
+        assert app.repositories.match_history.list_by_target(fixture.target.id) == []
+        assert app.repositories.latest_scan_items.list_by_target(fixture.target.id) == []
+
+
+def test_finalize_scan_items_starts_write_transaction_before_first_scan_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guard check 與 scan 結果寫入必須包在同一個 SQLite write transaction。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    saw_write_transaction: list[bool] = []
+    with SqliteApplicationContext(db_path) as app:
+        original_mark_profile_ok = app.repositories.app_settings.mark_profile_ok
+
+        def mark_profile_ok_with_assertion(*, source: str) -> None:
+            """記錄第一個 scan finalize 寫入前是否已持有 transaction。"""
+
+            saw_write_transaction.append(
+                app.repositories.runtime_states.connection.in_transaction
+            )
+            original_mark_profile_ok(source=source)
+
+        monkeypatch.setattr(
+            app.repositories.app_settings,
+            "mark_profile_ok",
+            mark_profile_ok_with_assertion,
+        )
+        finalize_scan_items(
+            app=app,
+            target=fixture.target,
+            config=fixture.config,
+            items=[],
+            item_count=0,
+            metadata={"worker": "test_worker"},
+            commit_guard=fixture.commit_guard,
+        )
+
+    assert saw_write_transaction == [True]
+
+
+def test_record_guarded_scan_failure_starts_write_transaction_before_failure_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """failure finalize 的 guard check 與 failure scan run 寫入也要同 transaction。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    saw_write_transaction: list[bool] = []
+    with SqliteApplicationContext(db_path) as app:
+
+        def record_scan_failure_with_assertion(**kwargs: object) -> int:
+            """記錄 failure scan run 寫入前是否已持有 transaction。"""
+
+            saw_write_transaction.append(
+                app.repositories.runtime_states.connection.in_transaction
+            )
+            return record_scan_failure(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            scan_failure_finalize_module,
+            "record_scan_failure",
+            record_scan_failure_with_assertion,
+        )
+        decision = record_guarded_scan_failure(
+            app=app,
+            target_id=fixture.target.id,
+            reason="unknown",
+            message="boom",
+            source="worker_failure",
+            worker_path="resident_main",
+            commit_guard=fixture.commit_guard,
+        )
+
+    assert decision is not None
+    assert saw_write_transaction == [True]
+
+
+def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sort-adjust skip 的 guard check 與 scan run 寫入也要同 transaction。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    saw_write_transaction: list[bool] = []
+    with SqliteApplicationContext(db_path) as app:
+        original_record_scan = app.services.scans.record_scan
+
+        def record_scan_with_assertion(request: object) -> int:
+            """記錄 skipped scan run 寫入前是否已持有 transaction。"""
+
+            saw_write_transaction.append(
+                app.repositories.runtime_states.connection.in_transaction
+            )
+            return original_record_scan(request)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(app.services.scans, "record_scan", record_scan_with_assertion)
+        record_skipped_scan(
+            app=app,
+            target=fixture.target,
+            metadata={"worker": "test_worker"},
+            commit_guard=fixture.commit_guard,
+        )
+
+    assert saw_write_transaction == [True]
+
+
 def test_restart_monitoring_re_notifies_previously_seen_match(
     tmp_path: Path,
 ) -> None:
@@ -191,6 +584,7 @@ def test_restart_monitoring_re_notifies_previously_seen_match(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
 
         first_result = finalize_scan_items(
@@ -281,6 +675,7 @@ def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:
                 ),
             )
         )
+        target = _activate_target(app, target)
         app.repositories.scan_scope_state.clear_scope(target.scope_id)
         config = app.services.targets.get_config_for_target(target)
 
@@ -340,6 +735,7 @@ def test_scan_failure_marks_profile_needs_login_and_success_clears_it(
                 config=TargetConfigPatch(include_keywords=("票券",)),
             )
         )
+        target = _activate_target(app, target)
         record_scan_failure(
             app=app,
             target=target,
@@ -380,6 +776,7 @@ def test_finalize_scan_items_uses_exclude_ignore_phrase_masking(tmp_path: Path) 
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
 
         result = finalize_scan_items(
@@ -438,6 +835,7 @@ def test_finalize_does_not_send_notification_when_transaction_rolls_back(
                     ),
                 )
             )
+            target = _activate_target(app, target)
             config = app.services.targets.get_config_for_target(target)
 
             def fail_replace_for_target(
@@ -500,6 +898,7 @@ def test_outbox_keeps_retryable_failed_notification_after_commit(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,
@@ -567,6 +966,7 @@ def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,
@@ -643,6 +1043,7 @@ def test_outbox_failed_result_records_one_event_per_entry(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,
@@ -707,6 +1108,7 @@ def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> Non
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,
@@ -801,6 +1203,7 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,
@@ -939,6 +1342,7 @@ def test_outbox_dispatch_is_idempotent_for_sent_event(tmp_path: Path) -> None:
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.services.targets.get_config_for_target(target)
         finalize_scan_items(
             app=app,

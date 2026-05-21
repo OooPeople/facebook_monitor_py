@@ -42,14 +42,15 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.resident_shared import apply_resident_scan_failure_decision
-from facebook_monitor.worker.resident_shared import decide_resident_scan_failure
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_error
-from facebook_monitor.worker.resident_shared import record_resident_scan_failure
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
+from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
 
 
 SleepCallable = Callable[[float], None]
@@ -70,6 +71,7 @@ class ResidentScanCallable(Protocol):
         config: TargetConfig,
         scroll_rounds: int,
         scroll_wait_ms: int,
+        commit_guard: ScanCommitGuard | None = None,
     ) -> PostsScanSummary | CommentsScanSummary:
         """掃描單一 target page 並回傳摘要。"""
 
@@ -228,9 +230,15 @@ def run_sync_resident_fallback_cycle(
 
         with SqliteApplicationContext(options.db_path) as app:
             locked_state = app.services.targets.try_mark_target_running(target_id, worker_id)
+            if locked_state is not None and due_target.scan_requested:
+                app.services.targets.clear_target_scan_request_if_not_newer(
+                    target_id,
+                    due_target.scan_requested_at,
+                )
         if locked_state is None:
             skipped_count += 1
             continue
+        commit_guard = scan_commit_guard_from_runtime_state(locked_state)
         planner.mark_dispatched(due_target)
 
         try:
@@ -259,83 +267,66 @@ def run_sync_resident_fallback_cycle(
                     config=resident_target.config,
                     scroll_rounds=options.scroll_rounds,
                     scroll_wait_ms=options.scroll_wait_ms,
+                    commit_guard=commit_guard,
                 )
-                app.services.targets.mark_target_idle(target_id)
-            success_count += 1
+                if mark_target_idle_for_scan_commit(
+                    app=app,
+                    target_id=target_id,
+                    commit_guard=commit_guard,
+                ):
+                    success_count += 1
+                else:
+                    skipped_count += 1
         except WorkerFailure as exc:
-            failure_count += 1
-            decision = decide_resident_scan_failure(
-                options.db_path,
-                target_id,
-                exc.reason,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=options.db_path,
+                target_id=target_id,
+                reason=exc.reason,
+                message=str(exc),
                 source="worker_failure",
-            )
-            record_resident_scan_failure(
-                options.db_path,
-                resident_target.target,
-                exc.reason,
-                str(exc),
-                retryable=decision.retryable,
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                skipped_count += 1
+                continue
+            failure_count += 1
             if decision.discard_page:
                 page_pool.discard(target_id)
         except (PlaywrightTimeoutError, PlaywrightError) as exc:
-            failure_count += 1
             reason = classify_playwright_exception(exc)
-            decision = decide_resident_scan_failure(
-                options.db_path,
-                target_id,
-                reason,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=options.db_path,
+                target_id=target_id,
+                reason=reason,
+                message=str(exc),
                 source="playwright",
-            )
-            record_resident_scan_failure(
-                options.db_path,
-                resident_target.target,
-                reason,
-                str(exc),
-                retryable=decision.retryable,
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                skipped_count += 1
+                continue
+            failure_count += 1
             if decision.discard_page:
                 page_pool.discard(target_id)
         except Exception as exc:
-            failure_count += 1
-            decision = decide_resident_scan_failure(
-                options.db_path,
-                target_id,
-                UNKNOWN_REASON,
+            decision = record_guarded_scan_failure_for_db(
+                db_path=options.db_path,
+                target_id=target_id,
+                reason=UNKNOWN_REASON,
+                message=str(exc),
                 source="unknown_exception",
-            )
-            record_resident_scan_failure(
-                options.db_path,
-                resident_target.target,
-                UNKNOWN_REASON,
-                str(exc),
-                retryable=decision.retryable,
+                worker_path="resident_main",
+                commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                decision=decision,
             )
-            apply_resident_scan_failure_decision(
-                options.db_path,
-                target_id,
-                decision,
-                str(exc),
-            )
+            if decision is None:
+                skipped_count += 1
+                continue
+            failure_count += 1
             if decision.discard_page:
                 page_pool.discard(target_id)
         finally:
@@ -351,7 +342,6 @@ def run_sync_resident_fallback_cycle(
         reused_page_count=reused_page_count,
         closed_page_count=closed_page_count,
     )
-
 
 @contextmanager
 def _open_sync_fallback_browser_context(

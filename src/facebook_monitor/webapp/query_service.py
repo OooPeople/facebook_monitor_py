@@ -20,7 +20,6 @@ from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
-from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import ScanStatus
@@ -153,14 +152,6 @@ def _list_target_rows(
             target_ids,
             status=ScanStatus.FAILED,
         )
-        latest_notification_events = (
-            app_context.repositories.notification_events.latest_by_targets(target_ids)
-        )
-        latest_notification_events_by_channel = (
-            app_context.repositories.notification_events.latest_by_targets_and_channels(
-                target_ids
-            )
-        )
         outbox_summaries = app_context.repositories.notification_outbox.summarize_by_targets(
             target_ids
         )
@@ -195,10 +186,6 @@ def _list_target_rows(
                 hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
                 latest_scan_run=latest_scan_runs.get(target.id),
                 latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
-                latest_notification_event=latest_notification_events.get(target.id),
-                latest_notification_events=tuple(
-                    latest_notification_events_by_channel.get(target.id, {}).values()
-                ),
                 notification_outbox_summary=outbox_summaries.get(target.id),
                 hit_record_total_count=hit_record_counts.get(target.id, 0),
             )
@@ -307,14 +294,6 @@ def get_target_card(
                     target.id,
                     status=ScanStatus.FAILED,
                 ),
-                latest_notification_event=(
-                    app_context.repositories.notification_events.latest_by_target(target.id)
-                ),
-                latest_notification_events=tuple(
-                    app_context.repositories.notification_events.latest_by_target_channels(
-                        target.id
-                    ).values()
-                ),
                 notification_outbox_summary=(
                     app_context.repositories.notification_outbox
                     .summarize_by_targets([target.id])
@@ -419,8 +398,6 @@ def _build_target_row(
     hit_record_preview_items: list[MatchHistoryEntry] | tuple[MatchHistoryEntry, ...],
     latest_scan_run: ScanRun | None,
     latest_failed_scan_run: ScanRun | None,
-    latest_notification_event: NotificationEvent | None,
-    latest_notification_events: tuple[NotificationEvent, ...],
     notification_outbox_summary: NotificationOutboxSummary | None,
     hit_record_total_count: int,
 ) -> TargetRow:
@@ -432,8 +409,6 @@ def _build_target_row(
         runtime_state=runtime_state,
         latest_scan_run=latest_scan_run,
         latest_failed_scan_run=latest_failed_scan_run,
-        latest_notification_event=latest_notification_event,
-        latest_notification_events=latest_notification_events,
         notification_outbox_summary=notification_outbox_summary,
         latest_scan_items=tuple(LatestScanItemRow(item=item) for item in latest_scan_items),
         hit_record_preview_items=tuple(

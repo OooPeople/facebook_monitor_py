@@ -47,6 +47,9 @@
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
+- `targets.group_cover_image_url` 只服務 Web UI 社團縮圖顯示，不參與 scan、seen/baseline 或 notification 判斷。
+- cover image URL 自動刷新採被動即時策略：只有 dashboard/browser 判定縮圖載入失敗時，才送出輕量 hint 並排 image-only refresh job。主動低頻背景刷新目前明確不做，因為使用者未開 dashboard 時壞縮圖沒有產品影響，且定期開 Facebook 頁面會增加 session 與資源負擔。
+- cover image refresh 狀態 owner 是 `target_cover_image_refresh_state`。該狀態不得混用 `targets.metadata_status`，避免 UI 把縮圖維護誤解成名稱 metadata refresh。失敗時保留舊 URL，result/error 可由 DB state 查詢。
 
 ## Scan Pipeline
 
@@ -66,7 +69,7 @@
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
 - ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
 - SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存；application、worker 與 Web UI 的 domain model 維持明文。
-- 目前加密欄位是 `target_configs.ntfy_topic`、`target_configs.discord_webhook`、`global_notification_settings.ntfy_topic`、`global_notification_settings.discord_webhook` 與 `notification_outbox.endpoint`。
+- 目前加密欄位是 `target_configs.ntfy_topic`、`target_configs.discord_webhook`、`sidebar_group_config_templates.ntfy_topic`、`sidebar_group_config_templates.discord_webhook`、`global_notification_settings.ntfy_topic`、`global_notification_settings.discord_webhook` 與 `notification_outbox.endpoint`。
 - 密文以 `enc:v1:` prefix 保存，讓 repository 能辨識密文與 legacy plaintext rows；舊版 plaintext rows 可讀回，正常重新保存時會改寫為密文。
 - encryption key 放在 DB 同層的 `secrets.key`，正式 application context 依 DB 路徑載入或建立 key。
 - DB 檔案單獨外流時，notification topic / webhook 不再直接裸露；DB 與 `secrets.key` 同時外流時仍可解密，這是本機 DB-at-rest 加密的安全邊界，不是 OS keychain 等級保護。
@@ -74,6 +77,7 @@
 ## Frozen Updater
 
 - 目前正式更新目標支援 Windows PyInstaller onedir portable zip 與 macOS Apple Silicon onedir zip；source mode 只提供 GitHub Release 檢查，不把原始碼更新包裝成正式功能。
+- App version 的唯一產品來源是 `pyproject.toml` 的 project version；release asset 檔名、GitHub tag 對齊、PyInstaller version resource 與 Web asset cache key 都應由此派生或被 release validation 檢查。`src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 由 `APP_VERSION` 派生，不是第二個手動維護版本來源。
 - macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；它啟動同一個 onedir 內的正式 `facebook-monitor` executable，並留在 Dock 作為可 Quit 的母程序。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版 binary 會自動轉交給 `.app` launcher，updater 仍以 onedir 根目錄作為 app base dir。
 - 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
 - Release asset 檔名必須精確對齊 GitHub tag version：Windows 使用 `facebook-monitor-{version}-windows-portable.zip`，macOS arm64 使用 `facebook-monitor-{version}-macos-arm64-onedir.zip`，兩者都必須有同名 `.sha256`。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
@@ -105,6 +109,8 @@
 - 「開始」會清該 target seen scope 與 notification outbox 去重 rows、要求立即掃描並喚醒 scheduler。
 - 「停止」只暫停排程，保留 seen/history。
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
+- 社團縮圖載入失敗時，UI 會立即退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次。這個上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
+- target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
 - 貼文 / 留言模式 chip 是 target kind 分類標籤，不是執行狀態 badge，也不得與 `已啟用` / `已停止` 混淆。
 - 右側結果 panel header 可顯示最近一輪 scan cycle result；這是掃描結果摘要，不是錯誤或使用者停止狀態。
 - 最近通知摘要不放在 target card header；通知狀態由 notification events、outbox diagnostics 與相關 read model 承接。

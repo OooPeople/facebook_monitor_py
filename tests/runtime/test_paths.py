@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from facebook_monitor.runtime.paths import DEFAULT_HOME_DATA_DIR_NAME
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 
@@ -88,6 +90,49 @@ def test_profile_dir_must_stay_under_profiles_dir(tmp_path) -> None:
         assert "--profile-dir" in str(exc)
     else:
         raise AssertionError("expected external profile-dir to fail")
+
+
+def test_default_profile_dir_rejects_existing_symlink_escape(tmp_path) -> None:
+    """預設 profile path 也不得透過 symlink 逃出 `<data-dir>/profiles/`。"""
+
+    data_dir = tmp_path / "data"
+    external_profile = tmp_path / "external" / "automation_default"
+    external_profile.mkdir(parents=True)
+    profiles_dir = data_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    link = profiles_dir / "automation_default"
+    try:
+        link.symlink_to(external_profile, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    try:
+        resolve_runtime_paths(data_dir=data_dir)
+    except ValueError as exc:
+        assert "symlink" in str(exc) or "profile-dir" in str(exc)
+    else:
+        raise AssertionError("expected symlinked default profile-dir to fail")
+
+
+def test_profiles_dir_rejects_existing_symlink_escape(tmp_path) -> None:
+    """profiles root 本身若是 symlink/junction，正式 profile resolver 要拒絕。"""
+
+    data_dir = tmp_path / "data"
+    external_profiles = tmp_path / "external_profiles"
+    external_profiles.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    link = data_dir / "profiles"
+    try:
+        link.symlink_to(external_profiles, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    try:
+        resolve_runtime_paths(data_dir=data_dir)
+    except ValueError as exc:
+        assert "profiles" in str(exc) or "symlink" in str(exc)
+    else:
+        raise AssertionError("expected symlinked profiles dir to fail")
 
 
 def test_unsafe_profile_dir_allows_external_debug_path(tmp_path) -> None:

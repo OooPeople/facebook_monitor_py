@@ -18,6 +18,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
@@ -290,6 +291,15 @@ def mark_post_payload_seen(
     )
 
 
+def _activate_target(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+) -> TargetDescriptor:
+    """讓 posts pipeline 測試明確模擬正式 worker 正在掃描 active target。"""
+
+    return app.services.targets.restart_target_monitoring(target.id)
+
+
 def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
     """單輪掃描會寫入 seen、match history 與 scan run。"""
 
@@ -302,6 +312,7 @@ def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
                 config=TargetConfigPatch(include_keywords=("票券",)),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -369,6 +380,7 @@ def test_scan_posts_page_records_all_matched_keywords(tmp_path: Path) -> None:
                 config=TargetConfigPatch(include_keywords=("6/5;6/6",)),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -413,6 +425,7 @@ def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
         config = replace(config, auto_load_more=False)
@@ -449,6 +462,7 @@ def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
                 config=TargetConfigPatch(max_items_per_scan=10),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -499,6 +513,7 @@ def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
                 ),
             )
         )
+        target = _activate_target(app, target)
         for payload in fake_page.items[:4]:
             mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
         config = app.repositories.configs.get_for_target(target)
@@ -545,6 +560,7 @@ def test_seen_stop_latest_scan_snapshot_carries_previous_items_to_target_count(
                 ),
             )
         )
+        target = _activate_target(app, target)
         for payload in fake_page.items[:4]:
             mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
         app.repositories.latest_scan_items.replace_for_target(
@@ -597,6 +613,7 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
         config = replace(config, auto_adjust_sort=True)
@@ -644,6 +661,7 @@ def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -
                 ),
             )
         )
+        target = _activate_target(app, target)
         app.repositories.latest_scan_items.replace_for_target(
             target.id,
             [
@@ -706,6 +724,7 @@ def test_scan_posts_page_raises_content_unavailable_before_sort(tmp_path: Path) 
                 config=TargetConfigPatch(auto_adjust_sort=True),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -748,6 +767,7 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -814,6 +834,7 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -860,6 +881,7 @@ def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -928,6 +950,7 @@ def test_scan_posts_page_records_all_enabled_notification_channels(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -978,6 +1001,7 @@ def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -1007,6 +1031,7 @@ def test_scan_posts_page_empty_include_does_not_match(tmp_path: Path) -> None:
                 canonical_url="https://www.facebook.com/groups/222518561920110",
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
@@ -1069,6 +1094,7 @@ def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
                 ),
             )
         )
+        target = _activate_target(app, target)
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 

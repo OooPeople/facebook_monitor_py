@@ -9,6 +9,7 @@ queue executor，也不是 resident page pool owner；正式產品主路徑為
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
@@ -37,6 +38,7 @@ from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.target_validation import is_valid_posts_target_route
 from facebook_monitor.worker.target_validation import validate_posts_target_route
@@ -55,6 +57,21 @@ class OneShotScanOptions:
     headed_compat: bool = False
     scan_timeout_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scan_timeout_seconds
     record_failures: bool = True
+    scan_worker_id: str = ""
+    scan_started_at: datetime | None = None
+    scan_page_id: str = ""
+
+    @property
+    def commit_guard(self) -> ScanCommitGuard | None:
+        """回傳 scheduler admission identity；debug one-shot 直跑時可為空。"""
+
+        if not self.scan_worker_id or self.scan_started_at is None:
+            return None
+        return ScanCommitGuard(
+            worker_id=self.scan_worker_id,
+            started_at=self.scan_started_at,
+            page_id=self.scan_page_id,
+        )
 
 
 def select_one_shot_target(app: ApplicationContext, target_id: str, group_id: str) -> TargetDescriptor:
@@ -196,6 +213,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                             config=config,
                             scroll_rounds=options.scroll_rounds,
                             scroll_wait_ms=options.scroll_wait_ms,
+                            commit_guard=options.commit_guard,
                         )
                     finally:
                         context.close()

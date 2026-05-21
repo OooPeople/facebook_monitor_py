@@ -15,6 +15,7 @@ from facebook_monitor.updates.apply import apply_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update
 from facebook_monitor.updates.apply import _backup_folder_name
 from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
+from facebook_monitor.updates.apply import _prepare_empty_dir
 from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
@@ -914,6 +915,25 @@ def test_cleanup_old_backup_dirs_rejects_root_that_escapes_runtime(
     assert (outside / "keep.txt").exists()
 
 
+def test_prepare_empty_dir_rejects_path_that_resolves_to_work_root(
+    tmp_path: Path,
+) -> None:
+    """update staging/backup 目錄不可用 `..` 解析成 runtime root 後被清空。"""
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    marker = runtime_dir / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+
+    try:
+        _prepare_empty_dir(runtime_dir / "update_staging" / "..", work_root=runtime_dir)
+    except ValueError as exc:
+        assert str(exc) == "update_work_dir_unsafe"
+    else:
+        raise AssertionError("expected work root path to fail")
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
 def test_apply_loaded_pending_update_file_logs_cleanup_warnings(
     tmp_path: Path,
     monkeypatch,
@@ -1033,6 +1053,21 @@ def test_safe_extract_zip_rejects_escaping_symlink(tmp_path: Path) -> None:
         assert str(exc) == "zip_symlink_target_unsafe"
     else:
         raise AssertionError("expected escaping symlink to fail")
+
+
+def test_safe_extract_zip_rejects_backslash_symlink_target(tmp_path: Path) -> None:
+    """zip symlink target 必須是實際會被 POSIX symlink 使用的 slash path。"""
+
+    zip_path = tmp_path / "bad.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/link", "_internal\\lib.dylib")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_symlink_target_unsafe"
+    else:
+        raise AssertionError("expected backslash symlink target to fail")
 
 
 def test_safe_extract_zip_rejects_symlink_to_private_data(tmp_path: Path) -> None:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import re
 import subprocess
 import sys
 from typing import AsyncIterator
@@ -17,10 +16,13 @@ from typing import AsyncIterator
 import httpx
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
+from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.checksum import HASH_CHUNK_SIZE
 from facebook_monitor.updates.checksum import calculate_sha256 as _calculate_sha256
 from facebook_monitor.updates.checksum import read_sha256_sidecar
 from facebook_monitor.updates.release_check import UpdateCheckResult
+from facebook_monitor.updates.validation import has_unsafe_existing_path_component
+from facebook_monitor.updates.validation import is_reparse_or_symlink
 
 
 DOWNLOAD_CHUNK_SIZE = HASH_CHUNK_SIZE
@@ -65,14 +67,25 @@ async def download_and_verify_update(
         asset_name = sanitize_release_asset_name(update_check.asset_name)
         sha256_name = sanitize_release_asset_name(update_check.sha256_asset_name)
         version_dir_name = sanitize_release_asset_name(update_check.latest_version)
-        destination_dir = (updates_dir / version_dir_name).resolve()
-        ensure_child_path(updates_dir.resolve(), destination_dir)
+        updates_root = Path(updates_dir).expanduser().absolute()
+        destination_dir = updates_root / version_dir_name
+        file_path = destination_dir / asset_name
+        sha256_path = destination_dir / sha256_name
+        staged_file_path = _staging_destination(file_path)
+        staged_sha256_path = _staging_destination(sha256_path)
+        ensure_child_path(updates_root, destination_dir)
+        ensure_safe_download_path(destination_dir, updates_root=updates_root)
     except ValueError as exc:
         return _failure(str(exc))
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    file_path = destination_dir / asset_name
-    sha256_path = destination_dir / sha256_name
     try:
+        _prepare_destination_dir(destination_dir, updates_root=updates_root)
+        _prepare_download_destinations(
+            file_path,
+            sha256_path,
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
             transport=transport,
@@ -81,57 +94,95 @@ async def download_and_verify_update(
             await _download_file(
                 client=client,
                 url=update_check.asset_download_url,
-                destination=file_path,
+                destination=staged_file_path,
+                updates_root=updates_root,
                 max_bytes=max_asset_bytes,
             )
             await _download_file(
                 client=client,
                 url=update_check.sha256_asset_download_url,
-                destination=sha256_path,
+                destination=staged_sha256_path,
+                updates_root=updates_root,
                 max_bytes=max_sha256_bytes,
             )
+        expected_sha256 = read_expected_sha256(
+            staged_sha256_path,
+            expected_filename=asset_name,
+        )
+        actual_sha256 = calculate_sha256(staged_file_path)
+        if expected_sha256 != actual_sha256:
+            _cleanup_download_artifacts(
+                staged_file_path,
+                staged_sha256_path,
+                updates_root=updates_root,
+            )
+            return UpdateDownloadResult(
+                status="sha256_mismatch",
+                downloaded=True,
+                verified=False,
+                file_path=file_path,
+                sha256_path=sha256_path,
+                expected_sha256=expected_sha256,
+                actual_sha256=actual_sha256,
+                failure_reason="sha256_mismatch",
+            )
+        _publish_verified_download(
+            staged_file_path=staged_file_path,
+            file_path=file_path,
+            staged_sha256_path=staged_sha256_path,
+            sha256_path=sha256_path,
+            updates_root=updates_root,
+        )
     except httpx.HTTPStatusError as exc:
+        _cleanup_download_artifacts(
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
         return _failure(
             f"download_http_{exc.response.status_code}",
             file_path=file_path,
             sha256_path=sha256_path,
         )
     except httpx.HTTPError as exc:
+        _cleanup_download_artifacts(
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
         return _failure(
             f"download_error:{exc.__class__.__name__}",
             file_path=file_path,
             sha256_path=sha256_path,
         )
     except ValueError as exc:
+        _cleanup_download_artifacts(
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
         return _failure(str(exc), file_path=file_path, sha256_path=sha256_path)
-
-    try:
-        expected_sha256 = read_expected_sha256(sha256_path, expected_filename=asset_name)
-        actual_sha256 = calculate_sha256(file_path)
-    except ValueError as exc:
-        return _failure(str(exc), file_path=file_path, sha256_path=sha256_path)
-    verified = expected_sha256 == actual_sha256
+    except OSError as exc:
+        _cleanup_download_artifacts(
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
+        return _failure(
+            f"download_io_error:{exc.__class__.__name__}",
+            file_path=file_path,
+            sha256_path=sha256_path,
+        )
     return UpdateDownloadResult(
-        status="verified" if verified else "sha256_mismatch",
+        status="verified",
         downloaded=True,
-        verified=verified,
+        verified=True,
         file_path=file_path,
         sha256_path=sha256_path,
         expected_sha256=expected_sha256,
         actual_sha256=actual_sha256,
-        failure_reason="" if verified else "sha256_mismatch",
+        failure_reason="",
     )
-
-
-def sanitize_release_asset_name(value: str) -> str:
-    """限制 release asset 檔名，避免下載結果逃出 updates dir。"""
-
-    name = Path(value).name.strip()
-    if name != value.strip() or not name:
-        raise ValueError("invalid_asset_name")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
-        raise ValueError("invalid_asset_name")
-    return name
 
 
 def ensure_child_path(parent: Path, child: Path) -> None:
@@ -139,6 +190,19 @@ def ensure_child_path(parent: Path, child: Path) -> None:
 
     if not child.is_relative_to(parent):
         raise ValueError("download_path_outside_updates_dir")
+
+
+def ensure_safe_download_path(path: Path, *, updates_root: Path) -> None:
+    """確認 download path 不會經由 symlink/junction 寫到 updates dir 外。"""
+
+    absolute_path = path.absolute()
+    absolute_updates_root = updates_root.absolute()
+    ensure_child_path(absolute_updates_root, absolute_path)
+    if has_unsafe_existing_path_component(
+        absolute_path,
+        root=absolute_updates_root.parent,
+    ):
+        raise ValueError("download_path_unsafe")
 
 
 def read_expected_sha256(path: Path, *, expected_filename: str) -> str:
@@ -158,31 +222,164 @@ async def _download_file(
     client: httpx.AsyncClient,
     url: str,
     destination: Path,
+    updates_root: Path,
     max_bytes: int,
 ) -> None:
     """串流下載單一檔案；完成前使用 `.tmp` 避免半成品被當成可用。"""
 
     tmp_destination = destination.with_name(destination.name + ".tmp")
     try:
+        _prepare_download_tmp(
+            destination,
+            tmp_destination,
+            updates_root=updates_root,
+        )
         async with client.stream("GET", url) as response:
             response.raise_for_status()
             content_length = _parse_content_length(response)
             if content_length is not None and content_length > max_bytes:
                 raise ValueError("download_too_large")
             downloaded_bytes = 0
-            with tmp_destination.open("wb") as file:
+            with tmp_destination.open("xb") as file:
                 async for chunk in _aiter_response_bytes(response):
                     downloaded_bytes += len(chunk)
                     if downloaded_bytes > max_bytes:
                         raise ValueError("download_too_large")
                     file.write(chunk)
+        ensure_safe_download_path(destination, updates_root=updates_root)
+        if is_reparse_or_symlink(destination):
+            raise ValueError("download_path_unsafe")
         tmp_destination.replace(destination)
+    except FileExistsError as exc:
+        raise ValueError("download_path_unsafe") from exc
     except Exception:
         try:
             tmp_destination.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+
+
+def _staging_destination(destination: Path) -> Path:
+    """回傳驗證完成前使用的 staging 路徑。"""
+
+    return destination.with_name(destination.name + ".download")
+
+
+def _prepare_destination_dir(path: Path, *, updates_root: Path) -> None:
+    """建立安全的下載版本目錄；既有非目錄或連結一律拒絕。"""
+
+    ensure_safe_download_path(path, updates_root=updates_root)
+    if is_reparse_or_symlink(path):
+        raise ValueError("download_path_unsafe")
+    if path.exists():
+        if not path.is_dir():
+            raise ValueError("download_path_unsafe")
+        return
+    path.mkdir(parents=True, exist_ok=True)
+    ensure_safe_download_path(path, updates_root=updates_root)
+
+
+def _prepare_download_destinations(
+    *destinations: Path,
+    updates_root: Path,
+) -> None:
+    """下載前準備所有正式與 staging 路徑，並移除安全範圍內 stale `.tmp`。"""
+
+    for destination in destinations:
+        _prepare_download_tmp(
+            destination,
+            destination.with_name(destination.name + ".tmp"),
+            updates_root=updates_root,
+        )
+
+
+def _publish_verified_download(
+    *,
+    staged_file_path: Path,
+    file_path: Path,
+    staged_sha256_path: Path,
+    sha256_path: Path,
+    updates_root: Path,
+) -> None:
+    """驗證完成後才將 staging 檔發布到正式檔名。"""
+
+    for destination in (file_path, sha256_path):
+        _ensure_download_destination_available(destination, updates_root=updates_root)
+    published_paths: list[Path] = []
+    try:
+        staged_file_path.replace(file_path)
+        published_paths.append(file_path)
+        staged_sha256_path.replace(sha256_path)
+        published_paths.append(sha256_path)
+    except Exception:
+        _cleanup_download_artifacts(
+            *published_paths,
+            staged_file_path,
+            staged_sha256_path,
+            updates_root=updates_root,
+        )
+        raise
+
+
+def _prepare_download_tmp(
+    destination: Path,
+    tmp_destination: Path,
+    *,
+    updates_root: Path,
+) -> None:
+    """準備下載暫存檔；不得 follow 既有 symlink/junction。"""
+
+    _ensure_download_destination_available(destination, updates_root=updates_root)
+    _ensure_download_destination_available(tmp_destination, updates_root=updates_root)
+    if tmp_destination.exists():
+        try:
+            tmp_destination.unlink()
+        except OSError as exc:
+            raise ValueError("download_path_unsafe") from exc
+
+
+def _ensure_download_destination_available(
+    destination: Path,
+    *,
+    updates_root: Path,
+) -> None:
+    """確認下載目的地可安全建立或覆寫。"""
+
+    ensure_safe_download_path(destination.parent, updates_root=updates_root)
+    ensure_safe_download_path(destination, updates_root=updates_root)
+    if is_reparse_or_symlink(destination):
+        raise ValueError("download_path_unsafe")
+    if destination.exists() and not destination.is_file():
+        raise ValueError("download_path_unsafe")
+
+
+def _cleanup_download_artifacts(
+    *paths: Path,
+    updates_root: Path,
+) -> None:
+    """清掉下載流程留下的安全範圍內暫存與目的檔。"""
+
+    for path in paths:
+        _safe_unlink_download_path(
+            path.with_name(path.name + ".tmp"),
+            updates_root=updates_root,
+        )
+        _safe_unlink_download_path(path, updates_root=updates_root)
+
+
+def _safe_unlink_download_path(path: Path, *, updates_root: Path) -> None:
+    """只移除確認仍在安全 updates tree 內的一般檔或 symlink。"""
+
+    try:
+        ensure_safe_download_path(path, updates_root=updates_root)
+    except ValueError:
+        return
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 async def _aiter_response_bytes(response: httpx.Response) -> AsyncIterator[bytes]:

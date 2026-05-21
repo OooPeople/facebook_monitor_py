@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
-from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -26,6 +25,8 @@ from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import split_coded_message
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.form_models import FIXED_REFRESH_MODE
+from facebook_monitor.webapp.form_models import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 
 PENDING_TARGET_DISPLAY_NAME = "抓取社團名稱中，請稍後"
@@ -176,15 +177,12 @@ class TargetCardSummarySection:
 class TargetCardSummary:
     """保存收合卡片摘要需要的穩定欄位。"""
 
-    target_type_label: str
-    status_label: str
     include_keywords_summary: str
     exclude_keywords_summary: str
     latest_scan_label: str
     hit_record_total_count: int
     refresh_label: str
     max_items_label: str
-    notification_summary: str
     latest_error_summary: str = ""
 
     @property
@@ -323,19 +321,6 @@ class TargetIdentityPresenter:
             return FAILED_TARGET_DISPLAY_NAME
         return PENDING_TARGET_DISPLAY_NAME
 
-    @property
-    def kind_label(self) -> str:
-        """回傳 target 類型診斷文字。"""
-
-        return "comments" if self.target.target_kind == TargetKind.COMMENTS else "posts"
-
-    @property
-    def target_type_label(self) -> str:
-        """回傳主畫面使用的 target 類型文字。"""
-
-        return "社團留言" if self.target.target_kind == TargetKind.COMMENTS else "社團貼文"
-
-
 @dataclass(frozen=True)
 class TargetSettingsPresenter:
     """整理 target 設定值的表單文字與摘要。"""
@@ -386,14 +371,14 @@ class TargetSettingsPresenter:
         """回傳目前 refresh mode。"""
 
         if self.config.fixed_refresh_sec is None and self.config.jitter_enabled:
-            return "floating"
-        return "fixed"
+            return FLOATING_REFRESH_MODE
+        return FIXED_REFRESH_MODE
 
     @property
     def refresh_mode_label(self) -> str:
         """回傳 refresh mode 摘要。"""
 
-        if self.refresh_mode == "floating":
+        if self.refresh_mode == FLOATING_REFRESH_MODE:
             min_seconds = min(self.config.min_refresh_sec, self.config.max_refresh_sec)
             max_seconds = max(self.config.min_refresh_sec, self.config.max_refresh_sec)
             return f"浮動 {min_seconds}-{max_seconds} 秒"
@@ -437,13 +422,10 @@ class TargetSettingsPresenter:
 class TargetCardSummaryPresenter:
     """整理收合卡片摘要。"""
 
-    target_type_label: str
-    status_label: str
     settings: TargetSettingsPresenter
     latest_scan_run: ScanRun | None
     latest_failed_scan_run: ScanRun | None
     hit_record_total_count: int
-    latest_notification_event: NotificationEvent | None = None
     content_unavailable_current: bool = False
 
     @property
@@ -481,14 +463,11 @@ class TargetCardSummaryPresenter:
         """回傳收合卡片可共用的摘要 view model。"""
 
         return TargetCardSummary(
-            target_type_label=self.target_type_label,
-            status_label=self.status_label,
             include_keywords_summary=self.settings.include_text or EMPTY_INCLUDE_KEYWORDS_LABEL,
             exclude_keywords_summary=self.settings.exclude_text or "未設定",
             latest_scan_label=self.latest_scan_label,
             hit_record_total_count=self.hit_record_total_count,
             refresh_label=self.settings.refresh_mode_label,
             max_items_label=self.settings.settings_summary.max_items_label,
-            notification_summary=self.settings.notification_summary_label,
             latest_error_summary=self.latest_failed_scan_summary,
         )

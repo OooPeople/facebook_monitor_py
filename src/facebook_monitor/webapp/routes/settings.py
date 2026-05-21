@@ -6,6 +6,7 @@ from typing import Annotated
 import platform
 import sys
 
+from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import Form
 from fastapi import HTTPException
@@ -43,6 +44,7 @@ from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_runtime_paths
 from facebook_monitor.webapp.dependencies import get_target_keyword_defaults
+from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import open_profile_options
 from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
@@ -103,7 +105,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def update_theme(request: Request) -> dict[str, str]:
         """保存 Web UI theme preference，避免 auto-port 時遺失主題。"""
 
-        payload = await request.json()
+        payload = await json_object_payload(request)
         theme = str(payload.get("theme", "")).strip()
         if theme not in {"light", "dark"}:
             raise HTTPException(status_code=400, detail="invalid theme")
@@ -114,21 +116,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.post("/settings/notifications")
     async def update_global_notifications(
         request: Request,
-        enable_desktop_notification: Annotated[str | None, Form()] = None,
-        enable_ntfy: Annotated[str | None, Form()] = None,
-        ntfy_topic: Annotated[str, Form()] = "",
-        enable_discord_notification: Annotated[str | None, Form()] = None,
-        discord_webhook: Annotated[str, Form()] = "",
+        notification_form: Annotated[
+            NotificationConfigForm,
+            Depends(NotificationConfigForm.as_form),
+        ],
     ) -> RedirectResponse:
         """更新 Web UI 通知預設值。"""
 
-        settings = NotificationConfigForm(
-            enable_desktop_notification=enable_desktop_notification,
-            enable_ntfy=enable_ntfy,
-            ntfy_topic=ntfy_topic,
-            enable_discord_notification=enable_discord_notification,
-            discord_webhook=discord_webhook,
-        ).to_global_settings()
+        settings = notification_form.to_global_settings()
         with SqliteApplicationContext(get_db_path(request)) as app_context:
             app_context.repositories.global_notification_settings.save(settings)
         return redirect_settings_with_message(
@@ -313,21 +308,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.post("/settings/notifications/test")
     async def test_global_notifications(
         request: Request,
-        enable_desktop_notification: Annotated[str | None, Form()] = None,
-        enable_ntfy: Annotated[str | None, Form()] = None,
-        ntfy_topic: Annotated[str, Form()] = "",
-        enable_discord_notification: Annotated[str | None, Form()] = None,
-        discord_webhook: Annotated[str, Form()] = "",
+        notification_form: Annotated[
+            NotificationConfigForm,
+            Depends(NotificationConfigForm.as_form),
+        ],
     ) -> RedirectResponse:
         """依 settings 頁目前表單欄位送出一則測試通知，不保存設定。"""
 
-        config = NotificationConfigForm(
-            enable_desktop_notification=enable_desktop_notification,
-            enable_ntfy=enable_ntfy,
-            ntfy_topic=ntfy_topic,
-            enable_discord_notification=enable_discord_notification,
-            discord_webhook=discord_webhook,
-        ).to_target_config(target_id="global-notification-test")
+        config = notification_form.to_target_config(target_id="global-notification-test")
         try:
             results = await run_in_threadpool(
                 send_manual_test_notification,

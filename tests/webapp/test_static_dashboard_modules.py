@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from facebook_monitor.webapp.assets import ASSET_VERSION
@@ -13,6 +14,15 @@ def _css_rule_body(css: str, selector: str) -> str:
     """擷取單一 selector 規則內容，讓樣式契約測試只檢查局部宣告。"""
 
     return css.split(f"{selector} {{", 1)[1].split("}", 1)[0]
+
+
+def _input_tags(template: str, field_name: str) -> list[str]:
+    """回傳指定 name 的 input tags，供靜態模板契約測試檢查屬性。"""
+
+    return re.findall(
+        rf'<input\b(?=[^>]*\bname="{re.escape(field_name)}")[^>]*>',
+        template,
+    )
 
 
 def test_dashboard_import_map_covers_all_dashboard_modules() -> None:
@@ -907,6 +917,58 @@ def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> No
     assert "data-notification-test-status" in notification_test_button
     assert "測試通知" in notification_test_button
     assert ".notification-test-button" in modals_css
+
+
+def test_target_settings_modal_attaches_controls_to_config_form() -> None:
+    """target 設定 modal 的外部欄位必須掛回同一個 config form。"""
+
+    template = Path(
+        "src/facebook_monitor/webapp/templates/_target_settings_modal.html"
+    ).read_text(encoding="utf-8")
+    scan_fields = Path(
+        "src/facebook_monitor/webapp/templates/_scan_settings_fields.html"
+    ).read_text(encoding="utf-8")
+    refresh_fields = Path(
+        "src/facebook_monitor/webapp/templates/_refresh_settings_fields.html"
+    ).read_text(encoding="utf-8")
+    notification_fields = Path(
+        "src/facebook_monitor/webapp/templates/_notification_settings_fields.html"
+    ).read_text(encoding="utf-8")
+
+    assert '{% set scan_form_id = config_form_id %}' in template
+    assert '{% set refresh_form_id = config_form_id %}' in template
+    assert '{% set notification_test_form_id = config_form_id %}' in template
+    assert '{% set notification_form_id = config_form_id %}' in template
+
+    for field_name in (
+        "auto_load_more",
+        "auto_adjust_sort",
+        "max_items_per_scan",
+    ):
+        tags = _input_tags(scan_fields, field_name)
+        assert tags
+        assert all('form="{{ scan_form_id }}"' in tag for tag in tags)
+
+    for field_name in (
+        "refresh_mode",
+        "fixed_refresh_sec",
+        "min_refresh_sec",
+        "max_refresh_sec",
+    ):
+        tags = _input_tags(refresh_fields, field_name)
+        assert tags
+        assert all('form="{{ refresh_form_id }}"' in tag for tag in tags)
+
+    for field_name in (
+        "enable_desktop_notification",
+        "enable_ntfy",
+        "ntfy_topic",
+        "enable_discord_notification",
+        "discord_webhook",
+    ):
+        tags = _input_tags(notification_fields, field_name)
+        assert tags
+        assert all('form="{{ notification_form_id }}"' in tag for tag in tags)
 
 
 def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:

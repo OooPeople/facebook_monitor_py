@@ -16,6 +16,7 @@ from facebook_monitor.webapp.notification_presenters import format_notification_
 from facebook_monitor.webapp.notification_presenters import format_notification_event_message
 from facebook_monitor.webapp.notification_presenters import format_notification_status_label
 from facebook_monitor.webapp.preview_models import trim_preview_text
+from facebook_monitor.webapp.url_safety import safe_facebook_permalink
 
 
 @dataclass(frozen=True)
@@ -83,5 +84,5 @@ class FullHitRecordRow:
                 self.entry.include_rule,
             ),
             "content_preview": trim_preview_text(self.entry.text, max_length=220),
-            "permalink": self.entry.permalink,
+            "permalink": safe_facebook_permalink(self.entry.permalink),
         }

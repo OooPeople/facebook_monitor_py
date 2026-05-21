@@ -26,8 +26,8 @@ from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import AppInstanceLock
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
+from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import calculate_sha256
-from facebook_monitor.updates.download import sanitize_release_asset_name
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import load_pending_update
 from facebook_monitor.updates.handoff import validate_pending_update_paths
@@ -39,6 +39,7 @@ from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import macos_app_executable_staging_paths
 from facebook_monitor.updates.platforms import missing_required_paths
 from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
+from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import has_posix_executable_bit
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
 from facebook_monitor.updates.validation import is_dangerous_root
@@ -46,6 +47,7 @@ from facebook_monitor.updates.validation import is_junction
 from facebook_monitor.updates.validation import is_macho_arm64
 from facebook_monitor.updates.validation import is_reparse_or_symlink
 from facebook_monitor.updates.validation import plist_value_is_true
+from facebook_monitor.updates.validation import resolve_zip_symlink_target
 from facebook_monitor.updates.validation import validate_tree_links_stay_within_root
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
 from facebook_monitor.updates.validation import zip_member_is_symlink
@@ -267,8 +269,7 @@ def safe_extract_zip(
                 if member.file_size > MAX_ZIP_SYMLINK_TARGET_BYTES:
                     raise ValueError("zip_symlink_target_too_large")
                 _validate_zip_symlink_target(
-                    destination,
-                    _zip_member_target(destination, member_path),
+                    member_path,
                     archive.read(member),
                 )
                 continue
@@ -444,21 +445,16 @@ def _zip_member_target(destination: Path, member_path: PurePosixPath) -> Path:
 
 
 def _validate_zip_symlink_target(
-    destination: Path,
-    link_path: Path,
+    member_path: PurePosixPath,
     target_data: bytes,
 ) -> None:
     """確認 zip symlink target 不會逃出 staging root。"""
 
-    target_text = _decode_zip_symlink_target(target_data)
-    link_target = Path(target_text)
-    if link_target.is_absolute():
+    target_text = decode_zip_symlink_target(target_data)
+    resolved = resolve_zip_symlink_target(member_path, target_text)
+    if resolved is None:
         raise ValueError("zip_symlink_target_unsafe")
-    resolved = (link_path.parent / link_target).resolve(strict=False)
-    if not resolved.is_relative_to(destination):
-        raise ValueError("zip_symlink_target_unsafe")
-    relative_target = resolved.relative_to(destination)
-    lower_parts = {part.casefold() for part in relative_target.parts}
+    lower_parts = {part.casefold() for part in resolved.parts}
     if SENSITIVE_RELEASE_PATH_PARTS & lower_parts:
         raise ValueError("zip_symlink_target_unsafe")
 
@@ -466,13 +462,7 @@ def _validate_zip_symlink_target(
 def _decode_zip_symlink_target(target_data: bytes) -> str:
     """讀取 zip symlink target；PyInstaller 產物應使用文字相對路徑。"""
 
-    try:
-        target_text = target_data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("zip_symlink_target_unsafe") from exc
-    if "\x00" in target_text or not target_text:
-        raise ValueError("zip_symlink_target_unsafe")
-    return target_text
+    return decode_zip_symlink_target(target_data)
 
 
 def _apply_zip_member_mode(target: Path, member: zipfile.ZipInfo) -> None:
@@ -616,6 +606,12 @@ def _validate_pending_hash(pending: PendingUpdate) -> None:
 def _prepare_empty_dir(path: Path, *, work_root: Path) -> Path:
     """建立空目錄；既有內容會先刪除。"""
 
+    resolved_work_root = work_root.resolve()
+    resolved_path = path.resolve(strict=False)
+    if resolved_path == resolved_work_root or not resolved_path.is_relative_to(
+        resolved_work_root
+    ):
+        raise ValueError("update_work_dir_unsafe")
     if has_unsafe_existing_path_component(path, root=work_root):
         raise ValueError("update_work_dir_unsafe")
     if path.exists() or path.is_symlink():
@@ -926,75 +922,72 @@ def _cleanup_old_backup_dirs(
     for _, _, backup_dir in sorted(sortable_dirs, reverse=True):
         if len(keep) >= keep_count:
             break
-        if is_reparse_or_symlink(backup_dir):
-            warnings.append(
-                _cleanup_warning(
-                    "backup_unsafe",
-                    backup_dir,
-                    OSError("backup directory is symlink or junction"),
-                )
-            )
-            continue
-        try:
-            resolved = backup_dir.resolve()
-        except OSError as exc:
-            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
-            continue
-        if not resolved.is_relative_to(resolved_root):
-            warnings.append(
-                _cleanup_warning(
-                    "backup_unsafe",
-                    backup_dir,
-                    OSError("backup directory escaped backup root"),
-                )
-            )
+        resolved = _resolve_safe_backup_dir(
+            backup_dir,
+            resolved_root=resolved_root,
+            warnings=warnings,
+        )
+        if resolved is None:
             continue
         keep.add(resolved)
     for _, _, backup_dir in sortable_dirs:
-        if is_reparse_or_symlink(backup_dir):
-            warnings.append(
-                _cleanup_warning(
-                    "backup_unsafe",
-                    backup_dir,
-                    OSError("backup directory is symlink or junction"),
-                )
-            )
-            continue
-        try:
-            resolved = backup_dir.resolve()
-        except OSError as exc:
-            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
-            continue
-        if not resolved.is_relative_to(resolved_root):
-            warnings.append(
-                _cleanup_warning(
-                    "backup_unsafe",
-                    backup_dir,
-                    OSError("backup directory escaped backup root"),
-                )
-            )
+        resolved = _resolve_safe_backup_dir(
+            backup_dir,
+            resolved_root=resolved_root,
+            warnings=warnings,
+        )
+        if resolved is None:
             continue
         if resolved in keep:
             continue
-        try:
-            resolved = backup_dir.resolve()
-        except OSError as exc:
-            warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
-            continue
-        if not resolved.is_relative_to(resolved_root):
-            warnings.append(
-                _cleanup_warning(
-                    "backup_unsafe",
-                    backup_dir,
-                    OSError("backup directory escaped backup root"),
-                )
+        if (
+            _resolve_safe_backup_dir(
+                backup_dir,
+                resolved_root=resolved_root,
+                warnings=warnings,
             )
+            is None
+        ):
             continue
         try:
             shutil.rmtree(backup_dir)
         except OSError as exc:
             warnings.append(_cleanup_warning("backup", backup_dir, exc))
     return tuple(warnings)
+
+
+def _resolve_safe_backup_dir(
+    backup_dir: Path,
+    *,
+    resolved_root: Path,
+    warnings: list[str],
+) -> Path | None:
+    """確認 backup dir 仍留在 backup root 內，安全時回傳 resolved path。"""
+
+    if is_reparse_or_symlink(backup_dir):
+        warnings.append(
+            _cleanup_warning(
+                "backup_unsafe",
+                backup_dir,
+                OSError("backup directory is symlink or junction"),
+            )
+        )
+        return None
+    try:
+        resolved = backup_dir.resolve()
+    except OSError as exc:
+        warnings.append(_cleanup_warning("backup_resolve", backup_dir, exc))
+        return None
+    if not resolved.is_relative_to(resolved_root):
+        warnings.append(
+            _cleanup_warning(
+                "backup_unsafe",
+                backup_dir,
+                OSError("backup directory escaped backup root"),
+            )
+        )
+        return None
+    return resolved
 
 
 def _backup_timestamp(path: Path) -> float | None:

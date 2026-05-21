@@ -454,6 +454,18 @@ class TargetApplicationService:
 
         return self.runtime_service.clear_target_scan_request(target_id)
 
+    def clear_target_scan_request_if_not_newer(
+        self,
+        target_id: str,
+        consumed_at: datetime | None,
+    ) -> TargetRuntimeState:
+        """清除已入隊的 scan request，但保留入隊後新送出的 request。"""
+
+        return self.runtime_service.clear_target_scan_request_if_not_newer(
+            target_id,
+            consumed_at,
+        )
+
     def update_target_status(self, request: UpdateTargetStatusRequest) -> TargetDescriptor:
         """更新 target 啟停狀態。"""
 

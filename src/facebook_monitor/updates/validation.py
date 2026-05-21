@@ -7,6 +7,7 @@ executable bit、Mach-O 與危險路徑規則散落在 runtime、scripts 與 tes
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PurePosixPath
 import os
 import stat
 import struct
@@ -100,6 +101,53 @@ def zip_member_is_symlink(info: zipfile.ZipInfo) -> bool:
 
     mode = (info.external_attr >> 16) & 0o170000
     return mode == stat.S_IFLNK
+
+
+def decode_zip_symlink_target(
+    target_data: bytes,
+    *,
+    reason: str = "zip_symlink_target_unsafe",
+) -> str:
+    """讀取 zip symlink target；只接受 POSIX-style UTF-8 相對路徑文字。"""
+
+    try:
+        target_text = target_data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(reason) from exc
+    if "\x00" in target_text or "\\" in target_text or not target_text:
+        raise ValueError(reason)
+    return target_text
+
+
+def resolve_zip_relative_path(
+    base: PurePosixPath,
+    target: PurePosixPath,
+) -> PurePosixPath | None:
+    """以 POSIX path 規則解析 symlink 目標；逃出 zip root 時回傳 None。"""
+
+    parts: list[str] = []
+    for part in (*base.parts, *target.parts):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    return PurePosixPath(*parts)
+
+
+def resolve_zip_symlink_target(
+    link_path: PurePosixPath,
+    target_text: str,
+) -> PurePosixPath | None:
+    """解析 zip symlink target 在 archive root 內的正規相對路徑。"""
+
+    target = PurePosixPath(target_text)
+    if target.is_absolute() or not target.parts:
+        return None
+    return resolve_zip_relative_path(link_path.parent, target)
 
 
 def symlink_target_stays_within_root(path: Path, *, root: Path) -> bool:

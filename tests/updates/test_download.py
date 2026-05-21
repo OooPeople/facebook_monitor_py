@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 
 import httpx
+import pytest
 
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import read_expected_sha256
-from facebook_monitor.updates.download import sanitize_release_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
 
 
@@ -44,6 +45,19 @@ def mock_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport
             return httpx.Response(200, content=zip_bytes)
         if str(request.url) == "https://downloads.example.test/app.zip.sha256":
             return httpx.Response(200, text=sha256_text)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def failing_sha256_transport(*, zip_bytes: bytes, status_code: int = 500) -> httpx.MockTransport:
+    """建立 zip 成功、SHA256 sidecar 失敗的 mock transport。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://downloads.example.test/app.zip":
+            return httpx.Response(200, content=zip_bytes)
+        if str(request.url) == "https://downloads.example.test/app.zip.sha256":
+            return httpx.Response(status_code)
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -165,27 +179,34 @@ def test_download_and_verify_update_rejects_oversized_asset(tmp_path: Path) -> N
     assert not result.file_path.with_name(result.file_path.name + ".tmp").exists()
 
 
+def test_download_and_verify_update_removes_staged_zip_when_sha256_download_fails(
+    tmp_path: Path,
+) -> None:
+    """SHA256 sidecar 下載失敗時，不可留下未驗證 zip 或 staging 檔。"""
+
+    updates_dir = tmp_path / "updates"
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_dir,
+            transport=failing_sha256_transport(zip_bytes=b"actual", status_code=500),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_http_500"
+    assert result.file_path is not None
+    assert result.sha256_path is not None
+    assert not result.file_path.exists()
+    assert not result.sha256_path.exists()
+    assert not result.file_path.with_name(result.file_path.name + ".download").exists()
+    assert not result.sha256_path.with_name(result.sha256_path.name + ".download").exists()
+
+
 def test_download_and_verify_update_requires_sha256_url(tmp_path: Path) -> None:
     """缺 SHA256 URL 時不下載 zip。"""
 
-    check = update_check()
-    check = UpdateCheckResult(
-        checked=check.checked,
-        status=check.status,
-        channel=check.channel,
-        repository=check.repository,
-        current_version=check.current_version,
-        latest_version=check.latest_version,
-        update_available=check.update_available,
-        summary=check.summary,
-        detail=check.detail,
-        release_url=check.release_url,
-        asset_name=check.asset_name,
-        asset_download_url=check.asset_download_url,
-        sha256_asset_name=check.sha256_asset_name,
-        sha256_asset_download_url="",
-        failure_reason=check.failure_reason,
-    )
+    check = replace(update_check(), sha256_asset_download_url="")
 
     result = asyncio.run(
         download_and_verify_update(
@@ -203,24 +224,7 @@ def test_download_and_verify_update_requires_sha256_url(tmp_path: Path) -> None:
 def test_download_and_verify_update_rejects_invalid_version_dir(tmp_path: Path) -> None:
     """遠端版本字串不能讓下載資料夾逃出 updates dir。"""
 
-    check = update_check()
-    check = UpdateCheckResult(
-        checked=check.checked,
-        status=check.status,
-        channel=check.channel,
-        repository=check.repository,
-        current_version=check.current_version,
-        latest_version="../0.1.0",
-        update_available=check.update_available,
-        summary=check.summary,
-        detail=check.detail,
-        release_url=check.release_url,
-        asset_name=check.asset_name,
-        asset_download_url=check.asset_download_url,
-        sha256_asset_name=check.sha256_asset_name,
-        sha256_asset_download_url=check.sha256_asset_download_url,
-        failure_reason=check.failure_reason,
-    )
+    check = replace(update_check(), latest_version="../0.1.0")
 
     result = asyncio.run(
         download_and_verify_update(
@@ -235,17 +239,153 @@ def test_download_and_verify_update_rejects_invalid_version_dir(tmp_path: Path) 
     assert not (tmp_path / "updates").exists()
 
 
-def test_sanitize_release_asset_name_rejects_paths() -> None:
-    """Release asset name 不能偷渡路徑。"""
+def test_download_and_verify_update_rejects_symlinked_updates_dir(tmp_path: Path) -> None:
+    """updates root 若被 symlink/junction 導到外部，下載前就必須拒絕。"""
 
-    assert sanitize_release_asset_name("facebook-monitor-0.1.0-windows-portable.zip")
-    for value in ("../app.zip", "folder/app.zip", "app zip"):
-        try:
-            sanitize_release_asset_name(value)
-        except ValueError as exc:
-            assert str(exc) == "invalid_asset_name"
-        else:
-            raise AssertionError("expected invalid asset name")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    updates_link = data_dir / "updates"
+    try:
+        updates_link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_link,
+            transport=mock_transport(
+                zip_bytes=b"unused",
+                sha256_text="unused",
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_path_unsafe"
+    assert list(outside.iterdir()) == []
+
+
+def test_download_and_verify_update_rejects_existing_tmp_symlink(tmp_path: Path) -> None:
+    """下載 `.tmp` 若已是 symlink，不可 follow 後覆寫外部檔。"""
+
+    updates_dir = tmp_path / "updates"
+    destination_dir = updates_dir / "0.1.0"
+    destination_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    tmp_link = destination_dir / "facebook-monitor-0.1.0-windows-portable.zip.tmp"
+    try:
+        tmp_link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"file symlink unavailable: {exc}")
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_dir,
+            transport=mock_transport(
+                zip_bytes=b"actual",
+                sha256_text=(
+                    f"{hashlib.sha256(b'actual').hexdigest()}  "
+                    "facebook-monitor-0.1.0-windows-portable.zip\n"
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_path_unsafe"
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_download_and_verify_update_rejects_existing_sha256_tmp_symlink(
+    tmp_path: Path,
+) -> None:
+    """SHA256 `.tmp` 若已是 symlink，不可先留下 zip staging 檔。"""
+
+    updates_dir = tmp_path / "updates"
+    destination_dir = updates_dir / "0.1.0"
+    destination_dir.mkdir(parents=True)
+    outside = tmp_path / "outside-sha.txt"
+    outside.write_text("keep", encoding="utf-8")
+    tmp_link = destination_dir / "facebook-monitor-0.1.0-windows-portable.zip.sha256.tmp"
+    try:
+        tmp_link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"file symlink unavailable: {exc}")
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_dir,
+            transport=mock_transport(
+                zip_bytes=b"actual",
+                sha256_text=(
+                    f"{hashlib.sha256(b'actual').hexdigest()}  "
+                    "facebook-monitor-0.1.0-windows-portable.zip\n"
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_path_unsafe"
+    assert result.file_path is not None
+    assert not result.file_path.exists()
+    assert not result.file_path.with_name(result.file_path.name + ".download").exists()
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_download_and_verify_update_reports_io_error_when_version_dir_is_file(
+    tmp_path: Path,
+) -> None:
+    """updates/<version> 若是檔案，下載器要回傳 failure 而不是丟到 Web 500。"""
+
+    version_path = tmp_path / "updates" / "0.1.0"
+    version_path.parent.mkdir()
+    version_path.write_text("not a directory", encoding="utf-8")
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(
+                zip_bytes=b"unused",
+                sha256_text="unused",
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_path_unsafe"
+
+
+def test_download_and_verify_update_rejects_destination_directory(
+    tmp_path: Path,
+) -> None:
+    """目的檔若已是目錄，要回傳可診斷的 unsafe path failure。"""
+
+    destination_dir = tmp_path / "updates" / "0.1.0"
+    (destination_dir / "facebook-monitor-0.1.0-windows-portable.zip").mkdir(
+        parents=True
+    )
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(
+                zip_bytes=b"unused",
+                sha256_text="unused",
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "download_path_unsafe"
 
 
 def test_read_expected_sha256_rejects_filename_mismatch(tmp_path: Path) -> None:

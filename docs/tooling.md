@@ -86,7 +86,7 @@ Release tag 前建議執行：
 
 腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
-若這次 release 改過 `webapp/static` 或 template 入口，確認 `src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 已更新；release validation 會印出目前值，避免瀏覽器吃到舊 module graph。
+版本與 Web asset cache key 的來源語義看 `docs/ARCHITECTURE.md#frozen-updater`；release validation 會印出目前 app / asset version，正式發佈時以升版作為瀏覽器 cache busting 來源。
 
 ## 啟動診斷位置
 

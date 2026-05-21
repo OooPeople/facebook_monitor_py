@@ -1,8 +1,8 @@
 """Resident main shared runtime helpers。
 
 職責：提供正式 resident main 與 executor 共同使用的 options、summary、
-target loading、route 判斷與失敗狀態寫回 helper。sync fallback worker
-不放在本檔，避免 debug/fallback 與正式主路徑混名。
+target loading 與 route 判斷 helper。sync fallback worker 不放在本檔，
+避免 debug/fallback 與正式主路徑混名。
 """
 
 from __future__ import annotations
@@ -21,15 +21,10 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
-from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
-from facebook_monitor.core.scan_failure_policy import ScanFailureSource
-from facebook_monitor.core.scan_failure_policy import decide_scan_failure
 from facebook_monitor.facebook.route_detection import FACEBOOK_HOSTS
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import detect_group_comments_route
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
-from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.target_validation import validate_posts_target_route
 
 
@@ -178,39 +173,6 @@ def _group_feed_route_key(url: str) -> tuple[str, str] | None:
     return ("groups", group_id)
 
 
-def record_resident_scan_failure(
-    db_path: Path,
-    target: TargetDescriptor,
-    reason: str,
-    message: str,
-    *,
-    retryable: bool = False,
-    exception_class: str = "",
-    page_reused: bool | None = None,
-    decision: ScanFailureDecision | None = None,
-) -> None:
-    """記錄 resident main worker 的失敗 scan run。"""
-
-    runtime_action = decision.runtime_action if decision is not None else ""
-    retry_streak = decision.retry_streak if decision is not None else 0
-    retry_limit = decision.retry_limit if decision is not None else 0
-    with SqliteApplicationContext(db_path) as app:
-        record_scan_failure(
-            app=app,
-            target=target,
-            reason=reason,
-            message=message,
-            worker_path="resident_main",
-            retryable=retryable,
-            exception_class=exception_class,
-            page_reused=page_reused,
-            runtime_action=runtime_action,
-            retry_streak=retry_streak,
-            retry_limit=retry_limit,
-            force_record=bool(decision and decision.counts_toward_streak),
-        )
-
-
 def mark_resident_target_error(db_path: Path, target_id: str, message: str) -> None:
     """將 target runtime state 標成 error；target 已不存在時忽略。"""
 
@@ -227,36 +189,3 @@ def mark_resident_target_idle(db_path: Path, target_id: str) -> None:
         if app.repositories.targets.get(target_id) is None:
             return
         app.services.targets.mark_target_idle(target_id)
-
-
-def decide_resident_scan_failure(
-    db_path: Path,
-    target_id: str,
-    reason: str,
-    *,
-    source: ScanFailureSource,
-) -> ScanFailureDecision:
-    """依 DB runtime state 取得 resident failure 共用決策。"""
-
-    with SqliteApplicationContext(db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return decide_scan_failure(reason, source=source)
-        return app.services.targets.decide_scan_failure(target_id, reason, source=source)
-
-
-def apply_resident_scan_failure_decision(
-    db_path: Path,
-    target_id: str,
-    decision: ScanFailureDecision,
-    message: str,
-) -> None:
-    """依 resident failure decision 更新 target runtime state。"""
-
-    with SqliteApplicationContext(db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.targets.apply_scan_failure_decision(
-            target_id,
-            decision,
-            format_scan_failure_message(decision.reason, message),
-        )

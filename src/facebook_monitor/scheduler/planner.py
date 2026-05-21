@@ -31,6 +31,7 @@ class DueTarget:
     interval_seconds: float
     due_at: datetime
     scan_requested: bool = False
+    scan_requested_at: datetime | None = None
 
 
 class TargetSchedulePlanner:
@@ -94,6 +95,7 @@ class TargetSchedulePlanner:
                             interval_seconds=interval_seconds,
                             due_at=current_time,
                             scan_requested=True,
+                            scan_requested_at=runtime_state.scan_requested_at,
                         )
                     )
                     continue

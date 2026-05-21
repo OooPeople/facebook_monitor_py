@@ -6,10 +6,12 @@
 
 | 文件 | 職責 | 不應放 |
 |---|---|---|
-| `AGENTS.md` | 協作規則、禁止事項、產品語義守護與 UI 重構邊界 | 目前進度、驗證結果 |
+| `AGENTS.md` | 代理開工守則、禁止事項、文件索引、每次必看的高風險 guardrails | 目前進度、驗證結果、完整產品規格、完整審查清單 |
 | `README.md` | GitHub 專案首頁：專案用途、核心能力、架構亮點、文件入口 | 詳細操作步驟、scripts 全索引、歷史批次 |
+| `docs/README.md` | 公開文件職責邊界與更新規則 | 產品功能規格、逐次任務紀錄、最近驗證 |
 | `docs/USAGE.md` | 詳細安裝、啟動、target 操作、通知、資料路徑與疑難排解 | 穩定架構總論、目前進度、工具全索引 |
 | `docs/ARCHITECTURE.md` | 穩定架構事實、正式主路徑、模組邊界、不可回退產品語義、deferred 邊界 | 短期進度、最近驗證、逐次任務紀錄 |
+| `docs/ENGINEERING_REVIEW.md` | 預設工程審查清單、review 輸出格式與 handoff 要求 | 產品功能規格、短期進度、最近驗證 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、功能進度 |
 | `packaging/README.md` | EXE 打包前置、PyInstaller 與 frozen smoke checklist | source-mode 日常操作、目前進度 |
 | `packaging/MACOS_HANDOFF.md` | macOS Apple Silicon 打包接手摘要、近期驗證與後續邊界 | 詳細打包指令、穩定使用者操作、Windows 打包規則 |
@@ -24,7 +26,9 @@
 ## 更新規則
 
 - 目前進度、下一步、風險或最近驗證：若本機有 `docs/local/TASK_BREAKDOWN.md`，只更新該文件並保持摘要層級；不要新增公開追蹤的進度文件。
-- 正式主路徑、資料語義、模組邊界或 deferred 邊界：更新 `docs/ARCHITECTURE.md`，必要時同步 `AGENTS.md`。
+- 正式主路徑、資料語義、模組邊界或 deferred 邊界：更新 `docs/ARCHITECTURE.md`，必要時只在 `AGENTS.md` 保留短 guardrail 或文件索引。
+- 工程審查範圍、review 輸出格式或 handoff 要求：更新 `docs/ENGINEERING_REVIEW.md`，必要時只在 `AGENTS.md` 保留短索引。
+- 文件職責邊界或文件索引：更新本文件，並只在 README / AGENTS 保留必要入口。
 - 安裝與日常操作：更新 README 的摘要與 `docs/USAGE.md` 的詳細步驟。
 - scripts / CLI 搬移或新增：更新 `docs/tooling.md`。
 - 歷史來源說明：更新 README 的「歷史來源」段落，連到外部 JS repo。

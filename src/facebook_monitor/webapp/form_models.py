@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Annotated
 from typing import TypedDict
+
+from fastapi import Form
 
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
@@ -37,20 +41,32 @@ class NotificationSettingsKwargs(TypedDict):
     discord_webhook: str
 
 
-class NotificationFormKwargs(TypedDict):
-    """通知表單欄位 kwargs；供動態 payload 轉 TargetConfigForm 使用。"""
-
-    enable_desktop_notification: str | None
-    enable_ntfy: str | None
-    ntfy_topic: str
-    enable_discord_notification: str | None
-    discord_webhook: str
-
-
 def checkbox_checked(value: str | None) -> bool:
     """解析 HTML checkbox 欄位。"""
 
     return value == "on"
+
+
+def checkbox_payload(value: object) -> str | None:
+    """將 JSON payload 的 truthy 值轉成 HTML checkbox 表示。"""
+
+    return "on" if bool(value) else None
+
+
+def int_payload(value: object, fallback: int) -> int:
+    """解析 JSON payload 整數欄位，失敗時回傳既有預設。"""
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return fallback
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def normalize_refresh_seconds(value: int, fallback: int) -> int:
@@ -114,6 +130,53 @@ class NotificationConfigForm:
     enable_discord_notification: str | None = None
     discord_webhook: str = ""
 
+    @classmethod
+    def as_form(
+        cls,
+        enable_desktop_notification: Annotated[str | None, Form()] = None,
+        enable_ntfy: Annotated[str | None, Form()] = None,
+        ntfy_topic: Annotated[str, Form()] = "",
+        enable_discord_notification: Annotated[str | None, Form()] = None,
+        discord_webhook: Annotated[str, Form()] = "",
+    ) -> NotificationConfigForm:
+        """從 FastAPI HTML form dependency 建立通知設定表單。"""
+
+        return cls(
+            enable_desktop_notification=enable_desktop_notification,
+            enable_ntfy=enable_ntfy,
+            ntfy_topic=ntfy_topic,
+            enable_discord_notification=enable_discord_notification,
+            discord_webhook=discord_webhook,
+        )
+
+    @classmethod
+    def from_sidebar_template_payload(
+        cls,
+        payload: Mapping[str, object],
+    ) -> NotificationConfigForm:
+        """從 sidebar template JSON payload 建立通知表單。"""
+
+        kwargs: dict[str, object] = {}
+        for definition in NOTIFICATION_CHANNEL_DEFINITIONS:
+            kwargs[definition.enabled_field] = checkbox_payload(
+                payload.get(definition.enabled_field)
+            )
+            if definition.endpoint_field:
+                kwargs[definition.endpoint_field] = str(
+                    payload.get(definition.endpoint_field, "") or ""
+                )
+        return cls(
+            enable_desktop_notification=checkbox_payload(
+                kwargs.get("enable_desktop_notification")
+            ),
+            enable_ntfy=checkbox_payload(kwargs.get("enable_ntfy")),
+            ntfy_topic=str(kwargs.get("ntfy_topic", "")),
+            enable_discord_notification=checkbox_payload(
+                kwargs.get("enable_discord_notification")
+            ),
+            discord_webhook=str(kwargs.get("discord_webhook", "")),
+        )
+
     @property
     def desktop_enabled(self) -> bool:
         """回傳桌面通知 checkbox 狀態。"""
@@ -174,6 +237,95 @@ class TargetConfigForm:
     ntfy_topic: str = ""
     enable_discord_notification: str | None = None
     discord_webhook: str = ""
+
+    @classmethod
+    def as_form(
+        cls,
+        include_keywords: Annotated[str, Form()] = "",
+        exclude_keywords: Annotated[str, Form()] = "",
+        exclude_ignore_phrases: Annotated[str, Form()] = "",
+        refresh_mode: Annotated[str, Form()] = FLOATING_REFRESH_MODE,
+        fixed_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
+        min_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
+        max_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
+        max_items_per_scan: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
+        auto_load_more: Annotated[str | None, Form()] = None,
+        auto_adjust_sort: Annotated[str | None, Form()] = None,
+        enable_desktop_notification: Annotated[str | None, Form()] = None,
+        enable_ntfy: Annotated[str | None, Form()] = None,
+        ntfy_topic: Annotated[str, Form()] = "",
+        enable_discord_notification: Annotated[str | None, Form()] = None,
+        discord_webhook: Annotated[str, Form()] = "",
+    ) -> TargetConfigForm:
+        """從 FastAPI HTML form dependency 建立 target config form。"""
+
+        return cls(
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
+            exclude_ignore_phrases=exclude_ignore_phrases,
+            refresh_mode=refresh_mode,
+            fixed_refresh_sec=fixed_refresh_sec,
+            min_refresh_sec=min_refresh_sec,
+            max_refresh_sec=max_refresh_sec,
+            max_items_per_scan=max_items_per_scan,
+            auto_load_more=auto_load_more,
+            auto_adjust_sort=auto_adjust_sort,
+            enable_desktop_notification=enable_desktop_notification,
+            enable_ntfy=enable_ntfy,
+            ntfy_topic=ntfy_topic,
+            enable_discord_notification=enable_discord_notification,
+            discord_webhook=discord_webhook,
+        )
+
+    @classmethod
+    def from_sidebar_template_payload(
+        cls,
+        payload: Mapping[str, object],
+    ) -> TargetConfigForm:
+        """從 sidebar template JSON payload 建立 target config form。"""
+
+        notification_form = NotificationConfigForm.from_sidebar_template_payload(payload)
+        return cls(
+            include_keywords=str(payload.get("include_keywords", "")),
+            exclude_keywords=str(payload.get("exclude_keywords", "")),
+            exclude_ignore_phrases=str(payload.get("exclude_ignore_phrases", "")),
+            refresh_mode=str(payload.get("refresh_mode", FLOATING_REFRESH_MODE)),
+            fixed_refresh_sec=int_payload(
+                payload.get("fixed_refresh_sec"),
+                PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
+            ),
+            min_refresh_sec=int_payload(
+                payload.get("min_refresh_sec"),
+                PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
+            ),
+            max_refresh_sec=int_payload(
+                payload.get("max_refresh_sec"),
+                PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
+            ),
+            max_items_per_scan=int_payload(
+                payload.get("max_items_per_scan"),
+                PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
+            ),
+            auto_load_more=checkbox_payload(payload.get("auto_load_more")),
+            auto_adjust_sort=checkbox_payload(payload.get("auto_adjust_sort")),
+            enable_desktop_notification=notification_form.enable_desktop_notification,
+            enable_ntfy=notification_form.enable_ntfy,
+            ntfy_topic=notification_form.ntfy_topic,
+            enable_discord_notification=notification_form.enable_discord_notification,
+            discord_webhook=notification_form.discord_webhook,
+        )
 
     @property
     def include_keyword_tuple(self) -> tuple[str, ...]:
@@ -354,4 +506,110 @@ class TargetConfigForm:
             group_name=group_name,
             group_cover_image_url=group_cover_image_url,
             config=self.to_config_patch(),
+        )
+
+
+@dataclass(frozen=True)
+class CreateTargetConfigFormFields:
+    """保存新增 target 表單欄位，保留缺欄套用關鍵字預設的語義。"""
+
+    include_keywords: str = ""
+    exclude_keywords: str | None = None
+    exclude_ignore_phrases: str | None = None
+    refresh_mode: str = FLOATING_REFRESH_MODE
+    fixed_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
+    min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
+    max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
+    max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
+    auto_load_more: str | None = None
+    auto_adjust_sort: str | None = None
+    enable_desktop_notification: str | None = None
+    enable_ntfy: str | None = None
+    ntfy_topic: str = ""
+    enable_discord_notification: str | None = None
+    discord_webhook: str = ""
+
+    @classmethod
+    def as_form(
+        cls,
+        include_keywords: Annotated[str, Form()] = "",
+        exclude_keywords: Annotated[str | None, Form()] = None,
+        exclude_ignore_phrases: Annotated[str | None, Form()] = None,
+        refresh_mode: Annotated[str, Form()] = FLOATING_REFRESH_MODE,
+        fixed_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
+        min_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
+        max_refresh_sec: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
+        max_items_per_scan: Annotated[
+            int,
+            Form(),
+        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
+        auto_load_more: Annotated[str | None, Form()] = None,
+        auto_adjust_sort: Annotated[str | None, Form()] = None,
+        enable_desktop_notification: Annotated[str | None, Form()] = None,
+        enable_ntfy: Annotated[str | None, Form()] = None,
+        ntfy_topic: Annotated[str, Form()] = "",
+        enable_discord_notification: Annotated[str | None, Form()] = None,
+        discord_webhook: Annotated[str, Form()] = "",
+    ) -> CreateTargetConfigFormFields:
+        """從新增 target HTML form 建立 raw fields。"""
+
+        return cls(
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
+            exclude_ignore_phrases=exclude_ignore_phrases,
+            refresh_mode=refresh_mode,
+            fixed_refresh_sec=fixed_refresh_sec,
+            min_refresh_sec=min_refresh_sec,
+            max_refresh_sec=max_refresh_sec,
+            max_items_per_scan=max_items_per_scan,
+            auto_load_more=auto_load_more,
+            auto_adjust_sort=auto_adjust_sort,
+            enable_desktop_notification=enable_desktop_notification,
+            enable_ntfy=enable_ntfy,
+            ntfy_topic=ntfy_topic,
+            enable_discord_notification=enable_discord_notification,
+            discord_webhook=discord_webhook,
+        )
+
+    def to_target_config_form(
+        self,
+        *,
+        default_exclude_keywords: str,
+        default_exclude_ignore_phrases: str,
+    ) -> TargetConfigForm:
+        """套用新增 target 專屬預設後轉成共用 target config form。"""
+
+        return TargetConfigForm(
+            include_keywords=self.include_keywords,
+            exclude_keywords=(
+                default_exclude_keywords
+                if self.exclude_keywords is None
+                else self.exclude_keywords
+            ),
+            exclude_ignore_phrases=(
+                default_exclude_ignore_phrases
+                if self.exclude_ignore_phrases is None
+                else self.exclude_ignore_phrases
+            ),
+            refresh_mode=self.refresh_mode,
+            fixed_refresh_sec=self.fixed_refresh_sec,
+            min_refresh_sec=self.min_refresh_sec,
+            max_refresh_sec=self.max_refresh_sec,
+            max_items_per_scan=self.max_items_per_scan,
+            auto_load_more=self.auto_load_more,
+            auto_adjust_sort=self.auto_adjust_sort,
+            enable_desktop_notification=self.enable_desktop_notification,
+            enable_ntfy=self.enable_ntfy,
+            ntfy_topic=self.ntfy_topic,
+            enable_discord_notification=self.enable_discord_notification,
+            discord_webhook=self.discord_webhook,
         )

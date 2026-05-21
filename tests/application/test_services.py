@@ -182,6 +182,83 @@ def test_restart_target_monitoring_resets_runtime_and_requests_scan(
     assert state.consecutive_failure_count == 0
 
 
+def test_scan_request_during_running_survives_current_scan_finish(
+    tmp_path: Path,
+) -> None:
+    """target running 時再按 scan-once，完成目前掃描後仍保留下一輪要求。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.clear_target_scan_request(target.id)
+        app.services.targets.mark_target_running(target.id, "worker-1")
+        requested_state = app.services.targets.request_target_scan(target.id)
+        finished_state = app.services.targets.mark_target_idle(target.id)
+
+    assert requested_state.scan_requested_at is not None
+    assert finished_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert finished_state.scan_requested_at == requested_state.scan_requested_at
+
+
+def test_scan_request_during_queued_survives_current_scan_finish(
+    tmp_path: Path,
+) -> None:
+    """target queued 時再按 scan-once，也應在本輪完成後保留下一輪要求。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.clear_target_scan_request(target.id)
+        app.services.targets.mark_target_queued(target.id, "due")
+        requested_state = app.services.targets.request_target_scan(target.id)
+        app.services.targets.mark_target_running(target.id, "worker-1")
+        finished_state = app.services.targets.mark_target_idle(target.id)
+
+    assert requested_state.scan_requested_at is not None
+    assert finished_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert finished_state.scan_requested_at == requested_state.scan_requested_at
+
+
+def test_clear_consumed_scan_request_preserves_newer_request(
+    tmp_path: Path,
+) -> None:
+    """已入隊 request 的清除動作不得刪掉稍後送出的 scan-once。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        consumed_state = app.repositories.runtime_states.get(target.id)
+        assert consumed_state is not None
+        assert consumed_state.scan_requested_at is not None
+        newer_state = app.services.targets.request_target_scan(target.id)
+
+        cleared_state = app.services.targets.clear_target_scan_request_if_not_newer(
+            target.id,
+            consumed_state.scan_requested_at,
+        )
+
+    assert newer_state.scan_requested_at is not None
+    assert cleared_state.scan_requested_at == newer_state.scan_requested_at
+
+
 def test_target_config_patch_fields_track_request_model() -> None:
     """config merge 欄位清單需能安全套用到 TargetConfig。"""
 
@@ -850,7 +927,10 @@ def test_update_target_config(tmp_path: Path) -> None:
         initial_config = app.repositories.configs.get_for_target(target)
 
         assert initial_config is not None
-        assert initial_config.exclude_ignore_phrases == ("全收", "回收")
+        assert (
+            initial_config.exclude_ignore_phrases
+            == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
+        )
 
         config = app.services.targets.update_target_config(
             UpdateTargetConfigRequest(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
+from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import Form
 from fastapi import Request
@@ -14,7 +15,6 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
@@ -44,8 +44,10 @@ from facebook_monitor.webapp.dependencies import get_target_keyword_defaults
 from facebook_monitor.webapp.dependencies import redirect_new_target_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
+from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
 from facebook_monitor.webapp.dependencies import start_resident_scheduler_if_needed
+from facebook_monitor.webapp.form_models import CreateTargetConfigFormFields
 from facebook_monitor.webapp.form_models import NotificationConfigForm
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.profile_session import ProfileSessionError
@@ -58,45 +60,6 @@ def _wants_json_response(request: Request) -> bool:
     """判斷前端是否要求保留目前頁面並以 JSON 接收操作結果。"""
 
     return "application/json" in request.headers.get("accept", "").lower()
-
-
-def _build_target_config_form(
-    *,
-    include_keywords: str,
-    exclude_keywords: str,
-    exclude_ignore_phrases: str,
-    refresh_mode: str,
-    fixed_refresh_sec: int,
-    min_refresh_sec: int,
-    max_refresh_sec: int,
-    max_items_per_scan: int,
-    auto_load_more: str | None,
-    auto_adjust_sort: str | None,
-    enable_desktop_notification: str | None,
-    enable_ntfy: str | None,
-    ntfy_topic: str,
-    enable_discord_notification: str | None,
-    discord_webhook: str,
-) -> TargetConfigForm:
-    """集中建立 target config form，避免 create/update route 重複欄位映射。"""
-
-    return TargetConfigForm(
-        include_keywords=include_keywords,
-        exclude_keywords=exclude_keywords,
-        exclude_ignore_phrases=exclude_ignore_phrases,
-        refresh_mode=refresh_mode,
-        fixed_refresh_sec=fixed_refresh_sec,
-        min_refresh_sec=min_refresh_sec,
-        max_refresh_sec=max_refresh_sec,
-        max_items_per_scan=max_items_per_scan,
-        auto_load_more=auto_load_more,
-        auto_adjust_sort=auto_adjust_sort,
-        enable_desktop_notification=enable_desktop_notification,
-        enable_ntfy=enable_ntfy,
-        ntfy_topic=ntfy_topic,
-        enable_discord_notification=enable_discord_notification,
-        discord_webhook=discord_webhook,
-    )
 
 
 async def _resolve_group_metadata_if_needed(
@@ -157,54 +120,19 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def create_target(
         request: Request,
         group_url: Annotated[str, Form()],
+        config_fields: Annotated[
+            CreateTargetConfigFormFields,
+            Depends(CreateTargetConfigFormFields.as_form),
+        ],
         display_name: Annotated[str, Form()] = "",
-        include_keywords: Annotated[str, Form()] = "",
-        exclude_keywords: Annotated[str | None, Form()] = None,
-        exclude_ignore_phrases: Annotated[str | None, Form()] = None,
-        refresh_mode: Annotated[str, Form()] = "floating",
-        fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
-        min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
-        max_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
-        max_items_per_scan: Annotated[
-            int,
-            Form(),
-        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
-        auto_load_more: Annotated[str | None, Form()] = None,
-        auto_adjust_sort: Annotated[str | None, Form()] = None,
-        enable_desktop_notification: Annotated[str | None, Form()] = None,
-        enable_ntfy: Annotated[str | None, Form()] = None,
-        ntfy_topic: Annotated[str, Form()] = "",
-        enable_discord_notification: Annotated[str | None, Form()] = None,
-        discord_webhook: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
         """從表單 URL 建立或更新 posts/comments target。"""
 
         try:
             keyword_defaults = get_target_keyword_defaults(request)
-            config_form = _build_target_config_form(
-                include_keywords=include_keywords,
-                exclude_keywords=(
-                    keyword_defaults.exclude_keywords_text
-                    if exclude_keywords is None
-                    else exclude_keywords
-                ),
-                exclude_ignore_phrases=(
-                    keyword_defaults.exclude_ignore_phrases_text
-                    if exclude_ignore_phrases is None
-                    else exclude_ignore_phrases
-                ),
-                refresh_mode=refresh_mode,
-                fixed_refresh_sec=fixed_refresh_sec,
-                min_refresh_sec=min_refresh_sec,
-                max_refresh_sec=max_refresh_sec,
-                max_items_per_scan=max_items_per_scan,
-                auto_load_more=auto_load_more,
-                auto_adjust_sort=auto_adjust_sort,
-                enable_desktop_notification=enable_desktop_notification,
-                enable_ntfy=enable_ntfy,
-                ntfy_topic=ntfy_topic,
-                enable_discord_notification=enable_discord_notification,
-                discord_webhook=discord_webhook,
+            config_form = config_fields.to_target_config_form(
+                default_exclude_keywords=keyword_defaults.exclude_keywords_text,
+                default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
             )
             custom_name = clean_facebook_page_title(display_name)
             scheduler_running = get_scheduler_manager(request).state().running
@@ -270,46 +198,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def update_config(
         request: Request,
         target_id: str,
+        config_form: Annotated[
+            TargetConfigForm,
+            Depends(TargetConfigForm.as_form),
+        ],
         return_to: Annotated[str, Form()] = "",
-        include_keywords: Annotated[str, Form()] = "",
-        exclude_keywords: Annotated[str, Form()] = "",
-        exclude_ignore_phrases: Annotated[str, Form()] = "",
-        refresh_mode: Annotated[str, Form()] = "floating",
-        fixed_refresh_sec: Annotated[int, Form()] = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
-        min_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec,
-        max_refresh_sec: Annotated[int, Form()] = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec,
-        max_items_per_scan: Annotated[
-            int,
-            Form(),
-        ] = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan,
-        auto_load_more: Annotated[str | None, Form()] = None,
-        auto_adjust_sort: Annotated[str | None, Form()] = None,
-        enable_desktop_notification: Annotated[str | None, Form()] = None,
-        enable_ntfy: Annotated[str | None, Form()] = None,
-        ntfy_topic: Annotated[str, Form()] = "",
-        enable_discord_notification: Annotated[str | None, Form()] = None,
-        discord_webhook: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
         """更新單一 target 設定。"""
 
         try:
-            config_form = _build_target_config_form(
-                include_keywords=include_keywords,
-                exclude_keywords=exclude_keywords,
-                exclude_ignore_phrases=exclude_ignore_phrases,
-                refresh_mode=refresh_mode,
-                fixed_refresh_sec=fixed_refresh_sec,
-                min_refresh_sec=min_refresh_sec,
-                max_refresh_sec=max_refresh_sec,
-                max_items_per_scan=max_items_per_scan,
-                auto_load_more=auto_load_more,
-                auto_adjust_sort=auto_adjust_sort,
-                enable_desktop_notification=enable_desktop_notification,
-                enable_ntfy=enable_ntfy,
-                ntfy_topic=ntfy_topic,
-                enable_discord_notification=enable_discord_notification,
-                discord_webhook=discord_webhook,
-            )
             with SqliteApplicationContext(get_db_path(request)) as app_context:
                 app_context.services.targets.update_target_config(
                     config_form.to_update_request(target_id=target_id)
@@ -381,8 +278,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> JSONResponse:
         """接收 UI 壞圖 hint，排程 image-only cover URL 背景刷新。"""
 
-        payload = await request.json()
-        reported_url = str(payload.get("url", "")).strip() if isinstance(payload, dict) else ""
+        payload = await json_object_payload(request)
+        reported_url = str(payload.get("url", "")).strip()
         min_interval_seconds = (
             PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
         )
@@ -412,12 +309,11 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def test_target_notifications(
         request: Request,
         target_id: str,
+        notification_form: Annotated[
+            NotificationConfigForm,
+            Depends(NotificationConfigForm.as_form),
+        ],
         return_to: Annotated[str, Form()] = "",
-        enable_desktop_notification: Annotated[str | None, Form()] = None,
-        enable_ntfy: Annotated[str | None, Form()] = None,
-        ntfy_topic: Annotated[str, Form()] = "",
-        enable_discord_notification: Annotated[str | None, Form()] = None,
-        discord_webhook: Annotated[str, Form()] = "",
     ) -> object:
         """依 target 設定 modal 目前欄位送出一則測試通知，不保存設定。"""
 
@@ -431,13 +327,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             status_code=404,
                         )
                     return redirect_with_error("測試通知失敗: target 不存在", return_to=return_to)
-            config = NotificationConfigForm(
-                enable_desktop_notification=enable_desktop_notification,
-                enable_ntfy=enable_ntfy,
-                ntfy_topic=ntfy_topic,
-                enable_discord_notification=enable_discord_notification,
-                discord_webhook=discord_webhook,
-            ).to_target_config(target_id=target.id)
+            config = notification_form.to_target_config(target_id=target.id)
             results = await run_in_threadpool(
                 send_manual_test_notification,
                 config=config,

@@ -13,6 +13,7 @@ from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.highlight import HighlightSegment
 from facebook_monitor.webapp.highlight import build_highlight_segments
+from facebook_monitor.webapp.url_safety import safe_facebook_permalink
 
 
 def trim_preview_text(text: str, *, max_length: int) -> str:
@@ -38,6 +39,11 @@ class TargetPreviewRow:
     secondary_text: str = ""
     debug_summary: str = ""
     debug_text: str = ""
+
+    def __post_init__(self) -> None:
+        """清理可點擊外部連結，避免模板與 API 輸出 unsafe href。"""
+
+        object.__setattr__(self, "permalink", safe_facebook_permalink(self.permalink))
 
     @property
     def has_debug(self) -> bool:

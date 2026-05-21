@@ -23,8 +23,8 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
@@ -111,7 +111,9 @@ def create_app(
     group_name_resolver: GroupMetadataResolver | None = None,
     scheduler_manager: SchedulerManagerLike | None = None,
     auto_start_scheduler: bool = False,
-    scheduler_interval_seconds: float = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
+    scheduler_interval_seconds: float = (
+        PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
+    ),
     scheduler_tick_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds,
     max_concurrent_scans: int = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans,
     reset_targets_on_startup: bool = False,

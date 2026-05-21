@@ -23,7 +23,9 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
-from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
+from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
+from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
 
 
 ScanCallable = Callable[[OneShotScanOptions], PostsScanSummary]
@@ -108,9 +110,15 @@ def run_one_shot_scheduler_loop(
             target_id = due_target.target_id
             with SqliteApplicationContext(options.db_path) as app:
                 locked_state = app.services.targets.try_mark_target_running(target_id, worker_id)
+                if locked_state is not None and due_target.scan_requested:
+                    app.services.targets.clear_target_scan_request_if_not_newer(
+                        target_id,
+                        due_target.scan_requested_at,
+                    )
             if locked_state is None:
                 skipped_count += 1
                 continue
+            commit_guard = scan_commit_guard_from_runtime_state(locked_state)
             schedule_planner.mark_dispatched(due_target)
             try:
                 scan_once(
@@ -122,68 +130,53 @@ def run_one_shot_scheduler_loop(
                         scroll_wait_ms=options.scroll_wait_ms,
                         scan_timeout_seconds=options.scan_timeout_seconds,
                         record_failures=False,
+                        scan_worker_id=commit_guard.worker_id,
+                        scan_started_at=commit_guard.started_at,
+                        scan_page_id=commit_guard.page_id,
                     )
                 )
             except WorkerFailure as exc:
+                recorded_failure = record_guarded_scan_failure_for_db(
+                    db_path=options.db_path,
+                    target_id=target_id,
+                    reason=exc.reason,
+                    message=str(exc),
+                    source="worker_failure",
+                    worker_path="one_shot_scheduler",
+                    commit_guard=commit_guard,
+                    exception_class=exc.__class__.__name__,
+                    runtime_error_message=str(exc),
+                )
+                if not recorded_failure:
+                    skipped_count += 1
+                    continue
                 failure_count += 1
-                with SqliteApplicationContext(options.db_path) as app:
-                    target = app.repositories.targets.get(target_id)
-                    decision = app.services.targets.decide_scan_failure(
-                        target_id,
-                        exc.reason,
-                        source="worker_failure",
-                    )
-                    if target is not None:
-                        record_scan_failure(
-                            app=app,
-                            target=target,
-                            reason=exc.reason,
-                            message=str(exc),
-                            worker_path="one_shot_scheduler",
-                            exception_class=exc.__class__.__name__,
-                            retryable=decision.retryable,
-                            runtime_action=decision.runtime_action,
-                            retry_streak=decision.retry_streak,
-                            retry_limit=decision.retry_limit,
-                            force_record=decision.counts_toward_streak,
-                        )
-                    app.services.targets.apply_scan_failure_decision(
-                        target_id,
-                        decision,
-                        str(exc),
-                    )
             except Exception as exc:
+                recorded_failure = record_guarded_scan_failure_for_db(
+                    db_path=options.db_path,
+                    target_id=target_id,
+                    reason=UNKNOWN_REASON,
+                    message=str(exc),
+                    source="unknown_exception",
+                    worker_path="one_shot_scheduler",
+                    commit_guard=commit_guard,
+                    exception_class=exc.__class__.__name__,
+                    runtime_error_message=str(exc),
+                )
+                if not recorded_failure:
+                    skipped_count += 1
+                    continue
                 failure_count += 1
-                with SqliteApplicationContext(options.db_path) as app:
-                    target = app.repositories.targets.get(target_id)
-                    decision = app.services.targets.decide_scan_failure(
-                        target_id,
-                        UNKNOWN_REASON,
-                        source="unknown_exception",
-                    )
-                    if target is not None:
-                        record_scan_failure(
-                            app=app,
-                            target=target,
-                            reason=UNKNOWN_REASON,
-                            message=str(exc),
-                            worker_path="one_shot_scheduler",
-                            exception_class=exc.__class__.__name__,
-                            retryable=decision.retryable,
-                            runtime_action=decision.runtime_action,
-                            retry_streak=decision.retry_streak,
-                            retry_limit=decision.retry_limit,
-                            force_record=decision.counts_toward_streak,
-                        )
-                    app.services.targets.apply_scan_failure_decision(
-                        target_id,
-                        decision,
-                        str(exc),
-                    )
             else:
-                success_count += 1
                 with SqliteApplicationContext(options.db_path) as app:
-                    app.services.targets.mark_target_idle(target_id)
+                    if mark_target_idle_for_scan_commit(
+                        app=app,
+                        target_id=target_id,
+                        commit_guard=commit_guard,
+                    ):
+                        success_count += 1
+                    else:
+                        skipped_count += 1
             finally:
                 schedule_planner.mark_finished(target_id)
 

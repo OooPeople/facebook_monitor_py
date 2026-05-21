@@ -27,6 +27,8 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.sidebar_models import SidebarGroup
+from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.sqlite import MatchHistoryRepository
 from facebook_monitor.persistence.sqlite import AppSettingsRepository
 from facebook_monitor.persistence.sqlite import GlobalNotificationSettingsRepository
@@ -36,13 +38,16 @@ from facebook_monitor.persistence.sqlite import NotificationOutboxRepository
 from facebook_monitor.persistence.sqlite import ScanRunRepository
 from facebook_monitor.persistence.sqlite import SeenItemRepository
 from facebook_monitor.persistence.sqlite import SCHEMA_VERSION
+from facebook_monitor.persistence.sqlite import SidebarLayoutRepository
 from facebook_monitor.persistence.sqlite import SqliteConnection
 from facebook_monitor.persistence.sqlite import TargetConfigRepository
+from facebook_monitor.persistence.sqlite import TargetCoverImageRefreshRepository
 from facebook_monitor.persistence.sqlite import TargetRepository
 from facebook_monitor.persistence.sqlite import TargetRuntimeStateRepository
 from facebook_monitor.persistence.sqlite import initialize_schema
 from facebook_monitor.persistence.migrations import ensure_legacy_group_configs_table
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
+from facebook_monitor.persistence.schema import repair_duplicate_target_scopes
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
@@ -292,6 +297,85 @@ def test_initialize_schema_repairs_duplicate_target_scopes_before_unique_index(
     assert len(targets) == 1
     assert targets[0].id == first.id
     assert "idx_targets_kind_scope_unique" in indexes
+
+
+def test_repair_duplicate_target_scopes_preserves_single_row_state(
+    tmp_path: Path,
+) -> None:
+    """duplicate scope repair 會搬移 config/runtime/cover/sidebar，不直接丟資料。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        target_repository = TargetRepository(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-target",
+            name="duplicate",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        target_repository.save(first)
+        target_repository.save(duplicate)
+        target_config_repository(connection).save_for_target_id(
+            duplicate.id,
+            TargetConfig(
+                target_id=duplicate.id,
+                include_keywords=("duplicate-keyword",),
+            ),
+        )
+        TargetRuntimeStateRepository(connection).save(
+            TargetRuntimeState(
+                target_id=duplicate.id,
+                desired_state=TargetDesiredState.ACTIVE,
+                runtime_status=TargetRuntimeStatus.QUEUED,
+            )
+        )
+        TargetCoverImageRefreshRepository(connection).request_refresh(
+            target_id=duplicate.id,
+            reported_url="https://images.example/cover.jpg",
+            min_interval_seconds=0,
+        )
+        sidebar_repository = SidebarLayoutRepository(
+            connection,
+            secret_codec=PLAINTEXT_SECRET_CODEC,
+        )
+        group = sidebar_repository.save_group(
+            SidebarGroup.create(name="測試分組", sort_order=0)
+        )
+        sidebar_repository.save_placement(
+            SidebarTargetPlacement(
+                target_id=duplicate.id,
+                sidebar_group_id=group.id,
+                sort_order=3,
+            )
+        )
+
+        repair_duplicate_target_scopes(connection)
+
+        loaded_config = target_config_repository(connection).get_for_target_id(first.id)
+        loaded_runtime = TargetRuntimeStateRepository(connection).get(first.id)
+        loaded_cover = TargetCoverImageRefreshRepository(connection).get(first.id)
+        placements = SidebarLayoutRepository(
+            connection,
+            secret_codec=PLAINTEXT_SECRET_CODEC,
+        ).list_placements()
+
+    assert loaded_config is not None
+    assert loaded_config.include_keywords == ("duplicate-keyword",)
+    assert loaded_runtime is not None
+    assert loaded_runtime.runtime_status == TargetRuntimeStatus.QUEUED
+    assert loaded_cover is not None
+    assert loaded_cover.last_reported_url == "https://images.example/cover.jpg"
+    assert placements[first.id].sidebar_group_id == group.id
+    assert placements[first.id].sort_order == 3
+    assert "duplicate-target" not in placements
 
 
 def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path) -> None:

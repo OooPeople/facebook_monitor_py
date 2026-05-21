@@ -28,6 +28,7 @@ FailureRuntimeAction = Literal["idle", "will_retry", "error"]
 RETRYABLE_IDLE_FAILURE_REASONS = frozenset(
     {EXTRACTOR_EMPTY_REASON, TARGET_STOPPED_REASON}
 )
+SCHEDULER_CANCEL_IDLE_FAILURE_REASONS = frozenset({"scheduler_stopping"})
 STREAK_RETRY_FAILURE_LIMITS = {
     PAGE_LOAD_TIMEOUT_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit
@@ -67,6 +68,17 @@ def decide_scan_failure(
 
     normalized_reason = str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
     discard_page = source in DISCARD_PAGE_FAILURE_SOURCES
+    if (
+        source == "scheduler_cancel"
+        and normalized_reason in SCHEDULER_CANCEL_IDLE_FAILURE_REASONS
+    ):
+        return ScanFailureDecision(
+            reason=normalized_reason,
+            retryable=True,
+            target_action="idle",
+            runtime_action="idle",
+            discard_page=discard_page,
+        )
     retry_limit = STREAK_RETRY_FAILURE_LIMITS.get(normalized_reason)
     if retry_limit is not None:
         retry_streak = _next_retry_streak(

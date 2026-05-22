@@ -100,9 +100,10 @@ macOS zip 內預期包含：
 
 以下腳本都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。
 
-平台 release build 腳本會依序安裝 PyInstaller、安裝 Playwright Chromium、執行 PyInstaller、建立 release zip / `.sha256`、建立 signed manifest、簽署 `.sig`、執行 artifact validation，最後跑完整 release validation。若只想快速重建 artifact，可加 `--skip-release-validation`。
+平台 release build 腳本會依序安裝 PyInstaller、安裝 Playwright Chromium、執行 PyInstaller、建立 release zip / `.sha256`、建立 signed manifest、簽署 `.sig`、執行 artifact validation，最後跑完整 release validation。若只想快速重建正式 release artifact，可加 `--skip-release-validation`，但仍然需要 release 簽章私鑰，因為 artifact validation 會檢查 signed manifest。
 
-簽章私鑰預設會優先使用 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`；若該檔不存在，`sign_release_manifest.py` 會改讀 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64` 環境變數。
+release build wrapper 會優先使用 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`；若該檔不存在，`sign_release_manifest.py` 會改讀 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64` 環境變數。若直接手動執行 `sign_release_manifest.py`，需明確傳 `--private-key-file docs/local/release-signing/release-ed25519-2026q2.private-key.b64`，或設定上述環境變數。
+若看到 `manifest_private_key_missing`，代表上述檔案與環境變數都不存在；這是私鑰缺失，不是 PyInstaller 或 macOS packaging 失敗。私鑰必須對應 `src/facebook_monitor/updates/trust.py` 內建 trusted public key，否則後續 manifest validation 仍會失敗。
 
 ### Windows
 
@@ -121,6 +122,15 @@ uv run python scripts/admin/build_macos_release.py --force
 ```
 
 macOS spec 會在 `dist/facebook-monitor/` 內建立 `Facebook Monitor.app` native launcher，圖示來自 `packaging/assets/facebook-monitor.png`。若需要手動重建 launcher，可執行 `uv run python scripts/admin/create_macos_app_launcher.py --app-root dist/facebook-monitor`。
+
+若只是要在本機確認 unsigned macOS zip 內容，不要使用上面的正式 release build 腳本；改跑底層步驟並略過 signed manifest：
+
+```bash
+uv run python -m playwright install chromium
+uv run python -m PyInstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean --noconfirm
+uv run python scripts/admin/create_release_zip.py --platform macos-arm64 --force
+uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64
+```
 
 若同一個 release 同時發佈 Windows 與 macOS，可在兩個平台 zip 都已放進同一個 `dist/` 後，用同一份 manifest 帶入多個 `--asset`，再重新簽署 manifest。Windows / macOS artifact 仍應各自在對應平台跑 release artifact validation。
 
@@ -186,9 +196,9 @@ macOS frozen smoke 另需確認：
 - `_internal/browser/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing` 或等效 bundled browser executable 存在且有 executable bit。
 - 隔離 data dir 啟動後 `/health`、首頁與 static assets 正常。
 - `scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest` 通過。
-- `scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor` 通過，且替換後 app、updater 與 bundled browser 仍保留 executable bit。
+- 有 release 簽章私鑰時，`scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor` 通過，且替換後 app、updater 與 bundled browser 仍保留 executable bit。
 
-非互動 updater smoke 可用目前打包產物直接執行：
+非互動 updater smoke 可用目前打包產物直接執行；因為正式 updater 會重驗 signed manifest，此 smoke 也需要 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64` 或 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64`：
 
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\smoke_frozen_updater.py

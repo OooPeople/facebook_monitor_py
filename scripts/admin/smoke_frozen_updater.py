@@ -23,13 +23,20 @@ if str(SRC) not in sys.path:
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
+from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
+from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import missing_required_paths
+from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 from facebook_monitor.updates.validation import has_posix_executable_bit
 from facebook_monitor.version import APP_VERSION
+from scripts.admin._release_build import DEFAULT_KEY_ID
+from scripts.admin._release_build import DEFAULT_PRIVATE_KEY_FILE
+from scripts.admin.create_release_manifest import create_release_manifest
+from scripts.admin.sign_release_manifest import sign_release_manifest
 
 APP_DIR_NAME = "facebook-monitor"
 
@@ -58,6 +65,17 @@ def parse_args() -> argparse.Namespace:
         default=PYTHON_UPDATER_RUNTIME_DEFAULTS.timeout_seconds,
         help="Maximum seconds to wait for the frozen updater process.",
     )
+    parser.add_argument(
+        "--private-key-file",
+        type=Path,
+        default=None,
+        help="Ed25519 private key file. Defaults to docs/local path when present, otherwise env.",
+    )
+    parser.add_argument(
+        "--private-key-b64",
+        default="",
+        help="Base64 raw Ed25519 private key used to sign the smoke manifest.",
+    )
     return parser.parse_args()
 
 
@@ -70,6 +88,8 @@ def main() -> int:
             built_app=args.built_app.resolve(),
             smoke_root=args.smoke_root.resolve(),
             timeout_seconds=float(args.timeout_seconds),
+            private_key_file=args.private_key_file,
+            private_key_b64=str(args.private_key_b64),
         )
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
@@ -83,6 +103,8 @@ def run_smoke(
     built_app: Path,
     smoke_root: Path,
     timeout_seconds: float = PYTHON_UPDATER_RUNTIME_DEFAULTS.timeout_seconds,
+    private_key_file: Path | None = None,
+    private_key_b64: str = "",
 ) -> dict[str, object]:
     """執行 frozen updater smoke 並回傳結構化結果。"""
 
@@ -115,12 +137,22 @@ def run_smoke(
     (data_dir / "app.db").write_text("smoke-user-db", encoding="utf-8")
     (profile_dir / "profile-marker.txt").write_text("smoke-profile", encoding="utf-8")
 
-    zip_path = updates_dir / f"facebook-monitor-{APP_VERSION}-smoke-{layout_policy.platform_key}.zip"
+    artifact_policy = update_artifact_policy_for_key(layout_policy.platform_key)
+    zip_path = updates_dir / artifact_policy.asset_name(APP_VERSION)
     _write_app_zip(new_app, zip_path)
     digest = calculate_sha256(zip_path)
     zip_path.with_name(release_sha256_asset_name(zip_path.name)).write_text(
         render_sha256_sidecar(digest, zip_path.name),
         encoding="ascii",
+    )
+    manifest_path, manifest_signature_path, manifest_sha256, manifest_key_id = (
+        _write_smoke_manifest(
+            updates_dir=updates_dir,
+            zip_path=zip_path,
+            platform_key=artifact_policy.platform_key,
+            private_key_file=private_key_file,
+            private_key_b64=private_key_b64,
+        )
     )
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
@@ -128,6 +160,7 @@ def run_smoke(
             {
                 "schema_version": 1,
                 "version": APP_VERSION,
+                "repository": DEFAULT_UPDATE_REPOSITORY,
                 "asset_name": zip_path.name,
                 "zip_path": str(zip_path),
                 "expected_sha256": digest,
@@ -139,6 +172,10 @@ def run_smoke(
                 "logs_dir": str(logs_dir),
                 "runtime_dir": str(runtime_dir),
                 "created_at": "2026-05-17T00:00:00+00:00",
+                "manifest_path": str(manifest_path),
+                "manifest_signature_path": str(manifest_signature_path),
+                "manifest_sha256": manifest_sha256,
+                "manifest_key_id": manifest_key_id,
             },
             ensure_ascii=False,
             indent=2,
@@ -201,6 +238,8 @@ def run_smoke(
         and not pending_path.exists()
         and not zip_path.exists()
         and not zip_path.with_name(release_sha256_asset_name(zip_path.name)).exists()
+        and not manifest_path.exists()
+        and not manifest_signature_path.exists()
         and all(executable_checks.values())
     )
     return {
@@ -217,12 +256,45 @@ def run_smoke(
         "sha256_removed": not zip_path.with_name(
             release_sha256_asset_name(zip_path.name)
         ).exists(),
+        "manifest_removed": not manifest_path.exists(),
+        "manifest_signature_removed": not manifest_signature_path.exists(),
         "updater_log_contains_applied": (
             "status=applied applied=true message=updated" in updater_log
         ),
         "executable_checks": executable_checks,
         "old_app": str(old_app),
     }
+
+
+def _write_smoke_manifest(
+    *,
+    updates_dir: Path,
+    zip_path: Path,
+    platform_key: str,
+    private_key_file: Path | None,
+    private_key_b64: str,
+) -> tuple[Path, Path, str, str]:
+    """建立 updater smoke 使用的 signed manifest 與 detached signature。"""
+
+    manifest_path = updates_dir / release_manifest_asset_name(APP_VERSION)
+    create_release_manifest(
+        version=APP_VERSION,
+        repository=DEFAULT_UPDATE_REPOSITORY,
+        key_id=DEFAULT_KEY_ID,
+        asset_specs=[f"{platform_key}={zip_path}"],
+        output=manifest_path,
+        force=True,
+    )
+    resolved_private_key_file = private_key_file
+    if resolved_private_key_file is None and DEFAULT_PRIVATE_KEY_FILE.is_file():
+        resolved_private_key_file = DEFAULT_PRIVATE_KEY_FILE
+    signature_path = sign_release_manifest(
+        manifest_path=manifest_path,
+        private_key_b64=private_key_b64,
+        private_key_file=resolved_private_key_file,
+        force=True,
+    )
+    return manifest_path, signature_path, calculate_sha256(manifest_path), DEFAULT_KEY_ID
 
 
 def _validate_smoke_root(smoke_root: Path) -> None:

@@ -10,6 +10,7 @@ label {
 textarea,
 input[type="text"],
 input[type="number"],
+input[type="password"],
 select {
   background: var(--surface-soft);
   border: 1px solid var(--border-soft);
@@ -28,6 +29,7 @@ textarea {
 textarea:focus,
 input[type="text"]:focus,
 input[type="number"]:focus,
+input[type="password"]:focus,
 select:focus {
   background: var(--surface);
   border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
@@ -172,4 +174,40 @@ select:focus {
 .field-caption {
   color: var(--text-soft);
   font-size: 13px;
+}
+
+.secret-input-row {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+}
+
+.secret-input-row [data-secret-input] {
+  border-radius: 10px 0 0 10px;
+}
+
+.secret-input-row [data-secret-input]:only-child {
+  border-radius: 10px;
+}
+
+.secret-clear-button {
+  border-color: var(--border-soft);
+  border-left: 0;
+  border-radius: 0 10px 10px 0;
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 650;
+  min-width: 72px;
+  padding-inline: 12px;
+}
+
+.secret-clear-button:hover,
+.secret-clear-button:focus-visible {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.secret-clear-status {
+  color: var(--danger);
 }

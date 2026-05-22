@@ -11,6 +11,7 @@ import {
 } from "/static/dashboard/utils.js";
 import { csrfHeaders } from "/static/dashboard/csrf.js";
 import { setupConfirmSubmitForms } from "/static/dashboard/dialogs.js";
+import { setupSecretClearButtons } from "/static/dashboard/forms.js";
 import { setupNotificationHelp } from "/static/dashboard/notification_help.js";
 import { setupThemeToggle } from "/static/dashboard/theme.js";
 
@@ -38,6 +39,7 @@ const updateProgressClose = document.querySelector("[data-update-progress-close]
 
 setupThemeToggle();
 setupConfirmSubmitForms();
+setupSecretClearButtons();
 setupNotificationHelp();
 setupScrollRestoration({
   storageKey: "facebook-monitor:settings-scroll",

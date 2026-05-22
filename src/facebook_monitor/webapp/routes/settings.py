@@ -141,6 +141,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             current_settings = app_context.repositories.global_notification_settings.get()
             try:
                 settings = notification_form.to_global_settings(
+                    existing_ntfy_topic=current_settings.ntfy_topic,
                     existing_discord_webhook=current_settings.discord_webhook,
                 )
             except ValueError as exc:
@@ -290,6 +291,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             current_settings = get_global_notification_settings(request)
             config = notification_form.to_target_config(
                 target_id="global-notification-test",
+                existing_ntfy_topic=current_settings.ntfy_topic,
                 existing_discord_webhook=current_settings.discord_webhook,
             )
             results = await run_in_threadpool(

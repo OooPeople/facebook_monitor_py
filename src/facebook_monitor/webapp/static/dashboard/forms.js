@@ -49,6 +49,45 @@ export const setupRefreshFields = () => {
   });
 };
 
+const notifyFieldChanged = (node) => {
+  node?.dispatchEvent(new Event("input", { bubbles: true }));
+  node?.dispatchEvent(new Event("change", { bubbles: true }));
+};
+
+export const setupSecretClearButtons = () => {
+  document.querySelectorAll("[data-secret-field]").forEach((field) => {
+    const input = field.querySelector("[data-secret-input]");
+    const clearInput = field.querySelector("[data-secret-clear-input]");
+    const button = field.querySelector("[data-secret-clear-button]");
+    const status = field.parentElement?.querySelector("[data-secret-clear-status]");
+    if (!input || !clearInput || !button) return;
+
+    const defaultPlaceholder = input.dataset.secretDefaultPlaceholder || "";
+    const clearPlaceholder = input.dataset.secretClearPlaceholder || "保存後將清除";
+    const setClearState = (cleared) => {
+      clearInput.value = cleared ? "on" : "";
+      field.dataset.secretCleared = cleared ? "1" : "0";
+      input.value = "";
+      input.placeholder = cleared ? clearPlaceholder : defaultPlaceholder;
+      button.textContent = cleared ? "取消" : "清除";
+      if (status) {
+        status.hidden = !cleared;
+      }
+      notifyFieldChanged(clearInput);
+      notifyFieldChanged(input);
+    };
+
+    button.addEventListener("click", () => {
+      setClearState(clearInput.value !== "on");
+    });
+    input.addEventListener("input", () => {
+      if (clearInput.value === "on" && input.value.trim()) {
+        setClearState(false);
+      }
+    });
+  });
+};
+
 export const setupFormSubmitTracking = () => {
   document.querySelectorAll("form").forEach((form) => {
     form.addEventListener("submit", () => {

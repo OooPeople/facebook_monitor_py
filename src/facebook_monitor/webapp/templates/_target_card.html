@@ -57,44 +57,6 @@
           <button class="more-menu-action menu-action" type="button" data-rename-target-button>更改名稱</button>
           <form
             method="post"
-            action="/targets/{{ row.target.id }}/data/seen/clear"
-            data-confirm-submit
-            data-confirm-title="清除 seen baseline"
-            data-confirm-message="清除這個 target 的 seen baseline？下一輪會重新建立 baseline，可能暫時抑制通知。"
-            data-confirm-label="清除"
-          >
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="return_to" value="">
-            <button class="more-menu-action menu-action" type="submit">清除 baseline</button>
-          </form>
-          <form
-            method="post"
-            action="/targets/{{ row.target.id }}/data/history/clear"
-            data-confirm-submit
-            data-confirm-title="清除命中紀錄"
-            data-confirm-message="清除這個 target 的命中紀錄？seen baseline 與設定會保留。"
-            data-confirm-label="清除"
-            data-confirm-danger="1"
-          >
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="return_to" value="">
-            <button class="more-menu-action menu-action button--danger" type="submit">清除命中紀錄</button>
-          </form>
-          <form
-            method="post"
-            action="/targets/{{ row.target.id }}/data/notifications/clear"
-            data-confirm-submit
-            data-confirm-title="清除通知資料"
-            data-confirm-message="清除這個 target 的通知事件與 outbox rows？pending 或 failed 通知也會被移除。"
-            data-confirm-label="清除"
-            data-confirm-danger="1"
-          >
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="return_to" value="">
-            <button class="more-menu-action menu-action button--danger" type="submit">清除通知資料</button>
-          </form>
-          <form
-            method="post"
             action="/targets/{{ row.target.id }}/delete"
             data-confirm-submit
             data-confirm-title="刪除 target"

@@ -11,7 +11,7 @@ from facebook_monitor.facebook.sort_controls import SORT_REASON_SORT_CONTROL_NOT
 from facebook_monitor.facebook.sort_controls import SortAdjustResult
 
 
-def _sort_control_absent_without_observed_label(
+def sort_control_absent_without_observed_label(
     sort_adjust_result: SortAdjustResult,
 ) -> bool:
     """辨識頁面沒有排序控制與排序標籤的合法非阻塞狀態。"""
@@ -36,7 +36,7 @@ def should_skip_scan_for_unconfirmed_sort(
         config.auto_adjust_sort
         and not (
             allow_absent_sort_control_without_label
-            and _sort_control_absent_without_observed_label(sort_adjust_result)
+            and sort_control_absent_without_observed_label(sort_adjust_result)
         )
         and sort_adjust_result.after_label != sort_adjust_result.preferred_label
     )

@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import RecordScanRequest
+from facebook_monitor.application.services import TargetConfigPatch
+from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationStatus
@@ -196,11 +198,52 @@ def test_index_keeps_internal_scheduler_and_old_debug_ui_hidden(
 
     assert "背景掃描服務" not in text
     assert "running=1 · queued=0 · slots=2" not in text
-    assert "data-secret-input" not in text
     assert "除錯" not in text
     assert "複製除錯資訊" not in text
     assert "監視中" not in text
     assert "掃描一次" not in text
+
+
+def test_index_masks_saved_notification_secrets_in_target_settings(
+    tmp_path: Path,
+) -> None:
+    """首頁 target 設定 modal 不把已保存 notification secret 原文送到前端。"""
+
+    db_path = tmp_path / "app.db"
+    ntfy_topic = "private-topic"
+    discord_webhook = "https://discord.com/api/webhooks/1234567890/private-token"
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic=ntfy_topic,
+                    enable_discord_notification=True,
+                    discord_webhook=discord_webhook,
+                ),
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            enforce_csrf=False,
+        )
+    )
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert ntfy_topic not in response.text
+    assert discord_webhook not in response.text
+    assert 'name="ntfy_topic" type="text" value=""' in response.text
+    assert 'name="discord_webhook" type="text" value=""' in response.text
+    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in response.text
+    assert 'name="discord_webhook_keep" type="hidden" value="on"' in response.text
+    assert "data-secret-clear-button" in response.text
 
 
 def test_index_renders_target_settings_summary_and_collapse_controls(

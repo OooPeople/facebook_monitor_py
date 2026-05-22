@@ -6,6 +6,7 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.facebook.sort_controls import SORT_REASON_SORT_CONTROL_NOT_FOUND
 from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
+from facebook_monitor.worker.scan_sort_policy import sort_control_absent_without_observed_label
 
 
 def test_should_skip_scan_for_unconfirmed_sort_requires_enabled_auto_adjust() -> None:
@@ -94,6 +95,7 @@ def test_should_skip_scan_for_unconfirmed_sort_allows_absent_sort_control_when_o
         sort_adjust_result=result,
         allow_absent_sort_control_without_label=True,
     )
+    assert sort_control_absent_without_observed_label(result)
 
 
 def test_should_skip_scan_for_unconfirmed_sort_keeps_label_mismatch_guard() -> None:

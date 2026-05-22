@@ -21,9 +21,22 @@
 
 ## 發佈內容
 
+GitHub Release 上傳檔案分成兩層：使用者下載的 app zip，以及 updater / 人工驗證用的 sidecar 檔。一般使用者只需要下載平台 zip；`.sha256`、manifest 與 `.sig` 是自動更新與完整性驗證用。
+
+單一平台 release 至少包含：
+
+```text
+facebook-monitor-{version}-{platform}.zip
+facebook-monitor-{version}-{platform}.zip.sha256
+facebook-monitor-{version}-manifest.json
+facebook-monitor-{version}-manifest.json.sig
+```
+
+其中 `{platform}` 目前是 `windows-portable` 或 `macos-arm64-onedir`。若同一個 GitHub Release 同時發佈 Windows 與 macOS，兩個平台各有自己的 zip / `.sha256`，但共用同一份 manifest / `.sig`；manifest 內需列出兩個平台 asset。
+
 ### Windows
 
-發佈時請發佈整個 portable zip，不要只發佈單一 EXE：
+使用者下載與 updater 套用的主檔是整個 portable zip，不要只發佈單一 EXE：
 
 ```text
 dist\facebook-monitor-{version}-windows-portable.zip
@@ -46,9 +59,11 @@ GitHub Release asset 命名約定：
 ```text
 facebook-monitor-{version}-windows-portable.zip
 facebook-monitor-{version}-windows-portable.zip.sha256
+facebook-monitor-{version}-manifest.json
+facebook-monitor-{version}-manifest.json.sig
 ```
 
-`.sha256` 內容格式：
+Windows `.sha256` 內容格式：
 
 ```text
 {sha256_lowercase_hex}  facebook-monitor-{version}-windows-portable.zip
@@ -59,7 +74,7 @@ rc release 應在 GitHub 勾選 `Set as a pre-release`，避免 GitHub stable re
 
 ### macOS onedir
 
-macOS onedir artifact 需在 macOS build machine 上產出。發佈時同樣要附同名 `.sha256`：
+macOS onedir artifact 需在 macOS build machine 上產出。使用者下載與 updater 套用的主檔同樣要附同名 `.sha256`：
 
 ```text
 dist/facebook-monitor-{version}-macos-arm64-onedir.zip
@@ -79,101 +94,35 @@ macOS zip 內預期包含：
 
 `Facebook Monitor.app` 只是一個 Finder / Dock native launcher 外殼，會啟動同一個 `facebook-monitor/` onedir 內真正的 `facebook-monitor` executable；launcher 會留在 Dock 當母程序，使用者從 Dock Quit 時會終止子程序。若舊版 updater 或 Finder 直接啟動 root `facebook-monitor` binary，新版 frozen launcher 會轉交給 `.app` native launcher，避免 Dock item 消失。updater 替換的 app base dir 仍是這個 onedir 根目錄，不改 Windows 或 macOS updater layout 語義。
 
-目前 macOS frozen Web UI 可檢查、下載、驗證 SHA256，並啟動獨立 updater 在主程式退出後套用新版 onedir。若未做 Developer ID signing / notarization，使用者可能需要右鍵 Open、到系統設定允許，或自行處理 quarantine。
+目前 macOS frozen Web UI 可檢查、下載、驗證 signed manifest / SHA256，並啟動獨立 updater 在主程式退出後套用新版 onedir。若未做 Developer ID signing / notarization，使用者可能需要右鍵 Open、到系統設定允許，或自行處理 quarantine。
 
-## 打包與壓縮最小指令
+## 打包與 Release 指令
 
-以下指令都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。`create_release_zip.py` 是 Windows / macOS 共用的壓縮與 `.sha256` 入口，會先檢查平台必要檔案並拒絕把 `data/`、`profiles/`、`logs/` 等 runtime 私密資料包進 release。`create_release_manifest.py` 與 `sign_release_manifest.py` 則建立 updater 信任鏈所需的 manifest / signature。
+以下腳本都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。
+
+平台 release build 腳本會依序安裝 PyInstaller、安裝 Playwright Chromium、執行 PyInstaller、建立 release zip / `.sha256`、建立 signed manifest、簽署 `.sig`、執行 artifact validation，最後跑完整 release validation。若只想快速重建 artifact，可加 `--skip-release-validation`。
+
+簽章私鑰預設會優先使用 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`；若該檔不存在，`sign_release_manifest.py` 會改讀 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64` 環境變數。
 
 ### Windows
 
-打包 onedir：
+Windows release 在 Windows build machine 上執行：
 
 ```powershell
-.\scripts\uv.ps1 run python -m pip install pyinstaller
-$env:FACEBOOK_MONITOR_BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$env:FACEBOOK_MONITOR_GIT_COMMIT = (git rev-parse --short=12 HEAD)
-$env:FACEBOOK_MONITOR_PACKAGING_MODE = "pyinstaller-onedir-gui-tray"
-.\scripts\uv.ps1 run python -m PyInstaller packaging\pyinstaller\facebook_monitor.spec --clean --noconfirm
-```
-
-壓縮 Windows portable zip 並產生同名 `.sha256`：
-
-```powershell
-.\scripts\uv.ps1 run python scripts\admin\create_release_zip.py --platform windows --force
-```
-
-建立並簽署 Windows signed manifest：
-
-```powershell
-$version = (.\scripts\uv.ps1 run python -c "from facebook_monitor.version import APP_VERSION; print(APP_VERSION)").Trim()
-.\scripts\uv.ps1 run python scripts\admin\create_release_manifest.py --version $version --key-id release-ed25519-2026q2 --asset "windows=dist\facebook-monitor-$version-windows-portable.zip" --output "dist\facebook-monitor-$version-manifest.json" --force
-.\scripts\uv.ps1 run python scripts\admin\sign_release_manifest.py "dist\facebook-monitor-$version-manifest.json" --private-key-file docs\local\release-signing\release-ed25519-2026q2.private-key.b64 --force
+.\scripts\uv.ps1 run python scripts\admin\build_windows_release.py --force
 ```
 
 ### macOS onedir
 
-macOS build 必須在 macOS 上執行。若要使用 bundled Chromium，先安裝 Playwright Chromium，或用 `FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR` 指到含 `Chromium.app` 的資料夾：
-
-打包 onedir：
+macOS release 必須在 macOS build machine 上執行。若要使用 bundled Chromium，先安裝 Playwright Chromium，或用 `FACEBOOK_MONITOR_BUNDLED_CHROMIUM_DIR` 指到含 `Chromium.app` 的資料夾。macOS spec 只能在 macOS 上 build；artifact validation 也需要 macOS 產出的 arm64 Mach-O、POSIX executable bit 與 `.app` layout，Windows 上不能完整驗證這條路徑。
 
 ```bash
-uv run python -m pip install pyinstaller
-uv run playwright install chromium
-export FACEBOOK_MONITOR_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export FACEBOOK_MONITOR_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
-uv run python -m PyInstaller packaging/pyinstaller/facebook_monitor_macos.spec --clean --noconfirm
+uv run python scripts/admin/build_macos_release.py --force
 ```
 
-macOS spec 會在 `dist/facebook-monitor/` 內建立 `Facebook Monitor.app` native launcher，圖示來自 `packaging/assets/facebook-monitor.png`。若需要手動重建 launcher，可執行：
+macOS spec 會在 `dist/facebook-monitor/` 內建立 `Facebook Monitor.app` native launcher，圖示來自 `packaging/assets/facebook-monitor.png`。若需要手動重建 launcher，可執行 `uv run python scripts/admin/create_macos_app_launcher.py --app-root dist/facebook-monitor`。
 
-```bash
-uv run python scripts/admin/create_macos_app_launcher.py --app-root dist/facebook-monitor
-```
-
-壓縮 macOS portable zip 並產生同名 `.sha256`。共用 zip builder 會先確認已知 executable 是 arm64 Mach-O，並保留 executable bit 與 POSIX symlink，避免一般 zip 工具遺失權限：
-
-```bash
-uv run python scripts/admin/create_release_zip.py --platform macos-arm64 --force
-```
-
-若同一個 release 同時發佈 Windows 與 macOS，可用同一份 manifest 帶入多個 `--asset`。
-
-## 驗證指令
-
-驗證目前版本的 Windows artifact：
-
-```powershell
-.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --require-manifest
-```
-
-驗證目前版本的 Windows artifact，並確認 GitHub tag 語義：
-
-```powershell
-$version = (.\scripts\uv.ps1 run python -c "from facebook_monitor.version import APP_VERSION; print(APP_VERSION)").Trim()
-.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --require-manifest --expected-tag "v$version"
-```
-
-驗證 macOS Apple Silicon artifact：
-
-```bash
-uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest
-```
-
-完整 release 驗證：
-
-```powershell
-.\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts
-.\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts --artifact-platform macos-arm64
-```
-
-若已取得正式 code signing 憑證並完成簽章，可加上 signer subject 檢查：
-
-```powershell
-.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --expected-signer-subject "Your Publisher Name"
-```
-
-macOS artifact validation 會驗證 artifact 形狀、完整性、私密 runtime data、macOS executable bit 與 app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O；runtime 套用能力與 symlink 保留仍需搭配 frozen updater smoke。
+若同一個 release 同時發佈 Windows 與 macOS，可在兩個平台 zip 都已放進同一個 `dist/` 後，用同一份 manifest 帶入多個 `--asset`，再重新簽署 manifest。Windows / macOS artifact 仍應各自在對應平台跑 release artifact validation。
 
 ## Windows Tray
 
@@ -236,7 +185,7 @@ macOS frozen smoke 另需確認：
 - `dist/facebook-monitor/Facebook Monitor.app` 存在，Finder 開啟時不跳 Terminal，執行期間持續顯示在 Dock，從 Dock Quit 可關閉主程式。
 - `_internal/browser/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing` 或等效 bundled browser executable 存在且有 executable bit。
 - 隔離 data dir 啟動後 `/health`、首頁與 static assets 正常。
-- `scripts/admin/release_artifact_validation.py --platform macos-arm64` 通過。
+- `scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest` 通過。
 - `scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor` 通過，且替換後 app、updater 與 bundled browser 仍保留 executable bit。
 
 非互動 updater smoke 可用目前打包產物直接執行：

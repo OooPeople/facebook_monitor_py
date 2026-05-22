@@ -62,6 +62,38 @@ def test_dirty_form_helper_uses_form_elements_for_external_form_controls() -> No
     ).read_text(encoding="utf-8")
 
 
+def test_masked_secret_clear_buttons_are_loaded_by_form_pages() -> None:
+    """notification secret 清除按鈕必須接到正式頁面入口與 dirty state。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    forms_js = (dashboard_dir / "forms.js").read_text(encoding="utf-8")
+    forms_css = Path("src/facebook_monitor/webapp/static/styles/forms.css").read_text(
+        encoding="utf-8"
+    )
+    notification_fields = Path(
+        "src/facebook_monitor/webapp/templates/_notification_settings_fields.html"
+    ).read_text(encoding="utf-8")
+
+    assert "export const setupSecretClearButtons" in forms_js
+    assert "[data-secret-clear-button]" in forms_js
+    assert "data-secret-clear-input" in notification_fields
+    assert "name=\"clear_ntfy_topic\"" in notification_fields
+    assert "name=\"clear_discord_webhook\"" in notification_fields
+    assert 'name="ntfy_topic" type="text"' in notification_fields
+    assert 'name="discord_webhook" type="text"' in notification_fields
+    assert 'name="ntfy_topic" type="password"' not in notification_fields
+    assert 'name="discord_webhook" type="password"' not in notification_fields
+    assert "清除已保存 Discord webhook" not in notification_fields
+    assert ".secret-input-row [data-secret-input]" in forms_css
+    clear_button_rule = forms_css.split(".secret-clear-button {", 1)[1].split("}", 1)[0]
+    assert "color: var(--text);" in clear_button_rule
+    assert "color: var(--danger);" not in clear_button_rule
+    for filename in ("main.js", "settings.js", "new_target.js"):
+        text = (dashboard_dir / filename).read_text(encoding="utf-8")
+        assert '"/static/dashboard/forms.js"' in text
+        assert "setupSecretClearButtons();" in text
+
+
 def test_clear_feedback_params_removes_stable_feedback_code() -> None:
     """one-shot feedback code 顯示後需從 URL 清除，避免 reload 重播舊提示。"""
 
@@ -820,6 +852,11 @@ def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
     ).read_text(encoding="utf-8")
 
     assert "data-scan-diagnostics-button" in card_template
+    assert "data-rename-target-button" in card_template
+    assert ">刪除</button>" in card_template
+    assert "清除 baseline" not in card_template
+    assert "清除命中紀錄" not in card_template
+    assert "清除通知資料" not in card_template
     assert "data-scan-diagnostics-modal" in card_template
     assert 'class="settings-modal scan-diagnostics-modal"' in card_template
     assert 'class="settings-modal scan-diagnostics-modal scan-debug-details"' not in card_template
@@ -980,8 +1017,12 @@ def test_target_settings_modal_attaches_controls_to_config_form() -> None:
         "enable_desktop_notification",
         "enable_ntfy",
         "ntfy_topic",
+        "ntfy_topic_keep",
+        "clear_ntfy_topic",
         "enable_discord_notification",
         "discord_webhook",
+        "discord_webhook_keep",
+        "clear_discord_webhook",
     ):
         tags = _input_tags(notification_fields, field_name)
         assert tags

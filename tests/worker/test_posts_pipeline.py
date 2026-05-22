@@ -275,6 +275,27 @@ class SeenStopFakePage(FakePage):
         return super().evaluate(script, *args)
 
 
+class MissingSortControlSeenStopFakePage(SeenStopFakePage):
+    """模擬找不到排序控制但仍應保留 posts seen-stop 的社團 feed。"""
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """找不到排序控制時仍應允許 seen-stop 提早停止深度掃描。"""
+
+        if "preferredLabel" in script and "sort_control_not_found" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": False,
+                "changed": False,
+                "preferredLabel": "新貼文",
+                "beforeLabel": "",
+                "afterLabel": "",
+                "reason": "sort_control_not_found",
+                "mutationSuppressionMs": 0,
+                "mutationSuppressionReason": "",
+            }
+        return super().evaluate(script, *args)
+
+
 def build_post_payload(post_id: str, text: str) -> dict[str, Any]:
     """建立 posts pipeline 測試用 payload。"""
 
@@ -559,6 +580,53 @@ def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
         assert latest_scan.metadata["collected_meta"]["seenStopThreshold"] == 4
         assert latest_scan.metadata["collected_meta"]["seenStopSeenCount"] == 4
         assert latest_scan.metadata["collected_meta"]["seenStopNewCount"] == 0
+
+
+def test_scan_posts_page_keeps_seen_stop_when_sort_control_is_absent(
+    tmp_path: Path,
+) -> None:
+    """posts 找不到排序控制但已放行掃描時，仍保留 seen-stop 防止深度掃描。"""
+
+    db_path = tmp_path / "app.db"
+    fake_page = MissingSortControlSeenStopFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=10,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        for payload in fake_page.items[:4]:
+            mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=fake_page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=5,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+        assert fake_page.sort_adjusted
+        assert summary.item_count == 4
+        assert summary.new_count == 0
+        assert fake_page.scroll_count == 0
+        assert latest_scan is not None
+        assert latest_scan.metadata["stop_reason"] == "seen_stop_consecutive_seen"
+        assert latest_scan.metadata["sort_adjust"]["reason"] == "sort_control_not_found"
+        assert latest_scan.metadata["collected_meta"]["seenStopEnabled"] is True
+        assert latest_scan.metadata["collected_meta"]["seenStopTriggered"] is True
 
 
 def test_seen_stop_latest_scan_snapshot_carries_previous_items_to_target_count(

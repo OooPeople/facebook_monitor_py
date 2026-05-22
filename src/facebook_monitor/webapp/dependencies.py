@@ -21,6 +21,7 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_profile
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
@@ -238,7 +239,8 @@ def redirect_with_error(error: str, *, return_to: str = "") -> RedirectResponse:
     """回到首頁並帶上錯誤訊息。"""
 
     return RedirectResponse(
-        f"/?{urlencode({'error': error})}{normalize_return_fragment(return_to)}",
+        f"/?{urlencode({'error': redact_sensitive_text(error)})}"
+        f"{normalize_return_fragment(return_to)}",
         status_code=303,
     )
 
@@ -258,7 +260,10 @@ def normalize_return_fragment(value: str) -> str:
 def redirect_new_target_with_error(error: str) -> RedirectResponse:
     """回到新增頁並帶上錯誤訊息。"""
 
-    return RedirectResponse(f"/targets/new?{urlencode({'error': error})}", status_code=303)
+    return RedirectResponse(
+        f"/targets/new?{urlencode({'error': redact_sensitive_text(error)})}",
+        status_code=303,
+    )
 
 
 def redirect_new_target_with_message(message: str) -> RedirectResponse:
@@ -279,7 +284,10 @@ def redirect_settings_with_message(message: str, *, feedback: str = "") -> Redir
 def redirect_settings_with_error(error: str) -> RedirectResponse:
     """回到設定頁並帶上錯誤訊息。"""
 
-    return RedirectResponse(f"/settings?{urlencode({'error': error})}", status_code=303)
+    return RedirectResponse(
+        f"/settings?{urlencode({'error': redact_sensitive_text(error)})}",
+        status_code=303,
+    )
 
 
 def build_feedback_query(message: str, feedback: str = "") -> dict[str, str]:

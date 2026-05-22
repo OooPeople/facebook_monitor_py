@@ -12,14 +12,21 @@ from fastapi import Form
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.notification_admin import load_notification_outbox_health
+from facebook_monitor.application.notification_admin import retry_failed_notifications
+from facebook_monitor.application.update_flow import download_and_launch_verified_update
+from facebook_monitor.application.update_flow import download_verified_update
+from facebook_monitor.application.update_flow import launch_verified_update
+from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_notification_event_message
-from facebook_monitor.core.user_messages import format_update_reason_message
+from facebook_monitor.diagnostics.support_bundle import create_support_bundle
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
@@ -50,6 +57,7 @@ from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
+from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import NotificationConfigForm
 from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
@@ -75,11 +83,13 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         update_check = build_idle_update_check(
             current_version=metadata.app_version,
             channel="stable",
+            allow_env_repository_override=not metadata.frozen,
         )
         if request.query_params.get("update_check") == "1":
             update_check = await check_github_release_updates(
                 current_version=metadata.app_version,
                 channel="stable",
+                allow_env_repository_override=not metadata.frozen,
             )
         return templates.TemplateResponse(
             request,
@@ -92,6 +102,9 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "notification_settings": get_global_notification_settings(request),
                 "target_keyword_defaults": get_target_keyword_defaults(request),
                 "runtime_diagnostics": build_runtime_diagnostics_view(request.app.state),
+                "notification_outbox_health": load_notification_outbox_health(
+                    get_db_path(request)
+                ),
                 "update_check": update_check,
                 "update_download_supported": update_capability.download_supported,
                 "update_apply_supported": update_capability.apply_supported,
@@ -123,8 +136,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """更新 Web UI 通知預設值。"""
 
-        settings = notification_form.to_global_settings()
         with SqliteApplicationContext(get_db_path(request)) as app_context:
+            current_settings = app_context.repositories.global_notification_settings.get()
+            try:
+                settings = notification_form.to_global_settings(
+                    existing_discord_webhook=current_settings.discord_webhook,
+                )
+            except ValueError as exc:
+                return redirect_settings_with_error(format_notification_form_error(exc))
             app_context.repositories.global_notification_settings.save(settings)
         return redirect_settings_with_message(
             "通知預設值已保存",
@@ -139,6 +158,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """更新新增 target 時套用的關鍵字預設值。"""
 
+        try:
+            parse_limited_keywords_text(exclude_keywords, field_label="排除關鍵字預設")
+            parse_limited_keywords_text(
+                exclude_ignore_phrases,
+                field_label="排除字忽略片語預設",
+            )
+        except ValueError as exc:
+            return redirect_settings_with_error(str(exc))
         settings = TargetKeywordDefaultSettings(
             exclude_keywords_text=exclude_keywords,
             exclude_ignore_phrases_text=exclude_ignore_phrases,
@@ -165,46 +192,20 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_settings_with_error(
                 update_capability.unsupported_reason
             )
-        update_check = await check_github_release_updates(
+        outcome = await download_verified_update(
             current_version=metadata.app_version,
-            channel="stable",
+            paths=paths,
+            update_capability=update_capability,
+            allow_env_repository_override=not metadata.frozen,
+            check_updates=check_github_release_updates,
+            download_update=download_and_verify_update,
+            reveal_file_manager=reveal_in_file_manager,
+            write_pending_update=write_pending_update,
+            reveal_download=True,
         )
-        if not update_check.update_available:
-            reason = format_update_reason_message(
-                update_check.failure_reason or update_check.status
-            )
-            return redirect_settings_with_error(f"沒有可下載的更新：{reason}")
-        result = await download_and_verify_update(
-            update_check=update_check,
-            updates_dir=paths.updates_dir,
-        )
-        if not result.verified:
-            return redirect_settings_with_error(
-                "更新下載或驗證失敗："
-                + format_update_reason_message(result.failure_reason)
-            )
-        file_path = result.file_path
-        opened = reveal_in_file_manager(file_path) if file_path is not None else False
-        suffix = "，已開啟下載資料夾" if opened else ""
-        if not update_capability.apply_supported:
-            return redirect_settings_with_message(
-                "更新下載完成並已驗證；此平台目前尚不支援自動套用，"
-                f"請手動解壓新版 zip 後啟動{suffix}"
-            )
-        try:
-            write_pending_update(
-                update_check=update_check,
-                download_result=result,
-                paths=paths,
-            )
-        except ValueError as exc:
-            return redirect_settings_with_error(
-                "更新交接檔建立失敗：" + format_failure_message_text(str(exc))
-            )
-        return redirect_settings_with_message(
-            "更新下載完成並已驗證；已建立交接檔："
-            f"{pending_update_path(paths.runtime_dir)}{suffix}"
-        )
+        if not outcome.ok:
+            return redirect_settings_with_error(outcome.message)
+        return redirect_settings_with_message(outcome.message)
 
     @app.post("/settings/updates/apply")
     async def apply_update(request: Request) -> RedirectResponse:
@@ -219,19 +220,15 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         )
         if not update_capability.apply_supported:
             return redirect_settings_with_error(update_capability.unsupported_reason)
-        result = launch_temp_updater(paths=paths)
-        if not result.launched:
-            return redirect_settings_with_error(
-                "無法啟動更新器：" + format_update_reason_message(result.message)
-            )
-        shutdown_requested = _request_app_shutdown(request)
-        if shutdown_requested:
-            return redirect_settings_with_message(
-                "更新器已啟動，程式即將關閉並套用更新"
-            )
-        return redirect_settings_with_message(
-            "更新器已啟動；請從右下角 tray 選單完整退出程式後套用更新"
+        outcome = launch_verified_update(
+            paths=paths,
+            update_capability=update_capability,
+            launch_updater=launch_temp_updater,
+            request_shutdown=lambda: _request_app_shutdown(request),
         )
+        if not outcome.ok:
+            return redirect_settings_with_error(outcome.message)
+        return redirect_settings_with_message(outcome.message)
 
     @app.post("/settings/updates/download-and-apply")
     async def download_and_apply_update(request: Request) -> JSONResponse:
@@ -246,53 +243,26 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         )
         if not update_capability.apply_supported:
             return _update_json_error(update_capability.unsupported_reason, stage="environment")
-        update_check = await check_github_release_updates(
+        outcome = await download_and_launch_verified_update(
             current_version=metadata.app_version,
-            channel="stable",
+            paths=paths,
+            update_capability=update_capability,
+            allow_env_repository_override=not metadata.frozen,
+            check_updates=check_github_release_updates,
+            download_update=download_and_verify_update,
+            write_pending_update=write_pending_update,
+            launch_updater=launch_temp_updater,
+            request_shutdown=lambda: _request_app_shutdown(request),
         )
-        if not update_check.update_available:
-            reason = format_update_reason_message(
-                update_check.failure_reason or update_check.status
-            )
-            return _update_json_error(f"沒有可下載的更新：{reason}", stage="check")
-        result = await download_and_verify_update(
-            update_check=update_check,
-            updates_dir=paths.updates_dir,
-        )
-        if not result.verified:
-            return _update_json_error(
-                "更新下載或驗證失敗："
-                + format_update_reason_message(result.failure_reason),
-                stage="download",
-            )
-        try:
-            write_pending_update(
-                update_check=update_check,
-                download_result=result,
-                paths=paths,
-            )
-        except ValueError as exc:
-            return _update_json_error(
-                "更新交接檔建立失敗：" + format_failure_message_text(str(exc)),
-                stage="handoff",
-            )
-        launch_result = launch_temp_updater(paths=paths)
-        if not launch_result.launched:
-            return _update_json_error(
-                "無法啟動更新器：" + format_update_reason_message(launch_result.message),
-                stage="launch",
-            )
-        shutdown_requested = _request_app_shutdown(request)
-        message = "更新器已啟動，程式即將關閉並套用更新"
-        if not shutdown_requested:
-            message = "更新器已啟動；請從右下角 tray 選單完整退出程式後套用更新"
+        if not outcome.ok:
+            return _update_json_error(outcome.message, stage=outcome.stage)
         return JSONResponse(
             {
                 "ok": True,
-                "stage": "launched",
-                "message": message,
-                "latest_version": update_check.latest_version,
-                "shutdown_requested": shutdown_requested,
+                "stage": outcome.stage,
+                "message": outcome.message,
+                "latest_version": outcome.latest_version,
+                "shutdown_requested": outcome.shutdown_requested,
             }
         )
 
@@ -315,14 +285,22 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """依 settings 頁目前表單欄位送出一則測試通知，不保存設定。"""
 
-        config = notification_form.to_target_config(target_id="global-notification-test")
         try:
+            current_settings = get_global_notification_settings(request)
+            config = notification_form.to_target_config(
+                target_id="global-notification-test",
+                existing_discord_webhook=current_settings.discord_webhook,
+            )
             results = await run_in_threadpool(
                 send_manual_test_notification,
                 config=config,
                 ntfy_sender=get_ntfy_sender(request),
                 desktop_sender=get_desktop_sender(request),
                 discord_sender=get_discord_sender(request),
+            )
+        except ValueError as exc:
+            return redirect_settings_with_error(
+                "測試通知失敗：" + format_notification_form_error(exc)
             )
         except Exception as exc:
             return redirect_settings_with_error(
@@ -336,6 +314,59 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             for result in results
         ]
         return redirect_settings_with_message("測試通知結果：" + " / ".join(localized_results))
+
+    @app.post("/settings/notifications/retry-failed")
+    async def retry_failed_notification_outbox_route(request: Request) -> RedirectResponse:
+        """手動重試 failed notification outbox rows。"""
+
+        try:
+            dispatched_count = await run_in_threadpool(
+                retry_failed_notifications,
+                db_path=get_db_path(request),
+                ntfy_sender=get_ntfy_sender(request),
+                desktop_sender=get_desktop_sender(request),
+                discord_sender=get_discord_sender(request),
+            )
+        except Exception as exc:
+            return redirect_settings_with_error(
+                "重試通知失敗："
+                + format_notification_event_message(
+                    safe_exception_message("notification_retry_failed", exc)
+                )
+            )
+        return redirect_settings_with_message(
+            f"已重試 failed 通知 {dispatched_count} 筆",
+            feedback="notification_retry_finished",
+        )
+
+    @app.post("/settings/support-bundle")
+    async def download_support_bundle(request: Request) -> object:
+        """建立並下載 redacted support bundle。"""
+
+        try:
+            paths = get_runtime_paths(request)
+            metadata = collect_build_metadata(asset_version=ASSET_VERSION)
+            diagnostics = build_runtime_diagnostics_view(request.app.state)
+            result = await run_in_threadpool(
+                create_support_bundle,
+                paths=paths,
+                runtime_diagnostics_text=diagnostics.copy_text,
+                app_metadata={
+                    "app_version": metadata.app_version,
+                    "asset_version": metadata.asset_version,
+                    "packaging_mode": metadata.packaging_mode,
+                    "python_version": metadata.python_version,
+                },
+            )
+        except Exception as exc:
+            return redirect_settings_with_error(
+                "支援診斷包建立失敗：" + format_failure_message_text(str(exc))
+            )
+        return FileResponse(
+            result.path,
+            media_type="application/zip",
+            filename=result.filename,
+        )
 
     @app.post("/settings/facebook/open")
     async def open_facebook_profile(request: Request) -> RedirectResponse:

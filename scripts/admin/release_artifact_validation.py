@@ -27,6 +27,9 @@ from facebook_monitor.updates.artifacts import RELEASE_ARCHIVE_ROOT_NAME
 from facebook_monitor.updates.artifacts import UPDATE_ARTIFACT_POLICIES
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
+from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
 from facebook_monitor.updates.platforms import WINDOWS_LAYOUT_POLICY
 from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
@@ -48,6 +51,7 @@ from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
+from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 from facebook_monitor.version import APP_VERSION
 from scripts.admin.windows_version_resource import windows_file_version
 from scripts.admin.windows_version_resource import windows_version_tuple
@@ -166,6 +170,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional GitHub tag expected for this artifact, for example v0.2.0.",
     )
+    parser.add_argument(
+        "--require-manifest",
+        action="store_true",
+        help="Require and verify signed release manifest plus detached signature.",
+    )
     return parser.parse_args()
 
 
@@ -176,6 +185,7 @@ def validate_release_artifacts(
     platform_name: str = "windows",
     expected_signer_subject: str = "",
     expected_tag: str = "",
+    require_manifest: bool = False,
 ) -> ArtifactValidationResult:
     """驗證 release zip、SHA256、version metadata 與必要內容。"""
 
@@ -203,6 +213,15 @@ def validate_release_artifacts(
         _validate_macos_zip_contents(zip_path, version, messages)
     if zip_path.is_file() and sha_path.is_file():
         _validate_sha256(zip_path, sha_path, messages)
+    if require_manifest:
+        _validate_signed_manifest(
+            version=version,
+            dist_dir=dist_dir,
+            zip_path=zip_path,
+            zip_name=zip_name,
+            platform_key=normalized_platform,
+            messages=messages,
+        )
 
     if messages:
         return ArtifactValidationResult(ok=False, messages=tuple(messages))
@@ -507,6 +526,42 @@ def _validate_sha256(zip_path: Path, sha_path: Path, messages: list[str]) -> Non
         )
 
 
+def _validate_signed_manifest(
+    *,
+    version: str,
+    dist_dir: Path,
+    zip_path: Path,
+    zip_name: str,
+    platform_key: str,
+    messages: list[str],
+) -> None:
+    """驗證 release signed manifest、detached signature 與 zip metadata 一致。"""
+
+    manifest_path = dist_dir / release_manifest_asset_name(version)
+    signature_path = dist_dir / release_manifest_signature_asset_name(version)
+    _require_file(manifest_path, messages)
+    _require_file(signature_path, messages)
+    if not manifest_path.is_file() or not signature_path.is_file() or not zip_path.is_file():
+        return
+    try:
+        verified = verify_release_manifest(
+            manifest_bytes=manifest_path.read_bytes(),
+            signature_bytes=signature_path.read_bytes(),
+            expected_version=version,
+            expected_repository=DEFAULT_UPDATE_REPOSITORY,
+            expected_asset_name=zip_name,
+            expected_platform=platform_key,
+        )
+    except ValueError as exc:
+        messages.append(f"signed manifest invalid: {exc}")
+        return
+    actual_sha256 = calculate_sha256(zip_path)
+    if verified.asset.sha256 != actual_sha256:
+        messages.append("signed manifest sha256 does not match release zip")
+    if verified.asset.size != zip_path.stat().st_size:
+        messages.append("signed manifest size does not match release zip")
+
+
 def _validate_exe_version(
     exe_path: Path,
     version: str,
@@ -645,6 +700,7 @@ def main() -> int:
         platform_name=str(args.platform),
         expected_signer_subject=str(args.expected_signer_subject),
         expected_tag=str(args.expected_tag),
+        require_manifest=bool(args.require_manifest),
     )
     for message in result.messages:
         print(message)

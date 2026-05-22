@@ -1,0 +1,82 @@
+"""通知 outbox 管理 use case。
+
+職責：提供 settings 頁需要的 outbox 健康摘要與手動 retry，不改變一般
+scan commit 後自動 dispatch pending 的主流程。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.user_messages import format_notification_event_message
+from facebook_monitor.notifications.channel_dispatch import DesktopSender
+from facebook_monitor.notifications.channel_dispatch import DiscordSender
+from facebook_monitor.notifications.channel_dispatch import NtfySender
+from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
+
+
+@dataclass(frozen=True)
+class NotificationOutboxHealth:
+    """保存 settings 頁顯示的通知 outbox 健康摘要。"""
+
+    pending_count: int
+    processing_count: int
+    failed_count: int
+    terminal_count: int
+    max_attempts: int
+    last_failure_channel: str = ""
+    last_failure_reason: str = ""
+
+    @property
+    def has_failed(self) -> bool:
+        """回傳目前是否有 failed outbox rows。"""
+
+        return self.failed_count > 0
+
+    @property
+    def summary_label(self) -> str:
+        """回傳 settings 頁低干擾摘要文字。"""
+
+        return (
+            f"待送 {self.pending_count}，處理中 {self.processing_count}，"
+            f"失敗 {self.failed_count}，已結束 {self.terminal_count}"
+        )
+
+
+def load_notification_outbox_health(db_path: Path) -> NotificationOutboxHealth:
+    """讀取全域通知 outbox 健康摘要。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        summary = app_context.repositories.notification_outbox.summarize_all()
+        latest_failed = app_context.repositories.notification_outbox.latest_failed()
+    return NotificationOutboxHealth(
+        pending_count=summary.pending_count,
+        processing_count=summary.processing_count,
+        failed_count=summary.failed_count,
+        terminal_count=summary.terminal_count,
+        max_attempts=summary.max_attempts,
+        last_failure_channel=latest_failed.channel.value if latest_failed else "",
+        last_failure_reason=format_notification_event_message(latest_failed.last_error)
+        if latest_failed
+        else "",
+    )
+
+
+def retry_failed_notifications(
+    *,
+    db_path: Path,
+    ntfy_sender: NtfySender,
+    desktop_sender: DesktopSender,
+    discord_sender: DiscordSender,
+) -> int:
+    """手動重試 failed outbox rows，回傳本次嘗試派送筆數。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        return retry_failed_notification_outbox(
+            app=app_context,
+            ntfy_sender=ntfy_sender,
+            desktop_sender=desktop_sender,
+            discord_sender=discord_sender,
+        )

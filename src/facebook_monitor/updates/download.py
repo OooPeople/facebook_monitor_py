@@ -1,12 +1,14 @@
-"""更新檔下載與 SHA256 驗證。
+"""更新檔下載、signed manifest 與 SHA256 驗證。
 
 職責：將已知 GitHub Release asset 下載到 runtime data dir 底下，
-並用對應 SHA256 asset 驗證完整性。此模組不解壓、不替換程式檔、
-也不嘗試關閉或重啟主程式。
+先驗 signed manifest，再用 manifest hash 驗證 zip 完整性。SHA256
+sidecar 只作相容與交叉檢查。此模組不解壓、不替換程式檔，也不嘗試
+關閉或重啟主程式。
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
@@ -16,10 +18,15 @@ from typing import AsyncIterator
 import httpx
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
+from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.checksum import HASH_CHUNK_SIZE
 from facebook_monitor.updates.checksum import calculate_sha256 as _calculate_sha256
 from facebook_monitor.updates.checksum import read_sha256_sidecar
+from facebook_monitor.updates.download_url_policy import validate_final_release_download_url
+from facebook_monitor.updates.download_url_policy import validate_initial_release_download_url
+from facebook_monitor.updates.manifest import VerifiedReleaseManifest
+from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
 from facebook_monitor.updates.validation import is_reparse_or_symlink
@@ -28,6 +35,8 @@ from facebook_monitor.updates.validation import is_reparse_or_symlink
 DOWNLOAD_CHUNK_SIZE = HASH_CHUNK_SIZE
 MAX_UPDATE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 MAX_SHA256_DOWNLOAD_BYTES = 1024 * 1024
+MAX_MANIFEST_DOWNLOAD_BYTES = 1024 * 1024
+MAX_MANIFEST_SIGNATURE_DOWNLOAD_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,10 @@ class UpdateDownloadResult:
     expected_sha256: str
     actual_sha256: str
     failure_reason: str
+    manifest_path: Path | None = None
+    manifest_signature_path: Path | None = None
+    manifest_sha256: str = ""
+    manifest_key_id: str = ""
 
 
 async def download_and_verify_update(
@@ -52,38 +65,85 @@ async def download_and_verify_update(
     transport: httpx.AsyncBaseTransport | None = None,
     max_asset_bytes: int = MAX_UPDATE_DOWNLOAD_BYTES,
     max_sha256_bytes: int = MAX_SHA256_DOWNLOAD_BYTES,
+    trusted_public_keys: Mapping[str, str] | None = None,
 ) -> UpdateDownloadResult:
-    """下載更新 zip 與 SHA256 asset，驗證通過後保留於 updates dir。"""
+    """下載更新 zip 與 signed manifest，驗證通過後保留於 updates dir。"""
 
     if not update_check.update_available or not update_check.asset_name:
         return _failure("update_not_available")
     if not update_check.asset_download_url:
         return _failure("asset_download_url_missing")
-    if not update_check.sha256_asset_name:
-        return _failure("sha256_asset_missing")
-    if not update_check.sha256_asset_download_url:
-        return _failure("sha256_asset_url_missing")
+    if not update_check.manifest_asset_name:
+        return _failure("manifest_file_missing")
+    if not update_check.manifest_asset_download_url:
+        return _failure("manifest_asset_url_missing")
+    if not update_check.manifest_signature_asset_name:
+        return _failure("manifest_signature_asset_missing")
+    if not update_check.manifest_signature_asset_download_url:
+        return _failure("manifest_signature_asset_url_missing")
     try:
         asset_name = sanitize_release_asset_name(update_check.asset_name)
-        sha256_name = sanitize_release_asset_name(update_check.sha256_asset_name)
+        sha256_name = (
+            sanitize_release_asset_name(update_check.sha256_asset_name)
+            if update_check.sha256_asset_name
+            else ""
+        )
+        manifest_name = sanitize_release_asset_name(update_check.manifest_asset_name)
+        manifest_signature_name = sanitize_release_asset_name(
+            update_check.manifest_signature_asset_name
+        )
         version_dir_name = sanitize_release_asset_name(update_check.latest_version)
         updates_root = Path(updates_dir).expanduser().absolute()
         destination_dir = updates_root / version_dir_name
         file_path = destination_dir / asset_name
-        sha256_path = destination_dir / sha256_name
+        sha256_path = destination_dir / sha256_name if sha256_name else None
+        manifest_path = destination_dir / manifest_name
+        manifest_signature_path = destination_dir / manifest_signature_name
         staged_file_path = _staging_destination(file_path)
-        staged_sha256_path = _staging_destination(sha256_path)
+        staged_sha256_path = _staging_destination(sha256_path) if sha256_path else None
+        staged_manifest_path = _staging_destination(manifest_path)
+        staged_manifest_signature_path = _staging_destination(manifest_signature_path)
+        validate_initial_release_download_url(
+            update_check.asset_download_url,
+            expected_asset_name=asset_name,
+            repository=update_check.repository,
+        )
+        validate_initial_release_download_url(
+            update_check.manifest_asset_download_url,
+            expected_asset_name=manifest_name,
+            repository=update_check.repository,
+        )
+        validate_initial_release_download_url(
+            update_check.manifest_signature_asset_download_url,
+            expected_asset_name=manifest_signature_name,
+            repository=update_check.repository,
+        )
+        if sha256_name:
+            if not update_check.sha256_asset_download_url:
+                return _failure("sha256_asset_url_missing")
+            validate_initial_release_download_url(
+                update_check.sha256_asset_download_url,
+                expected_asset_name=sha256_name,
+                repository=update_check.repository,
+            )
         ensure_child_path(updates_root, destination_dir)
         ensure_safe_download_path(destination_dir, updates_root=updates_root)
     except ValueError as exc:
         return _failure(str(exc))
     try:
         _prepare_destination_dir(destination_dir, updates_root=updates_root)
-        _prepare_download_destinations(
+        destinations = [
             file_path,
-            sha256_path,
             staged_file_path,
-            staged_sha256_path,
+            manifest_path,
+            manifest_signature_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+        ]
+        if sha256_path is not None and staged_sha256_path is not None:
+            destinations.extend([sha256_path, staged_sha256_path])
+        _prepare_download_destinations(
+            *destinations,
             updates_root=updates_root,
         )
         async with httpx.AsyncClient(
@@ -93,27 +153,61 @@ async def download_and_verify_update(
         ) as client:
             await _download_file(
                 client=client,
+                url=update_check.manifest_asset_download_url,
+                destination=staged_manifest_path,
+                updates_root=updates_root,
+                max_bytes=MAX_MANIFEST_DOWNLOAD_BYTES,
+                expected_asset_name=manifest_name,
+            )
+            await _download_file(
+                client=client,
+                url=update_check.manifest_signature_asset_download_url,
+                destination=staged_manifest_signature_path,
+                updates_root=updates_root,
+                max_bytes=MAX_MANIFEST_SIGNATURE_DOWNLOAD_BYTES,
+                expected_asset_name=manifest_signature_name,
+            )
+            manifest = _verify_staged_manifest(
+                update_check=update_check,
+                manifest_path=staged_manifest_path,
+                signature_path=staged_manifest_signature_path,
+                asset_name=asset_name,
+                trusted_public_keys=trusted_public_keys,
+            )
+            if sha256_path is not None and staged_sha256_path is not None:
+                await _download_file(
+                    client=client,
+                    url=update_check.sha256_asset_download_url,
+                    destination=staged_sha256_path,
+                    updates_root=updates_root,
+                    max_bytes=max_sha256_bytes,
+                    expected_asset_name=sha256_name,
+                )
+                sidecar_sha256 = read_expected_sha256(
+                    staged_sha256_path,
+                    expected_filename=asset_name,
+                )
+                if sidecar_sha256 != manifest.asset.sha256:
+                    raise ValueError("sha256_sidecar_manifest_mismatch")
+            await _download_file(
+                client=client,
                 url=update_check.asset_download_url,
                 destination=staged_file_path,
                 updates_root=updates_root,
                 max_bytes=max_asset_bytes,
+                expected_asset_name=asset_name,
             )
-            await _download_file(
-                client=client,
-                url=update_check.sha256_asset_download_url,
-                destination=staged_sha256_path,
-                updates_root=updates_root,
-                max_bytes=max_sha256_bytes,
-            )
-        expected_sha256 = read_expected_sha256(
-            staged_sha256_path,
-            expected_filename=asset_name,
-        )
+        expected_sha256 = manifest.asset.sha256
+        actual_size = staged_file_path.stat().st_size
+        if actual_size != manifest.asset.size:
+            raise ValueError("manifest_asset_size_mismatch")
         actual_sha256 = calculate_sha256(staged_file_path)
         if expected_sha256 != actual_sha256:
             _cleanup_download_artifacts(
                 staged_file_path,
-                staged_sha256_path,
+                staged_manifest_path,
+                staged_manifest_signature_path,
+                *_optional_paths(staged_sha256_path),
                 updates_root=updates_root,
             )
             return UpdateDownloadResult(
@@ -125,53 +219,81 @@ async def download_and_verify_update(
                 expected_sha256=expected_sha256,
                 actual_sha256=actual_sha256,
                 failure_reason="sha256_mismatch",
+                manifest_path=manifest_path,
+                manifest_signature_path=manifest_signature_path,
+                manifest_sha256=manifest.manifest_sha256,
+                manifest_key_id=manifest.key_id,
             )
         _publish_verified_download(
             staged_file_path=staged_file_path,
             file_path=file_path,
             staged_sha256_path=staged_sha256_path,
             sha256_path=sha256_path,
+            staged_manifest_path=staged_manifest_path,
+            manifest_path=manifest_path,
+            staged_manifest_signature_path=staged_manifest_signature_path,
+            manifest_signature_path=manifest_signature_path,
             updates_root=updates_root,
         )
     except httpx.HTTPStatusError as exc:
         _cleanup_download_artifacts(
             staged_file_path,
-            staged_sha256_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+            *_optional_paths(staged_sha256_path),
             updates_root=updates_root,
         )
         return _failure(
             f"download_http_{exc.response.status_code}",
             file_path=file_path,
             sha256_path=sha256_path,
+            manifest_path=manifest_path,
+            manifest_signature_path=manifest_signature_path,
         )
     except httpx.HTTPError as exc:
         _cleanup_download_artifacts(
             staged_file_path,
-            staged_sha256_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+            *_optional_paths(staged_sha256_path),
             updates_root=updates_root,
         )
         return _failure(
             f"download_error:{exc.__class__.__name__}",
             file_path=file_path,
             sha256_path=sha256_path,
+            manifest_path=manifest_path,
+            manifest_signature_path=manifest_signature_path,
         )
     except ValueError as exc:
         _cleanup_download_artifacts(
             staged_file_path,
-            staged_sha256_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+            *_optional_paths(staged_sha256_path),
             updates_root=updates_root,
         )
-        return _failure(str(exc), file_path=file_path, sha256_path=sha256_path)
+        return _failure(
+            str(exc),
+            file_path=file_path,
+            sha256_path=sha256_path,
+            manifest_path=manifest_path,
+            manifest_signature_path=manifest_signature_path,
+        )
     except OSError as exc:
         _cleanup_download_artifacts(
             staged_file_path,
-            staged_sha256_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+            *_optional_paths(staged_sha256_path),
             updates_root=updates_root,
         )
         return _failure(
             f"download_io_error:{exc.__class__.__name__}",
             file_path=file_path,
             sha256_path=sha256_path,
+            manifest_path=manifest_path,
+            manifest_signature_path=manifest_signature_path,
         )
     return UpdateDownloadResult(
         status="verified",
@@ -182,6 +304,10 @@ async def download_and_verify_update(
         expected_sha256=expected_sha256,
         actual_sha256=actual_sha256,
         failure_reason="",
+        manifest_path=manifest_path,
+        manifest_signature_path=manifest_signature_path,
+        manifest_sha256=manifest.manifest_sha256,
+        manifest_key_id=manifest.key_id,
     )
 
 
@@ -224,6 +350,7 @@ async def _download_file(
     destination: Path,
     updates_root: Path,
     max_bytes: int,
+    expected_asset_name: str,
 ) -> None:
     """串流下載單一檔案；完成前使用 `.tmp` 避免半成品被當成可用。"""
 
@@ -236,6 +363,10 @@ async def _download_file(
         )
         async with client.stream("GET", url) as response:
             response.raise_for_status()
+            validate_final_release_download_url(
+                str(response.url),
+                expected_asset_name=expected_asset_name,
+            )
             content_length = _parse_content_length(response)
             if content_length is not None and content_length > max_bytes:
                 raise ValueError("download_too_large")
@@ -258,6 +389,30 @@ async def _download_file(
         except OSError:
             pass
         raise
+
+
+def _verify_staged_manifest(
+    *,
+    update_check: UpdateCheckResult,
+    manifest_path: Path,
+    signature_path: Path,
+    asset_name: str,
+    trusted_public_keys: Mapping[str, str] | None,
+) -> VerifiedReleaseManifest:
+    """驗證已下載 manifest，並確認 asset platform 與檔名一致。"""
+
+    policy = release_artifact_policy_for_asset_name(asset_name)
+    if policy is None:
+        raise ValueError("manifest_asset_platform_unknown")
+    return verify_release_manifest(
+        manifest_bytes=manifest_path.read_bytes(),
+        signature_bytes=signature_path.read_bytes(),
+        expected_version=update_check.latest_version,
+        expected_repository=update_check.repository,
+        expected_asset_name=asset_name,
+        expected_platform=policy.platform_key,
+        trusted_public_keys=trusted_public_keys,
+    )
 
 
 def _staging_destination(destination: Path) -> Path:
@@ -298,25 +453,38 @@ def _publish_verified_download(
     *,
     staged_file_path: Path,
     file_path: Path,
-    staged_sha256_path: Path,
-    sha256_path: Path,
+    staged_sha256_path: Path | None,
+    sha256_path: Path | None,
+    staged_manifest_path: Path,
+    manifest_path: Path,
+    staged_manifest_signature_path: Path,
+    manifest_signature_path: Path,
     updates_root: Path,
 ) -> None:
     """驗證完成後才將 staging 檔發布到正式檔名。"""
 
-    for destination in (file_path, sha256_path):
+    for destination in (file_path, manifest_path, manifest_signature_path):
         _ensure_download_destination_available(destination, updates_root=updates_root)
+    if sha256_path is not None:
+        _ensure_download_destination_available(sha256_path, updates_root=updates_root)
     published_paths: list[Path] = []
     try:
         staged_file_path.replace(file_path)
         published_paths.append(file_path)
-        staged_sha256_path.replace(sha256_path)
-        published_paths.append(sha256_path)
+        staged_manifest_path.replace(manifest_path)
+        published_paths.append(manifest_path)
+        staged_manifest_signature_path.replace(manifest_signature_path)
+        published_paths.append(manifest_signature_path)
+        if staged_sha256_path is not None and sha256_path is not None:
+            staged_sha256_path.replace(sha256_path)
+            published_paths.append(sha256_path)
     except Exception:
         _cleanup_download_artifacts(
             *published_paths,
             staged_file_path,
-            staged_sha256_path,
+            staged_manifest_path,
+            staged_manifest_signature_path,
+            *_optional_paths(staged_sha256_path),
             updates_root=updates_root,
         )
         raise
@@ -379,7 +547,13 @@ def _safe_unlink_download_path(path: Path, *, updates_root: Path) -> None:
         if path.is_symlink() or path.is_file():
             path.unlink(missing_ok=True)
     except OSError:
-        pass
+            pass
+
+
+def _optional_paths(*paths: Path | None) -> tuple[Path, ...]:
+    """回傳非空路徑 tuple，供 cleanup call-site 保持精簡。"""
+
+    return tuple(path for path in paths if path is not None)
 
 
 async def _aiter_response_bytes(response: httpx.Response) -> AsyncIterator[bytes]:
@@ -408,6 +582,8 @@ def _failure(
     *,
     file_path: Path | None = None,
     sha256_path: Path | None = None,
+    manifest_path: Path | None = None,
+    manifest_signature_path: Path | None = None,
 ) -> UpdateDownloadResult:
     """建立下載失敗結果。"""
 
@@ -420,6 +596,8 @@ def _failure(
         expected_sha256="",
         actual_sha256="",
         failure_reason=reason,
+        manifest_path=manifest_path,
+        manifest_signature_path=manifest_signature_path,
     )
 
 

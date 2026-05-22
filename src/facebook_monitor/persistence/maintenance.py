@@ -35,6 +35,29 @@ class RuntimeDataCleanupResult:
         )
 
 
+@dataclass(frozen=True)
+class TargetDataCleanupResult:
+    """保存單一 target 資料清除結果。"""
+
+    target_found: bool
+    seen_items: int = 0
+    scan_scope_state: int = 0
+    match_history: int = 0
+    notification_events: int = 0
+    notification_outbox: int = 0
+
+    @property
+    def total_deleted(self) -> int:
+        """回傳實際刪除的資料列總數。"""
+
+        return (
+            self.seen_items
+            + self.match_history
+            + self.notification_events
+            + self.notification_outbox
+        )
+
+
 class RuntimeDataMaintenanceRepository:
     """清理可重建 runtime data，保留 target/config/profile 等長期設定。"""
 
@@ -59,10 +82,74 @@ class RuntimeDataMaintenanceRepository:
             scan_scope_state=scan_scope_state,
         )
 
+    def clear_target_seen_baseline(self, target_id: str) -> TargetDataCleanupResult:
+        """清除單一 target 的 seen baseline，下一輪會重新進入 baseline 抑制。"""
+
+        scope_id = self._target_scope_id(target_id)
+        if scope_id is None:
+            return TargetDataCleanupResult(target_found=False)
+        seen_items = self._delete_where("seen_items", "scope_id", scope_id)
+        scan_scope_state = self._reset_scope_state(scope_id)
+        return TargetDataCleanupResult(
+            target_found=True,
+            seen_items=seen_items,
+            scan_scope_state=scan_scope_state,
+        )
+
+    def clear_target_match_history(self, target_id: str) -> TargetDataCleanupResult:
+        """清除單一 target 的命中紀錄，保留 seen baseline 與設定。"""
+
+        if not self._target_exists(target_id):
+            return TargetDataCleanupResult(target_found=False)
+        self.connection.execute(
+            """
+            DELETE FROM match_history_matches
+            WHERE history_id IN (
+                SELECT id FROM match_history WHERE target_id = ?
+            )
+            """,
+            (target_id,),
+        )
+        match_history = self._delete_where("match_history", "target_id", target_id)
+        return TargetDataCleanupResult(
+            target_found=True,
+            match_history=match_history,
+        )
+
+    def clear_target_notification_data(self, target_id: str) -> TargetDataCleanupResult:
+        """清除單一 target 的通知事件與 outbox rows。"""
+
+        if not self._target_exists(target_id):
+            return TargetDataCleanupResult(target_found=False)
+        notification_events = self._delete_where(
+            "notification_events",
+            "target_id",
+            target_id,
+        )
+        notification_outbox = self._delete_where(
+            "notification_outbox",
+            "target_id",
+            target_id,
+        )
+        return TargetDataCleanupResult(
+            target_found=True,
+            notification_events=notification_events,
+            notification_outbox=notification_outbox,
+        )
+
     def _delete_all(self, table_name: str) -> int:
         """刪除指定 runtime table 的全部資料並回傳刪除筆數。"""
 
         cursor = self.connection.execute(f"DELETE FROM {table_name}")
+        return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+    def _delete_where(self, table_name: str, column_name: str, value: str) -> int:
+        """刪除單一欄位符合條件的資料列。"""
+
+        cursor = self.connection.execute(
+            f"DELETE FROM {table_name} WHERE {column_name} = ?",
+            (value,),
+        )
         return int(cursor.rowcount if cursor.rowcount is not None else 0)
 
     def _reset_scan_scope_state(self) -> int:
@@ -80,3 +167,38 @@ class RuntimeDataMaintenanceRepository:
             """
         )
         return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+    def _reset_scope_state(self, scope_id: str) -> int:
+        """重置單一 scope state，供 target-scoped 資料清除使用。"""
+
+        cursor = self.connection.execute(
+            """
+            INSERT INTO scan_scope_state (scope_id, initialized, updated_at)
+            VALUES (?, 0, datetime('now'))
+            ON CONFLICT(scope_id) DO UPDATE SET
+                initialized = 0,
+                updated_at = excluded.updated_at
+            """,
+            (scope_id,),
+        )
+        return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+    def _target_scope_id(self, target_id: str) -> str | None:
+        """讀取 target scope id；target 不存在時回 None。"""
+
+        row = self.connection.execute(
+            "SELECT scope_id FROM targets WHERE id = ?",
+            (target_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["scope_id"])
+
+    def _target_exists(self, target_id: str) -> bool:
+        """確認 target 是否存在。"""
+
+        row = self.connection.execute(
+            "SELECT 1 FROM targets WHERE id = ?",
+            (target_id,),
+        ).fetchone()
+        return row is not None

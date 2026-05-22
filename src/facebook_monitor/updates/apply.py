@@ -73,6 +73,15 @@ class UpdaterApplyResult:
     staging_dir: Path | None = None
 
 
+@dataclass(frozen=True)
+class PreparedUpdateStage:
+    """保存已解壓並驗證完成的更新 staging 資料。"""
+
+    layout_policy: UpdaterLayoutPolicy
+    staging_dir: Path
+    staging_app_root: Path
+
+
 def apply_pending_update_file(
     path: Path,
     *,
@@ -147,56 +156,8 @@ def apply_pending_update(
             wait_for_lock_seconds=wait_for_lock_seconds,
             poll_seconds=poll_seconds,
         ):
-            layout_policy = detect_layout_policy(pending.app_base_dir)
-            validate_macos_zip_executable_bits(
-                pending.zip_path,
-                layout_policy=layout_policy,
-            )
-            staging_dir = _prepare_empty_dir(
-                pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(
-                    pending.version
-                ),
-                work_root=pending.runtime_dir,
-            )
-            safe_extract_zip(pending.zip_path, staging_dir)
-            staging_app_root = find_staging_app_root(
-                staging_dir,
-                layout_policy=layout_policy,
-            )
-            validate_staging_app_root(
-                staging_app_root,
-                layout_policy=layout_policy,
-                expected_version=pending.version,
-            )
-            validate_current_app_root(
-                pending.app_base_dir,
-                layout_policy=layout_policy,
-                data_dir=pending.data_dir,
-            )
-            backup_dir = _prepare_empty_dir(
-                pending.runtime_dir
-                / BACKUP_DIR_NAME
-                / _backup_folder_name(pending.version),
-                work_root=pending.runtime_dir,
-            )
-            backup_current_app_files(
-                app_base_dir=pending.app_base_dir,
-                backup_dir=backup_dir,
-                data_dir=pending.data_dir,
-            )
-            try:
-                replace_app_files(
-                    staging_app_root=staging_app_root,
-                    app_base_dir=pending.app_base_dir,
-                    data_dir=pending.data_dir,
-                )
-            except Exception:
-                restore_backup(
-                    app_base_dir=pending.app_base_dir,
-                    backup_dir=backup_dir,
-                    data_dir=pending.data_dir,
-                )
-                raise
+            prepared = _prepare_update_stage(pending)
+            backup_dir = _replace_current_app_from_stage(pending, prepared)
     except AppInstanceLockError as exc:
         return UpdaterApplyResult(
             status="app_running",
@@ -214,8 +175,77 @@ def apply_pending_update(
         applied=True,
         message="updated",
         backup_dir=backup_dir,
-        staging_dir=staging_dir,
+        staging_dir=prepared.staging_dir,
     )
+
+
+def _prepare_update_stage(pending: PendingUpdate) -> PreparedUpdateStage:
+    """解壓並驗證更新包 staging，尚不觸碰目前 app files。"""
+
+    layout_policy = detect_layout_policy(pending.app_base_dir)
+    validate_macos_zip_executable_bits(
+        pending.zip_path,
+        layout_policy=layout_policy,
+    )
+    staging_dir = _prepare_empty_dir(
+        pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(
+            pending.version
+        ),
+        work_root=pending.runtime_dir,
+    )
+    safe_extract_zip(pending.zip_path, staging_dir)
+    staging_app_root = find_staging_app_root(
+        staging_dir,
+        layout_policy=layout_policy,
+    )
+    validate_staging_app_root(
+        staging_app_root,
+        layout_policy=layout_policy,
+        expected_version=pending.version,
+    )
+    return PreparedUpdateStage(
+        layout_policy=layout_policy,
+        staging_dir=staging_dir,
+        staging_app_root=staging_app_root,
+    )
+
+
+def _replace_current_app_from_stage(
+    pending: PendingUpdate,
+    prepared: PreparedUpdateStage,
+) -> Path:
+    """備份目前 app files 後用已驗證 staging 替換，失敗時嘗試 rollback。"""
+
+    validate_current_app_root(
+        pending.app_base_dir,
+        layout_policy=prepared.layout_policy,
+        data_dir=pending.data_dir,
+    )
+    backup_dir = _prepare_empty_dir(
+        pending.runtime_dir
+        / BACKUP_DIR_NAME
+        / _backup_folder_name(pending.version),
+        work_root=pending.runtime_dir,
+    )
+    backup_current_app_files(
+        app_base_dir=pending.app_base_dir,
+        backup_dir=backup_dir,
+        data_dir=pending.data_dir,
+    )
+    try:
+        replace_app_files(
+            staging_app_root=prepared.staging_app_root,
+            app_base_dir=pending.app_base_dir,
+            data_dir=pending.data_dir,
+        )
+    except Exception:
+        restore_backup(
+            app_base_dir=pending.app_base_dir,
+            backup_dir=backup_dir,
+            data_dir=pending.data_dir,
+        )
+        raise
+    return backup_dir
 
 
 @contextmanager
@@ -596,11 +626,15 @@ def restore_backup(
 
 
 def _validate_pending_hash(pending: PendingUpdate) -> None:
-    """套用前重算 zip SHA256，避免 handoff 後檔案被替換。"""
+    """套用前重算 zip / manifest SHA256，避免 handoff 後檔案被替換。"""
 
     actual = calculate_sha256(pending.zip_path)
     if actual != pending.expected_sha256:
         raise ValueError("pending_zip_sha256_mismatch")
+    if pending.manifest_path is not None and pending.manifest_sha256:
+        manifest_actual = calculate_sha256(pending.manifest_path)
+        if manifest_actual != pending.manifest_sha256:
+            raise ValueError("pending_manifest_sha256_mismatch")
 
 
 def _prepare_empty_dir(path: Path, *, work_root: Path) -> Path:
@@ -829,6 +863,14 @@ def _cleanup_applied_update(
         label="sha256",
         warnings=warnings,
     )
+    if pending.manifest_path is not None:
+        _cleanup_file(pending.manifest_path, label="manifest", warnings=warnings)
+    if pending.manifest_signature_path is not None:
+        _cleanup_file(
+            pending.manifest_signature_path,
+            label="manifest_signature",
+            warnings=warnings,
+        )
     parent = pending.zip_path.parent
     try:
         resolved_parent = parent.resolve()

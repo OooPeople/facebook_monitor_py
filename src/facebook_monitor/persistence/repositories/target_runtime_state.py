@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.persistence.row_mappers import runtime_state_from_row
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+
 
 class TargetRuntimeStateRepository:
     """保存與查詢 target scheduler runtime state。"""
@@ -70,6 +73,49 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.updated_at),
             ),
         )
+
+    def try_mark_running(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        page_id: str,
+        started_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """以單一 SQL conditional update 嘗試取得 target running 權。"""
+
+        started_at_text = encode_datetime(started_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                runtime_status = ?,
+                last_started_at = ?,
+                last_heartbeat_at = ?,
+                last_error = '',
+                last_skip_reason = '',
+                active_worker_id = ?,
+                active_page_id = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND desired_state = ?
+              AND runtime_status != ?
+            """,
+            (
+                TargetRuntimeStatus.RUNNING.value,
+                started_at_text,
+                started_at_text,
+                worker_id,
+                page_id,
+                started_at_text,
+                target_id,
+                TargetDesiredState.ACTIVE.value,
+                TargetRuntimeStatus.RUNNING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
 
     def get(self, target_id: str) -> TargetRuntimeState | None:
         """依 target id 查詢 runtime state。"""

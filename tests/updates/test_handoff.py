@@ -71,6 +71,45 @@ def test_write_pending_update_contains_only_paths_and_hashes(tmp_path: Path) -> 
     assert loaded.runtime_dir == paths.runtime_dir
 
 
+def test_write_pending_update_preserves_signed_manifest_metadata(tmp_path: Path) -> None:
+    """handoff 要保存 manifest digest，供 updater 套用前二次檢查。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    zip_path = paths.updates_dir / "0.1.0" / "facebook-monitor-0.1.0-windows-portable.zip"
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_bytes(b"zip")
+    manifest_path = zip_path.with_name("facebook-monitor-0.1.0-manifest.json")
+    signature_path = zip_path.with_name("facebook-monitor-0.1.0-manifest.json.sig")
+    manifest_path.write_text("manifest", encoding="utf-8")
+    signature_path.write_text("sig", encoding="utf-8")
+
+    pending = write_pending_update(
+        update_check=update_check(),
+        download_result=UpdateDownloadResult(
+            status="verified",
+            downloaded=True,
+            verified=True,
+            file_path=zip_path,
+            sha256_path=None,
+            expected_sha256="a" * 64,
+            actual_sha256="a" * 64,
+            failure_reason="",
+            manifest_path=manifest_path,
+            manifest_signature_path=signature_path,
+            manifest_sha256="b" * 64,
+            manifest_key_id="test-key",
+        ),
+        paths=paths,
+    )
+    loaded = load_pending_update(pending_update_path(paths.runtime_dir))
+
+    assert loaded == pending
+    assert loaded.manifest_path == manifest_path.resolve()
+    assert loaded.manifest_signature_path == signature_path.resolve()
+    assert loaded.manifest_sha256 == "b" * 64
+    assert loaded.manifest_key_id == "test-key"
+
+
 def test_write_pending_update_rejects_missing_verified_file(tmp_path: Path) -> None:
     """即使 download result 標示 verified，也不能寫出指向不存在 zip 的 handoff。"""
 

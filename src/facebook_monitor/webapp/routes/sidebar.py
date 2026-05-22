@@ -8,6 +8,7 @@ from fastapi import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
 
@@ -128,8 +129,14 @@ def register_sidebar_routes(app: FastAPI) -> None:
         form = TargetConfigForm.from_sidebar_template_payload(payload)
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
+                current_template = app_context.services.sidebar_layout.get_template_or_default(
+                    group_id,
+                )
                 template = app_context.services.sidebar_layout.save_template(
-                    form.to_sidebar_group_template(sidebar_group_id=group_id)
+                    form.to_sidebar_group_template(
+                        sidebar_group_id=group_id,
+                        existing_discord_webhook=current_template.discord_webhook,
+                    )
                 )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
@@ -162,6 +169,11 @@ def _sidebar_error_detail(exc: ValueError) -> str:
     """回傳不含內部路徑、SQL 或 secret 的 sidebar API 錯誤訊息。"""
 
     message = str(exc)
+    notification_error = format_notification_form_error(exc)
+    if notification_error != message:
+        return notification_error
+    if "不可超過" in message or "最多" in message:
+        return message
     if "群組名稱不可空白" in message:
         return "群組名稱不可空白"
     if "找不到指定的 sidebar 群組" in message or "sidebar group not found" in message:

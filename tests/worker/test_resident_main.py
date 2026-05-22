@@ -127,7 +127,7 @@ class FakeMetadataPage:
     async def evaluate(self, script: str) -> str:
         """回傳 metadata resolver 抽到的 cover image URL。"""
 
-        return "https://scontent.example.test/group-cover.jpg"
+        return "https://scontent.xx.fbcdn.net/group-cover.jpg"
 
     async def close(self) -> None:
         """標記 metadata page 已關閉。"""
@@ -255,7 +255,7 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated is not None
     assert updated.name == "測試社團"
     assert updated.group_name == "測試社團"
-    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
 
@@ -329,7 +329,7 @@ def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
     assert updated is not None
     assert updated.name == "測試社團"
     assert updated.group_name == "測試社團"
-    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
 
@@ -347,12 +347,12 @@ def test_resident_scheduler_tick_refreshes_cover_image_without_renaming_target(
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="我的自訂名稱",
                 group_name="既有社團名稱",
-                group_cover_image_url="https://scontent.example.test/old.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
         app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
 
@@ -405,12 +405,12 @@ def test_resident_scheduler_tick_refreshes_cover_image_without_renaming_target(
     assert updated is not None
     assert updated.name == "我的自訂名稱"
     assert updated.group_name == "既有社團名稱"
-    assert updated.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert state is not None
     assert state.status == TargetCoverImageRefreshStatus.IDLE
-    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
-    assert state.last_resolved_url == "https://scontent.example.test/group-cover.jpg"
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/old.jpg"
+    assert state.last_resolved_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert state.last_result == "succeeded_changed"
     assert state.changed is True
 
@@ -428,17 +428,17 @@ def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="我的自訂名稱",
                 group_name="既有社團名稱",
-                group_cover_image_url="https://scontent.example.test/old.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
         app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
         app.services.targets.refresh_target_group_cover_image(
             target.id,
-            "https://scontent.example.test/manual-new.jpg",
+            "https://scontent.xx.fbcdn.net/manual-new.jpg",
         )
 
     async def scan_page(**kwargs: Any) -> PostsScanSummary:
@@ -488,11 +488,11 @@ def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
         state = app.repositories.cover_image_refreshes.get(target.id)
     assert updated is not None
     assert updated.name == "我的自訂名稱"
-    assert updated.group_cover_image_url == "https://scontent.example.test/manual-new.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/manual-new.jpg"
     assert state is not None
     assert state.status == TargetCoverImageRefreshStatus.IDLE
-    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
-    assert state.last_resolved_url == "https://scontent.example.test/manual-new.jpg"
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/old.jpg"
+    assert state.last_resolved_url == "https://scontent.xx.fbcdn.net/manual-new.jpg"
     assert state.last_result == "stale_skipped"
     assert state.changed is False
 
@@ -510,12 +510,12 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="我的自訂名稱",
                 group_name="既有社團名稱",
-                group_cover_image_url="https://scontent.example.test/old.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
         app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
 
@@ -566,12 +566,12 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
         state = app.repositories.cover_image_refreshes.get(target.id)
     assert updated is not None
     assert updated.name == "我的自訂名稱"
-    assert updated.group_cover_image_url == "https://scontent.example.test/old.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/old.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
     assert state is not None
     assert state.status == TargetCoverImageRefreshStatus.FAILED
-    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/old.jpg"
     assert state.last_resolved_url == ""
     assert state.last_result == "failed"
     assert state.changed is False

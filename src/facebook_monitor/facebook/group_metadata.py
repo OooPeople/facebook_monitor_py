@@ -21,6 +21,7 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_BROWSER_RUNTIME_DEFAULTS
+from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
@@ -250,10 +251,8 @@ def _extract_cover_image_url_sync(page: object) -> str:
 def _normalize_cover_image_url(value: object) -> str:
     """整理 extractor 回傳值，避免非 URL 內容進入 metadata。"""
 
-    url = str(value or "").strip()
-    if not url.startswith(("https://", "http://")):
-        return ""
-    return url
+    result = sanitize_facebook_image_url(value)
+    return result.url if result.ok else ""
 
 
 _COVER_IMAGE_EXTRACTOR_SCRIPT = """

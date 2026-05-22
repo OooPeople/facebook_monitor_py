@@ -11,6 +11,7 @@ from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.discord import truncate_discord_content
+from facebook_monitor.notifications.discord_url import validate_discord_webhook_url
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.ntfy import to_ascii_header_value
@@ -174,7 +175,7 @@ def test_send_discord_notification_matches_webhook_payload(
 
     monkeypatch.setattr(httpx, "post", fake_post)
     result = send_discord_notification(
-        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
         "Facebook group match",
         "社團: 測試社團",
     )
@@ -182,7 +183,7 @@ def test_send_discord_notification_matches_webhook_payload(
     assert result.ok
     assert result.status_code == 204
     assert result.message == "discord_sent"
-    assert calls[0]["url"] == "https://discord.com/api/webhooks/example"
+    assert calls[0]["url"] == "https://discord.com/api/webhooks/1234567890/token_value"
     assert calls[0]["json"]["username"] == "facebook_monitor_py"
     assert calls[0]["json"]["content"] == "Facebook group match\n社團: 測試社團"
     assert calls[0]["headers"]["Accept"] == "*/*"
@@ -217,7 +218,7 @@ def test_send_discord_notification_retries_short_rate_limit(
     monkeypatch.setattr("facebook_monitor.notifications.discord.time.sleep", sleeps.append)
 
     result = send_discord_notification(
-        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
         "Facebook group match",
         "社團: 測試社團",
     )
@@ -256,7 +257,7 @@ def test_send_discord_notification_reports_rate_limit_details(
     monkeypatch.setattr(httpx, "post", fake_post)
 
     result = send_discord_notification(
-        DiscordConfig(webhook_url="https://discord.com/api/webhooks/example"),
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
         "Facebook group match",
         "社團: 測試社團",
     )
@@ -288,7 +289,7 @@ def test_send_discord_notification_sanitizes_http_exception_message(
     monkeypatch.setattr(httpx, "post", fake_post)
 
     result = send_discord_notification(
-        DiscordConfig(webhook_url="https://discord.com/api/webhooks/private-token"),
+        DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/private-token"),
         "Facebook group match",
         "message",
     )
@@ -304,3 +305,48 @@ def test_truncate_discord_content_uses_conservative_limit() -> None:
     content = truncate_discord_content("x" * 2000, limit=20)
 
     assert content == "x" * 17 + "..."
+
+
+def test_validate_discord_webhook_url_rejects_non_discord_hosts() -> None:
+    """Discord webhook URL 不可退化成 generic webhook。"""
+
+    for value in (
+        "http://discord.com/api/webhooks/123/token",
+        "https://example.com/api/webhooks/123/token",
+        "https://discord.com.evil.test/api/webhooks/123/token",
+        "https://127.0.0.1/api/webhooks/123/token",
+        "https://user:pass@discord.com/api/webhooks/123/token",
+        "https://discord.com:8443/api/webhooks/123/token",
+        "https://discord.com/api/not-webhooks/123/token",
+        "https://discord.com/api/webhooks/not-numeric/token",
+        "https://discord.com/api/webhooks/123/token?wait=true",
+    ):
+        try:
+            validate_discord_webhook_url(value)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected invalid Discord webhook URL: {value}")
+
+
+def test_send_discord_notification_does_not_post_invalid_webhook(
+    monkeypatch: Any,
+) -> None:
+    """舊資料或污染資料中的 invalid webhook 不可觸發 HTTP POST。"""
+
+    calls: list[str] = []
+
+    def fake_post(*args: object, **kwargs: object) -> httpx.Response:
+        calls.append("called")
+        return httpx.Response(204)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = send_discord_notification(
+        DiscordConfig(webhook_url="https://127.0.0.1/api/webhooks/123/token"),
+        "Facebook group match",
+        "message",
+    )
+
+    assert not result.ok
+    assert result.message == "discord_webhook_invalid"
+    assert calls == []

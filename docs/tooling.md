@@ -22,7 +22,11 @@
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
 | Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 從 `dist/facebook-monitor` 建立 Windows / macOS release zip 與同名 `.sha256`，並先檢查平台必要檔案與私密 runtime data | 否 |
-| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案與私密 runtime data；Windows 可選驗證 Authenticode signer | 否 |
+| Release Manifest Builder | `scripts/admin/create_release_manifest.py` | Admin packaging | 從 release zip 建立 signed updater manifest JSON，記錄平台、檔名、size 與 SHA256 | 否 |
+| Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用本機或 CI secret 內的 Ed25519 私鑰輸出 manifest detached signature | 否 |
+| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、signed manifest / `.sig`、平台必要 onedir 檔案與私密 runtime data；Windows 可選驗證 Authenticode signer | 否 |
+| Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 用 stdlib AST 輸出超過 complexity / 函式長度門檻的 report；預設不作 CI gate | 否 |
+| Database Invariant Check | `scripts/admin/check_database_invariants.py` | Admin diagnostics | 唯讀檢查正式 SQLite DB 內 enum、boolean、range 與 runtime ownership invariant | 否 |
 | Windows Version Resource Builder | `scripts/admin/windows_version_resource.py` | Admin packaging | 由 `APP_VERSION` 產生 Windows PyInstaller version resource；通常由 Windows spec 自動呼叫 | 否 |
 | Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
 | macOS App Launcher Builder | `scripts/admin/create_macos_app_launcher.py` | Admin packaging | 在 macOS onedir 內建立 `Facebook Monitor.app` Finder / Dock native launcher，圖示來源為 `packaging/assets/facebook-monitor.png` | 否 |
@@ -56,7 +60,11 @@
 .\scripts\uv.ps1 run python .\scripts\admin\manage_targets.py
 .\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
 .\scripts\uv.ps1 run python .\scripts\admin\create_release_zip.py --platform windows --force
-.\scripts\uv.ps1 run python .\scripts\admin\release_artifact_validation.py
+.\scripts\uv.ps1 run python .\scripts\admin\create_release_manifest.py --version 0.4.0 --key-id release-ed25519-2026q2 --asset "windows=dist\facebook-monitor-0.4.0-windows-portable.zip" --output "dist\facebook-monitor-0.4.0-manifest.json" --force
+.\scripts\uv.ps1 run python .\scripts\admin\sign_release_manifest.py "dist\facebook-monitor-0.4.0-manifest.json" --private-key-file docs\local\release-signing\release-ed25519-2026q2.private-key.b64 --force
+.\scripts\uv.ps1 run python .\scripts\admin\release_artifact_validation.py --require-manifest
+.\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --max-complexity 12 --max-lines 80
+.\scripts\uv.ps1 run python .\scripts\admin\check_database_invariants.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
 .\scripts\uv.ps1 run python .\scripts\debug\one_shot_scan.py --group-id "<group_id>" --scroll-rounds 3
@@ -68,13 +76,17 @@
 
 ```powershell
 .\scripts\uv.ps1 run pytest -q
+.\scripts\uv.ps1 run pytest -q --cov=facebook_monitor --cov-report=term-missing --cov-fail-under=80
 .\scripts\uv.ps1 run mypy
 .\scripts\uv.ps1 run pytest tests\core --cov=facebook_monitor.core --cov-report=term-missing -q
 .\scripts\uv.ps1 run python -m compileall -q src scripts tests
 .\scripts\uv.ps1 run ruff check src scripts tests
 .\scripts\uv.ps1 run pip-audit
+Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 git diff --check
 ```
+
+CI 使用 Node 24 對 `src/facebook_monitor/webapp/static/**/*.js` 執行 syntax check，並以目前完整測試可通過的 80% coverage 作為 baseline。這個門檻只防止覆蓋率意外大幅倒退；後續新增測試後再逐步提高，不用為了既有大型模組一次重寫測試。
 
 Release tag 前建議執行：
 
@@ -84,7 +96,7 @@ Release tag 前建議執行：
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts --artifact-platform macos-arm64
 ```
 
-腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
+腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、signed manifest / `.sig`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / signed manifest / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
 版本與 Web asset cache key 的來源語義看 `docs/ARCHITECTURE.md#frozen-updater`；release validation 會印出目前 app / asset version，正式發佈時以升版作為瀏覽器 cache busting 來源。
 
@@ -122,7 +134,7 @@ EXE 打包前置、PyInstaller spec 與 frozen smoke checklist 看 `packaging/RE
 .\scripts\uv.ps1 run pytest tests\updates tests\webapp\test_app.py -q
 .\scripts\uv.ps1 run mypy src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\webapp\routes\settings.py
 .\scripts\uv.ps1 run ruff check src\facebook_monitor\updates src\facebook_monitor\updater.py src\facebook_monitor\webapp\routes\settings.py tests\updates tests\webapp\test_app.py
-node --check src\facebook_monitor\webapp\static\dashboard\settings.js
+Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 ```
 
 打包後還需要人工 Web UI + tray smoke。重點不是只看 zip 有沒有下載，而是確認 updater 可等待舊 app 退出、替換 app files、保留 `data/`、重啟新版 app，並清除本次下載 zip / `.sha256` / pending handoff。詳細 checklist 放在 `packaging/README.md#frozen-smoke-checklist`。

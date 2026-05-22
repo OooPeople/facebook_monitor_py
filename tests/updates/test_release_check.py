@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from pytest import MonkeyPatch
+
+from facebook_monitor.updates.release_check import configured_update_repository
+from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 from facebook_monitor.updates.release_check import evaluate_release
 from facebook_monitor.updates.release_check import find_windows_portable_asset
 from facebook_monitor.updates.release_check import parse_release_assets
 from facebook_monitor.updates.release_check import parse_version
+from facebook_monitor.updates.release_check import UPDATE_REPOSITORY_ENV
 from facebook_monitor.updates.artifacts import MACOS_ARM64_ONEDIR_POLICY
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 
 
 def release_payload(
@@ -35,11 +42,31 @@ def asset(name: str) -> dict[str, str]:
     }
 
 
+def manifest_assets(version: str) -> list[dict[str, str]]:
+    """建立 signed manifest 與 detached signature asset payload。"""
+
+    return [
+        asset(release_manifest_asset_name(version)),
+        asset(release_manifest_signature_asset_name(version)),
+    ]
+
+
 def test_parse_version_orders_release_candidate_before_stable() -> None:
     """同版本 stable 應視為比 rc 新。"""
 
     assert parse_version("0.1.0-rc1").sort_key() < parse_version("0.1.0").sort_key()
     assert parse_version("v0.1.1").sort_key() > parse_version("0.1.0").sort_key()
+
+
+def test_configured_update_repository_can_disable_env_override(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """正式 frozen updater 路徑不可被環境變數靜默切換 repository。"""
+
+    monkeypatch.setenv(UPDATE_REPOSITORY_ENV, "OtherOwner/other_repo")
+
+    assert configured_update_repository() == "OtherOwner/other_repo"
+    assert configured_update_repository(allow_env_override=False) == DEFAULT_UPDATE_REPOSITORY
 
 
 def test_evaluate_release_reports_available_windows_portable_asset() -> None:
@@ -55,6 +82,7 @@ def test_evaluate_release_reports_available_windows_portable_asset() -> None:
             assets=[
                 asset("facebook-monitor-0.1.0-windows-portable.zip"),
                 asset("facebook-monitor-0.1.0-windows-portable.zip.sha256"),
+                *manifest_assets("0.1.0"),
             ],
         ),
     )
@@ -64,6 +92,8 @@ def test_evaluate_release_reports_available_windows_portable_asset() -> None:
     assert result.latest_version == "0.1.0"
     assert result.asset_name == "facebook-monitor-0.1.0-windows-portable.zip"
     assert result.sha256_asset_name == "facebook-monitor-0.1.0-windows-portable.zip.sha256"
+    assert result.manifest_asset_name == "facebook-monitor-0.1.0-manifest.json"
+    assert result.manifest_signature_asset_name == "facebook-monitor-0.1.0-manifest.json.sig"
     assert result.failure_reason == ""
     assert "只提供檢查" not in result.detail
 
@@ -81,6 +111,7 @@ def test_evaluate_release_reports_available_macos_arm64_asset() -> None:
             assets=[
                 asset("facebook-monitor-0.1.0-macos-arm64-onedir.zip"),
                 asset("facebook-monitor-0.1.0-macos-arm64-onedir.zip.sha256"),
+                *manifest_assets("0.1.0"),
             ],
         ),
     )
@@ -91,8 +122,8 @@ def test_evaluate_release_reports_available_macos_arm64_asset() -> None:
     assert result.sha256_asset_name == "facebook-monitor-0.1.0-macos-arm64-onedir.zip.sha256"
 
 
-def test_evaluate_release_keeps_missing_sha256_as_non_blocking_phase_one_reason() -> None:
-    """Phase 1 只查 metadata，缺 SHA256 asset 先保留 reason 但不阻擋更新提示。"""
+def test_evaluate_release_keeps_missing_sha256_non_blocking_with_manifest() -> None:
+    """Signed manifest 已提供 hash 時，缺 SHA256 sidecar 不阻擋更新提示。"""
 
     result = evaluate_release(
         current_version="0.1.0-rc1",
@@ -101,14 +132,40 @@ def test_evaluate_release_keeps_missing_sha256_as_non_blocking_phase_one_reason(
         artifact_policy=WINDOWS_PORTABLE_POLICY,
         release=release_payload(
             tag_name="v0.1.0",
-            assets=[asset("facebook-monitor-0.1.0-windows-portable.zip")],
+            assets=[
+                asset("facebook-monitor-0.1.0-windows-portable.zip"),
+                *manifest_assets("0.1.0"),
+            ],
         ),
     )
 
     assert result.status == "available"
     assert result.update_available
-    assert result.failure_reason == "sha256_asset_missing"
+    assert result.failure_reason == ""
     assert result.sha256_asset_name == ""
+
+
+def test_evaluate_release_keeps_missing_manifest_as_download_blocking_reason() -> None:
+    """缺 signed manifest 時仍可提示新版，但自動下載會被後續流程擋下。"""
+
+    result = evaluate_release(
+        current_version="0.1.0-rc1",
+        channel="stable",
+        repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
+        release=release_payload(
+            tag_name="v0.1.0",
+            assets=[
+                asset("facebook-monitor-0.1.0-windows-portable.zip"),
+                asset("facebook-monitor-0.1.0-windows-portable.zip.sha256"),
+            ],
+        ),
+    )
+
+    assert result.status == "available"
+    assert result.update_available
+    assert result.failure_reason == "manifest_file_missing"
+    assert result.manifest_asset_name == ""
 
 
 def test_evaluate_release_reports_current_when_remote_is_not_newer() -> None:

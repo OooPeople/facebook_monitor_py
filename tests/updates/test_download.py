@@ -3,16 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import replace
 import hashlib
+import json
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import httpx
 import pytest
 
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import read_expected_sha256
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
+
+
+ASSET_NAME = "facebook-monitor-0.1.0-windows-portable.zip"
+SHA256_NAME = f"{ASSET_NAME}.sha256"
+MANIFEST_NAME = release_manifest_asset_name("0.1.0")
+MANIFEST_SIGNATURE_NAME = release_manifest_signature_asset_name("0.1.0")
+RELEASE_URL_PREFIX = "https://github.com/OooPeople/facebook_monitor_py/releases/download/v0.1.0"
+ASSET_URL = f"{RELEASE_URL_PREFIX}/{ASSET_NAME}"
+SHA256_URL = f"{RELEASE_URL_PREFIX}/{SHA256_NAME}"
+MANIFEST_URL = f"{RELEASE_URL_PREFIX}/{MANIFEST_NAME}"
+MANIFEST_SIGNATURE_URL = f"{RELEASE_URL_PREFIX}/{MANIFEST_SIGNATURE_NAME}"
+TEST_PRIVATE_KEY = Ed25519PrivateKey.generate()
+TEST_KEY_ID = "test-release-key"
 
 
 def update_check() -> UpdateCheckResult:
@@ -29,22 +48,95 @@ def update_check() -> UpdateCheckResult:
         summary="有新版 0.1.0",
         detail="",
         release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.0",
-        asset_name="facebook-monitor-0.1.0-windows-portable.zip",
-        asset_download_url="https://downloads.example.test/app.zip",
-        sha256_asset_name="facebook-monitor-0.1.0-windows-portable.zip.sha256",
-        sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+        asset_name=ASSET_NAME,
+        asset_download_url=ASSET_URL,
+        sha256_asset_name=SHA256_NAME,
+        sha256_asset_download_url=SHA256_URL,
         failure_reason="",
+        manifest_asset_name=MANIFEST_NAME,
+        manifest_asset_download_url=MANIFEST_URL,
+        manifest_signature_asset_name=MANIFEST_SIGNATURE_NAME,
+        manifest_signature_asset_download_url=MANIFEST_SIGNATURE_URL,
     )
 
 
+def trusted_public_keys() -> dict[str, str]:
+    """回傳測試用 release manifest public key。"""
+
+    public_key = TEST_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return {TEST_KEY_ID: base64.b64encode(public_key).decode("ascii")}
+
+
+def manifest_bytes_for(zip_bytes: bytes) -> bytes:
+    """建立測試用 signed manifest bytes。"""
+
+    payload = {
+        "schema_version": 1,
+        "version": "0.1.0",
+        "repository": "OooPeople/facebook_monitor_py",
+        "key_id": TEST_KEY_ID,
+        "assets": [
+            {
+                "name": ASSET_NAME,
+                "platform": "windows",
+                "sha256": hashlib.sha256(zip_bytes).hexdigest(),
+                "size": len(zip_bytes),
+            }
+        ],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def signature_bytes_for(manifest_bytes: bytes) -> bytes:
+    """簽出測試用 manifest detached signature。"""
+
+    signature = TEST_PRIVATE_KEY.sign(manifest_bytes)
+    return base64.b64encode(signature)
+
+
 def mock_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport:
-    """建立下載 zip 與 sha256 的 mock transport。"""
+    """建立下載 manifest、signature、zip 與 sha256 的 mock transport。"""
+
+    manifest_bytes = manifest_bytes_for(zip_bytes)
+    signature_bytes = signature_bytes_for(manifest_bytes)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://downloads.example.test/app.zip":
+        if str(request.url) == MANIFEST_URL:
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == ASSET_URL:
             return httpx.Response(200, content=zip_bytes)
-        if str(request.url) == "https://downloads.example.test/app.zip.sha256":
+        if str(request.url) == SHA256_URL:
             return httpx.Response(200, text=sha256_text)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def zip_mismatch_transport(
+    *,
+    manifest_zip_bytes: bytes,
+    served_zip_bytes: bytes,
+) -> httpx.MockTransport:
+    """建立 manifest hash 與實際 zip 內容不同的 mock transport。"""
+
+    manifest_bytes = manifest_bytes_for(manifest_zip_bytes)
+    signature_bytes = signature_bytes_for(manifest_bytes)
+    manifest_digest = hashlib.sha256(manifest_zip_bytes).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == MANIFEST_URL:
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == SHA256_URL:
+            return httpx.Response(200, text=f"{manifest_digest}  {ASSET_NAME}\n")
+        if str(request.url) == ASSET_URL:
+            return httpx.Response(200, content=served_zip_bytes)
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -53,10 +145,17 @@ def mock_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport
 def failing_sha256_transport(*, zip_bytes: bytes, status_code: int = 500) -> httpx.MockTransport:
     """建立 zip 成功、SHA256 sidecar 失敗的 mock transport。"""
 
+    manifest_bytes = manifest_bytes_for(zip_bytes)
+    signature_bytes = signature_bytes_for(manifest_bytes)
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://downloads.example.test/app.zip":
+        if str(request.url) == MANIFEST_URL:
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == ASSET_URL:
             return httpx.Response(200, content=zip_bytes)
-        if str(request.url) == "https://downloads.example.test/app.zip.sha256":
+        if str(request.url) == SHA256_URL:
             return httpx.Response(status_code)
         return httpx.Response(404)
 
@@ -66,18 +165,61 @@ def failing_sha256_transport(*, zip_bytes: bytes, status_code: int = 500) -> htt
 def redirect_transport(*, zip_bytes: bytes, sha256_text: str) -> httpx.MockTransport:
     """模擬 GitHub release asset 下載會先回 302 redirect。"""
 
+    manifest_bytes = manifest_bytes_for(zip_bytes)
+    signature_bytes = signature_bytes_for(manifest_bytes)
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://downloads.example.test/app.zip":
-            return httpx.Response(302, headers={"location": "https://objects.example.test/app.zip"})
-        if str(request.url) == "https://downloads.example.test/app.zip.sha256":
+        if str(request.url) == MANIFEST_URL:
             return httpx.Response(
                 302,
-                headers={"location": "https://objects.example.test/app.zip.sha256"},
+                headers={"location": "https://release-assets.githubusercontent.com/manifest"},
             )
-        if str(request.url) == "https://objects.example.test/app.zip":
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(
+                302,
+                headers={"location": "https://release-assets.githubusercontent.com/manifest.sig"},
+            )
+        if str(request.url) == ASSET_URL:
+            return httpx.Response(
+                302,
+                headers={"location": "https://release-assets.githubusercontent.com/app.zip"},
+            )
+        if str(request.url) == SHA256_URL:
+            return httpx.Response(
+                302,
+                headers={"location": "https://release-assets.githubusercontent.com/app.zip.sha256"},
+            )
+        if str(request.url) == "https://release-assets.githubusercontent.com/manifest":
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == "https://release-assets.githubusercontent.com/manifest.sig":
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == "https://release-assets.githubusercontent.com/app.zip":
             return httpx.Response(200, content=zip_bytes)
-        if str(request.url) == "https://objects.example.test/app.zip.sha256":
+        if str(request.url) == "https://release-assets.githubusercontent.com/app.zip.sha256":
             return httpx.Response(200, text=sha256_text)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def evil_redirect_transport(*, zip_bytes: bytes) -> httpx.MockTransport:
+    """建立最終 redirect 離開 GitHub allowlist 的 mock transport。"""
+
+    manifest_bytes = manifest_bytes_for(zip_bytes)
+    signature_bytes = signature_bytes_for(manifest_bytes)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == MANIFEST_URL:
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == SHA256_URL:
+            digest = hashlib.sha256(zip_bytes).hexdigest()
+            return httpx.Response(200, text=f"{digest}  {ASSET_NAME}\n")
+        if str(request.url) == ASSET_URL:
+            return httpx.Response(302, headers={"location": "https://example.com/app.zip"})
+        if str(request.url) == "https://example.com/app.zip":
+            return httpx.Response(200, content=zip_bytes)
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
@@ -98,6 +240,7 @@ def test_download_and_verify_update_stores_verified_zip_under_updates_dir(
                 zip_bytes=zip_bytes,
                 sha256_text=f"{digest}  facebook-monitor-0.1.0-windows-portable.zip\n",
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -126,6 +269,7 @@ def test_download_and_verify_update_follows_github_asset_redirects(
                 zip_bytes=zip_bytes,
                 sha256_text=f"{digest}  facebook-monitor-0.1.0-windows-portable.zip\n",
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -135,8 +279,10 @@ def test_download_and_verify_update_follows_github_asset_redirects(
     assert result.file_path.read_bytes() == zip_bytes
 
 
-def test_download_and_verify_update_rejects_sha256_mismatch(tmp_path: Path) -> None:
-    """SHA256 不一致時不可標示為 verified。"""
+def test_download_and_verify_update_rejects_sha256_sidecar_manifest_mismatch(
+    tmp_path: Path,
+) -> None:
+    """SHA256 sidecar 與 signed manifest 不一致時不可下載 zip。"""
 
     result = asyncio.run(
         download_and_verify_update(
@@ -147,6 +293,28 @@ def test_download_and_verify_update_rejects_sha256_mismatch(tmp_path: Path) -> N
                 sha256_text=f"{hashlib.sha256(b'expected').hexdigest()}  "
                 "facebook-monitor-0.1.0-windows-portable.zip\n",
             ),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert not result.downloaded
+    assert not result.verified
+    assert result.failure_reason == "sha256_sidecar_manifest_mismatch"
+
+
+def test_download_and_verify_update_rejects_zip_hash_mismatch(tmp_path: Path) -> None:
+    """zip 與 signed manifest hash 不一致時不可發布 verified download。"""
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=tmp_path / "updates",
+            transport=zip_mismatch_transport(
+                manifest_zip_bytes=b"expected",
+                served_zip_bytes=b"changed!",
+            ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -169,6 +337,7 @@ def test_download_and_verify_update_rejects_oversized_asset(tmp_path: Path) -> N
                 "facebook-monitor-0.1.0-windows-portable.zip\n",
             ),
             max_asset_bytes=3,
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -190,6 +359,7 @@ def test_download_and_verify_update_removes_staged_zip_when_sha256_download_fail
             update_check=update_check(),
             updates_dir=updates_dir,
             transport=failing_sha256_transport(zip_bytes=b"actual", status_code=500),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -213,12 +383,77 @@ def test_download_and_verify_update_requires_sha256_url(tmp_path: Path) -> None:
             update_check=check,
             updates_dir=tmp_path / "updates",
             transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
     assert result.status == "failed"
     assert result.failure_reason == "sha256_asset_url_missing"
     assert not (tmp_path / "updates").exists()
+
+
+def test_download_and_verify_update_requires_signed_manifest(tmp_path: Path) -> None:
+    """只有 SHA256 sidecar 沒 signed manifest 時不可下載 zip。"""
+
+    check = replace(
+        update_check(),
+        manifest_asset_name="",
+        manifest_asset_download_url="",
+        manifest_signature_asset_name="",
+        manifest_signature_asset_download_url="",
+    )
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=check,
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "manifest_file_missing"
+    assert not (tmp_path / "updates").exists()
+
+
+def test_download_and_verify_update_rejects_non_github_initial_url(
+    tmp_path: Path,
+) -> None:
+    """Release metadata 中的初始下載 URL 必須在 GitHub release host。"""
+
+    check = replace(update_check(), asset_download_url="https://example.com/app.zip")
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=check,
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "release_download_url_host_not_allowed"
+    assert not (tmp_path / "updates").exists()
+
+
+def test_download_and_verify_update_rejects_non_github_final_redirect(
+    tmp_path: Path,
+) -> None:
+    """GitHub 初始 URL redirect 到非 allowlist host 時必須停止下載。"""
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=tmp_path / "updates",
+            transport=evil_redirect_transport(zip_bytes=b"zip"),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "release_download_url_host_not_allowed"
 
 
 def test_download_and_verify_update_rejects_invalid_version_dir(tmp_path: Path) -> None:
@@ -231,6 +466,7 @@ def test_download_and_verify_update_rejects_invalid_version_dir(tmp_path: Path) 
             update_check=check,
             updates_dir=tmp_path / "updates",
             transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -260,6 +496,7 @@ def test_download_and_verify_update_rejects_symlinked_updates_dir(tmp_path: Path
                 zip_bytes=b"unused",
                 sha256_text="unused",
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -293,6 +530,7 @@ def test_download_and_verify_update_rejects_existing_tmp_symlink(tmp_path: Path)
                     "facebook-monitor-0.1.0-windows-portable.zip\n"
                 ),
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -328,6 +566,7 @@ def test_download_and_verify_update_rejects_existing_sha256_tmp_symlink(
                     "facebook-monitor-0.1.0-windows-portable.zip\n"
                 ),
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -356,6 +595,7 @@ def test_download_and_verify_update_reports_io_error_when_version_dir_is_file(
                 zip_bytes=b"unused",
                 sha256_text="unused",
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 
@@ -381,6 +621,7 @@ def test_download_and_verify_update_rejects_destination_directory(
                 zip_bytes=b"unused",
                 sha256_text="unused",
             ),
+            trusted_public_keys=trusted_public_keys(),
         )
     )
 

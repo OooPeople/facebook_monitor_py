@@ -191,6 +191,15 @@ def is_release_asset_name_for_policy(
     )
 
 
+def release_artifact_policy_for_asset_name(asset_name: str) -> UpdateArtifactPolicy | None:
+    """依 release asset 檔名回傳對應平台 policy。"""
+
+    for policy in UPDATE_ARTIFACT_POLICIES:
+        if is_release_asset_name_for_policy(asset_name, policy=policy):
+            return policy
+    return None
+
+
 def release_asset_name(*, version: str, policy: UpdateArtifactPolicy | None = None) -> str:
     """回傳目前平台或指定 policy 的 release asset 檔名。"""
 

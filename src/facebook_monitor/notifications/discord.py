@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
+from facebook_monitor.notifications.discord_url import validate_discord_webhook_url
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
@@ -49,7 +50,14 @@ def send_discord_notification(
 ) -> DiscordResult:
     """送出一則 Discord webhook 通知，遇到短暫 429 會依 Retry-After 重試一次。"""
 
-    webhook_url = config.webhook_url.strip()
+    try:
+        webhook_url = validate_discord_webhook_url(config.webhook_url)
+    except ValueError:
+        return DiscordResult(
+            ok=False,
+            status_code=None,
+            message="discord_webhook_invalid",
+        )
     if not webhook_url:
         return DiscordResult(ok=False, status_code=None, message="discord_skipped")
 

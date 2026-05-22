@@ -46,11 +46,11 @@
           <div class="settings-form-stack">
             <label>
               Facebook group URL / post URL
-              <input name="group_url" type="text" required placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321">
+              <input name="group_url" type="text" required maxlength="{{ input_limits.MAX_TARGET_URL_LENGTH }}" placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321">
             </label>
             <label>
               自訂顯示名稱
-              <input name="display_name" type="text" placeholder="可留空，系統會嘗試使用社團名稱">
+              <input name="display_name" type="text" maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}" placeholder="可留空，系統會嘗試使用社團名稱">
             </label>
           </div>
         </section>

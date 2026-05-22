@@ -78,7 +78,7 @@
                 <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
                   <span class="sidebar-avatar{% if item.thumbnail_url %} has-image{% endif %}" aria-hidden="true">
                     {% if item.thumbnail_url %}
-                      <img src="{{ item.thumbnail_url }}" alt="" referrerpolicy="origin-when-cross-origin" loading="lazy">
+                      <img src="{{ item.thumbnail_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
                     {% else %}
                       {{ item.display_name[:1] or "?" }}
                     {% endif %}

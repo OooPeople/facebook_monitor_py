@@ -13,18 +13,7 @@ SCHEMA_VERSION = 28
 def initialize_schema(connection: sqlite3.Connection) -> None:
     """建立目前 SQLite schema。"""
 
-    existing_version = read_schema_version(connection)
-    has_existing_data_schema = has_existing_user_tables(connection)
-    if existing_version == 0 and has_existing_data_schema:
-        raise RuntimeError(
-            "Unsupported SQLite schema version 0. Existing DBs must have a valid "
-            "schema_metadata version for automatic migration."
-        )
-    if existing_version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Unsupported SQLite schema version {existing_version}. "
-            f"This app supports up to version {SCHEMA_VERSION}."
-        )
+    existing_version = read_supported_schema_version(connection)
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -312,6 +301,35 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         """
     )
     ensure_dashboard_revision_triggers(connection)
+    migrate_or_mark_current_schema(connection, existing_version=existing_version)
+    ensure_post_migration_schema_guards(connection)
+
+
+def read_supported_schema_version(connection: sqlite3.Connection) -> int:
+    """讀取並驗證 DB schema version 是否可由本版本處理。"""
+
+    existing_version = read_schema_version(connection)
+    has_existing_data_schema = has_existing_user_tables(connection)
+    if existing_version == 0 and has_existing_data_schema:
+        raise RuntimeError(
+            "Unsupported SQLite schema version 0. Existing DBs must have a valid "
+            "schema_metadata version for automatic migration."
+        )
+    if existing_version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Unsupported SQLite schema version {existing_version}. "
+            f"This app supports up to version {SCHEMA_VERSION}."
+        )
+    return existing_version
+
+
+def migrate_or_mark_current_schema(
+    connection: sqlite3.Connection,
+    *,
+    existing_version: int,
+) -> None:
+    """依既有 schema version 執行 migration 或標記新 DB 為目前版本。"""
+
     if 0 < existing_version < SCHEMA_VERSION:
         from facebook_monitor.persistence.migrations import run_known_migrations
 
@@ -322,6 +340,11 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         )
     elif existing_version < SCHEMA_VERSION:
         write_schema_version(connection, SCHEMA_VERSION)
+
+
+def ensure_post_migration_schema_guards(connection: sqlite3.Connection) -> None:
+    """建立需要在 migrations 後才可安全建立的 index / repair guard。"""
+
     ensure_target_metadata_index(connection)
     ensure_target_scope_unique_index(connection)
     drop_redundant_target_scope_index(connection)

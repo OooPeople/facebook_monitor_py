@@ -11,6 +11,7 @@ from functools import cached_property
 from math import ceil
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
@@ -240,7 +241,8 @@ class TargetRow:
     def thumbnail_url(self) -> str:
         """回傳 target header / sidebar 使用的社團縮圖 URL。"""
 
-        return self.target.group_cover_image_url
+        result = sanitize_facebook_image_url(self.target.group_cover_image_url)
+        return result.url if result.ok else ""
 
     @property
     def mode_label(self) -> str:

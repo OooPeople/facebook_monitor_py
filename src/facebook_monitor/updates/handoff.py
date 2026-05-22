@@ -46,6 +46,10 @@ class PendingUpdate:
     logs_dir: Path
     runtime_dir: Path
     created_at: str
+    manifest_path: Path | None = None
+    manifest_signature_path: Path | None = None
+    manifest_sha256: str = ""
+    manifest_key_id: str = ""
 
 
 def pending_update_path(runtime_dir: Path) -> Path:
@@ -80,6 +84,14 @@ def write_pending_update(
         logs_dir=paths.logs_dir.resolve(),
         runtime_dir=paths.runtime_dir.resolve(),
         created_at=datetime.now(timezone.utc).isoformat(),
+        manifest_path=download_result.manifest_path.resolve()
+        if download_result.manifest_path is not None
+        else None,
+        manifest_signature_path=download_result.manifest_signature_path.resolve()
+        if download_result.manifest_signature_path is not None
+        else None,
+        manifest_sha256=download_result.manifest_sha256,
+        manifest_key_id=download_result.manifest_key_id,
     )
     validate_pending_update_paths(pending)
     destination = pending_update_path(paths.runtime_dir)
@@ -112,6 +124,12 @@ def load_pending_update(path: Path) -> PendingUpdate:
             logs_dir=Path(str(payload["logs_dir"])).resolve(),
             runtime_dir=Path(str(payload["runtime_dir"])).resolve(),
             created_at=str(payload["created_at"]),
+            manifest_path=_optional_payload_path(payload.get("manifest_path")),
+            manifest_signature_path=_optional_payload_path(
+                payload.get("manifest_signature_path")
+            ),
+            manifest_sha256=str(payload.get("manifest_sha256", "")),
+            manifest_key_id=str(payload.get("manifest_key_id", "")),
         )
     except KeyError as exc:
         raise ValueError("pending_update_missing_field") from exc
@@ -121,6 +139,13 @@ def load_pending_update(path: Path) -> PendingUpdate:
         raise ValueError("pending_update_sha256_invalid")
     if not pending.zip_path.is_file():
         raise ValueError("pending_update_zip_missing")
+    if pending.manifest_sha256:
+        if not re.fullmatch(r"[0-9a-f]{64}", pending.manifest_sha256.casefold()):
+            raise ValueError("pending_update_manifest_sha256_invalid")
+        if pending.manifest_path is None or not pending.manifest_path.is_file():
+            raise ValueError("pending_update_manifest_missing")
+        if pending.manifest_signature_path is None or not pending.manifest_signature_path.is_file():
+            raise ValueError("pending_update_manifest_signature_missing")
     validate_pending_update_paths(pending, pending_path=path)
     return pending
 
@@ -151,6 +176,14 @@ def validate_pending_update_paths(
         raise ValueError("pending_update_runtime_dir_mismatch")
     if not zip_path.is_relative_to(updates_dir):
         raise ValueError("pending_update_zip_outside_updates_dir")
+    if pending.manifest_path is not None:
+        manifest_path = pending.manifest_path.resolve()
+        if not manifest_path.is_relative_to(updates_dir):
+            raise ValueError("pending_update_manifest_outside_updates_dir")
+    if pending.manifest_signature_path is not None:
+        manifest_signature_path = pending.manifest_signature_path.resolve()
+        if not manifest_signature_path.is_relative_to(updates_dir):
+            raise ValueError("pending_update_manifest_signature_outside_updates_dir")
     if not pending.db_path.resolve().is_relative_to(data_dir):
         raise ValueError("pending_update_db_outside_data_dir")
     if not pending.profile_dir.resolve().is_relative_to(profiles_dir):
@@ -178,9 +211,19 @@ def _pending_to_json_dict(pending: PendingUpdate) -> dict[str, Any]:
         "profile_dir",
         "logs_dir",
         "runtime_dir",
+        "manifest_path",
+        "manifest_signature_path",
     ):
-        payload[key] = str(payload[key])
+        payload[key] = str(payload[key]) if payload[key] is not None else None
     return payload
+
+
+def _optional_payload_path(value: object) -> Path | None:
+    """讀取可為空的 pending update 路徑欄位。"""
+
+    if value in (None, ""):
+        return None
+    return Path(str(value)).resolve()
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:

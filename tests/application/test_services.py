@@ -231,6 +231,132 @@ def test_scan_request_during_queued_survives_current_scan_finish(
     assert finished_state.scan_requested_at == requested_state.scan_requested_at
 
 
+def test_try_mark_target_running_claims_only_active_non_running_state(
+    tmp_path: Path,
+) -> None:
+    """running claim 必須由 DB conditional update 原子判定。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active",
+                canonical_url="https://www.facebook.com/groups/active",
+            )
+        )
+        stopped_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stopped",
+                canonical_url="https://www.facebook.com/groups/stopped",
+            )
+        )
+        app.services.targets.restart_target_monitoring(active_target.id)
+        claimed = app.services.targets.try_mark_target_running(
+            active_target.id,
+            "worker-a",
+            page_id="page-a",
+        )
+        duplicate = app.services.targets.try_mark_target_running(
+            active_target.id,
+            "worker-b",
+            page_id="page-b",
+        )
+        stopped_claim = app.services.targets.try_mark_target_running(
+            stopped_target.id,
+            "worker-c",
+        )
+        active_state = app.repositories.runtime_states.get(active_target.id)
+        stopped_state = app.repositories.runtime_states.get(stopped_target.id)
+
+    assert claimed is not None
+    assert claimed.runtime_status == TargetRuntimeStatus.RUNNING
+    assert claimed.active_worker_id == "worker-a"
+    assert claimed.active_page_id == "page-a"
+    assert duplicate is None
+    assert stopped_claim is None
+    assert active_state is not None
+    assert active_state.active_worker_id == "worker-a"
+    assert active_state.last_skip_reason.startswith(
+        "scan_guard_skipped: target_already_running"
+    )
+    assert active_state.scan_guard_count == 1
+    assert stopped_state is not None
+    assert stopped_state.desired_state == TargetDesiredState.STOPPED
+    assert stopped_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert "target_not_active" in stopped_state.last_skip_reason
+
+
+def test_runtime_transition_invariants_for_running_finish_and_stop(
+    tmp_path: Path,
+) -> None:
+    """running attempt 完成、失敗與 target stop 應保留既有 runtime 不變式。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        idle_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="idle",
+                canonical_url="https://www.facebook.com/groups/idle",
+            )
+        )
+        error_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="error",
+                canonical_url="https://www.facebook.com/groups/error",
+            )
+        )
+        stopped_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stop",
+                canonical_url="https://www.facebook.com/groups/stop",
+            )
+        )
+
+        app.services.targets.restart_target_monitoring(idle_target.id)
+        app.services.targets.clear_target_scan_request(idle_target.id)
+        idle_running = app.services.targets.try_mark_target_running(
+            idle_target.id,
+            "worker-idle",
+        )
+        idle_requested = app.services.targets.request_target_scan(idle_target.id)
+        idle_finished = app.services.targets.mark_target_idle(idle_target.id)
+
+        app.services.targets.restart_target_monitoring(error_target.id)
+        error_running = app.services.targets.try_mark_target_running(
+            error_target.id,
+            "worker-error",
+        )
+        error_state = app.services.targets.mark_target_error(
+            error_target.id,
+            "scan failed",
+            failure_reason="unknown",
+            failure_count=1,
+        )
+
+        stopped_claim = app.services.targets.try_mark_target_running(
+            stopped_target.id,
+            "worker-stop",
+        )
+
+    assert idle_running is not None
+    assert idle_running.runtime_status == TargetRuntimeStatus.RUNNING
+    assert idle_requested.scan_requested_at is not None
+    assert idle_finished.runtime_status == TargetRuntimeStatus.IDLE
+    assert idle_finished.scan_requested_at == idle_requested.scan_requested_at
+    assert idle_finished.active_worker_id == ""
+    assert idle_finished.last_error == ""
+
+    assert error_running is not None
+    assert error_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert error_state.scan_requested_at is None
+    assert error_state.active_worker_id == ""
+    assert error_state.last_error == "scan failed"
+    assert error_state.consecutive_failure_reason == "unknown"
+    assert error_state.consecutive_failure_count == 1
+
+    assert stopped_claim is None
+
+
 def test_clear_consumed_scan_request_preserves_newer_request(
     tmp_path: Path,
 ) -> None:
@@ -456,7 +582,7 @@ def test_upsert_group_posts_target_stores_group_cover_image_url(tmp_path: Path) 
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 group_name="測試社團",
-                group_cover_image_url="https://scontent.example.test/group-cover.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/group-cover.jpg",
             )
         )
         second = app.services.targets.upsert_group_posts_target(
@@ -468,9 +594,9 @@ def test_upsert_group_posts_target_stores_group_cover_image_url(tmp_path: Path) 
         )
         loaded = app.repositories.targets.get(first.id)
 
-    assert second.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert second.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert loaded is not None
-    assert loaded.group_cover_image_url == "https://scontent.example.test/group-cover.jpg"
+    assert loaded.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
 
 
 def test_refresh_target_group_cover_image_does_not_overwrite_custom_name(
@@ -486,17 +612,17 @@ def test_refresh_target_group_cover_image_does_not_overwrite_custom_name(
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="我的自訂名稱",
                 group_name="舊社團名稱",
-                group_cover_image_url="https://scontent.example.test/old.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
         updated = app.services.targets.refresh_target_group_cover_image(
             target.id,
-            "https://scontent.example.test/new.jpg",
+            "https://scontent.xx.fbcdn.net/new.jpg",
         )
 
     assert updated.name == "我的自訂名稱"
     assert updated.group_name == "舊社團名稱"
-    assert updated.group_cover_image_url == "https://scontent.example.test/new.jpg"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/new.jpg"
 
 
 def test_cover_image_load_failure_request_uses_url_scoped_throttle(
@@ -510,27 +636,27 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                group_cover_image_url="https://scontent.example.test/old.jpg",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
         first = app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
         second = app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
         state = app.repositories.cover_image_refreshes.get(target.id)
         app.services.targets.refresh_target_group_cover_image(
             target.id,
-            "https://scontent.example.test/new.jpg",
+            "https://scontent.xx.fbcdn.net/new.jpg",
         )
         stale = app.services.targets.request_target_cover_image_refresh(
             target.id,
-            reported_url="https://scontent.example.test/old.jpg",
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
 
@@ -540,7 +666,7 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
     assert not second.queued
     assert state is not None
     assert state.status == TargetCoverImageRefreshStatus.PENDING
-    assert state.last_reported_url == "https://scontent.example.test/old.jpg"
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/old.jpg"
     assert state.last_resolved_url == ""
     assert state.last_result == "queued"
     assert state.changed is False

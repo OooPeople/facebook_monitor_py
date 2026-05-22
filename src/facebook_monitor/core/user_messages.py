@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
@@ -96,6 +97,7 @@ _NOTIFICATION_MESSAGE_LABELS = {
     "ntfy_failed": "ntfy 發送失敗",
     "discord_failed": "Discord 發送失敗",
     "ntfy topic is empty": "ntfy 主題未設定",
+    "discord_webhook_invalid": "Discord webhook URL 格式不正確",
     "desktop_failed: unsupported platform": "目前平台不支援桌面通知",
     "failed_result": "通知服務回傳失敗",
     "previous_down": "前次通知失敗",
@@ -113,8 +115,24 @@ _UPDATE_REASON_LABELS = {
     "sha256_asset_missing": "缺少 SHA256 驗證檔",
     "sha256_asset_url_missing": "缺少 SHA256 驗證檔下載網址",
     "sha256_mismatch": "更新檔 SHA256 驗證失敗",
+    "sha256_sidecar_manifest_mismatch": "SHA256 驗證檔與 signed manifest 不一致",
+    "manifest_file_missing": "缺少 signed release manifest",
+    "manifest_asset_url_missing": "缺少 signed release manifest 下載網址",
+    "manifest_signature_asset_missing": "缺少 release manifest 簽章",
+    "manifest_signature_asset_url_missing": "缺少 release manifest 簽章下載網址",
+    "manifest_signature_invalid": "release manifest 簽章無效",
+    "manifest_key_untrusted": "release manifest 簽章 key 不受信任",
+    "manifest_version_mismatch": "release manifest 版本不一致",
+    "manifest_repository_mismatch": "release manifest repository 不一致",
+    "manifest_asset_missing": "release manifest 缺少目前平台更新檔",
+    "manifest_asset_sha256_invalid": "release manifest 內的更新檔 hash 無效",
+    "manifest_asset_size_mismatch": "release manifest 內的更新檔大小不一致",
     "update_not_available": "目前沒有可下載的更新",
     "asset_download_url_missing": "缺少更新檔下載網址",
+    "release_download_url_must_be_https": "更新檔下載網址必須使用 HTTPS",
+    "release_download_url_host_not_allowed": "更新檔下載來源不在 GitHub allowlist",
+    "release_download_url_repository_mismatch": "更新檔下載 repository 與設定不一致",
+    "release_download_url_asset_mismatch": "更新檔下載檔名與 release metadata 不一致",
     "invalid_asset_name": "更新檔名不安全",
     "download_path_unsafe": "更新檔下載路徑不安全",
     "download_too_large": "更新檔超過大小限制",
@@ -185,7 +203,7 @@ def format_failure_message_text(value: str) -> str:
         return localized
     if _looks_like_raw_english(text):
         return _FAILURE_REASON_DETAILS[UNKNOWN_REASON]
-    return text
+    return redact_sensitive_text(text)
 
 
 def format_runtime_skip_message(value: str) -> str:
@@ -205,7 +223,7 @@ def format_runtime_skip_message(value: str) -> str:
         return _RUNTIME_SKIP_MESSAGES[text]
     if _looks_like_raw_english(text):
         return "本輪掃描已略過。"
-    return text
+    return redact_sensitive_text(text)
 
 
 def format_notification_status_label(status: str) -> str:
@@ -240,7 +258,7 @@ def format_notification_event_message(value: str) -> str:
         return "通知發送失敗"
     if _looks_like_raw_english(text):
         return "通知處理失敗"
-    return text
+    return redact_sensitive_text(text)
 
 
 def format_update_reason_message(value: str) -> str:
@@ -265,7 +283,7 @@ def format_update_reason_message(value: str) -> str:
         return f"下載更新檔失敗，狀態碼 {status_code}"
     if _looks_like_raw_english(text):
         return "更新流程失敗，請查看 log 或稍後重試。"
-    return text
+    return redact_sensitive_text(text)
 
 
 def _localized_failure_detail(reason: str, detail: str) -> str:
@@ -279,7 +297,7 @@ def _localized_failure_detail(reason: str, detail: str) -> str:
     text = str(detail or "").strip()
     if _looks_like_raw_english(text):
         return _FAILURE_REASON_DETAILS[UNKNOWN_REASON]
-    return text
+    return redact_sensitive_text(text)
 
 
 def _localized_exception_text(value: str) -> str:

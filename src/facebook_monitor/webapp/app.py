@@ -25,6 +25,7 @@ from starlette.types import Scope
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core import input_limits
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
@@ -64,7 +65,7 @@ from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
-from facebook_monitor.webapp.form_models import parse_keywords_text
+from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionManager
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
@@ -81,6 +82,7 @@ templates = _default_templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _default_templates.env.globals["asset_version"] = ASSET_VERSION
 _default_templates.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
 _default_templates.env.globals["csrf_token"] = ""
+_default_templates.env.globals["input_limits"] = input_limits
 
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -201,10 +203,13 @@ def create_app(
                 submitted_token = _submitted_csrf_token_from_body(request, request_body)
             expected_token = str(getattr(request.app.state, "csrf_token", ""))
             if not submitted_token or not compare_digest(submitted_token, expected_token):
-                return Response("CSRF validation failed", status_code=403)
+                return _with_security_headers(
+                    Response("CSRF validation failed", status_code=403)
+                )
         if request_body is not None:
             request = _replay_request_body(request, request_body)
-        return await call_next(request)
+        response = await call_next(request)
+        return _with_security_headers(response)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -235,6 +240,7 @@ def _build_templates(templates_dir: Path, *, csrf_token: str = "") -> Jinja2Temp
     template_environment.env.globals["asset_version"] = ASSET_VERSION
     template_environment.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
     template_environment.env.globals["csrf_token"] = csrf_token
+    template_environment.env.globals["input_limits"] = input_limits
     return template_environment
 
 
@@ -246,6 +252,19 @@ def _should_validate_csrf(request: Request) -> bool:
     if not bool(getattr(request.app.state, "enforce_csrf", True)):
         return False
     return True
+
+
+def _with_security_headers(response: Response) -> Response:
+    """加上本機 Web UI 的基本安全 header。"""
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    )
+    return response
 
 
 def _submitted_csrf_token_from_body(request: Request, body: bytes) -> str:

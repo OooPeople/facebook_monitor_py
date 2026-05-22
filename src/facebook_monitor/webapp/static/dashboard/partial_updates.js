@@ -45,7 +45,7 @@ const updateAvatar = (avatar, thumbnailUrl, displayName) => {
     image = document.createElement("img");
     image.alt = "";
     image.loading = "lazy";
-    image.referrerPolicy = "origin-when-cross-origin";
+    image.referrerPolicy = "no-referrer";
     avatar.append(image);
   }
   if (image.getAttribute("src") !== normalizedUrl) {

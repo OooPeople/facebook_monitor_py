@@ -11,6 +11,7 @@ from facebook_monitor.application.target_config_service import TargetConfigServi
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
+from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
@@ -340,7 +341,5 @@ def _normalize_metadata_error(value: str) -> str:
 def _normalize_metadata_url(value: str) -> str:
     """整理 Facebook metadata URL，避免空白與控制字元進 DB。"""
 
-    normalized = str(value or "").strip()
-    if not normalized:
-        return ""
-    return normalized[:2000]
+    result = sanitize_facebook_image_url(value)
+    return result.url if result.ok else ""

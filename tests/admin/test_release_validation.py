@@ -77,6 +77,7 @@ def test_validation_steps_include_artifact_validation_when_requested() -> None:
     assert "scripts/admin/release_artifact_validation.py" in artifact_step.command
     assert "--platform" in artifact_step.command
     assert "windows" in artifact_step.command
+    assert "--require-manifest" in artifact_step.command
     assert "--expected-signer-subject" in artifact_step.command
     assert "Example Publisher" in artifact_step.command
 

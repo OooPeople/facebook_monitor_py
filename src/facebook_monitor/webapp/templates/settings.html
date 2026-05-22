@@ -55,11 +55,11 @@
         <div class="settings-form-grid settings-form-grid--two">
           <label>
             排除關鍵字
-            <textarea name="exclude_keywords" rows="2">{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
+            <textarea name="exclude_keywords" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}">{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
           </label>
           <label>
             排除字忽略片語
-            <textarea name="exclude_ignore_phrases" rows="2">{{ target_keyword_defaults.exclude_ignore_phrases_text }}</textarea>
+            <textarea name="exclude_ignore_phrases" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}">{{ target_keyword_defaults.exclude_ignore_phrases_text }}</textarea>
           </label>
         </div>
       </form>
@@ -95,6 +95,47 @@
           aria-live="polite"
         >尚未儲存</span>
         <button class="button button--primary" type="submit" form="notification-defaults-form" data-dirty-submit>保存通知預設值</button>
+      </div>
+    </section>
+
+    <section class="target settings-card">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <h2>通知 outbox</h2>
+          <p>{{ notification_outbox_health.summary_label }}</p>
+        </div>
+      </div>
+
+      <dl class="field-grid update-check-grid" aria-label="通知 outbox 狀態">
+        <div class="field-grid-cell">
+          <dt>待送</dt>
+          <dd>{{ notification_outbox_health.pending_count }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>失敗</dt>
+          <dd>{{ notification_outbox_health.failed_count }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>最大嘗試</dt>
+          <dd>{{ notification_outbox_health.max_attempts }}</dd>
+        </div>
+        <div class="field-grid-cell">
+          <dt>最近失敗</dt>
+          <dd>
+            {% if notification_outbox_health.last_failure_reason %}
+              {{ notification_outbox_health.last_failure_channel }} · {{ notification_outbox_health.last_failure_reason }}
+            {% else %}
+              無
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
+
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        <form method="post" action="/settings/notifications/retry-failed">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button--primary" type="submit" {% if not notification_outbox_health.has_failed %}disabled{% endif %}>重試 failed 通知</button>
+        </form>
       </div>
     </section>
 
@@ -134,6 +175,22 @@
         <form class="settings-inline-form" method="get" action="/settings" data-update-check-form>
           <input type="hidden" name="update_check" value="1">
           <button class="button button--primary" type="submit">檢查更新</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="target settings-card">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <h2>資料與支援</h2>
+          <p>支援診斷包會排除 DB、profile、cookies、secrets、logs 與完整貼文/留言內容；target 資料清除在各 target 的更多操作中執行。</p>
+        </div>
+      </div>
+
+      <div class="settings-card-actions settings-actions settings-actions--right">
+        <form method="post" action="/settings/support-bundle">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button--primary" type="submit">下載支援診斷包</button>
         </form>
       </div>
     </section>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -982,6 +983,37 @@ def test_apply_pending_update_rejects_hash_changed_after_handoff(tmp_path: Path)
 
     assert result.status == "failed"
     assert result.message == "pending_zip_sha256_mismatch"
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_rejects_manifest_changed_after_handoff(
+    tmp_path: Path,
+) -> None:
+    """handoff 後 manifest 被替換時，updater 會重算 SHA256 並拒絕套用。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+    manifest_path = zip_path.with_name("facebook-monitor-0.1.0-manifest.json")
+    manifest_path.write_text("original", encoding="utf-8")
+    manifest_digest = hashlib.sha256(b"original").hexdigest()
+    manifest_path.write_text("changed", encoding="utf-8")
+    signature_path = manifest_path.with_suffix(manifest_path.suffix + ".sig")
+    signature_path.write_text("sig", encoding="utf-8")
+
+    pending = replace(
+        pending_update(tmp_path, zip_path=zip_path, digest=digest),
+        manifest_path=manifest_path,
+        manifest_signature_path=signature_path,
+        manifest_sha256=manifest_digest,
+        manifest_key_id="test-key",
+    )
+    result = apply_pending_update(pending)
+
+    assert result.status == "failed"
+    assert result.message == "pending_manifest_sha256_mismatch"
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
 
 

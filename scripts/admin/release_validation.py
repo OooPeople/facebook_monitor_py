@@ -181,6 +181,7 @@ def validation_steps(
                 "scripts/admin/release_artifact_validation.py",
                 "--platform",
                 artifact_platform,
+                "--require-manifest",
             )
         ]
         if expected_signer_subject:

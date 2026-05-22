@@ -106,6 +106,16 @@ class TargetRuntimeService:
         """嘗試取得單一 target scan lock；已 running 時記錄 skip reason。"""
 
         self._require_target(target_id)
+        self.ensure_runtime_state(target_id)
+        now = utc_now()
+        claimed_state = self.runtime_states.try_mark_running(
+            target_id,
+            worker_id=worker_id,
+            page_id=page_id,
+            started_at=now,
+        )
+        if claimed_state is not None:
+            return claimed_state
         existing_state = self.ensure_runtime_state(target_id)
         if existing_state.runtime_status == TargetRuntimeStatus.RUNNING:
             skipped_state = replace(
@@ -131,7 +141,14 @@ class TargetRuntimeService:
             )
             self.runtime_states.save(skipped_state)
             return None
-        return self.mark_target_running(target_id, worker_id, page_id=page_id)
+        skipped_state = replace(
+            existing_state,
+            last_skip_reason="scan_guard_skipped: target_claim_conflict",
+            scan_guard_count=existing_state.scan_guard_count + 1,
+            updated_at=utc_now(),
+        )
+        self.runtime_states.save(skipped_state)
+        return None
 
     def mark_target_page_reloaded(
         self,

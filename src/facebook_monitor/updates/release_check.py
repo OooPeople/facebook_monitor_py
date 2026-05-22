@@ -20,6 +20,8 @@ from facebook_monitor.updates.artifacts import current_update_runtime_platform
 from facebook_monitor.updates.artifacts import is_release_asset_name_for_policy
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.versioning import normalize_version_text
 from facebook_monitor.versioning import parse_version
 
@@ -57,6 +59,10 @@ class UpdateCheckResult:
     sha256_asset_name: str
     sha256_asset_download_url: str
     failure_reason: str
+    manifest_asset_name: str = ""
+    manifest_asset_download_url: str = ""
+    manifest_signature_asset_name: str = ""
+    manifest_signature_asset_download_url: str = ""
 
 
 def build_idle_update_check(
@@ -64,11 +70,14 @@ def build_idle_update_check(
     current_version: str,
     channel: str = "stable",
     repository: str | None = None,
+    allow_env_repository_override: bool = True,
 ) -> UpdateCheckResult:
     """建立尚未查詢 GitHub 前的設定頁狀態。"""
 
     normalized_channel = normalize_channel(channel)
-    resolved_repository = repository or configured_update_repository()
+    resolved_repository = repository or configured_update_repository(
+        allow_env_override=allow_env_repository_override
+    )
     return UpdateCheckResult(
         checked=False,
         status="not_checked",
@@ -93,13 +102,16 @@ async def check_github_release_updates(
     current_version: str,
     channel: str = "stable",
     repository: str | None = None,
+    allow_env_repository_override: bool = True,
     timeout_seconds: float = 10.0,
     artifact_policy: UpdateArtifactPolicy | None = None,
 ) -> UpdateCheckResult:
     """查詢 GitHub Releases，回傳目前版本與遠端 release 的比較結果。"""
 
     normalized_channel = normalize_channel(channel)
-    resolved_repository = repository or configured_update_repository()
+    resolved_repository = repository or configured_update_repository(
+        allow_env_override=allow_env_repository_override
+    )
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -225,6 +237,11 @@ def evaluate_release(
         policy=resolved_policy,
     )
     sha256_asset = find_sha256_asset(assets, portable_asset=portable_asset)
+    manifest_asset = find_manifest_asset(assets, latest_version=latest_version)
+    manifest_signature_asset = find_manifest_signature_asset(
+        assets,
+        latest_version=latest_version,
+    )
     if portable_asset is None:
         if has_version_mismatched_portable_asset(
             assets,
@@ -274,19 +291,32 @@ def evaluate_release(
         latest_version=latest_version,
         update_available=True,
         summary=f"有新版 {latest_version}",
-        detail="下載與套用能力會依目前 runtime 支援與 SHA256 asset 狀態決定。",
+        detail="下載與套用能力會依目前 runtime 支援與 signed manifest 狀態決定。",
         release_url=release_url,
         asset_name=portable_asset.name,
         asset_download_url=portable_asset.download_url,
         sha256_asset_name=sha256_asset.name if sha256_asset else "",
         sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
-        failure_reason="" if sha256_asset else "sha256_asset_missing",
+        failure_reason=_manifest_failure_reason(
+            manifest_asset=manifest_asset,
+            manifest_signature_asset=manifest_signature_asset,
+        ),
+        manifest_asset_name=manifest_asset.name if manifest_asset else "",
+        manifest_asset_download_url=manifest_asset.download_url if manifest_asset else "",
+        manifest_signature_asset_name=manifest_signature_asset.name
+        if manifest_signature_asset
+        else "",
+        manifest_signature_asset_download_url=manifest_signature_asset.download_url
+        if manifest_signature_asset
+        else "",
     )
 
 
-def configured_update_repository() -> str:
-    """取得受信任 GitHub repository，允許開發/測試用 env 覆寫。"""
+def configured_update_repository(*, allow_env_override: bool = True) -> str:
+    """取得受信任 GitHub repository；正式 frozen 路徑可禁用 env 覆寫。"""
 
+    if not allow_env_override:
+        return DEFAULT_UPDATE_REPOSITORY
     value = os.environ.get(UPDATE_REPOSITORY_ENV, DEFAULT_UPDATE_REPOSITORY).strip()
     if not value or "/" not in value:
         return DEFAULT_UPDATE_REPOSITORY
@@ -390,6 +420,48 @@ def find_sha256_asset(
         if asset.name == expected_name:
             return asset
     return None
+
+
+def find_manifest_asset(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+) -> ReleaseAsset | None:
+    """尋找 release manifest asset。"""
+
+    expected_name = release_manifest_asset_name(latest_version)
+    for asset in assets:
+        if asset.name == expected_name:
+            return asset
+    return None
+
+
+def find_manifest_signature_asset(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+) -> ReleaseAsset | None:
+    """尋找 release manifest detached signature asset。"""
+
+    expected_name = release_manifest_signature_asset_name(latest_version)
+    for asset in assets:
+        if asset.name == expected_name:
+            return asset
+    return None
+
+
+def _manifest_failure_reason(
+    *,
+    manifest_asset: ReleaseAsset | None,
+    manifest_signature_asset: ReleaseAsset | None,
+) -> str:
+    """回傳會阻擋自動下載的 manifest metadata 缺漏原因。"""
+
+    if manifest_asset is None:
+        return "manifest_file_missing"
+    if manifest_signature_asset is None:
+        return "manifest_signature_asset_missing"
+    return ""
 
 
 async def _fetch_release(

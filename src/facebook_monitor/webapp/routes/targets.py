@@ -15,10 +15,19 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_actions import clear_target_match_history_action
+from facebook_monitor.application.target_actions import clear_target_notification_data_action
+from facebook_monitor.application.target_actions import clear_target_seen_baseline_action
+from facebook_monitor.application.target_actions import delete_target_action
+from facebook_monitor.application.target_actions import pause_target_monitoring_action
+from facebook_monitor.application.target_actions import request_target_scan_once_action
+from facebook_monitor.application.target_actions import restart_target_monitoring_action
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.input_limits import normalize_display_name
+from facebook_monitor.core.input_limits import normalize_target_url
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
@@ -48,6 +57,7 @@ from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
 from facebook_monitor.webapp.dependencies import start_resident_scheduler_if_needed
 from facebook_monitor.webapp.form_models import CreateTargetConfigFormFields
+from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import NotificationConfigForm
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.profile_session import ProfileSessionError
@@ -130,13 +140,14 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
         try:
             keyword_defaults = get_target_keyword_defaults(request)
+            notification_defaults = get_global_notification_settings(request)
             config_form = config_fields.to_target_config_form(
                 default_exclude_keywords=keyword_defaults.exclude_keywords_text,
                 default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
             )
-            custom_name = clean_facebook_page_title(display_name)
+            custom_name = clean_facebook_page_title(normalize_display_name(display_name))
             scheduler_running = get_scheduler_manager(request).state().running
-            route = detect_target_route_from_url(group_url.strip())
+            route = detect_target_route_from_url(normalize_target_url(group_url))
             if isinstance(route, DetectedCommentsTargetRoute):
                 resolved_metadata = await _resolve_group_metadata_if_needed(
                     request,
@@ -152,6 +163,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
+                            existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -174,6 +186,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
+                            existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -188,6 +201,10 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_new_target_with_error(str(exc))
         except ProfileSessionError as exc:
             return redirect_new_target_with_error(str(exc))
+        except ValueError as exc:
+            return redirect_new_target_with_error(
+                "新增失敗：" + format_notification_form_error(exc)
+            )
         except Exception as exc:
             return redirect_new_target_with_error(
                 "新增失敗：" + format_failure_message_text(str(exc))
@@ -211,6 +228,11 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 app_context.services.targets.update_target_config(
                     config_form.to_update_request(target_id=target_id)
                 )
+        except ValueError as exc:
+            return redirect_with_error(
+                "設定更新失敗：" + format_notification_form_error(exc),
+                return_to=return_to,
+            )
         except Exception as exc:
             return redirect_with_error(
                 "設定更新失敗：" + format_failure_message_text(str(exc)),
@@ -233,7 +255,10 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
         try:
             with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.targets.update_target_name(target_id, display_name)
+                app_context.services.targets.update_target_name(
+                    target_id,
+                    normalize_display_name(display_name),
+                )
         except Exception as exc:
             return redirect_with_error(
                 "名稱更新失敗：" + format_failure_message_text(str(exc)),
@@ -327,13 +352,28 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             status_code=404,
                         )
                     return redirect_with_error("測試通知失敗: target 不存在", return_to=return_to)
-            config = notification_form.to_target_config(target_id=target.id)
+                existing_config = app_context.services.targets.get_config_for_target(target)
+            config = notification_form.to_target_config(
+                target_id=target.id,
+                existing_discord_webhook=existing_config.discord_webhook,
+            )
             results = await run_in_threadpool(
                 send_manual_test_notification,
                 config=config,
                 ntfy_sender=get_ntfy_sender(request),
                 desktop_sender=get_desktop_sender(request),
                 discord_sender=get_discord_sender(request),
+            )
+        except ValueError as exc:
+            error_message = "測試通知失敗: " + format_notification_form_error(exc)
+            if _wants_json_response(request):
+                return JSONResponse(
+                    {"ok": False, "error": error_message},
+                    status_code=400,
+                )
+            return redirect_with_error(
+                error_message,
+                return_to=return_to,
             )
         except Exception as exc:
             error_message = (
@@ -369,18 +409,18 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """重新開始單一 target，清 seen/outbox 去重並要求立即掃描。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.targets.restart_target_monitoring(target_id)
-            get_scheduler_manager(request).wake()
+            outcome = restart_target_monitoring_action(get_db_path(request), target_id)
+            if outcome.wake_scheduler:
+                get_scheduler_manager(request).wake()
         except Exception as exc:
             return redirect_with_error(
                 "啟動失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(
-            "target 已開始",
+            outcome.message,
             return_to=return_to,
-            feedback="target_started",
+            feedback=outcome.feedback,
         )
 
     @app.post("/targets/{target_id}/stop")
@@ -392,18 +432,18 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """暫停單一 target，保留 seen scope 與歷史紀錄。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.targets.pause_target_monitoring(target_id)
-            get_scheduler_manager(request).wake()
+            outcome = pause_target_monitoring_action(get_db_path(request), target_id)
+            if outcome.wake_scheduler:
+                get_scheduler_manager(request).wake()
         except Exception as exc:
             return redirect_with_error(
                 "停止失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(
-            "target 已停止",
+            outcome.message,
             return_to=return_to,
-            feedback="target_stopped",
+            feedback=outcome.feedback,
         )
 
     @app.post("/targets/{target_id}/delete")
@@ -415,17 +455,85 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """刪除單一 target。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.targets.delete_target(target_id)
+            outcome = delete_target_action(get_db_path(request), target_id)
         except Exception as exc:
             return redirect_with_error(
                 "刪除失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(
-            "target 已刪除",
+            outcome.message,
             return_to=return_to,
-            feedback="target_deleted",
+            feedback=outcome.feedback,
+        )
+
+    @app.post("/targets/{target_id}/data/seen/clear")
+    async def clear_target_seen_baseline(
+        request: Request,
+        target_id: str,
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """清除單一 target 的 seen baseline。"""
+
+        try:
+            outcome = clear_target_seen_baseline_action(get_db_path(request), target_id)
+            if not outcome.ok:
+                return redirect_with_error(outcome.message, return_to=return_to)
+        except Exception as exc:
+            return redirect_with_error(
+                "資料清除失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            outcome.message,
+            return_to=return_to,
+            feedback=outcome.feedback,
+        )
+
+    @app.post("/targets/{target_id}/data/history/clear")
+    async def clear_target_match_history(
+        request: Request,
+        target_id: str,
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """清除單一 target 的命中紀錄。"""
+
+        try:
+            outcome = clear_target_match_history_action(get_db_path(request), target_id)
+            if not outcome.ok:
+                return redirect_with_error(outcome.message, return_to=return_to)
+        except Exception as exc:
+            return redirect_with_error(
+                "資料清除失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            outcome.message,
+            return_to=return_to,
+            feedback=outcome.feedback,
+        )
+
+    @app.post("/targets/{target_id}/data/notifications/clear")
+    async def clear_target_notification_data(
+        request: Request,
+        target_id: str,
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """清除單一 target 的通知事件與 outbox rows。"""
+
+        try:
+            outcome = clear_target_notification_data_action(get_db_path(request), target_id)
+            if not outcome.ok:
+                return redirect_with_error(outcome.message, return_to=return_to)
+        except Exception as exc:
+            return redirect_with_error(
+                "資料清除失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            outcome.message,
+            return_to=return_to,
+            feedback=outcome.feedback,
         )
 
     @app.post("/targets/{target_id}/scan-once")
@@ -433,15 +541,12 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """要求 resident scheduler 對單一 target 執行一次掃描。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                target = app_context.repositories.targets.get(target_id)
-                if target is None:
-                    return redirect_with_error("掃描失敗：target 不存在")
-                if not target.enabled or target.paused:
-                    return redirect_with_error("掃描失敗：請先開始 target")
-                app_context.services.targets.request_target_scan(target_id)
-            start_resident_scheduler_if_needed(request)
+            outcome = request_target_scan_once_action(get_db_path(request), target_id)
+            if not outcome.ok:
+                return redirect_with_error(outcome.message)
+            if outcome.start_scheduler:
+                start_resident_scheduler_if_needed(request)
         except Exception as exc:
             logger.exception("scan once failed", extra={"target_id": target_id})
             return redirect_with_error("掃描失敗：" + format_failure_message_text(str(exc)))
-        return redirect_with_message("已排入掃描", feedback="scan_requested")
+        return redirect_with_message(outcome.message, feedback=outcome.feedback)

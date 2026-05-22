@@ -45,6 +45,20 @@ def test_generic_raw_english_failure_message_is_not_exposed() -> None:
     assert "Unexpected" not in message
 
 
+def test_mixed_failure_message_redacts_secret_values() -> None:
+    """含中文的 exception detail 仍不得顯示 webhook token 或使用者目錄。"""
+
+    message = format_failure_message_text(
+        r"操作失敗：https://discord.com/api/webhooks/123456/very-secret-token "
+        r"C:\Users\alice\facebook_monitor_data\logs\error.log"
+    )
+
+    assert "very-secret-token" not in message
+    assert "alice" not in message
+    assert "[已隱藏]" in message
+    assert "%USERPROFILE%" in message
+
+
 def test_notification_event_message_is_localized() -> None:
     """通知事件內部代碼顯示時必須轉成中文摘要。"""
 

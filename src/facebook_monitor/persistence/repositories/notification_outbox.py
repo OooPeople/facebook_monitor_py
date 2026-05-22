@@ -376,6 +376,62 @@ class NotificationOutboxRepository:
             summaries[summary.target_id] = summary
         return summaries
 
+    def summarize_all(self) -> NotificationOutboxSummary:
+        """回傳全域 outbox backlog 診斷摘要，供 settings health 使用。"""
+
+        row = self.connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END) AS processing_count,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END) AS terminal_count,
+                MIN(CASE WHEN status IN (?, ?, ?) THEN updated_at ELSE NULL END)
+                    AS oldest_pending_updated_at,
+                MAX(attempts) AS max_attempts
+            FROM notification_outbox
+            """,
+            (
+                NotificationOutboxStatus.PENDING.value,
+                NotificationOutboxStatus.PROCESSING_PENDING.value,
+                NotificationOutboxStatus.PROCESSING_FAILED.value,
+                NotificationOutboxStatus.FAILED.value,
+                NotificationOutboxStatus.SENT.value,
+                NotificationOutboxStatus.SKIPPED.value,
+                NotificationOutboxStatus.PENDING.value,
+                NotificationOutboxStatus.PROCESSING_PENDING.value,
+                NotificationOutboxStatus.PROCESSING_FAILED.value,
+            ),
+        ).fetchone()
+        if row is None:
+            return NotificationOutboxSummary(target_id="*")
+        oldest_text = str(row["oldest_pending_updated_at"] or "")
+        return NotificationOutboxSummary(
+            target_id="*",
+            pending_count=int(row["pending_count"] or 0),
+            processing_count=int(row["processing_count"] or 0),
+            failed_count=int(row["failed_count"] or 0),
+            terminal_count=int(row["terminal_count"] or 0),
+            oldest_pending_updated_at=decode_datetime(oldest_text)
+            if oldest_text
+            else None,
+            max_attempts=int(row["max_attempts"] or 0),
+        )
+
+    def latest_failed(self) -> NotificationOutboxEntry | None:
+        """回傳最近一筆 failed outbox event，供 UI 顯示分類後原因。"""
+
+        row = self.connection.execute(
+            """
+            SELECT * FROM notification_outbox
+            WHERE status = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (NotificationOutboxStatus.FAILED.value,),
+        ).fetchone()
+        return self._decrypt_entry(notification_outbox_from_row(row)) if row else None
+
     def _decrypt_entry(self, entry: NotificationOutboxEntry) -> NotificationOutboxEntry:
         """還原 repository 對外回傳的 notification endpoint。"""
 

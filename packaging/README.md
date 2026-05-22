@@ -14,9 +14,9 @@
 - frozen Windows 預設啟用 system tray；source mode 預設不啟用 tray。
 - Windows PyInstaller spec 會從 `APP_VERSION` 分別產生主程式與 updater 的 version resource；code signing 本輪不做。
 - `facebook-monitor-updater.exe` 是 PyInstaller onedir app，從 Web UI 啟動 temp updater 時必須連同 `_internal\` 複製；不可只複製單一 updater exe。
-- 每次輸出 release zip 時，必須同時產生同名 `.sha256`，供 GitHub Release updater 驗證下載完整性；正式壓縮入口是 `scripts/admin/create_release_zip.py`。
+- 每次輸出 release zip 時，必須同時產生同名 `.sha256`，並建立 signed release manifest / `.sig`。runtime updater 以 Ed25519 signed manifest 作為信任根，`.sha256` 只作相容與交叉檢查；正式壓縮入口是 `scripts/admin/create_release_zip.py`。
 - GitHub Release tag、app version、Windows version metadata、macOS Info.plist version、release zip 檔名與 `.sha256` 內容必須互相對齊；updater 只接受精確版本檔名，不 fallback 到其他版本 zip。
-- Release artifact validation 會檢查 zip、`.sha256`、必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE version resource、generated Windows version resource、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 Git tag 與可選 Windows Authenticode signer；正式發佈前應納入 release validation。
+- Release artifact validation 會檢查 zip、`.sha256`、signed manifest / `.sig`、必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE version resource、generated Windows version resource、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 Git tag 與可選 Windows Authenticode signer；正式發佈前應納入 release validation。
 - macOS Apple Silicon 目前使用 PyInstaller onedir zip，內含 `Facebook Monitor.app` native launcher 外殼，避免 Finder 啟動時跳出 Terminal，並讓程式執行期間持續顯示在 Dock；尚未做 Developer ID signing / notarization。
 
 ## 發佈內容
@@ -83,7 +83,7 @@ macOS zip 內預期包含：
 
 ## 打包與壓縮最小指令
 
-以下指令都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。`create_release_zip.py` 是 Windows / macOS 共用的壓縮與 `.sha256` 入口，會先檢查平台必要檔案並拒絕把 `data/`、`profiles/`、`logs/` 等 runtime 私密資料包進 release。
+以下指令都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。`create_release_zip.py` 是 Windows / macOS 共用的壓縮與 `.sha256` 入口，會先檢查平台必要檔案並拒絕把 `data/`、`profiles/`、`logs/` 等 runtime 私密資料包進 release。`create_release_manifest.py` 與 `sign_release_manifest.py` 則建立 updater 信任鏈所需的 manifest / signature。
 
 ### Windows
 
@@ -101,6 +101,14 @@ $env:FACEBOOK_MONITOR_PACKAGING_MODE = "pyinstaller-onedir-gui-tray"
 
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\create_release_zip.py --platform windows --force
+```
+
+建立並簽署 Windows signed manifest：
+
+```powershell
+$version = (.\scripts\uv.ps1 run python -c "from facebook_monitor.version import APP_VERSION; print(APP_VERSION)").Trim()
+.\scripts\uv.ps1 run python scripts\admin\create_release_manifest.py --version $version --key-id release-ed25519-2026q2 --asset "windows=dist\facebook-monitor-$version-windows-portable.zip" --output "dist\facebook-monitor-$version-manifest.json" --force
+.\scripts\uv.ps1 run python scripts\admin\sign_release_manifest.py "dist\facebook-monitor-$version-manifest.json" --private-key-file docs\local\release-signing\release-ed25519-2026q2.private-key.b64 --force
 ```
 
 ### macOS onedir
@@ -129,25 +137,27 @@ uv run python scripts/admin/create_macos_app_launcher.py --app-root dist/faceboo
 uv run python scripts/admin/create_release_zip.py --platform macos-arm64 --force
 ```
 
+若同一個 release 同時發佈 Windows 與 macOS，可用同一份 manifest 帶入多個 `--asset`。
+
 ## 驗證指令
 
 驗證目前版本的 Windows artifact：
 
 ```powershell
-.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py
+.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --require-manifest
 ```
 
 驗證目前版本的 Windows artifact，並確認 GitHub tag 語義：
 
 ```powershell
 $version = (.\scripts\uv.ps1 run python -c "from facebook_monitor.version import APP_VERSION; print(APP_VERSION)").Trim()
-.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --expected-tag "v$version"
+.\scripts\uv.ps1 run python scripts\admin\release_artifact_validation.py --require-manifest --expected-tag "v$version"
 ```
 
 驗證 macOS Apple Silicon artifact：
 
 ```bash
-uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64
+uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest
 ```
 
 完整 release 驗證：
@@ -240,5 +250,6 @@ macOS frozen smoke 另需確認：
 ## Deferred
 
 - Windows code signing 本輪不做；SmartScreen / Defender 提示需由 release note 說明。
-- signed manifest / detached signature 尚未導入；目前只有 SHA256 完整性檢查與可選 Authenticode signer validation hook。
+- macOS Developer ID signing / notarization 本輪不做；Gatekeeper / quarantine 提示需由 release note 說明。
+- signed manifest / detached signature 已作為 updater 免費信任鏈；OS 發布者身分驗證仍依上面兩項另行處理。
 - frozen smoke 目前是本機 admin smoke script；尚未進 CI。

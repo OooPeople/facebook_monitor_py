@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "containerRole": "article",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/1111111111111111",
+      "permalinkSource": "container:groups_post_anchor",
+      "postId": "1111111111111111",
+      "text": "主辦人 讓票兩張，今晚可面交。 留言",
+      "textSource": "container"
+    },
+    {
+      "containerRole": "article",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/2222222222222222",
+      "permalinkSource": "container:groups_post_anchor",
+      "postId": "2222222222222222",
+      "text": "社團成員 徵票一張。 留言",
+      "textSource": "container"
+    }
+  ],
+  "meta": {
+    "articleElementCount": 2,
+    "candidateCount": 2,
+    "filteredNonPostCount": 0,
+    "parsedCount": 2,
+    "postsWithPostIdCount": 2
+  }
+}

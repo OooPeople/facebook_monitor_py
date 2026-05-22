@@ -243,6 +243,7 @@ def test_launch_restarted_app_preserves_runtime_path_overrides(
     pending = PendingUpdate(
         schema_version=1,
         version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
         asset_name="app.zip",
         zip_path=tmp_path / "app.zip",
         expected_sha256="a" * 64,
@@ -299,6 +300,7 @@ def test_launch_restarted_app_uses_macos_binary_and_detached_session(
     pending = PendingUpdate(
         schema_version=1,
         version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
         asset_name="app.zip",
         zip_path=tmp_path / "app.zip",
         expected_sha256="a" * 64,
@@ -347,6 +349,7 @@ def test_launch_restarted_app_reports_missing_macos_launcher(
     pending = PendingUpdate(
         schema_version=1,
         version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
         asset_name="app.zip",
         zip_path=tmp_path / "app.zip",
         expected_sha256="a" * 64,

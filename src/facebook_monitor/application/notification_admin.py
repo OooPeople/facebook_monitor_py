@@ -80,3 +80,12 @@ def retry_failed_notifications(
             desktop_sender=desktop_sender,
             discord_sender=discord_sender,
         )
+
+
+def clear_failed_notifications(*, db_path: Path) -> int:
+    """清除 failed outbox rows，讓使用者明確結束不再重試的通知。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        cleared_count = app_context.repositories.notification_outbox.clear_failed()
+        app_context.repositories.notification_outbox.connection.commit()
+        return cleared_count

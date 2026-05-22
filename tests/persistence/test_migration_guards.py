@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -40,26 +41,26 @@ def test_v12_to_v13_migration_owns_historical_repair_columns() -> None:
 def test_cover_refresh_diagnostics_are_owned_by_v27_to_v28() -> None:
     """v27 保持已發布表格形狀，診斷欄位只由 v28 migration 補上。"""
 
-    connection = sqlite3.connect(":memory:")
-    migrate_26_to_27(connection)
-    v27_columns = {
-        row[1]
-        for row in connection.execute(
-            "PRAGMA table_info(target_cover_image_refresh_state)"
-        ).fetchall()
-    }
+    with closing(sqlite3.connect(":memory:")) as connection:
+        migrate_26_to_27(connection)
+        v27_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(target_cover_image_refresh_state)"
+            ).fetchall()
+        }
+        migrate_27_to_28(connection)
+        v28_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(target_cover_image_refresh_state)"
+            ).fetchall()
+        }
     assert "last_reported_url" in v27_columns
     assert "last_resolved_url" not in v27_columns
     assert "last_result" not in v27_columns
     assert "changed" not in v27_columns
 
-    migrate_27_to_28(connection)
-    v28_columns = {
-        row[1]
-        for row in connection.execute(
-            "PRAGMA table_info(target_cover_image_refresh_state)"
-        ).fetchall()
-    }
     assert "last_resolved_url" in v28_columns
     assert "last_result" in v28_columns
     assert "changed" in v28_columns

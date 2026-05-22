@@ -136,6 +136,18 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="button button--primary" type="submit" {% if not notification_outbox_health.has_failed %}disabled{% endif %}>重試 failed 通知</button>
         </form>
+        <form
+          method="post"
+          action="/settings/notifications/clear-failed"
+          data-confirm-submit
+          data-confirm-title="清除 failed 通知"
+          data-confirm-message="清除所有 failed 通知？這會移除這些通知的重試與去重紀錄，之後若同一 target/item/channel 再次命中，可能重新建立待送通知。"
+          data-confirm-label="清除"
+          data-confirm-danger="1"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button" type="submit" {% if not notification_outbox_health.has_failed %}disabled{% endif %}>清除 failed 通知</button>
+        </form>
       </div>
     </section>
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -201,7 +202,7 @@ def test_initialize_schema_repairs_duplicate_target_scopes_before_unique_index(
     """v16 以前若出現重複 scope，migration 會先合併再建立 DB unique index。"""
 
     db_path = tmp_path / "app.db"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         connection.executescript(
             """
@@ -282,6 +283,7 @@ def test_initialize_schema_repairs_duplicate_target_scopes_before_unique_index(
                     encode_datetime(target.updated_at),
                 ),
             )
+        connection.commit()
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
@@ -1389,7 +1391,7 @@ def test_initialize_schema_accepts_plain_sqlite_connection_for_current_db(
     with SqliteConnection(db_path) as sqlite:
         initialize_schema(sqlite.require_connection())
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         initialize_schema(connection)
 
         row = connection.execute(
@@ -1710,6 +1712,67 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
 
         assert repo.get_by_idempotency_key(f"{first.id}:item-hash:ntfy") is None
         assert repo.get_by_idempotency_key(f"{second.id}:item-hash:ntfy") is not None
+
+
+def test_notification_outbox_clear_failed_only_deletes_failed_rows(
+    tmp_path: Path,
+) -> None:
+    """全域 failed 清除是破壞性操作，但不可誤刪其他 outbox 狀態。"""
+
+    db_path = tmp_path / "app.db"
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+    )
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        TargetRepository(connection).save(target)
+        repo = notification_outbox_repository(connection)
+        for status in NotificationOutboxStatus:
+            repo.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:{status.value}:desktop",
+                    target_id=target.id,
+                    item_key=status.value,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.DESKTOP,
+                    title=status.value,
+                    message=status.value,
+                    status=status,
+                )
+            )
+
+        assert repo.clear_failed() == 1
+        replacement = repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:failed:desktop",
+                target_id=target.id,
+                item_key="failed",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="replacement",
+                message="replacement",
+                status=NotificationOutboxStatus.PENDING,
+            )
+        )
+        loaded_by_status = {
+            status: repo.get_by_idempotency_key(f"{target.id}:{status.value}:desktop")
+            for status in NotificationOutboxStatus
+        }
+
+    assert loaded_by_status[NotificationOutboxStatus.FAILED] is not None
+    assert loaded_by_status[NotificationOutboxStatus.FAILED] == replacement
+    for status in (
+        NotificationOutboxStatus.PENDING,
+        NotificationOutboxStatus.PROCESSING_PENDING,
+        NotificationOutboxStatus.SENT,
+        NotificationOutboxStatus.PROCESSING_FAILED,
+        NotificationOutboxStatus.SKIPPED,
+    ):
+        loaded_entry = loaded_by_status[status]
+        assert loaded_entry is not None
+        assert loaded_entry.status == status
 
 
 def test_notification_outbox_claim_pending_is_single_owner_across_connections(

@@ -144,6 +144,27 @@ class UnconfirmedSortFakePage(FakePage):
         raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
+class MissingSortControlFakePage(FakePage):
+    """模擬社團 feed 沒有排序控制欄位。"""
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """找不到排序控制時仍應允許後續 extractor。"""
+
+        if "preferredLabel" in script and "sort_control_not_found" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": False,
+                "changed": False,
+                "preferredLabel": "新貼文",
+                "beforeLabel": "",
+                "afterLabel": "",
+                "reason": "sort_control_not_found",
+                "mutationSuppressionMs": 0,
+                "mutationSuppressionReason": "",
+            }
+        return super().evaluate(script, *args)
+
+
 class ContentUnavailablePostsPage(FakePage):
     """模擬 Facebook 內容不可見頁。"""
 
@@ -641,6 +662,58 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
             "mutation_suppression_reason": "auto_adjust_sort",
             "menu_candidate_texts": [],
         }
+
+
+def test_scan_posts_page_allows_missing_sort_control(tmp_path: Path) -> None:
+    """沒有排序控制欄位的社團仍應繼續掃描並保存排序診斷。"""
+
+    db_path = tmp_path / "app.db"
+    page = MissingSortControlFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_posts_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=0,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+
+    assert page.sort_adjusted
+    assert summary.item_count == 2
+    assert summary.matched_count == 1
+    assert len(latest_items) == 2
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 2
+    assert "scan_skipped" not in latest_scan.metadata
+    assert latest_scan.metadata["sort_adjust"] == {
+        "attempted": False,
+        "changed": False,
+        "preferred_label": "新貼文",
+        "before_label": "",
+        "after_label": "",
+        "reason": "sort_control_not_found",
+        "mutation_suppression_ms": 0,
+        "mutation_suppression_reason": "",
+        "menu_candidate_texts": [],
+    }
 
 
 def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -> None:

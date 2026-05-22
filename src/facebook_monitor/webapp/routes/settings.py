@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.notification_admin import clear_failed_notifications
 from facebook_monitor.application.notification_admin import load_notification_outbox_health
 from facebook_monitor.application.notification_admin import retry_failed_notifications
 from facebook_monitor.application.update_flow import download_and_launch_verified_update
@@ -337,6 +338,27 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return redirect_settings_with_message(
             f"已重試 failed 通知 {dispatched_count} 筆",
             feedback="notification_retry_finished",
+        )
+
+    @app.post("/settings/notifications/clear-failed")
+    async def clear_failed_notification_outbox_route(request: Request) -> RedirectResponse:
+        """手動清除 failed notification outbox rows，不影響 pending rows。"""
+
+        try:
+            cleared_count = await run_in_threadpool(
+                clear_failed_notifications,
+                db_path=get_db_path(request),
+            )
+        except Exception as exc:
+            return redirect_settings_with_error(
+                "清除 failed 通知失敗："
+                + format_notification_event_message(
+                    safe_exception_message("notification_clear_failed", exc)
+                )
+            )
+        return redirect_settings_with_message(
+            f"已清除 failed 通知 {cleared_count} 筆",
+            feedback="notification_clear_failed_finished",
         )
 
     @app.post("/settings/support-bundle")

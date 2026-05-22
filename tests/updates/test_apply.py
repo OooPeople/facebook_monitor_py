@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Mapping
 from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import zipfile
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import pytest
 
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
 from facebook_monitor.updates import apply as updater_apply
+from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
 from facebook_monitor.updates.apply import apply_loaded_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update
@@ -20,6 +28,7 @@ from facebook_monitor.updates.apply import _prepare_empty_dir
 from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 from tests.helpers.macos_bundle import assert_zip_member_executable
@@ -28,6 +37,33 @@ from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
 from tests.helpers.macos_bundle import write_path_to_zip_with_mode
 from tests.helpers.macos_bundle import write_macos_app_bundle
 from tests.helpers.macos_bundle import writestr_symlink
+
+
+TEST_KEY_ID = "test-key"
+TEST_PRIVATE_KEY = Ed25519PrivateKey.generate()
+TEST_REPOSITORY = "OooPeople/facebook_monitor_py"
+TEST_VERSION = "0.1.0"
+
+
+@pytest.fixture(autouse=True)
+def trust_test_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply 階段使用測試 release public key 驗 signed manifest。"""
+
+    monkeypatch.setattr(
+        updater_apply,
+        "TRUSTED_RELEASE_PUBLIC_KEYS",
+        trusted_public_keys(),
+    )
+
+
+def trusted_public_keys() -> Mapping[str, str]:
+    """回傳測試用 Ed25519 public key trust root。"""
+
+    public_key = TEST_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return {TEST_KEY_ID: base64.b64encode(public_key).decode("ascii")}
 
 
 def make_app_root(root: Path, *, exe_text: str) -> None:
@@ -192,13 +228,64 @@ def _macos_zip_mode(path: Path) -> int:
     return 0o644
 
 
+def write_signed_manifest_for_pending(
+    *,
+    tmp_path: Path,
+    zip_path: Path,
+    digest: str,
+    manifest_digest_override: str | None = None,
+) -> tuple[str, Path, Path, str]:
+    """建立與測試 app layout 對齊的 signed manifest metadata。"""
+
+    app_base_dir = tmp_path / "app"
+    layout_policy = detect_layout_policy(app_base_dir)
+    artifact_policy = update_artifact_policy_for_key(layout_policy.platform_key)
+    asset_name = artifact_policy.asset_name(TEST_VERSION)
+    manifest_path = zip_path.with_name(f"facebook-monitor-{TEST_VERSION}-manifest.json")
+    signature_path = manifest_path.with_suffix(manifest_path.suffix + ".sig")
+    zip_size = zip_path.stat().st_size if zip_path.exists() else 1
+    manifest_payload = {
+        "schema_version": 1,
+        "version": TEST_VERSION,
+        "repository": TEST_REPOSITORY,
+        "key_id": TEST_KEY_ID,
+        "assets": [
+            {
+                "name": asset_name,
+                "platform": artifact_policy.platform_key,
+                "sha256": digest,
+                "size": zip_size,
+            }
+        ],
+    }
+    manifest_bytes = json.dumps(
+        manifest_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_bytes(manifest_bytes)
+    signature_path.write_bytes(base64.b64encode(TEST_PRIVATE_KEY.sign(manifest_bytes)))
+    manifest_digest = manifest_digest_override or hashlib.sha256(manifest_bytes).hexdigest()
+    return asset_name, manifest_path, signature_path, manifest_digest
+
+
 def pending_update(tmp_path: Path, *, zip_path: Path, digest: str) -> PendingUpdate:
     """建立測試用 pending update。"""
 
+    asset_name, manifest_path, signature_path, manifest_digest = (
+        write_signed_manifest_for_pending(
+            tmp_path=tmp_path,
+            zip_path=zip_path,
+            digest=digest,
+        )
+    )
     return PendingUpdate(
         schema_version=1,
-        version="0.1.0",
-        asset_name=zip_path.name,
+        version=TEST_VERSION,
+        repository=TEST_REPOSITORY,
+        asset_name=asset_name,
         zip_path=zip_path,
         expected_sha256=digest,
         actual_sha256=digest,
@@ -209,7 +296,36 @@ def pending_update(tmp_path: Path, *, zip_path: Path, digest: str) -> PendingUpd
         logs_dir=tmp_path / "app" / "data" / "logs",
         runtime_dir=tmp_path / "app" / "data" / "runtime",
         created_at="2026-05-17T00:00:00+00:00",
+        manifest_path=manifest_path,
+        manifest_signature_path=signature_path,
+        manifest_sha256=manifest_digest,
+        manifest_key_id=TEST_KEY_ID,
     )
+
+
+def pending_file_payload(pending: PendingUpdate) -> dict[str, object]:
+    """將測試 pending update 轉成 JSON payload。"""
+
+    return {
+        "schema_version": pending.schema_version,
+        "version": pending.version,
+        "repository": pending.repository,
+        "asset_name": pending.asset_name,
+        "zip_path": str(pending.zip_path),
+        "expected_sha256": pending.expected_sha256,
+        "actual_sha256": pending.actual_sha256,
+        "app_base_dir": str(pending.app_base_dir),
+        "data_dir": str(pending.data_dir),
+        "db_path": str(pending.db_path),
+        "profile_dir": str(pending.profile_dir),
+        "logs_dir": str(pending.logs_dir),
+        "runtime_dir": str(pending.runtime_dir),
+        "created_at": pending.created_at,
+        "manifest_path": str(pending.manifest_path),
+        "manifest_signature_path": str(pending.manifest_signature_path),
+        "manifest_sha256": pending.manifest_sha256,
+        "manifest_key_id": pending.manifest_key_id,
+    }
 
 
 def test_apply_pending_update_replaces_app_files_but_preserves_data(tmp_path: Path) -> None:
@@ -735,25 +851,10 @@ def test_apply_pending_update_file_writes_result_log(tmp_path: Path) -> None:
     zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest=digest)
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": "0.1.0",
-                "asset_name": zip_path.name,
-                "zip_path": str(zip_path),
-                "expected_sha256": digest,
-                "actual_sha256": digest,
-                "app_base_dir": str(app_root),
-                "data_dir": str(data_dir),
-                "db_path": str(data_dir / "app.db"),
-                "profile_dir": str(data_dir / "profiles" / "automation_default"),
-                "logs_dir": str(data_dir / "logs"),
-                "runtime_dir": str(runtime_dir),
-                "created_at": "2026-05-17T00:00:00+00:00",
-            }
-        ),
+        json.dumps(pending_file_payload(pending)),
         encoding="utf-8",
     )
     log_path = data_dir / "logs" / "updater.log"
@@ -784,25 +885,10 @@ def test_apply_pending_update_file_removes_verified_sha256_asset(tmp_path: Path)
         f"{digest}  {zip_path.name}\n",
         encoding="utf-8",
     )
+    pending = pending_update(tmp_path, zip_path=zip_path, digest=digest)
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": "0.1.0",
-                "asset_name": zip_path.name,
-                "zip_path": str(zip_path),
-                "expected_sha256": digest,
-                "actual_sha256": digest,
-                "app_base_dir": str(app_root),
-                "data_dir": str(data_dir),
-                "db_path": str(data_dir / "app.db"),
-                "profile_dir": str(data_dir / "profiles" / "automation_default"),
-                "logs_dir": str(data_dir / "logs"),
-                "runtime_dir": str(runtime_dir),
-                "created_at": "2026-05-17T00:00:00+00:00",
-            }
-        ),
+        json.dumps(pending_file_payload(pending)),
         encoding="utf-8",
     )
 
@@ -832,25 +918,10 @@ def test_apply_pending_update_file_prunes_old_backups(tmp_path: Path) -> None:
     zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest=digest)
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "version": "0.1.0",
-                "asset_name": zip_path.name,
-                "zip_path": str(zip_path),
-                "expected_sha256": digest,
-                "actual_sha256": digest,
-                "app_base_dir": str(app_root),
-                "data_dir": str(data_dir),
-                "db_path": str(data_dir / "app.db"),
-                "profile_dir": str(data_dir / "profiles" / "automation_default"),
-                "logs_dir": str(data_dir / "logs"),
-                "runtime_dir": str(runtime_dir),
-                "created_at": "2026-05-17T00:00:00+00:00",
-            }
-        ),
+        json.dumps(pending_file_payload(pending)),
         encoding="utf-8",
     )
 
@@ -1014,6 +1085,43 @@ def test_apply_pending_update_rejects_manifest_changed_after_handoff(
 
     assert result.status == "failed"
     assert result.message == "pending_manifest_sha256_mismatch"
+    assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_rejects_self_consistent_manifest_without_valid_signature(
+    tmp_path: Path,
+) -> None:
+    """zip、pending 與 manifest 被一起改寫但 signature 不符時不可套用。"""
+
+    app_root = tmp_path / "app"
+    make_app_root(app_root, exe_text="old")
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    original_digest = make_update_zip(zip_path, exe_text="new")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest=original_digest)
+    assert pending.manifest_signature_path is not None
+    original_signature = pending.manifest_signature_path.read_bytes()
+    shutil.rmtree(zip_path.parent / "new")
+    tampered_digest = make_update_zip(zip_path, exe_text="evil")
+    _, manifest_path, signature_path, manifest_digest = write_signed_manifest_for_pending(
+        tmp_path=tmp_path,
+        zip_path=zip_path,
+        digest=tampered_digest,
+    )
+    signature_path.write_bytes(original_signature)
+    tampered_pending = replace(
+        pending,
+        expected_sha256=tampered_digest,
+        actual_sha256=tampered_digest,
+        manifest_path=manifest_path,
+        manifest_signature_path=signature_path,
+        manifest_sha256=manifest_digest,
+    )
+
+    result = apply_pending_update(tampered_pending)
+
+    assert result.status == "failed"
+    assert result.message == "manifest_signature_invalid"
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
 
 

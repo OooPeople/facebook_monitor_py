@@ -26,11 +26,13 @@ from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import AppInstanceLock
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
+from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import calculate_sha256
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import load_pending_update
 from facebook_monitor.updates.handoff import validate_pending_update_paths
+from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
@@ -51,6 +53,7 @@ from facebook_monitor.updates.validation import resolve_zip_symlink_target
 from facebook_monitor.updates.validation import validate_tree_links_stay_within_root
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
 from facebook_monitor.updates.validation import zip_member_is_symlink
+from facebook_monitor.updates.trust import TRUSTED_RELEASE_PUBLIC_KEYS
 from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
@@ -150,6 +153,7 @@ def apply_pending_update(
 
     try:
         validate_pending_update_paths(pending)
+        _validate_pending_manifest_trust(pending)
         _validate_pending_hash(pending)
         with _wait_for_app_lock(
             pending.runtime_dir,
@@ -625,16 +629,47 @@ def restore_backup(
         _copy_path(child, app_base_dir / child.name, source_root=backup_dir)
 
 
+def _validate_pending_manifest_trust(pending: PendingUpdate) -> None:
+    """套用前重驗 signed manifest，避免 handoff 後信任資料被一起改寫。"""
+
+    if (
+        pending.manifest_path is None
+        or pending.manifest_signature_path is None
+        or not pending.manifest_sha256
+        or not pending.manifest_key_id
+    ):
+        raise ValueError("pending_manifest_required")
+    manifest_actual = calculate_sha256(pending.manifest_path)
+    if manifest_actual != pending.manifest_sha256:
+        raise ValueError("pending_manifest_sha256_mismatch")
+    artifact_policy = release_artifact_policy_for_asset_name(pending.asset_name)
+    if artifact_policy is None:
+        raise ValueError("pending_manifest_asset_platform_unknown")
+    verified = verify_release_manifest(
+        manifest_bytes=pending.manifest_path.read_bytes(),
+        signature_bytes=pending.manifest_signature_path.read_bytes(),
+        expected_version=pending.version,
+        expected_repository=pending.repository,
+        expected_asset_name=pending.asset_name,
+        expected_platform=artifact_policy.platform_key,
+        trusted_public_keys=TRUSTED_RELEASE_PUBLIC_KEYS,
+    )
+    if verified.key_id != pending.manifest_key_id:
+        raise ValueError("pending_manifest_key_mismatch")
+    if verified.manifest_sha256 != pending.manifest_sha256.casefold():
+        raise ValueError("pending_manifest_sha256_mismatch")
+    if verified.asset.sha256 != pending.expected_sha256.casefold():
+        raise ValueError("pending_manifest_asset_sha256_mismatch")
+    if pending.zip_path.stat().st_size != verified.asset.size:
+        raise ValueError("pending_manifest_asset_size_mismatch")
+
+
 def _validate_pending_hash(pending: PendingUpdate) -> None:
-    """套用前重算 zip / manifest SHA256，避免 handoff 後檔案被替換。"""
+    """套用前重算 zip SHA256，避免 handoff 後檔案被替換。"""
 
     actual = calculate_sha256(pending.zip_path)
     if actual != pending.expected_sha256:
         raise ValueError("pending_zip_sha256_mismatch")
-    if pending.manifest_path is not None and pending.manifest_sha256:
-        manifest_actual = calculate_sha256(pending.manifest_path)
-        if manifest_actual != pending.manifest_sha256:
-            raise ValueError("pending_manifest_sha256_mismatch")
 
 
 def _prepare_empty_dir(path: Path, *, work_root: Path) -> Path:

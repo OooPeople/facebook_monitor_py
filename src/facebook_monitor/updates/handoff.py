@@ -35,6 +35,7 @@ class PendingUpdate:
 
     schema_version: int
     version: str
+    repository: str
     asset_name: str
     zip_path: Path
     expected_sha256: str
@@ -70,9 +71,21 @@ def write_pending_update(
         raise ValueError("download_result_not_verified")
     if not download_result.file_path.is_file():
         raise ValueError("download_result_file_missing")
+    if download_result.manifest_path is None or not download_result.manifest_path.is_file():
+        raise ValueError("download_result_manifest_missing")
+    if (
+        download_result.manifest_signature_path is None
+        or not download_result.manifest_signature_path.is_file()
+    ):
+        raise ValueError("download_result_manifest_signature_missing")
+    if not download_result.manifest_sha256:
+        raise ValueError("download_result_manifest_missing")
+    if not download_result.manifest_key_id:
+        raise ValueError("download_result_manifest_key_missing")
     pending = PendingUpdate(
         schema_version=PENDING_UPDATE_SCHEMA_VERSION,
         version=update_check.latest_version,
+        repository=update_check.repository,
         asset_name=update_check.asset_name,
         zip_path=download_result.file_path.resolve(),
         expected_sha256=download_result.expected_sha256,
@@ -113,6 +126,7 @@ def load_pending_update(path: Path) -> PendingUpdate:
         pending = PendingUpdate(
             schema_version=schema_version,
             version=str(payload["version"]),
+            repository=str(payload["repository"]),
             asset_name=str(payload["asset_name"]),
             zip_path=Path(str(payload["zip_path"])).resolve(),
             expected_sha256=str(payload["expected_sha256"]),
@@ -139,13 +153,16 @@ def load_pending_update(path: Path) -> PendingUpdate:
         raise ValueError("pending_update_sha256_invalid")
     if not pending.zip_path.is_file():
         raise ValueError("pending_update_zip_missing")
-    if pending.manifest_sha256:
-        if not re.fullmatch(r"[0-9a-f]{64}", pending.manifest_sha256.casefold()):
-            raise ValueError("pending_update_manifest_sha256_invalid")
-        if pending.manifest_path is None or not pending.manifest_path.is_file():
-            raise ValueError("pending_update_manifest_missing")
-        if pending.manifest_signature_path is None or not pending.manifest_signature_path.is_file():
-            raise ValueError("pending_update_manifest_signature_missing")
+    if not pending.manifest_sha256:
+        raise ValueError("pending_update_manifest_missing")
+    if not re.fullmatch(r"[0-9a-f]{64}", pending.manifest_sha256.casefold()):
+        raise ValueError("pending_update_manifest_sha256_invalid")
+    if pending.manifest_path is None or not pending.manifest_path.is_file():
+        raise ValueError("pending_update_manifest_missing")
+    if pending.manifest_signature_path is None or not pending.manifest_signature_path.is_file():
+        raise ValueError("pending_update_manifest_signature_missing")
+    if not pending.manifest_key_id:
+        raise ValueError("pending_update_manifest_key_missing")
     validate_pending_update_paths(pending, pending_path=path)
     return pending
 
@@ -157,6 +174,8 @@ def validate_pending_update_paths(
 ) -> None:
     """驗證 pending update 的路徑仍落在 updater 可接受的安全邊界內。"""
 
+    if not pending.repository.strip() or "/" not in pending.repository.strip():
+        raise ValueError("pending_update_repository_invalid")
     sanitize_release_asset_name(pending.version)
     sanitize_release_asset_name(pending.asset_name)
     app_base_dir = pending.app_base_dir.resolve()

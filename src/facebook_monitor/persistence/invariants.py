@@ -9,21 +9,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from enum import StrEnum
 
-from facebook_monitor.core.models import ItemKind
-from facebook_monitor.core.models import NotificationChannel
-from facebook_monitor.core.models import NotificationOutboxStatus
-from facebook_monitor.core.models import NotificationStatus
-from facebook_monitor.core.models import ScanStatus
-from facebook_monitor.core.models import TargetCoverImageRefreshResult
-from facebook_monitor.core.models import TargetCoverImageRefreshStatus
-from facebook_monitor.core.models import TargetDesiredState
-from facebook_monitor.core.models import TargetKind
-from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import WorkerMode
-from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
+from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
+from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
+from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
 
 
 @dataclass(frozen=True)
@@ -55,52 +45,24 @@ def validate_database_invariants(
 
 
 def _enum_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
-    checks: tuple[tuple[str, str, str, set[str]], ...] = (
-        ("targets", "id", "target_kind", _enum_values(TargetKind)),
-        ("targets", "id", "metadata_status", _enum_values(TargetMetadataStatus)),
-        ("targets", "id", "worker_mode", _enum_values(WorkerMode)),
-        ("seen_items", "scope_id || ':' || item_key", "item_kind", _enum_values(ItemKind)),
-        ("match_history", "id", "item_kind", _enum_values(ItemKind)),
-        ("latest_scan_items", "target_id || ':' || item_key", "item_kind", _enum_values(ItemKind)),
-        ("scan_runs", "id", "status", _enum_values(ScanStatus)),
-        ("scan_runs", "id", "worker_mode", _enum_values(WorkerMode)),
-        ("notification_events", "id", "channel", _enum_values(NotificationChannel)),
-        ("notification_events", "id", "status", _enum_values(NotificationStatus)),
-        ("notification_outbox", "id", "item_kind", _enum_values(ItemKind)),
-        ("notification_outbox", "id", "channel", _enum_values(NotificationChannel)),
-        ("notification_outbox", "id", "status", _enum_values(NotificationOutboxStatus)),
-        ("target_runtime_state", "target_id", "desired_state", _enum_values(TargetDesiredState)),
-        ("target_runtime_state", "target_id", "runtime_status", _enum_values(TargetRuntimeStatus)),
-        (
-            "target_cover_image_refresh_state",
-            "target_id",
-            "status",
-            _enum_values(TargetCoverImageRefreshStatus),
-        ),
-        (
-            "target_cover_image_refresh_state",
-            "target_id",
-            "last_result",
-            _enum_values(TargetCoverImageRefreshResult) | {""},
-        ),
-    )
     violations: list[DatabaseInvariantViolation] = []
-    for table, id_expr, field, allowed in checks:
+    for contract in ENUM_CONTRACTS:
+        allowed = tuple(sorted(contract.allowed_values))
         allowed_placeholders = ",".join("?" for _ in allowed)
         rows = connection.execute(
             f"""
-            SELECT {id_expr} AS row_id, {field}
-            FROM {table}
-            WHERE {field} NOT IN ({allowed_placeholders})
+            SELECT {contract.row_id_expr} AS row_id, {contract.field}
+            FROM {contract.table}
+            WHERE {contract.field} NOT IN ({allowed_placeholders})
             """,
-            tuple(sorted(allowed)),
+            allowed,
         ).fetchall()
         violations.extend(
             DatabaseInvariantViolation(
-                table=table,
+                table=contract.table,
                 row_id=str(row["row_id"]),
-                field=field,
-                message=f"unexpected enum value {row[field]!r}",
+                field=contract.field,
+                message=f"unexpected enum value {row[contract.field]!r}",
             )
             for row in rows
         )
@@ -108,54 +70,19 @@ def _enum_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantVi
 
 
 def _boolean_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
-    checks: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-        ("targets", "id", ("enabled", "paused")),
-        (
-            "target_configs",
-            "target_id",
-            (
-                "jitter_enabled",
-                "auto_load_more",
-                "auto_adjust_sort",
-                "enable_desktop_notification",
-                "enable_ntfy",
-                "enable_discord_notification",
-            ),
-        ),
-        ("scan_scope_state", "scope_id", ("initialized",)),
-        (
-            "global_notification_settings",
-            "id",
-            ("enable_desktop_notification", "enable_ntfy", "enable_discord_notification"),
-        ),
-        ("sidebar_groups", "id", ("collapsed",)),
-        (
-            "sidebar_group_config_templates",
-            "sidebar_group_id",
-            (
-                "jitter_enabled",
-                "auto_load_more",
-                "auto_adjust_sort",
-                "enable_desktop_notification",
-                "enable_ntfy",
-                "enable_discord_notification",
-            ),
-        ),
-        ("target_cover_image_refresh_state", "target_id", ("changed",)),
-    )
     violations: list[DatabaseInvariantViolation] = []
-    for table, id_column, fields in checks:
-        for field in fields:
+    for contract in BOOLEAN_CONTRACTS:
+        for field in contract.fields:
             rows = connection.execute(
                 f"""
-                SELECT {id_column} AS row_id, {field}
-                FROM {table}
+                SELECT {contract.row_id_column} AS row_id, {field}
+                FROM {contract.table}
                 WHERE {field} NOT IN (0, 1)
                 """
             ).fetchall()
             violations.extend(
                 DatabaseInvariantViolation(
-                    table=table,
+                    table=contract.table,
                     row_id=str(row["row_id"]),
                     field=field,
                     message=f"expected boolean 0/1, got {row[field]!r}",
@@ -166,55 +93,20 @@ def _boolean_violations(connection: sqlite3.Connection) -> list[DatabaseInvarian
 
 
 def _range_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
-    checks: tuple[tuple[str, str, str, str], ...] = (
-        (
-            "target_configs",
-            "target_id",
-            "refresh_range",
-            (
-                "min_refresh_sec < ? OR max_refresh_sec < ? "
-                "OR min_refresh_sec > max_refresh_sec"
-            ),
-        ),
-        (
-            "sidebar_group_config_templates",
-            "sidebar_group_id",
-            "refresh_range",
-            (
-                "min_refresh_sec < ? OR max_refresh_sec < ? "
-                "OR min_refresh_sec > max_refresh_sec"
-            ),
-        ),
-        ("target_configs", "target_id", "max_items_per_scan", "max_items_per_scan <= 0"),
-        (
-            "sidebar_group_config_templates",
-            "sidebar_group_id",
-            "max_items_per_scan",
-            "max_items_per_scan <= 0",
-        ),
-        ("scan_runs", "id", "item_count", "item_count < 0 OR matched_count < 0"),
-        ("notification_outbox", "id", "attempts", "attempts < 0"),
-        (
-            "target_runtime_state",
-            "target_id",
-            "scan_guard_count",
-            "scan_guard_count < 0 OR consecutive_failure_count < 0",
-        ),
-    )
     violations: list[DatabaseInvariantViolation] = []
-    for table, id_column, field, where_clause in checks:
-        params: tuple[object, ...] = ()
-        if field == "refresh_range":
-            params = (MIN_REFRESH_SECONDS, MIN_REFRESH_SECONDS)
+    for contract in RANGE_CONTRACTS:
         rows = connection.execute(
-            f"SELECT {id_column} AS row_id FROM {table} WHERE {where_clause}",
-            params,
+            (
+                f"SELECT {contract.row_id_column} AS row_id "
+                f"FROM {contract.table} WHERE {contract.where_clause}"
+            ),
+            contract.params,
         ).fetchall()
         violations.extend(
             DatabaseInvariantViolation(
-                table=table,
+                table=contract.table,
                 row_id=str(row["row_id"]),
-                field=field,
+                field=contract.field,
                 message="value is outside product range",
             )
             for row in rows
@@ -263,9 +155,3 @@ def _runtime_state_violations(
         for row in idle_worker_rows
     )
     return violations
-
-
-def _enum_values(enum_type: type[StrEnum]) -> set[str]:
-    """回傳 StrEnum values。"""
-
-    return {item.value for item in enum_type}

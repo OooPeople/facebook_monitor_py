@@ -1,0 +1,16 @@
+{
+  "article_contracts": [
+    "feed-post",
+    "feed-post"
+  ],
+  "post_permalinks": [
+    {
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/1111111111111111",
+      "source": "groups_post_anchor"
+    },
+    {
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/2222222222222222",
+      "source": "groups_post_anchor"
+    }
+  ]
+}

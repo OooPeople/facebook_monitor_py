@@ -399,6 +399,9 @@ def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_trac
     main_js = Path("src/facebook_monitor/webapp/static/dashboard/main.js").read_text(
         encoding="utf-8"
     )
+    settings_js = Path("src/facebook_monitor/webapp/static/dashboard/settings.js").read_text(
+        encoding="utf-8"
+    )
 
     assert 'dialog.addEventListener("cancel", () => finish(false), { once: true });' in dialogs_js
     assert 'dialog.addEventListener("close", () => finish(false), { once: true });' in dialogs_js
@@ -407,6 +410,20 @@ def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_trac
     assert "let settled = false;" in dialogs_js
     assert "event.stopImmediatePropagation();" in dialogs_js
     assert main_js.index("setupConfirmSubmitForms();") < main_js.index("setupFormSubmitTracking();")
+    assert "setupConfirmSubmitForms();" in settings_js
+
+
+def test_settings_failed_outbox_clear_requires_dynamic_confirmation() -> None:
+    """Settings 全域 failed outbox 清除需走共用確認彈窗。"""
+
+    settings_template = Path(
+        "src/facebook_monitor/webapp/templates/settings.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'action="/settings/notifications/clear-failed"' in settings_template
+    assert "data-confirm-submit" in settings_template
+    assert 'data-confirm-title="清除 failed 通知"' in settings_template
+    assert 'data-confirm-danger="1"' in settings_template
 
 
 def test_sidebar_sort_mode_does_not_reserve_drag_column_when_inactive() -> None:

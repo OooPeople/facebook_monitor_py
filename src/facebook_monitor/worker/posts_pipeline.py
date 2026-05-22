@@ -228,6 +228,7 @@ def scan_posts_page(
     if should_skip_scan_for_unconfirmed_sort(
         config=config,
         sort_adjust_result=sort_adjust_result,
+        allow_absent_sort_control_without_label=True,
     ):
         finalize_result = record_skipped_scan(
             app=app,
@@ -314,6 +315,7 @@ async def scan_posts_page_async(
     if should_skip_scan_for_unconfirmed_sort(
         config=config,
         sort_adjust_result=sort_adjust_result,
+        allow_absent_sort_control_without_label=True,
     ):
         finalize_result = record_skipped_scan(
             app=app,

@@ -57,6 +57,8 @@ from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
@@ -111,6 +113,39 @@ def make_supported_macos_update_paths(tmp_path: Path):
         encoding="utf-8",
     )
     return paths
+
+
+def verified_update_download_result(
+    *,
+    update_check: UpdateCheckResult,
+    file_path: Path,
+    expected_sha256: str = "a" * 64,
+    actual_sha256: str = "a" * 64,
+) -> UpdateDownloadResult:
+    """建立包含 signed manifest metadata 的 settings 測試下載結果。"""
+
+    manifest_path = file_path.with_name(
+        release_manifest_asset_name(update_check.latest_version)
+    )
+    signature_path = file_path.with_name(
+        release_manifest_signature_asset_name(update_check.latest_version)
+    )
+    manifest_path.write_text("manifest", encoding="utf-8")
+    signature_path.write_text("sig", encoding="utf-8")
+    return UpdateDownloadResult(
+        status="verified",
+        downloaded=True,
+        verified=True,
+        file_path=file_path,
+        sha256_path=file_path.with_name(file_path.name + ".sha256"),
+        expected_sha256=expected_sha256,
+        actual_sha256=actual_sha256,
+        failure_reason="",
+        manifest_path=manifest_path,
+        manifest_signature_path=signature_path,
+        manifest_sha256="b" * 64,
+        manifest_key_id="test-key",
+    )
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
@@ -653,15 +688,9 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     opened_paths: list[Path] = []
@@ -751,15 +780,9 @@ def test_settings_macos_download_update_does_not_create_pending_update(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     monkeypatch.setattr(
@@ -833,15 +856,9 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     launched_paths: list[Path] = []
@@ -942,15 +959,9 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     launched_paths: list[Path] = []
@@ -1050,15 +1061,9 @@ def test_settings_macos_download_and_apply_uses_macos_release_asset_policy(
         file_path = updates_dir / "9.9.9" / update_check.asset_name
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     def fake_launch_temp_updater(*, paths, wait_seconds=300):
@@ -3980,6 +3985,94 @@ def test_settings_shows_outbox_health_and_retries_failed_notifications(
         )
     assert entry is not None
     assert entry.status == NotificationOutboxStatus.SENT
+
+
+def test_settings_can_clear_failed_outbox_without_deleting_pending_rows(
+    tmp_path: Path,
+) -> None:
+    """Settings 頁可清 failed outbox，但不誤刪 pending rows。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:failed:desktop",
+                target_id=target.id,
+                item_key="failed",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="失敗通知",
+                message="失敗內容",
+                status=NotificationOutboxStatus.FAILED,
+                attempts=3,
+                last_error="desktop_failed",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:pending:desktop",
+                target_id=target.id,
+                item_key="pending",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="待送通知",
+                message="待送內容",
+                status=NotificationOutboxStatus.PENDING,
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+
+    response = client.post(
+        "/settings/notifications/clear-failed",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert page_feedback(response.text)["message"] == "已清除 failed 通知 1 筆"
+    with SqliteApplicationContext(db_path) as app_context:
+        failed_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:failed:desktop",
+        )
+        pending_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:pending:desktop",
+        )
+    assert failed_entry is None
+    assert pending_entry is not None
+    assert pending_entry.status == NotificationOutboxStatus.PENDING
+
+
+def test_settings_clear_failed_outbox_reports_zero_when_no_failed_rows(
+    tmp_path: Path,
+) -> None:
+    """沒有 failed rows 時，清除操作仍回報 0 並保持可預期。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+
+    response = client.post(
+        "/settings/notifications/clear-failed",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert page_feedback(response.text)["message"] == "已清除 failed 通知 0 筆"
 
 
 def test_settings_support_bundle_excludes_private_runtime_files(tmp_path: Path) -> None:

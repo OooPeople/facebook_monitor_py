@@ -29,6 +29,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
 
+      - name: Install Playwright browsers
+        run: uv run python -m playwright install --with-deps chromium
+
       - name: Lint
         run: uv run ruff check src scripts tests
 

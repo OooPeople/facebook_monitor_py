@@ -60,13 +60,13 @@
             action="/targets/{{ row.target.id }}/notifications/clear"
             data-action-anchor="{{ row.anchor_id }}"
             data-confirm-submit
-            data-confirm-title="清除通知紀錄"
-            data-confirm-message="清除這個 target 的通知去重紀錄？這可能取消尚未發送的通知；不會重置已看紀錄，因此已看過的同一項目不會因為這個操作再次通知。此操作不會影響命中紀錄或設定。"
-            data-confirm-label="清除"
+            data-confirm-title="重置通知狀態"
+            data-confirm-message="重置這個 target 的通知狀態？這會清除通知紀錄與已看狀態，可能取消尚未發送的通知。下次掃描時，仍符合關鍵字的既有貼文或留言可能再次通知。此操作不會刪除命中紀錄或設定。"
+            data-confirm-label="重置"
           >
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="return_to" value="">
-            <button class="more-menu-action menu-action" type="submit">清除通知紀錄</button>
+            <button class="more-menu-action menu-action" type="submit">重置通知狀態</button>
           </form>
           <form
             method="post"

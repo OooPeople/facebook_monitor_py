@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from dataclasses import replace
 
 from facebook_monitor.application.target_config_service import TargetConfigService
@@ -24,6 +25,20 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+
+
+@dataclass(frozen=True)
+class ResetTargetNotificationStateResult:
+    """描述 target 通知狀態重置結果。"""
+
+    notification_outbox_rows: int = 0
+    seen_items: int = 0
+
+    @property
+    def total_rows(self) -> int:
+        """回傳本次清除的總筆數，供 UI 顯示摘要。"""
+
+        return self.notification_outbox_rows + self.seen_items
 
 
 class TargetMonitoringCommands:
@@ -94,13 +109,19 @@ class TargetMonitoringCommands:
         self.runtime.restart_target_runtime(target_id)
         return updated_target
 
-    def clear_target_notification_records(self, target_id: str) -> int:
-        """清除單一 target 的通知去重紀錄，不影響 seen/history。"""
+    def reset_target_notification_state(
+        self,
+        target_id: str,
+    ) -> ResetTargetNotificationStateResult:
+        """重置單一 target 的通知與 seen 去重狀態，讓下一輪可重新通知。"""
 
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
-        return self.notification_outbox.clear_by_target(target.id)
+        return ResetTargetNotificationStateResult(
+            notification_outbox_rows=self.notification_outbox.clear_by_target(target.id),
+            seen_items=self.seen_items.clear_scope(target.scope_id),
+        )
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

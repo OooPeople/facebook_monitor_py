@@ -1017,12 +1017,12 @@ def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
     assert ">刪除</button>" in card_template
     assert "清除 baseline" not in card_template
     assert "清除命中紀錄" not in card_template
-    assert "清除通知紀錄" in card_template
+    assert "重置通知狀態" in card_template
     assert 'action="/targets/{{ row.target.id }}/notifications/clear"' in card_template
-    assert 'data-confirm-title="清除通知紀錄"' in card_template
-    assert "不會重置已看紀錄" in card_template
-    assert "不會影響命中紀錄或設定" in card_template
-    assert "不會因為這個操作再次通知" in card_template
+    assert 'data-confirm-title="重置通知狀態"' in card_template
+    assert "通知紀錄與已看狀態" in card_template
+    assert "可能再次通知" in card_template
+    assert "不會刪除命中紀錄或設定" in card_template
     assert "data-scan-diagnostics-modal" in card_template
     assert 'class="settings-modal scan-diagnostics-modal"' in card_template
     assert 'class="settings-modal scan-diagnostics-modal scan-debug-details"' not in card_template

@@ -86,7 +86,7 @@ Web UI 目前只允許綁定本機 loopback host。`--host` 若指定非 loopbac
 - **停止**：暫停排程，但保留 seen/history。
 - **設定**：編輯 target-scoped keywords、刷新策略、掃描上限、排序/載入更多與通知設定。
 - **命中紀錄**：查看該 target 保存的 match history。
-- **清除通知紀錄**：位於右上角「更多操作」，清除該 target 的 notification outbox rows，包含待送、處理中、失敗、已送出或略過的去重紀錄；不會重置已看紀錄，因此已看過的同一項目不會因為這個操作再次通知。
+- **重置通知狀態**：位於右上角「更多操作」，清除該 target 的 notification outbox rows 與已看狀態；下次掃描若同一貼文或留言仍符合關鍵字，可能會再次通知。此操作不會清除命中紀錄、target 設定或 baseline 初始化狀態。
 
 target 卡片 header 會顯示模式、最近掃描與下次刷新；右側 panel 會顯示最近一輪掃描結果摘要。最近通知摘要不放在 target header，避免和掃描排程資訊混在一起。
 

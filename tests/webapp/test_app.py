@@ -4418,10 +4418,10 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
     assert scheduler_manager.woken_count == 2
 
 
-def test_clear_target_notification_records_route_only_clears_target_outbox(
+def test_reset_target_notification_state_route_clears_outbox_and_seen(
     tmp_path: Path,
 ) -> None:
-    """target 更多操作可清通知紀錄，但不清 seen 或喚醒 scheduler。"""
+    """target 更多操作會重置通知與 seen 去重狀態，但不喚醒 scheduler。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -4441,6 +4441,13 @@ def test_clear_target_notification_records_route_only_clears_target_outbox(
             SeenItem(
                 scope_id=first.scope_id,
                 item_key="first-seen",
+                item_kind=ItemKind.POST,
+            )
+        )
+        app_context.repositories.seen_items.mark_seen(
+            SeenItem(
+                scope_id=second.scope_id,
+                item_key="second-seen",
                 item_kind=ItemKind.POST,
             )
         )
@@ -4472,8 +4479,11 @@ def test_clear_target_notification_records_route_only_clears_target_outbox(
     )
 
     assert response.status_code == 200
-    assert page_feedback(response.text)["message"] == "已清除通知紀錄 1 筆"
-    assert page_feedback(response.text)["feedback"] == "notification_records_cleared"
+    assert (
+        page_feedback(response.text)["message"]
+        == "已重置通知狀態：清除通知紀錄 1 筆、已看紀錄 1 筆"
+    )
+    assert page_feedback(response.text)["feedback"] == "notification_state_reset"
     with SqliteApplicationContext(db_path) as app_context:
         first_seen = app_context.repositories.seen_items.has_seen(
             first.scope_id,
@@ -4485,7 +4495,12 @@ def test_clear_target_notification_records_route_only_clears_target_outbox(
         second_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
             f"{second.id}:second-seen:ntfy",
         )
-    assert first_seen
+        second_seen = app_context.repositories.seen_items.has_seen(
+            second.scope_id,
+            "second-seen",
+        )
+    assert not first_seen
+    assert second_seen
     assert first_outbox is None
     assert second_outbox is not None
     assert scheduler_manager.woken_count == 0

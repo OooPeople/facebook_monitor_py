@@ -43,7 +43,7 @@
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
 - keyword、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
 - seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
-- 使用者按下「開始」只恢復監看並要求立即掃描；seen、notification outbox 去重狀態與 `match_history` / 查看紀錄都會保留。若要清除該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的去重紀錄），使用者需在 target 更多操作中明確執行「清除通知紀錄」；這不會重置 seen，因此已看過的同一 item 不會因此重播通知。
+- 使用者按下「開始」只恢復監看並要求立即掃描；seen、notification outbox 去重狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows 與同一 scan scope 的 `seen_items`，但保留 `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
@@ -108,7 +108,7 @@
 - Web UI 不註冊全域 scheduler start/stop 日常 route。
 - 「開始」會保留 seen scope 與 notification outbox 去重 rows，只要求立即掃描並喚醒 scheduler。
 - 「停止」只暫停排程，保留 seen/history。
-- 「清除通知紀錄」位於 target 卡片更多操作，只清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的去重紀錄），不清 seen、match history 或設定，也不會讓已 seen 的同一 item 重播通知。
+- 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的去重紀錄）與同一 scan scope 的 seen items。它不清 `scan_scope_state`、match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
 - 社團縮圖載入失敗時，UI 會立即退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次。這個上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。

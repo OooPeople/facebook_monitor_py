@@ -37,19 +37,22 @@ def restart_target_monitoring_action(db_path: Path, target_id: str) -> TargetAct
     )
 
 
-def clear_target_notification_records_action(
+def reset_target_notification_state_action(
     db_path: Path,
     target_id: str,
 ) -> TargetActionOutcome:
-    """清除單一 target 的通知去重紀錄，不喚醒 scheduler。"""
+    """重置單一 target 的通知與 seen 去重狀態，不喚醒 scheduler。"""
 
     with SqliteApplicationContext(db_path) as app_context:
-        cleared_count = app_context.services.targets.clear_target_notification_records(target_id)
+        result = app_context.services.targets.reset_target_notification_state(target_id)
     return TargetActionOutcome(
         ok=True,
-        message=f"已清除通知紀錄 {cleared_count} 筆",
-        feedback="notification_records_cleared",
-        updated_count=cleared_count,
+        message=(
+            f"已重置通知狀態：清除通知紀錄 {result.notification_outbox_rows} 筆、"
+            f"已看紀錄 {result.seen_items} 筆"
+        ),
+        feedback="notification_state_reset",
+        updated_count=result.total_rows,
     )
 
 

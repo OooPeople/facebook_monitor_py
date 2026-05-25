@@ -58,7 +58,7 @@ const dispatchPageFeedback = () => {
       "target_started",
       "target_stopped",
       "scan_requested",
-      "notification_records_cleared",
+      "notification_state_reset",
     ].includes(feedback) &&
     targetElement
   ) {

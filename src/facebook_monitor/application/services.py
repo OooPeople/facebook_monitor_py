@@ -12,6 +12,9 @@ from datetime import datetime
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.application.scan_recording_service import ScanApplicationService
 from facebook_monitor.application.target_config_service import TargetConfigService
+from facebook_monitor.application.target_monitoring_commands import (
+    ResetTargetNotificationStateResult,
+)
 from facebook_monitor.application.target_monitoring_commands import TargetMonitoringCommands
 from facebook_monitor.application.target_registry_service import TargetRegistryService
 from facebook_monitor.application.target_registry_service import clean_facebook_group_name
@@ -467,10 +470,13 @@ class TargetApplicationService:
 
         return self.monitoring_commands.restart_target_monitoring(target_id)
 
-    def clear_target_notification_records(self, target_id: str) -> int:
-        """清除單一 target 的通知去重紀錄。"""
+    def reset_target_notification_state(
+        self,
+        target_id: str,
+    ) -> ResetTargetNotificationStateResult:
+        """重置單一 target 的通知與 seen 去重狀態，讓下一輪可重新通知。"""
 
-        return self.monitoring_commands.clear_target_notification_records(target_id)
+        return self.monitoring_commands.reset_target_notification_state(target_id)
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

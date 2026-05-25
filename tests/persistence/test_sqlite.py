@@ -1717,6 +1717,33 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
         assert repo.get_by_idempotency_key(f"{second.id}:item-hash:ntfy") is not None
 
 
+def test_seen_items_clear_scope_only_deletes_that_scan_scope(tmp_path: Path) -> None:
+    """清除 seen scope 僅影響指定 target scope，避免跨 target 重播通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        repo = SeenItemRepository(connection)
+        repo.mark_seen_aliases(
+            SeenItem(scope_id="scope-a", item_key="same-item", item_kind=ItemKind.POST),
+            ("same-item", "same-item-alias"),
+        )
+        repo.mark_seen(
+            SeenItem(
+                scope_id="scope-b",
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+            )
+        )
+
+        assert repo.clear_scope("scope-a") == 2
+
+        assert not repo.has_seen("scope-a", "same-item")
+        assert not repo.has_seen("scope-a", "same-item-alias")
+        assert repo.has_seen("scope-b", "same-item")
+
+
 def test_notification_outbox_clear_failed_only_deletes_failed_rows(
     tmp_path: Path,
 ) -> None:

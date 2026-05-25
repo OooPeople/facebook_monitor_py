@@ -15,11 +15,11 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.target_actions import clear_target_notification_records_action
 from facebook_monitor.application.target_actions import delete_target_action
 from facebook_monitor.application.target_actions import pause_target_monitoring_action
 from facebook_monitor.application.target_actions import request_target_scan_once_action
 from facebook_monitor.application.target_actions import restart_target_monitoring_action
+from facebook_monitor.application.target_actions import reset_target_notification_state_action
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
@@ -418,18 +418,18 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         )
 
     @app.post("/targets/{target_id}/notifications/clear")
-    async def clear_target_notification_records_route(
+    async def reset_target_notification_state_route(
         request: Request,
         target_id: str,
         return_to: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
-        """清除單一 target 的通知去重紀錄。"""
+        """重置單一 target 的通知與 seen 去重狀態。"""
 
         try:
-            outcome = clear_target_notification_records_action(get_db_path(request), target_id)
+            outcome = reset_target_notification_state_action(get_db_path(request), target_id)
         except Exception as exc:
             return redirect_with_error(
-                "清除通知紀錄失敗：" + format_failure_message_text(str(exc)),
+                "重置通知狀態失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(

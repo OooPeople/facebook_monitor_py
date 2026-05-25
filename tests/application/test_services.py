@@ -20,6 +20,7 @@ from facebook_monitor.application.services import UpdateTargetStatusRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
@@ -1241,10 +1242,10 @@ def test_restart_monitoring_preserves_target_dedupe_state(tmp_path: Path) -> Non
         )
 
 
-def test_clear_target_notification_records_only_deletes_target_outbox(
+def test_reset_target_notification_state_clears_target_outbox_and_seen(
     tmp_path: Path,
 ) -> None:
-    """明確清除通知紀錄只刪該 target outbox，不清 seen。"""
+    """明確重置通知狀態會讓該 target 下輪可重新通知，但保留 history/scope。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -1262,6 +1263,19 @@ def test_clear_target_notification_records_only_deletes_target_outbox(
         )
         app.repositories.seen_items.mark_seen(
             SeenItem(scope_id=first.scope_id, item_key="first-item", item_kind=ItemKind.POST)
+        )
+        app.repositories.seen_items.mark_seen(
+            SeenItem(scope_id=second.scope_id, item_key="second-item", item_kind=ItemKind.POST)
+        )
+        app.repositories.scan_scope_state.mark_initialized(first.scope_id)
+        app.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=first.id,
+                group_id=first.group_id,
+                item_kind=ItemKind.POST,
+                item_key="first-item",
+                text="first",
+            )
         )
         app.repositories.notification_outbox.enqueue(
             NotificationOutboxEntry(
@@ -1286,10 +1300,15 @@ def test_clear_target_notification_records_only_deletes_target_outbox(
             )
         )
 
-        cleared_count = app.services.targets.clear_target_notification_records(first.id)
+        result = app.services.targets.reset_target_notification_state(first.id)
 
-        assert cleared_count == 1
-        assert app.repositories.seen_items.has_seen(first.scope_id, "first-item")
+        assert result.notification_outbox_rows == 1
+        assert result.seen_items == 1
+        assert result.total_rows == 2
+        assert not app.repositories.seen_items.has_seen(first.scope_id, "first-item")
+        assert app.repositories.seen_items.has_seen(second.scope_id, "second-item")
+        assert app.repositories.scan_scope_state.is_initialized(first.scope_id)
+        assert len(app.repositories.match_history.list_by_target(first.id)) == 1
         assert (
             app.repositories.notification_outbox.get_by_idempotency_key(
                 f"{first.id}:first-item:ntfy"

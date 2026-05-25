@@ -2271,6 +2271,59 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert "最近掃描內容" in response.text
 
 
+def test_dashboard_partial_payload_changes_sidebar_layout_signature_for_groups(
+    tmp_path: Path,
+) -> None:
+    """dashboard partial payload 需帶 group/order 簽章，讓前端遇到結構變更時 reload。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                group_name="第一個社團",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+                group_name="第二個社團",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("工作")
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id]), (None, [second.id])]
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    page_response = client.get("/")
+    first_payload = client.get("/api/dashboard-cards").json()
+    first_signature = first_payload["sidebar"]["layout_signature"]
+
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id, second.id]), (None, [])]
+        )
+    second_payload = client.get("/api/dashboard-cards").json()
+    second_signature = second_payload["sidebar"]["layout_signature"]
+
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.sidebar_layout.rename_group(group.id, "重新命名")
+    renamed_payload = client.get("/api/dashboard-cards").json()
+
+    assert page_response.status_code == 200
+    assert f'data-sidebar-layout-signature="{first_signature}"' in page_response.text
+    assert first_signature
+    assert second_signature != first_signature
+    assert renamed_payload["sidebar"]["layout_signature"] != second_signature
+    assert [item["target_id"] for item in second_payload["sidebar"]["items"]] == [
+        first.id,
+        second.id,
+    ]
+
+
 def test_index_renders_scan_guard_skip_reason(tmp_path: Path) -> None:
     """首頁會顯示同 target 重入被 guard 擋下的原因。"""
 
@@ -3883,6 +3936,55 @@ def test_settings_open_pauses_scheduler_until_profile_window_ends(tmp_path: Path
 
     assert scheduler_manager.started_count == 1
     assert scheduler_manager.running
+
+
+def test_manual_scan_does_not_restart_scheduler_while_profile_window_is_active(
+    tmp_path: Path,
+) -> None:
+    """profile 視窗開啟期間 manual scan 只排入 request，不重新搶 automation profile。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+
+    profile_manager = FakeProfileManager()
+    scheduler_manager = FakeSchedulerManager()
+    scheduler_manager.running = True
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        profile_manager=profile_manager,
+        scheduler_manager=scheduler_manager,
+    )
+    client = TestClient(app)
+
+    open_response = client.post("/settings/facebook/open", follow_redirects=False)
+    scan_response = client.post(f"/targets/{target.id}/scan-once", follow_redirects=False)
+
+    assert open_response.status_code == 303
+    assert scan_response.status_code == 303
+    assert profile_manager.active
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        state = app_context.repositories.runtime_states.get(target.id)
+    assert state is not None
+    assert state.scan_requested_at is not None
+
+    profile_manager.active = False
+    assert profile_manager.options is not None
+    assert profile_manager.options.on_close is not None
+    profile_manager.options.on_close()
+
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.running
+    assert app.state.scheduler_paused_for_profile is False
 
 
 def test_webui_shutdown_closes_active_profile_window(tmp_path: Path) -> None:

@@ -87,6 +87,7 @@ class SchedulerSessionState:
     last_closed_page_count: int = 0
     resident_browser_alive: bool = False
     recovered_runtime_count: int = 0
+    notification_dispatch_count: int = 0
     worker_health_ok: bool = True
 
     @property
@@ -151,6 +152,7 @@ class BackgroundSchedulerManager:
         self.last_closed_page_count = 0
         self.resident_browser_alive = False
         self.recovered_runtime_count = 0
+        self.notification_dispatch_count = 0
         self.worker_health_ok = True
         self.metadata_refresh_target_ids: set[str] = set()
         self.metadata_refresh_order: list[str] = []
@@ -187,6 +189,7 @@ class BackgroundSchedulerManager:
                 last_closed_page_count=self.last_closed_page_count,
                 resident_browser_alive=self.resident_browser_alive,
                 recovered_runtime_count=self.recovered_runtime_count,
+                notification_dispatch_count=self.notification_dispatch_count,
                 worker_health_ok=self.worker_health_ok,
             )
 
@@ -339,6 +342,7 @@ class BackgroundSchedulerManager:
             self.last_closed_page_count = summary.closed_page_count
             self.resident_browser_alive = summary.resident_browser_alive
             self.recovered_runtime_count = summary.recovered_runtime_count
+            self.notification_dispatch_count = summary.notification_dispatch_count
             self.worker_health_ok = summary.worker_health_ok
 
     def _wait_for_next_cycle(self, seconds: float) -> bool:

@@ -73,6 +73,7 @@ class ResidentCycleSummary:
     recovered_runtime_count: int = 0
     metadata_refresh_count: int = 0
     cover_image_refresh_count: int = 0
+    notification_dispatch_count: int = 0
     worker_health_ok: bool = True
 
 

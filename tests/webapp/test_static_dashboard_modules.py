@@ -898,6 +898,22 @@ def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> No
     assert ".sidebar-status .sidebar-status-token" in sidebar_css
 
 
+def test_dashboard_partial_update_reloads_when_sidebar_layout_signature_changes() -> None:
+    """partial update 不可用平面 sidebar items 覆蓋已改變的 group/order 結構。"""
+
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+    sidebar_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_sidebar.html"
+    ).read_text(encoding="utf-8")
+
+    assert "data-sidebar-layout-signature" in sidebar_template
+    assert "payload.layout_signature" in partial_updates_js
+    assert "sidebarLayoutSignature" in partial_updates_js
+    assert "partial_update_requires_reload:target_list_changed" in partial_updates_js
+
+
 def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     """sidebar 漢堡選單與卡片更多選單共用卡片系的 panel/action 樣式。"""
 

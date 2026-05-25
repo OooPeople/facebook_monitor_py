@@ -32,6 +32,9 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
+from facebook_monitor.notifications.outbox_service import (
+    dispatch_new_pending_notification_outbox_for_db,
+)
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -234,6 +237,7 @@ async def run_resident_main_scheduler_tick(
         options.db_path,
         options.stale_running_after_seconds,
     )
+    notification_dispatch_count = dispatch_pending_notification_outbox(options)
     metadata_refresh_count = await refresh_requested_target_metadata(
         options=options,
         browser_context=browser_context,
@@ -273,8 +277,19 @@ async def run_resident_main_scheduler_tick(
         recovered_runtime_count=recovered_runtime_count,
         metadata_refresh_count=metadata_refresh_count,
         cover_image_refresh_count=cover_image_refresh_count,
+        notification_dispatch_count=notification_dispatch_count,
         worker_health_ok=executor.worker_health_ok(),
     )
+
+
+def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int:
+    """每輪 tick drain 已存在的 pending outbox，避免 after-commit hook 漏跑後卡住。"""
+
+    try:
+        return dispatch_new_pending_notification_outbox_for_db(db_path=options.db_path)
+    except Exception:
+        logger.exception("pending notification outbox dispatch failed")
+        return 0
 
 
 async def refresh_requested_target_metadata(
@@ -356,6 +371,8 @@ async def refresh_pending_target_cover_images(
                 options,
                 state.target_id,
                 _format_exception_message(exc),
+                reported_url=state.last_reported_url,
+                requested_at=state.requested_at,
             )
     return refreshed_count
 
@@ -380,15 +397,24 @@ async def refresh_target_group_cover_image_from_context(
             app.services.targets.mark_target_cover_image_refresh_stale_skipped(
                 target_id,
                 current_url=current_url,
+                reported_url=reported_url,
+                requested_at=state.requested_at,
             )
             return False
         group_id = target.group_id
-        app.services.targets.mark_target_cover_image_refresh_attempted(target_id)
+        if not app.services.targets.mark_target_cover_image_refresh_attempted(
+            target_id,
+            reported_url=reported_url,
+            requested_at=state.requested_at,
+        ):
+            return False
     if not group_id:
         mark_target_cover_image_refresh_failed(
             options,
             target_id,
             "target group id is empty",
+            reported_url=reported_url,
+            requested_at=state.requested_at,
         )
         return False
     try:
@@ -401,7 +427,13 @@ async def refresh_target_group_cover_image_from_context(
             "cover image refresh skipped",
             extra={"target_id": target_id},
         )
-        mark_target_cover_image_refresh_failed(options, target_id, str(exc))
+        mark_target_cover_image_refresh_failed(
+            options,
+            target_id,
+            str(exc),
+            reported_url=reported_url,
+            requested_at=state.requested_at,
+        )
         return False
     with SqliteApplicationContext(options.db_path) as app:
         target = app.repositories.targets.get(target_id)
@@ -412,6 +444,8 @@ async def refresh_target_group_cover_image_from_context(
             app.services.targets.mark_target_cover_image_refresh_stale_skipped(
                 target_id,
                 current_url=current_url,
+                reported_url=reported_url,
+                requested_at=state.requested_at,
             )
             return True
         normalized_cover_image_url = cover_image_url.strip()
@@ -424,6 +458,8 @@ async def refresh_target_group_cover_image_from_context(
             target_id,
             resolved_url=normalized_cover_image_url,
             changed=changed,
+            reported_url=reported_url,
+            requested_at=state.requested_at,
         )
     return True
 
@@ -441,13 +477,21 @@ def mark_target_cover_image_refresh_failed(
     options: ResidentRuntimeOptions,
     target_id: str,
     error: str,
+    *,
+    reported_url: str | None = None,
+    requested_at: datetime | None = None,
 ) -> None:
     """將 cover image refresh 失敗寫回獨立狀態；target 已刪除時忽略。"""
 
     with SqliteApplicationContext(options.db_path) as app:
         if app.repositories.targets.get(target_id) is None:
             return
-        app.services.targets.mark_target_cover_image_refresh_failed(target_id, error)
+        app.services.targets.mark_target_cover_image_refresh_failed(
+            target_id,
+            error,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
 
 
 def mark_target_metadata_refresh_failed(
@@ -553,6 +597,9 @@ async def run_resident_main_cycle(
             page_pool_size=await page_pool.size(),
             resident_browser_alive=executor.worker_health_ok(),
             recovered_runtime_count=summary.recovered_runtime_count,
+            metadata_refresh_count=summary.metadata_refresh_count,
+            cover_image_refresh_count=summary.cover_image_refresh_count,
+            notification_dispatch_count=summary.notification_dispatch_count,
             worker_health_ok=executor.worker_health_ok(),
         )
     finally:

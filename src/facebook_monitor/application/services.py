@@ -189,10 +189,20 @@ class TargetApplicationService:
 
         return self.cover_image_refreshes.list_pending(limit=limit)
 
-    def mark_target_cover_image_refresh_attempted(self, target_id: str) -> None:
+    def mark_target_cover_image_refresh_attempted(
+        self,
+        target_id: str,
+        *,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """記錄 target cover image refresh 已開始嘗試。"""
 
-        self.cover_image_refreshes.mark_attempted(target_id)
+        return self.cover_image_refreshes.mark_attempted(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
 
     def mark_target_cover_image_refresh_succeeded(
         self,
@@ -201,14 +211,18 @@ class TargetApplicationService:
         resolved_url: str,
         changed: bool,
         result: TargetCoverImageRefreshResult | None = None,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """標記 target cover image refresh 成功。"""
 
-        self.cover_image_refreshes.mark_succeeded(
+        return self.cover_image_refreshes.mark_succeeded(
             target_id,
             resolved_url=resolved_url,
             changed=changed,
             result=result,
+            reported_url=reported_url,
+            requested_at=requested_at,
         )
 
     def mark_target_cover_image_refresh_stale_skipped(
@@ -216,12 +230,16 @@ class TargetApplicationService:
         target_id: str,
         *,
         current_url: str,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """現行圖片 URL 已非 UI 上報 URL 時，清除過期 cover refresh job。"""
 
-        self.cover_image_refreshes.mark_stale_skipped(
+        return self.cover_image_refreshes.mark_stale_skipped(
             target_id,
             current_url=current_url,
+            reported_url=reported_url,
+            requested_at=requested_at,
         )
 
     def mark_target_cover_image_refresh_failed(
@@ -230,10 +248,18 @@ class TargetApplicationService:
         error: str,
         *,
         result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.FAILED,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """標記 target cover image refresh 失敗。"""
 
-        self.cover_image_refreshes.mark_failed(target_id, error, result=result)
+        return self.cover_image_refreshes.mark_failed(
+            target_id,
+            error,
+            result=result,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
 
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
         """標記 target 正等待 resident worker 補齊 metadata。"""

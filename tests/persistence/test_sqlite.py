@@ -380,6 +380,83 @@ def test_repair_duplicate_target_scopes_preserves_single_row_state(
     assert "duplicate-target" not in placements
 
 
+def test_repair_duplicate_target_scopes_rewrites_notification_outbox_keys(
+    tmp_path: Path,
+) -> None:
+    """duplicate target repair 需同步修正 outbox idempotency key 並合併邏輯重複通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        target_repository = TargetRepository(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-target",
+            name="duplicate",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        target_repository.save(first)
+        target_repository.save(duplicate)
+        outbox = notification_outbox_repository(connection)
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{first.id}:same-item:ntfy",
+                target_id=first.id,
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:same-item:ntfy",
+                target_id=duplicate.id,
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:unique-item:discord",
+                target_id=duplicate.id,
+                item_key="unique-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DISCORD,
+                title="title",
+                message="message",
+            )
+        )
+
+        repair_duplicate_target_scopes(connection)
+
+        rows = connection.execute(
+            """
+            SELECT target_id, item_key, channel, idempotency_key
+            FROM notification_outbox
+            ORDER BY item_key, channel
+            """
+        ).fetchall()
+
+    assert [row["target_id"] for row in rows] == [first.id, first.id]
+    assert [row["idempotency_key"] for row in rows] == [
+        f"{first.id}:same-item:ntfy",
+        f"{first.id}:unique-item:discord",
+    ]
+    assert [row["item_key"] for row in rows] == ["same-item", "unique-item"]
+
+
 def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path) -> None:
     """舊 DB 的 runtime_status=paused 會升級成 idle，paused 語義只保留在 target flag。"""
 
@@ -2053,7 +2130,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert result.seen_items == 1
         assert result.scan_scope_state == 1
         assert result.notification_outbox == 0
-        assert result.total_deleted == 4
+        assert result.total_deleted == 5
         assert table_count(connection, "scan_runs") == 0
         assert table_count(connection, "latest_scan_items") == 0
         assert table_count(connection, "match_history") == 1

@@ -304,6 +304,16 @@ def start_resident_scheduler_if_needed(request: Request) -> None:
     """manual scan 需要 scheduler 時，以 resident mode 啟動或喚醒。"""
 
     scheduler = get_scheduler_manager(request)
+    if get_profile_manager(request).is_active():
+        request.app.state.scheduler_paused_for_profile = True
+        request.app.state.scheduler_resume_options = (
+            scheduler.options
+            or getattr(request.app.state, "scheduler_resume_options", None)
+            or build_scheduler_options(request)
+        )
+        if scheduler.is_running():
+            scheduler.stop()
+        return
     if not scheduler.is_running():
         scheduler.start(build_scheduler_options(request))
     scheduler.wake()

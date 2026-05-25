@@ -10,10 +10,10 @@ from fastapi import HTTPException
 from fastapi import Query
 from fastapi import Request
 
+from facebook_monitor.application.target_actions import clear_target_hit_records_action
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_session_started_at
-from facebook_monitor.webapp.query_service import clear_hit_records
 from facebook_monitor.webapp.query_service import count_hit_records
 from facebook_monitor.webapp.query_service import list_full_hit_record_rows
 from facebook_monitor.webapp.query_service import list_hit_record_preview_rows
@@ -121,9 +121,11 @@ def register_hit_record_routes(app: FastAPI) -> None:
         """清空單一 target 的命中紀錄，不影響其他 runtime/debug 資料。"""
 
         ensure_target_exists(request, target_id)
-        deleted_count = clear_hit_records(get_db_path(request), target_id)
+        outcome = clear_target_hit_records_action(get_db_path(request), target_id)
+        if not outcome.ok:
+            raise HTTPException(status_code=404, detail=outcome.message)
         return {
             "target_id": target_id,
-            "deleted_count": deleted_count,
+            "deleted_count": outcome.updated_count,
             "total_count": 0,
         }

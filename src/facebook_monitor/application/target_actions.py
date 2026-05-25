@@ -56,6 +56,22 @@ def reset_target_notification_state_action(
     )
 
 
+def clear_target_hit_records_action(db_path: Path, target_id: str) -> TargetActionOutcome:
+    """清空單一 target 的命中紀錄，讓寫入語義留在 application layer。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.get(target_id)
+        if target is None:
+            return TargetActionOutcome(ok=False, message="target not found")
+        deleted_count = app_context.repositories.match_history.clear_by_target(target.id)
+    return TargetActionOutcome(
+        ok=True,
+        message="hit records cleared",
+        feedback="hit_records_cleared",
+        updated_count=deleted_count,
+    )
+
+
 def pause_target_monitoring_action(db_path: Path, target_id: str) -> TargetActionOutcome:
     """停止 target，保留 seen baseline 與歷史紀錄。"""
 

@@ -6,6 +6,8 @@ route 直接散讀 repository，讓 UI route 專注處理 HTTP 流程。
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -72,6 +74,21 @@ class DashboardViewModel:
         """回傳 Phase 5 sidebar 使用的 target 摘要。"""
 
         return tuple(row.sidebar_item for row in self.rows)
+
+    @property
+    def sidebar_layout_signature(self) -> str:
+        """回傳 sidebar group/order 結構簽章，供 partial update 判斷是否需 reload。"""
+
+        payload = [
+            {
+                "group_id": group.dom_group_id,
+                "name": group.name,
+                "target_ids": [item.target_id for item in group.items],
+            }
+            for group in self.sidebar_groups
+        ]
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def list_target_rows(
@@ -525,13 +542,6 @@ def count_hit_records(
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
-
-
-def clear_hit_records(db_path: Path, target_id: str) -> int:
-    """清空單一 target 的命中紀錄。"""
-
-    with SqliteApplicationContext(db_path) as app_context:
-        return app_context.repositories.match_history.clear_by_target(target_id)
 
 
 def get_dashboard_revision(db_path: Path) -> DashboardRevision:

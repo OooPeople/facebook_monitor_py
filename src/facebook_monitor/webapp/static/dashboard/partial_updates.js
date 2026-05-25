@@ -158,6 +158,15 @@ const updateRenameInput = (card, payload) => {
 };
 
 const updateSidebar = (payload) => {
+  const sidebarRoot = document.querySelector("[data-sidebar-layout]");
+  const expectedSignature = String(payload.layout_signature || "");
+  if (
+    expectedSignature
+    && sidebarRoot?.dataset.sidebarLayoutSignature
+    && sidebarRoot.dataset.sidebarLayoutSignature !== expectedSignature
+  ) {
+    return false;
+  }
   let allItemsMatched = true;
   (payload.items || []).forEach((item) => {
     const status = document.querySelector(`[data-sidebar-status="${item.target_id}"]`);

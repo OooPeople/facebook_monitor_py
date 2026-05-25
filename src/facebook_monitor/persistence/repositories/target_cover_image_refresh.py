@@ -106,26 +106,34 @@ class TargetCoverImageRefreshRepository:
         self,
         target_id: str,
         *,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
         attempted_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         """記錄 worker 已開始處理 cover image refresh。"""
 
         now = attempted_at or utc_now()
-        self.connection.execute(
-            """
+        where_sql, where_params = _target_pending_token_where(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
+        cursor = self.connection.execute(
+            f"""
             UPDATE target_cover_image_refresh_state
             SET last_attempted_at = ?,
                 last_result = ?,
                 updated_at = ?
-            WHERE target_id = ?
+            WHERE {where_sql}
             """,
             (
                 encode_datetime(now),
                 TargetCoverImageRefreshResult.ATTEMPTED.value,
                 encode_datetime(now),
-                target_id,
+                *where_params,
             ),
         )
+        return cursor.rowcount == 1
 
     def mark_succeeded(
         self,
@@ -134,8 +142,10 @@ class TargetCoverImageRefreshRepository:
         resolved_url: str,
         changed: bool,
         result: TargetCoverImageRefreshResult | None = None,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
         succeeded_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         """標記 cover image refresh 成功並回到 idle。"""
 
         now = succeeded_at or utc_now()
@@ -144,8 +154,13 @@ class TargetCoverImageRefreshRepository:
             if changed
             else TargetCoverImageRefreshResult.SUCCEEDED_UNCHANGED
         )
-        self.connection.execute(
-            """
+        where_sql, where_params = _target_pending_token_where(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
+        cursor = self.connection.execute(
+            f"""
             UPDATE target_cover_image_refresh_state
             SET status = ?,
                 last_succeeded_at = ?,
@@ -154,7 +169,7 @@ class TargetCoverImageRefreshRepository:
                 changed = ?,
                 error = '',
                 updated_at = ?
-            WHERE target_id = ?
+            WHERE {where_sql}
             """,
             (
                 TargetCoverImageRefreshStatus.IDLE.value,
@@ -163,22 +178,30 @@ class TargetCoverImageRefreshRepository:
                 normalized_result.value,
                 1 if changed else 0,
                 encode_datetime(now),
-                target_id,
+                *where_params,
             ),
         )
+        return cursor.rowcount == 1
 
     def mark_stale_skipped(
         self,
         target_id: str,
         *,
         current_url: str,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
         skipped_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         """現行 target 圖片 URL 已變更時，清掉過期的 pending refresh job。"""
 
         now = skipped_at or utc_now()
-        self.connection.execute(
-            """
+        where_sql, where_params = _target_pending_token_where(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
+        cursor = self.connection.execute(
+            f"""
             UPDATE target_cover_image_refresh_state
             SET status = ?,
                 last_resolved_url = ?,
@@ -186,16 +209,17 @@ class TargetCoverImageRefreshRepository:
                 changed = 0,
                 error = '',
                 updated_at = ?
-            WHERE target_id = ?
+            WHERE {where_sql}
             """,
             (
                 TargetCoverImageRefreshStatus.IDLE.value,
                 current_url.strip(),
                 TargetCoverImageRefreshResult.STALE_SKIPPED.value,
                 encode_datetime(now),
-                target_id,
+                *where_params,
             ),
         )
+        return cursor.rowcount == 1
 
     def mark_failed(
         self,
@@ -203,20 +227,27 @@ class TargetCoverImageRefreshRepository:
         error: str,
         *,
         result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.FAILED,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
         failed_at: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         """標記 cover image refresh 失敗；不清除既有 target 圖片 URL。"""
 
         now = failed_at or utc_now()
-        self.connection.execute(
-            """
+        where_sql, where_params = _target_pending_token_where(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
+        cursor = self.connection.execute(
+            f"""
             UPDATE target_cover_image_refresh_state
             SET status = ?,
                 last_failed_at = ?,
                 last_result = ?,
                 error = ?,
                 updated_at = ?
-            WHERE target_id = ?
+            WHERE {where_sql}
             """,
             (
                 TargetCoverImageRefreshStatus.FAILED.value,
@@ -224,9 +255,29 @@ class TargetCoverImageRefreshRepository:
                 result.value,
                 format_failure_message_text(error)[:500],
                 encode_datetime(now),
-                target_id,
+                *where_params,
             ),
         )
+        return cursor.rowcount == 1
+
+
+def _target_pending_token_where(
+    target_id: str,
+    *,
+    reported_url: str | None,
+    requested_at: datetime | None,
+) -> tuple[str, tuple[str, ...]]:
+    """建立 pending cover refresh token guard，避免舊 worker 清掉新 request。"""
+
+    clauses = ["target_id = ?", "status = ?"]
+    params: list[str] = [target_id, TargetCoverImageRefreshStatus.PENDING.value]
+    if reported_url is not None:
+        clauses.append("last_reported_url = ?")
+        params.append(reported_url.strip())
+    if requested_at is not None:
+        clauses.append("requested_at = ?")
+        params.append(encode_datetime(requested_at))
+    return " AND ".join(clauses), tuple(params)
 
 
 def _within_interval(

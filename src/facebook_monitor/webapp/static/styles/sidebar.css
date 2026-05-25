@@ -69,7 +69,7 @@
   position: fixed;
   right: auto;
   top: var(--sidebar-menu-top, 76px);
-  z-index: 20;
+  z-index: 30;
 }
 
 .sidebar-sort-confirm {
@@ -554,4 +554,3 @@
     transition: none;
   }
 }
-

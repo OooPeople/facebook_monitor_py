@@ -296,6 +296,29 @@ def test_unsafe_dashboard_fetches_use_shared_csrf_helper() -> None:
     assert "const requestJson" not in sidebar_layout_js
 
 
+def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
+    """漢堡選單維持向右展開，但需脫離 sidebar scroll layer 避免被裁切。"""
+
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
+    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "document.body.appendChild(panel);" in sidebar_layout_js
+    assert "data-sidebar-menu-floating" in sidebar_layout_js
+    assert "rect.right + gap" in sidebar_layout_js
+    assert 'event.target.closest?.(".sidebar-menu-panel")' in sidebar_layout_js
+    assert "sidebarRect.right - panelWidth - viewportPadding" not in sidebar_layout_js
+    assert 'panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);' in (
+        sidebar_layout_js
+    )
+    assert _css_rule_body(sidebar_css, ".sidebar-menu-panel,\n.sidebar-menu-panel.menu-panel").count(
+        "z-index: 30;"
+    ) == 1
+
+
 def test_dashboard_modals_use_shared_dismiss_helper() -> None:
     """Modal 關閉按鈕與 backdrop click 必須走共用 helper。"""
 

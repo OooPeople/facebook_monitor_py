@@ -1,6 +1,6 @@
 """Target config application service。
 
-職責：管理 target-scoped config、upsert request merge 與通知預設值套用。
+職責：管理 target-scoped config 與 upsert request merge。
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from facebook_monitor.application.target_config_merge import merge_target_config
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import TargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
-from facebook_monitor.core.notification_channels import copy_notification_settings
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
@@ -103,19 +101,3 @@ class TargetConfigService:
         config = self.merge_config_patch(existing_config, request.config)
         self.save_config_for_target(target, config)
         return config
-
-    def apply_global_notification_settings(
-        self,
-        settings: GlobalNotificationSettings,
-    ) -> int:
-        """將通知預設值套用到所有既有 target config。"""
-
-        count = 0
-        for target in self.targets.list_all():
-            current = self.get_config_for_target(target)
-            self.save_config_for_target(
-                target,
-                copy_notification_settings(current, settings),
-            )
-            count += 1
-        return count

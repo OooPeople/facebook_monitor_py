@@ -19,7 +19,6 @@ from starlette.concurrency import run_in_threadpool
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.facebook.group_metadata import GroupMetadata
@@ -197,13 +196,6 @@ def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupM
         profile_dir=profile_dir,
         canonical_url=canonical_url,
     )
-
-
-def get_global_notification_settings(request: Request) -> GlobalNotificationSettings:
-    """讀取 Web UI 通知預設值。"""
-
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
-        return app_context.repositories.global_notification_settings.get()
 
 
 def get_app_theme(request: Request) -> str:

@@ -24,7 +24,6 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
@@ -287,14 +286,6 @@ class TargetApplicationService:
 
         return self.config_service.update_target_config(request)
 
-    def apply_global_notification_settings(
-        self,
-        settings: GlobalNotificationSettings,
-    ) -> int:
-        """將通知預設值套用到所有既有 target config。"""
-
-        return self.config_service.apply_global_notification_settings(settings)
-
     def ensure_runtime_state(self, target_id: str) -> TargetRuntimeState:
         """確保 target 已有 runtime state，供 scheduler/UI 查詢。"""
 
@@ -472,9 +463,14 @@ class TargetApplicationService:
         return self.monitoring_commands.update_target_status(request)
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """執行 target「開始」語義：清 seen scope、啟用並要求立即掃描。"""
+        """執行 target「開始」語義：恢復監看並要求立即掃描。"""
 
         return self.monitoring_commands.restart_target_monitoring(target_id)
+
+    def clear_target_notification_records(self, target_id: str) -> int:
+        """清除單一 target 的通知去重紀錄。"""
+
+        return self.monitoring_commands.clear_target_notification_records(target_id)
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

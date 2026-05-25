@@ -58,6 +58,7 @@ def _serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:
         "hit_count": item.hit_count,
         "latest_error_summary": item.latest_error_summary,
         "thumbnail_url": item.thumbnail_url,
+        "active": item.active,
     }
 
 

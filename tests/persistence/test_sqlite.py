@@ -1668,7 +1668,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
 def test_notification_outbox_clear_by_target_only_deletes_target_rows(
     tmp_path: Path,
 ) -> None:
-    """notification outbox 可依 target 清除，支援重新開始監看時重置通知去重。"""
+    """清除 target 通知紀錄會刪該 target 所有 outbox 狀態。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -1685,17 +1685,19 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
         TargetRepository(connection).save(first)
         TargetRepository(connection).save(second)
         repo = notification_outbox_repository(connection)
-        repo.enqueue(
-            NotificationOutboxEntry(
-                idempotency_key=f"{first.id}:item-hash:ntfy",
-                target_id=first.id,
-                item_key="item-hash",
-                item_kind=ItemKind.POST,
-                channel=NotificationChannel.NTFY,
-                title="title",
-                message="message",
+        for status in NotificationOutboxStatus:
+            repo.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{first.id}:{status.value}:ntfy",
+                    target_id=first.id,
+                    item_key=status.value,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title=status.value,
+                    message=status.value,
+                    status=status,
+                )
             )
-        )
         repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{second.id}:item-hash:ntfy",
@@ -1708,9 +1710,10 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
             )
         )
 
-        assert repo.clear_by_target(first.id) == 1
+        assert repo.clear_by_target(first.id) == len(NotificationOutboxStatus)
 
-        assert repo.get_by_idempotency_key(f"{first.id}:item-hash:ntfy") is None
+        for status in NotificationOutboxStatus:
+            assert repo.get_by_idempotency_key(f"{first.id}:{status.value}:ntfy") is None
         assert repo.get_by_idempotency_key(f"{second.id}:item-hash:ntfy") is not None
 
 

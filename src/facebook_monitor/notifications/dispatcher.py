@@ -21,7 +21,6 @@ from facebook_monitor.notifications.outbox_service import dispatch_notification_
 from facebook_monitor.notifications.outbox_service import enqueue_match_notifications
 from facebook_monitor.notifications.outbox_service import queue_match_notifications_after_commit
 from facebook_monitor.notifications.outbox_service import recover_stale_processing_outbox
-from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
 
 
 __all__ = [
@@ -39,6 +38,5 @@ __all__ = [
     "is_channel_enabled",
     "queue_match_notifications_after_commit",
     "recover_stale_processing_outbox",
-    "retry_failed_notification_outbox",
     "send_manual_test_notification",
 ]

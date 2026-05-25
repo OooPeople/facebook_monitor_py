@@ -7,7 +7,10 @@ from fastapi import HTTPException
 from fastapi import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_actions import pause_sidebar_group_monitoring_action
+from facebook_monitor.application.target_actions import restart_sidebar_group_monitoring_action
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
@@ -75,6 +78,44 @@ def register_sidebar_routes(app: FastAPI) -> None:
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True}
+
+    @app.post("/api/sidebar/groups/{group_id}/start")
+    async def start_sidebar_group_monitoring(
+        request: Request,
+        group_id: str,
+    ) -> dict[str, object]:
+        """開始 sidebar group 內 targets，route 只負責喚醒 scheduler 一次。"""
+
+        try:
+            outcome = restart_sidebar_group_monitoring_action(get_db_path(request), group_id)
+            if outcome.wake_scheduler:
+                get_scheduler_manager(request).wake()
+        except ValueError as exc:
+            raise _sidebar_bad_request(exc) from exc
+        return {
+            "ok": outcome.ok,
+            "updated_count": outcome.updated_count,
+            "message": outcome.message,
+        }
+
+    @app.post("/api/sidebar/groups/{group_id}/stop")
+    async def stop_sidebar_group_monitoring(
+        request: Request,
+        group_id: str,
+    ) -> dict[str, object]:
+        """停止 sidebar group 內 targets，保留 target-scoped seen/history。"""
+
+        try:
+            outcome = pause_sidebar_group_monitoring_action(get_db_path(request), group_id)
+            if outcome.wake_scheduler:
+                get_scheduler_manager(request).wake()
+        except ValueError as exc:
+            raise _sidebar_bad_request(exc) from exc
+        return {
+            "ok": outcome.ok,
+            "updated_count": outcome.updated_count,
+            "message": outcome.message,
+        }
 
     @app.post("/api/sidebar/groups/order")
     async def save_sidebar_group_order(request: Request) -> dict[str, object]:

@@ -21,12 +21,13 @@
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
-| Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | 串接 Windows PyInstaller、release zip / `.sha256`、signed manifest / `.sig` 與 release validation | 否 |
-| macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | 串接 macOS Apple Silicon PyInstaller、release zip / `.sha256`、signed manifest / `.sig` 與 release validation；需在 macOS 上執行 | 否 |
+| Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | 串接 Windows PyInstaller、release zip / `.sha256`、不含 manifest 的 artifact validation 與 release validation | 否 |
+| macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | 串接 macOS Apple Silicon PyInstaller、release zip / `.sha256`、不含 manifest 的 artifact validation 與 release validation；需在 macOS 上執行 | 否 |
 | Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 從 `dist/facebook-monitor` 建立 Windows / macOS release zip 與同名 `.sha256`，並先檢查平台必要檔案與私密 runtime data | 否 |
 | Release Manifest Builder | `scripts/admin/create_release_manifest.py` | Admin packaging | 從 release zip 建立 signed updater manifest JSON，記錄平台、檔名、size 與 SHA256 | 否 |
 | Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用本機或 CI secret 內的 Ed25519 私鑰輸出 manifest detached signature | 否 |
-| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、signed manifest / `.sig`、平台必要 onedir 檔案與私密 runtime data；Windows 可選驗證 Authenticode signer | 否 |
+| Finalize Release Manifest | `scripts/admin/finalize_release_manifest.py` | Admin packaging | 依 `dist/` 內目前版本的正式平台 zip 建立唯一 signed manifest / `.sig`，並重驗 manifest 與 artifact metadata | 否 |
+| Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案與私密 runtime data；加 `--require-manifest` 時驗 signed manifest / `.sig`；Windows 可選驗證 Authenticode signer | 否 |
 | Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 用 stdlib AST 輸出超過 complexity / 函式長度門檻的 report；預設不作 CI gate | 否 |
 | Database Invariant Check | `scripts/admin/check_database_invariants.py` | Admin diagnostics | 唯讀檢查正式 SQLite DB 內 enum、boolean、range 與 runtime ownership invariant | 否 |
 | Windows Version Resource Builder | `scripts/admin/windows_version_resource.py` | Admin packaging | 由 `APP_VERSION` 產生 Windows PyInstaller version resource；通常由 Windows spec 自動呼叫 | 否 |
@@ -62,6 +63,7 @@
 .\scripts\uv.ps1 run python .\scripts\admin\manage_targets.py
 .\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
 .\scripts\uv.ps1 run python .\scripts\admin\build_windows_release.py --force
+.\scripts\uv.ps1 run python .\scripts\admin\finalize_release_manifest.py --force
 .\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --max-complexity 12 --max-lines 80
 .\scripts\uv.ps1 run python .\scripts\admin\check_database_invariants.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
@@ -95,7 +97,7 @@ Release tag 前建議執行：
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts --artifact-platform macos-arm64
 ```
 
-腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、signed manifest / `.sig`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / signed manifest / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
+腳本會輸出 OS、Python、uv、git commit 與每個驗證 command 結果。環境已同步時可加 `--skip-sync`；若要把 dependency advisory 檢查納入本機 release 驗證，可加 `--include-audit` 執行 `pip-audit`（可能需要網路或 advisory DB）。`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、`.sha256`、signed manifest / `.sig`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data；若平台 build 階段尚未 finalize manifest，可加 `--skip-artifact-manifest`，只驗 zip / `.sha256` / 平台內容。若要驗證 macOS Apple Silicon onedir zip，可加 `--artifact-platform macos-arm64`，檢查 zip / SHA256 / signed manifest / `.app` Info.plist version / app、updater、bundled browser、`.app` launcher 的 arm64 Mach-O 與 executable bit / 私密 runtime data。若已有正式 Windows code signing 憑證，可再加 `--expected-signer-subject "<subject>"`，讓 artifact validation 驗證 zip 內 EXE 的 Authenticode signer；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。final release 上傳前需執行 `finalize_release_manifest.py --force` 產生唯一 signed manifest / `.sig`，再用未加 `--skip-artifact-manifest` 的 artifact validation 確認 manifest 與 zip metadata 對齊。macOS runtime 套用另用 `smoke_frozen_updater.py --built-app dist/facebook-monitor` 驗證 updater 可替換 app files、保留 data/profile 並清理 handoff。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace / conflict marker 問題時 fail。正式 tag 前仍應保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
 版本與 Web asset cache key 的來源語義看 `docs/ARCHITECTURE.md#frozen-updater`；release validation 會印出目前 app / asset version，正式發佈時以升版作為瀏覽器 cache busting 來源。
 

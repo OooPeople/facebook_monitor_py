@@ -2,12 +2,15 @@
 {% set refresh_source = refresh_source if refresh_source is defined else (row if has_row else none) %}
 {% set refresh_form_id = refresh_form_id if refresh_form_id is defined else ("config-" ~ row.target.id if has_row else "") %}
 {% set refresh_input_attrs = refresh_input_attrs|default("") %}
+{% set refresh_mode_name = refresh_mode_name|default("refresh_mode") %}
+{% set refresh_mode_payload_name = refresh_mode_payload_name|default("") %}
 {% set refresh_defaults = target_defaults %}
 {% set fixed_default = refresh_defaults.default_fixed_refresh_sec %}
 {% set min_default = refresh_defaults.min_refresh_sec %}
 {% set max_default = refresh_defaults.max_refresh_sec %}
-{% set floating_checked = (refresh_source and refresh_source.refresh_mode == "floating") or not refresh_source %}
-{% set fixed_checked = refresh_source and refresh_source.refresh_mode == "fixed" %}
+{% set refresh_mode_value = refresh_source.refresh_mode if refresh_source and refresh_source.refresh_mode else "floating" %}
+{% set floating_checked = refresh_mode_value != "fixed" %}
+{% set fixed_checked = refresh_mode_value == "fixed" %}
 {% set fixed_value = refresh_source.fixed_refresh_value if refresh_source else fixed_default %}
 {% set min_value = refresh_source.min_refresh_value if refresh_source else min_default %}
 {% set max_value = refresh_source.max_refresh_value if refresh_source else max_default %}
@@ -15,14 +18,14 @@
   <div class="field-caption">刷新模式</div>
   <div class="refresh-mode-grid">
     <label class="radio option-card">
-      <input name="refresh_mode" type="radio" value="floating" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if floating_checked %}checked{% endif %}>
+      <input name="{{ refresh_mode_name }}" type="radio" value="floating" data-refresh-mode-input {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %} {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if floating_checked %}checked{% endif %}>
       <span>
         <strong>浮動刷新</strong>
         <small>在最小與最大秒數之間隨機刷新</small>
       </span>
     </label>
     <label class="radio option-card">
-      <input name="refresh_mode" type="radio" value="fixed" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if fixed_checked %}checked{% endif %}>
+      <input name="{{ refresh_mode_name }}" type="radio" value="fixed" data-refresh-mode-input {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %} {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if fixed_checked %}checked{% endif %}>
       <span>
         <strong>固定刷新</strong>
         <small>每固定秒數執行一次掃描</small>

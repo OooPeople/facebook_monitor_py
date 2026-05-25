@@ -66,7 +66,9 @@ def _activate_target(
 ) -> TargetDescriptor:
     """讓 finalize 測試明確模擬正式 worker 正在處理 active target。"""
 
-    return app.services.targets.restart_target_monitoring(target.id)
+    activated = app.services.targets.restart_target_monitoring(target.id)
+    app.repositories.scan_scope_state.mark_initialized(activated.scope_id)
+    return activated
 
 
 @dataclass(frozen=True)
@@ -559,10 +561,10 @@ def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
     assert saw_write_transaction == [True]
 
 
-def test_restart_monitoring_re_notifies_previously_seen_match(
+def test_restart_monitoring_preserves_previously_seen_match_notification_state(
     tmp_path: Path,
 ) -> None:
-    """按下開始會清 seen/outbox 去重，讓同一命中可重新通知。"""
+    """停止後再開始不重播已看過且已通知過的命中。"""
 
     sent_ntfy: list[str] = []
 
@@ -640,16 +642,17 @@ def test_restart_monitoring_re_notifies_previously_seen_match(
             notification_sender=fake_ntfy_sender,
         )
 
-        assert second_result.new_count == 1
+        assert second_result.new_count == 0
         assert second_result.matched_count == 1
         assert not second_result.baseline_mode
         assert second_result.latest_items[0].debug_metadata["classification"][
             "eligible_for_notify"
-        ] is True
-        assert len(app.repositories.notification_outbox.list_pending()) == 1
+        ] is False
+        assert second_result.notification_payloads == ()
+        assert len(app.repositories.notification_outbox.list_pending()) == 0
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
 
-    assert sent_ntfy == ["phase0test", "phase0test"]
+    assert sent_ntfy == ["phase0test"]
 
 
 def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:

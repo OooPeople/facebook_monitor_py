@@ -80,7 +80,7 @@ class NotificationOutboxRepository:
         return self._decrypt_entry(notification_outbox_from_row(row)) if row else None
 
     def clear_by_target(self, target_id: str) -> int:
-        """清除單一 target 的通知去重 outbox rows，供重新開始監看時重置。"""
+        """清除單一 target 的通知去重 outbox rows，供明確清除通知紀錄使用。"""
 
         cursor = self.connection.execute(
             "DELETE FROM notification_outbox WHERE target_id = ?",

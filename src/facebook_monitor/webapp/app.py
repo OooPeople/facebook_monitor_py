@@ -48,7 +48,6 @@ from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_desktop_sender
 from facebook_monitor.webapp.dependencies import get_discord_sender
 from facebook_monitor.webapp.dependencies import get_app_theme
-from facebook_monitor.webapp.dependencies import get_global_notification_settings
 from facebook_monitor.webapp.dependencies import get_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import get_profile_dir
@@ -297,7 +296,6 @@ __all__ = [
     "get_desktop_sender",
     "get_discord_sender",
     "get_app_theme",
-    "get_global_notification_settings",
     "get_group_name_resolver",
     "get_ntfy_sender",
     "get_profile_dir",

@@ -4,7 +4,10 @@ import {
   markTargetUpdatePending,
 } from "/static/dashboard/state.js";
 import { syncNextRefreshCountdown } from "/static/dashboard/next_refresh_countdown.js";
-import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
+import {
+  renderSidebarStatus,
+  syncSidebarGroupMonitoringButtons,
+} from "/static/dashboard/sidebar_status.js";
 import { showInlineStatus } from "/static/dashboard/utils.js";
 
 const fetchJson = async (url) => {
@@ -168,6 +171,10 @@ const updateSidebar = (payload) => {
     if (name) {
       name.textContent = item.display_name || "";
     }
+    const sidebarItem = status.closest("[data-sidebar-item]");
+    if (sidebarItem) {
+      sidebarItem.dataset.sidebarItemActive = item.active ? "1" : "0";
+    }
     updateAvatar(avatar, item.thumbnail_url, item.display_name);
     renderSidebarStatus(status, {
       baseStatus: item.base_status_summary || "",
@@ -178,6 +185,7 @@ const updateSidebar = (payload) => {
       modeClass: item.mode_class || "",
     });
   });
+  syncSidebarGroupMonitoringButtons();
   return allItemsMatched;
 };
 

@@ -13,7 +13,7 @@ from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 
 class GlobalNotificationSettingsRepository:
-    """保存 Web UI 通知預設值。"""
+    """保存舊版全域通知設定，避免既有 DB / secret storage 失去相容性。"""
 
     def __init__(
         self,
@@ -25,7 +25,7 @@ class GlobalNotificationSettingsRepository:
         self.secret_codec = secret_codec
 
     def get(self) -> GlobalNotificationSettings:
-        """讀取通知預設值；尚未設定時回傳預設值。"""
+        """讀取舊版全域通知設定；尚未設定時回傳空預設值。"""
 
         row = self.connection.execute(
             "SELECT * FROM global_notification_settings WHERE id = 1"
@@ -45,7 +45,7 @@ class GlobalNotificationSettingsRepository:
         )
 
     def save(self, settings: GlobalNotificationSettings) -> None:
-        """新增或更新通知預設值。"""
+        """新增或更新舊版全域通知設定。"""
 
         encrypted = transform_notification_endpoints(settings, self.secret_codec.encrypt)
         self.connection.execute(

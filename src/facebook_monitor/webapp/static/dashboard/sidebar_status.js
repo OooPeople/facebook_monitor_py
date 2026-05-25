@@ -51,3 +51,34 @@ export const renderSidebarStatus = (
     node.appendChild(detailNode);
   }
 };
+
+const updateGroupMonitoringButton = (button, { active, empty }) => {
+  if (!button) return;
+  if (button.dataset.sidebarGroupMonitoringPending === "1") {
+    button.disabled = true;
+    return;
+  }
+  const action = active ? "stop" : "start";
+  const label = active ? "停止群組" : "開始群組";
+  button.dataset.sidebarGroupMonitoring = action;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.disabled = empty;
+  button.classList.toggle("is-active", active);
+  button.querySelector(".sidebar-action-icon--play")?.toggleAttribute("hidden", active);
+  button.querySelector(".sidebar-action-icon--stop")?.toggleAttribute("hidden", !active);
+};
+
+export const syncSidebarGroupMonitoringButtons = (root = document) => {
+  const groups = [
+    ...(root.matches?.("[data-sidebar-group][data-group-id]") ? [root] : []),
+    ...root.querySelectorAll("[data-sidebar-group][data-group-id]"),
+  ];
+  groups.forEach((group) => {
+    const items = Array.from(group.querySelectorAll("[data-sidebar-item]"));
+    updateGroupMonitoringButton(group.querySelector("[data-sidebar-group-monitoring]"), {
+      active: items.some((item) => item.dataset.sidebarItemActive === "1"),
+      empty: items.length === 0,
+    });
+  });
+};

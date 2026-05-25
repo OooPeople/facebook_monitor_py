@@ -21,10 +21,11 @@ class TargetActionOutcome:
     feedback: str = ""
     wake_scheduler: bool = False
     start_scheduler: bool = False
+    updated_count: int = 0
 
 
 def restart_target_monitoring_action(db_path: Path, target_id: str) -> TargetActionOutcome:
-    """重新開始 target，清 seen/outbox 去重並要求下一輪掃描。"""
+    """開始 target，保留 seen/outbox 並要求下一輪掃描。"""
 
     with SqliteApplicationContext(db_path) as app_context:
         app_context.services.targets.restart_target_monitoring(target_id)
@@ -33,6 +34,22 @@ def restart_target_monitoring_action(db_path: Path, target_id: str) -> TargetAct
         message="target 已開始",
         feedback="target_started",
         wake_scheduler=True,
+    )
+
+
+def clear_target_notification_records_action(
+    db_path: Path,
+    target_id: str,
+) -> TargetActionOutcome:
+    """清除單一 target 的通知去重紀錄，不喚醒 scheduler。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        cleared_count = app_context.services.targets.clear_target_notification_records(target_id)
+    return TargetActionOutcome(
+        ok=True,
+        message=f"已清除通知紀錄 {cleared_count} 筆",
+        feedback="notification_records_cleared",
+        updated_count=cleared_count,
     )
 
 
@@ -76,4 +93,48 @@ def request_target_scan_once_action(db_path: Path, target_id: str) -> TargetActi
         message="已排入掃描",
         feedback="scan_requested",
         start_scheduler=True,
+    )
+
+
+def restart_sidebar_group_monitoring_action(
+    db_path: Path,
+    group_id: str,
+) -> TargetActionOutcome:
+    """開始 sidebar group 內所有 targets，沿用單 target 開始語義。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        if app_context.repositories.sidebar_layout.get_group(group_id) is None:
+            raise ValueError("找不到指定的 sidebar 群組")
+        target_ids = app_context.repositories.sidebar_layout.list_target_ids_for_group(group_id)
+        for target_id in target_ids:
+            app_context.services.targets.restart_target_monitoring(target_id)
+    count = len(target_ids)
+    return TargetActionOutcome(
+        ok=True,
+        message=f"已開始群組內 {count} 個 target" if count else "群組內沒有 target",
+        feedback="sidebar_group_started",
+        wake_scheduler=count > 0,
+        updated_count=count,
+    )
+
+
+def pause_sidebar_group_monitoring_action(
+    db_path: Path,
+    group_id: str,
+) -> TargetActionOutcome:
+    """停止 sidebar group 內所有 targets，保留各 target seen/history。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
+        if app_context.repositories.sidebar_layout.get_group(group_id) is None:
+            raise ValueError("找不到指定的 sidebar 群組")
+        target_ids = app_context.repositories.sidebar_layout.list_target_ids_for_group(group_id)
+        for target_id in target_ids:
+            app_context.services.targets.pause_target_monitoring(target_id)
+    count = len(target_ids)
+    return TargetActionOutcome(
+        ok=True,
+        message=f"已停止群組內 {count} 個 target" if count else "群組內沒有 target",
+        feedback="sidebar_group_stopped",
+        wake_scheduler=count > 0,
+        updated_count=count,
     )

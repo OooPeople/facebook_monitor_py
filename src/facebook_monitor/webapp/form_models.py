@@ -26,7 +26,6 @@ from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import clamp_target_post_count
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.notifications.discord_url import validate_discord_webhook_url
@@ -275,21 +274,6 @@ class NotificationConfigForm:
         """回傳 Discord checkbox 狀態。"""
 
         return checkbox_checked(self.enable_discord_notification)
-
-    def to_global_settings(
-        self,
-        *,
-        existing_ntfy_topic: str = "",
-        existing_discord_webhook: str = "",
-    ) -> GlobalNotificationSettings:
-        """轉成全域通知預設值。"""
-
-        return GlobalNotificationSettings(
-            **self.notification_settings_kwargs(
-                existing_ntfy_topic=existing_ntfy_topic,
-                existing_discord_webhook=existing_discord_webhook,
-            )
-        )
 
     def to_target_config(
         self,

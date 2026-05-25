@@ -75,7 +75,7 @@ class TargetMonitoringCommands:
         return updated_target
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """執行 target「開始」語義：清 runtime 去重狀態並要求立即掃描。"""
+        """執行 target「開始」語義：恢復監看並要求立即掃描。"""
 
         target = self.targets.get(target_id)
         if target is None:
@@ -84,9 +84,6 @@ class TargetMonitoringCommands:
             raise ValueError(f"Unsupported target kind: {target.target_kind.value}")
         target = self.registry.normalize_target_names(target)
 
-        self.seen_items.clear_scope(target.scope_id)
-        self.scan_scope_state.mark_initialized(target.scope_id)
-        self.notification_outbox.clear_by_target(target.id)
         updated_target = replace(
             target,
             enabled=True,
@@ -96,6 +93,14 @@ class TargetMonitoringCommands:
         self.targets.save(updated_target)
         self.runtime.restart_target_runtime(target_id)
         return updated_target
+
+    def clear_target_notification_records(self, target_id: str) -> int:
+        """清除單一 target 的通知去重紀錄，不影響 seen/history。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        return self.notification_outbox.clear_by_target(target.id)
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

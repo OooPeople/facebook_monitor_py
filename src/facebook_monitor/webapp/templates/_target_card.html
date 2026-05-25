@@ -57,6 +57,19 @@
           <button class="more-menu-action menu-action" type="button" data-rename-target-button>更改名稱</button>
           <form
             method="post"
+            action="/targets/{{ row.target.id }}/notifications/clear"
+            data-action-anchor="{{ row.anchor_id }}"
+            data-confirm-submit
+            data-confirm-title="清除通知紀錄"
+            data-confirm-message="清除這個 target 的通知去重紀錄？這可能取消尚未發送的通知；不會重置已看紀錄，因此已看過的同一項目不會因為這個操作再次通知。此操作不會影響命中紀錄或設定。"
+            data-confirm-label="清除"
+          >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to" value="">
+            <button class="more-menu-action menu-action" type="submit">清除通知紀錄</button>
+          </form>
+          <form
+            method="post"
             action="/targets/{{ row.target.id }}/delete"
             data-confirm-submit
             data-confirm-title="刪除 target"

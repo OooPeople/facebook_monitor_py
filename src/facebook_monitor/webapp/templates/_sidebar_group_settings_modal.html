@@ -36,6 +36,8 @@
           {% include "_scan_settings_fields.html" %}
           {% set refresh_source = group %}
           {% set refresh_input_attrs = "data-sidebar-template-field" %}
+          {% set refresh_mode_name = "refresh_mode_" ~ group.group_id %}
+          {% set refresh_mode_payload_name = "refresh_mode" %}
           {% include "_refresh_settings_fields.html" %}
         </div>
       </section>

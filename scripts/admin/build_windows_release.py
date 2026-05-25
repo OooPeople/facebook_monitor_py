@@ -1,4 +1,4 @@
-"""Admin tool：建置 Windows release artifact 並完成簽章驗證。"""
+"""Admin tool：建置 Windows release artifact 並完成平台驗證。"""
 
 # ruff: noqa: E402
 
@@ -18,12 +18,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.version import APP_VERSION
-from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin._release_build import ReleaseBuildStep
 from scripts.admin._release_build import force_args
 from scripts.admin._release_build import maybe_expected_tag_args
 from scripts.admin._release_build import metadata_env
-from scripts.admin._release_build import private_key_args
 from scripts.admin._release_build import python_command
 from scripts.admin._release_build import run_steps
 
@@ -38,13 +36,6 @@ def parse_args() -> argparse.Namespace:
         description="Build Windows PyInstaller onedir release artifacts."
     )
     parser.add_argument("--force", action="store_true", help="Overwrite release outputs.")
-    parser.add_argument("--key-id", default=DEFAULT_KEY_ID, help="Release signing key id.")
-    parser.add_argument(
-        "--private-key-file",
-        type=Path,
-        default=None,
-        help="Ed25519 private key file. Defaults to docs/local path when present, otherwise env.",
-    )
     parser.add_argument(
         "--expected-tag",
         default=f"v{APP_VERSION}",
@@ -76,8 +67,6 @@ def parse_args() -> argparse.Namespace:
 def build_steps(args: argparse.Namespace, *, version: str = APP_VERSION) -> list[ReleaseBuildStep]:
     """建立 Windows release build 流程。"""
 
-    zip_name = f"facebook-monitor-{version}-windows-portable.zip"
-    manifest_name = f"facebook-monitor-{version}-manifest.json"
     steps: list[ReleaseBuildStep] = []
     if not args.skip_pyinstaller_install:
         steps.append(
@@ -116,36 +105,11 @@ def build_steps(args: argparse.Namespace, *, version: str = APP_VERSION) -> list
                 ),
             ),
             ReleaseBuildStep(
-                "create signed manifest payload",
-                python_command(
-                    "scripts/admin/create_release_manifest.py",
-                    "--version",
-                    version,
-                    "--key-id",
-                    str(args.key_id),
-                    "--asset",
-                    f"windows=dist/{zip_name}",
-                    "--output",
-                    f"dist/{manifest_name}",
-                    *force_args(force=bool(args.force)),
-                ),
-            ),
-            ReleaseBuildStep(
-                "sign manifest",
-                python_command(
-                    "scripts/admin/sign_release_manifest.py",
-                    f"dist/{manifest_name}",
-                    *private_key_args(args.private_key_file),
-                    *force_args(force=bool(args.force)),
-                ),
-            ),
-            ReleaseBuildStep(
                 "validate windows artifact",
                 python_command(
                     "scripts/admin/release_artifact_validation.py",
                     "--platform",
                     "windows",
-                    "--require-manifest",
                     *maybe_expected_tag_args(str(args.expected_tag)),
                     *(
                         ("--expected-signer-subject", str(args.expected_signer_subject))
@@ -165,6 +129,7 @@ def build_steps(args: argparse.Namespace, *, version: str = APP_VERSION) -> list
                     "--include-artifacts",
                     "--artifact-platform",
                     "windows",
+                    "--skip-artifact-manifest",
                     *maybe_expected_tag_args(str(args.expected_tag)),
                     *(
                         ("--expected-signer-subject", str(args.expected_signer_subject))

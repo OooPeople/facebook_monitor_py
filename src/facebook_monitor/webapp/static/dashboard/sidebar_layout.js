@@ -1,5 +1,6 @@
 import { requestJson } from "/static/dashboard/api.js";
 import { confirmDialog, promptDialog } from "/static/dashboard/dialogs.js";
+import { syncSidebarGroupMonitoringButtons } from "/static/dashboard/sidebar_status.js";
 import { saveScrollPosition } from "/static/dashboard/state.js";
 import {
   groupStack,
@@ -30,12 +31,7 @@ const updateEmptyStates = () => {
     if (!empty) return;
     empty.hidden = listTargetIds(list).length > 0;
   });
-  sidebarGroups().forEach((group) => {
-    const count = group.querySelector(".sidebar-group-count");
-    if (count) {
-      count.textContent = String(listTargetIds(group.querySelector("[data-sidebar-list]")).length);
-    }
-  });
+  syncSidebarGroupMonitoringButtons();
 };
 
 const syncGroupCollapsedA11y = () => {
@@ -222,6 +218,36 @@ const setupGroupControls = (showToast) => {
       );
     });
   });
+
+  document.querySelectorAll("[data-sidebar-group-monitoring]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (isSorting() || button.disabled) return;
+      const group = button.closest("[data-sidebar-group]");
+      const groupId = group?.dataset.groupId || "";
+      const action = button.dataset.sidebarGroupMonitoring || "start";
+      if (!groupId) return;
+      button.dataset.sidebarGroupMonitoringPending = "1";
+      button.disabled = true;
+      try {
+        const data = await requestJson(
+          `/api/sidebar/groups/${encodeURIComponent(groupId)}/${encodeURIComponent(action)}`,
+        );
+        showToast?.(data.message || "群組狀態已更新", "success");
+        reloadDashboardPreservingScroll();
+      } catch (error) {
+        delete button.dataset.sidebarGroupMonitoringPending;
+        if (group) {
+          syncSidebarGroupMonitoringButtons(group);
+        } else {
+          button.disabled = false;
+        }
+        showToast?.(
+          `群組狀態更新失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
+      }
+    });
+  });
 };
 
 const animateGroupCollapsed = (group, collapsed) => {
@@ -308,17 +334,18 @@ const collectTemplatePayload = (modal) => {
   modal.querySelectorAll("[data-sidebar-template-field]").forEach((field) => {
     const name = field.name || "";
     if (!name) return;
+    const payloadName = field.dataset.sidebarTemplatePayloadName || name;
     if (field.type === "checkbox") {
-      payload[name] = Boolean(field.checked);
+      payload[payloadName] = Boolean(field.checked);
       return;
     }
     if (field.type === "radio") {
       if (field.checked) {
-        payload[name] = field.value;
+        payload[payloadName] = field.value;
       }
       return;
     }
-    payload[name] = field.value;
+    payload[payloadName] = field.value;
   });
   return payload;
 };

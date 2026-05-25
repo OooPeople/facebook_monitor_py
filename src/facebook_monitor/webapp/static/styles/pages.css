@@ -101,8 +101,7 @@
   overflow-wrap: anywhere;
 }
 
-.settings-keyword-form,
-.settings-notification-form {
+.settings-keyword-form {
   gap: 14px;
 }
 
@@ -120,6 +119,23 @@
 
 .settings-card-actions .inline-feedback:not(.is-visible) {
   display: none;
+}
+
+.settings-alert {
+  align-items: center;
+  background: var(--warn-bg);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, var(--border-soft));
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.settings-alert form {
+  display: inline-flex;
 }
 
 .update-check-grid .field-grid-cell dd {
@@ -169,84 +185,6 @@
   min-height: 36px;
 }
 
-.runtime-diagnostics-card {
-  overflow: hidden;
-  padding: 0;
-}
-
-.runtime-diagnostics-summary {
-  align-items: flex-start;
-  cursor: pointer;
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-  list-style: none;
-  padding: 20px;
-}
-
-.runtime-diagnostics-summary::-webkit-details-marker {
-  display: none;
-}
-
-.runtime-diagnostics-heading {
-  color: var(--text);
-  display: block;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
-.runtime-diagnostics-description {
-  color: var(--muted);
-  display: block;
-  font-size: 14px;
-  line-height: 1.45;
-  margin-top: 6px;
-}
-
-.runtime-diagnostics-toggle {
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  color: var(--text-soft);
-  flex: 0 0 auto;
-  font-size: 13px;
-  font-weight: 650;
-  padding: 5px 10px;
-}
-
-.runtime-diagnostics-card[open] .runtime-diagnostics-toggle {
-  color: var(--accent);
-}
-
-.runtime-diagnostics-card[open] .runtime-diagnostics-toggle::before {
-  content: "收合";
-}
-
-.runtime-diagnostics-card[open] .runtime-diagnostics-toggle {
-  font-size: 0;
-}
-
-.runtime-diagnostics-card[open] .runtime-diagnostics-toggle::before {
-  font-size: 13px;
-}
-
-.runtime-diagnostics-body {
-  border-top: 1px solid var(--border-soft);
-  padding: 18px 20px 20px;
-}
-
-.runtime-diagnostics-grid {
-  margin-bottom: 14px;
-}
-
-.runtime-diagnostics-grid .field-grid-cell dd {
-  overflow-wrap: anywhere;
-}
-
-#runtime-diagnostics-copy-source {
-  margin-bottom: 12px;
-}
-
 @media (max-width: 720px) {
   .new-target-two-column,
   .new-target-scan-row,
@@ -265,7 +203,6 @@
   }
 
   .settings-card-head,
-  .runtime-diagnostics-summary,
   .settings-actions {
     align-items: stretch;
     display: grid;

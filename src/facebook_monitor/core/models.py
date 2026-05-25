@@ -352,7 +352,7 @@ class LegacyTargetConfig:
 
 @dataclass(frozen=True)
 class GlobalNotificationSettings:
-    """保存 Web UI 全域通知預設與測試通知設定。"""
+    """保存舊版全域通知設定資料，保留給 migration / secret storage 相容性。"""
 
     enable_desktop_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_desktop_notification
     enable_ntfy: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_ntfy

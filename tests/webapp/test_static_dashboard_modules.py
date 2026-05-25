@@ -305,15 +305,24 @@ def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
+    sidebar_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_sidebar.html"
+    ).read_text(encoding="utf-8")
 
     assert "document.body.appendChild(panel);" in sidebar_layout_js
     assert "data-sidebar-menu-floating" in sidebar_layout_js
+    assert "SIDEBAR_MENU_ACTION_SELECTOR" in sidebar_layout_js
+    assert "focusFirstSidebarMenuAction(panel);" in sidebar_layout_js
+    assert "focusSidebarMenuTrigger(menu);" in sidebar_layout_js
+    assert 'aria-controls="sidebar-menu-panel"' in sidebar_template
+    assert 'id="sidebar-menu-panel"' in sidebar_template
     assert "rect.right + gap" in sidebar_layout_js
     assert 'event.target.closest?.(".sidebar-menu-panel")' in sidebar_layout_js
     assert "sidebarRect.right - panelWidth - viewportPadding" not in sidebar_layout_js
     assert 'panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);' in (
         sidebar_layout_js
     )
+    assert "closeSidebarMenu," in sidebar_layout_js
     assert _css_rule_body(sidebar_css, ".sidebar-menu-panel,\n.sidebar-menu-panel.menu-panel").count(
         "z-index: 30;"
     ) == 1

@@ -19,6 +19,7 @@ import {
 } from "/static/dashboard/utils.js";
 
 const isSorting = () => sidebarRoot()?.classList.contains("sorting");
+const SIDEBAR_MENU_ACTION_SELECTOR = ".sidebar-menu-action:not([hidden]):not(:disabled)";
 let sidebarMenuPanelHost = null;
 let sidebarMenuPanelNextSibling = null;
 
@@ -97,7 +98,15 @@ const restoreSidebarMenuPanel = (menu, panel = sidebarMenuPanel(menu)) => {
   sidebarMenuPanelNextSibling = null;
 };
 
-const positionSidebarMenuPanel = () => {
+const focusFirstSidebarMenuAction = (panel) => {
+  panel?.querySelector(SIDEBAR_MENU_ACTION_SELECTOR)?.focus?.({ preventScroll: true });
+};
+
+const focusSidebarMenuTrigger = (menu) => {
+  menu?.querySelector(".sidebar-menu-trigger")?.focus?.({ preventScroll: true });
+};
+
+const positionSidebarMenuPanel = ({ focusFirstAction = false } = {}) => {
   const menu = document.querySelector("[data-sidebar-menu]");
   const panel = sidebarMenuPanel(menu);
   const trigger = menu?.querySelector(".sidebar-menu-trigger");
@@ -113,15 +122,21 @@ const positionSidebarMenuPanel = () => {
   );
   panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);
   panel.style.setProperty("--sidebar-menu-top", `${Math.max(viewportPadding, rect.top)}px`);
+  if (focusFirstAction) {
+    focusFirstSidebarMenuAction(panel);
+  }
 };
 
-const closeSidebarMenu = () => {
+const closeSidebarMenu = ({ restoreFocus = false } = {}) => {
   const menu = document.querySelector("[data-sidebar-menu]");
   const trigger = menu?.querySelector(".sidebar-menu-trigger");
   if (!menu) return;
   menu.open = false;
   restoreSidebarMenuPanel(menu);
   trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) {
+    focusSidebarMenuTrigger(menu);
+  }
 };
 
 const setSidebarMenuOpen = (open) => {
@@ -131,7 +146,9 @@ const setSidebarMenuOpen = (open) => {
   menu.open = open;
   trigger?.setAttribute("aria-expanded", String(open));
   if (open) {
-    window.requestAnimationFrame(positionSidebarMenuPanel);
+    window.requestAnimationFrame(() => {
+      positionSidebarMenuPanel({ focusFirstAction: true });
+    });
   } else {
     restoreSidebarMenuPanel(menu);
   }
@@ -166,7 +183,7 @@ const setupSidebarMenuPosition = () => {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      closeSidebarMenu();
+      closeSidebarMenu({ restoreFocus: true });
     }
   });
 };
@@ -503,6 +520,7 @@ export const setupSidebarLayout = ({ showToast } = {}) => {
     updateEmptyStates,
     reorderCardsBySidebar,
     closeExpandedGroupActions,
+    closeSidebarMenu,
   });
   setupGroupControls(showToast);
   setupGroupCreate(showToast);

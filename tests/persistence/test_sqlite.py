@@ -1938,6 +1938,24 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
     assert loaded.attempts == 1
 
 
+def test_notification_outbox_recover_stale_processing_skips_write_without_candidates(
+    tmp_path: Path,
+) -> None:
+    """沒有過期 processing rows 時，recovery 不應開啟 SQLite write transaction。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.commit()
+        repo = notification_outbox_repository(connection)
+
+        recovered_count = repo.recover_stale_processing(older_than_seconds=60)
+
+        assert recovered_count == 0
+        assert not connection.in_transaction
+
+
 def test_notification_outbox_recovers_stale_processing_for_future_claim(
     tmp_path: Path,
 ) -> None:

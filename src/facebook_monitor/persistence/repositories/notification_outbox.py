@@ -165,6 +165,23 @@ class NotificationOutboxRepository:
         recovered_count = 0
         recovered_at = encode_datetime(utc_now())
         threshold_text = encode_datetime(threshold)
+        stale_status_rows = self.connection.execute(
+            """
+            SELECT status
+            FROM notification_outbox
+            WHERE status IN (?, ?)
+              AND updated_at < ?
+            GROUP BY status
+            """,
+            (
+                NotificationOutboxStatus.PROCESSING_PENDING.value,
+                NotificationOutboxStatus.PROCESSING_FAILED.value,
+                threshold_text,
+            ),
+        ).fetchall()
+        stale_statuses = {str(row["status"]) for row in stale_status_rows}
+        if not stale_statuses:
+            return 0
         for processing_status, restored_status in (
             (
                 NotificationOutboxStatus.PROCESSING_PENDING,
@@ -175,6 +192,8 @@ class NotificationOutboxRepository:
                 NotificationOutboxStatus.FAILED,
             ),
         ):
+            if processing_status.value not in stale_statuses:
+                continue
             cursor = self.connection.execute(
                 """
                 UPDATE notification_outbox
@@ -193,8 +212,7 @@ class NotificationOutboxRepository:
                 ),
             )
             recovered_count += int(cursor.rowcount or 0)
-        if recovered_count:
-            self.connection.commit()
+        self.connection.commit()
         return recovered_count
 
     def touch_processing(

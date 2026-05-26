@@ -1340,6 +1340,59 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
     assert entry.attempts == 2
 
 
+def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(
+    tmp_path: Path,
+) -> None:
+    """outbox dispatch 不應在外部通知 I/O 期間持有 SQLite write transaction。"""
+
+    db_path = tmp_path / "app.db"
+    in_transaction_during_send: list[bool] = []
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:post:io-lock:ntfy",
+                target_id=target.id,
+                item_key="post:io-lock",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+                endpoint="phase0test",
+            )
+        )
+
+        def fake_ntfy_sender(
+            config: NtfyConfig,
+            _title: str,
+            _message: str,
+        ) -> NtfyResult:
+            """記錄 sender 執行時是否仍持有 write transaction。"""
+
+            in_transaction_during_send.append(
+                app.repositories.notification_outbox.connection.in_transaction
+            )
+            return NtfyResult(ok=True, status_code=200, message="sent")
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+
+    assert sent_count == 1
+    assert in_transaction_during_send == [False]
+
+
 def test_stale_failed_retry_processing_does_not_become_pending_dispatch(
     tmp_path: Path,
 ) -> None:

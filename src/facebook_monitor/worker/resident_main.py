@@ -13,6 +13,7 @@ from collections.abc import Callable
 from datetime import datetime
 import logging
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from playwright.async_api import async_playwright
@@ -287,9 +288,23 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
 
     try:
         return dispatch_new_pending_notification_outbox_for_db(db_path=options.db_path)
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_database_locked(exc):
+            logger.warning(
+                "pending notification outbox dispatch skipped: database locked"
+            )
+            return 0
+        logger.exception("pending notification outbox dispatch failed")
+        return 0
     except Exception:
         logger.exception("pending notification outbox dispatch failed")
         return 0
+
+
+def _is_sqlite_database_locked(exc: sqlite3.OperationalError) -> bool:
+    """判斷 SQLite OperationalError 是否為暫時性 lock contention。"""
+
+    return "locked" in str(exc).lower()
 
 
 async def refresh_requested_target_metadata(

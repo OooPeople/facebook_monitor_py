@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -25,6 +27,7 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import _is_playwright_driver_shutdown_exception
+from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
 from facebook_monitor.worker.resident_main import refresh_target_group_cover_image_from_context
 from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
@@ -342,6 +345,38 @@ def test_resident_scheduler_tick_dispatches_existing_pending_outbox(
     asyncio.run(run_test())
 
     assert dispatched_db_paths == [db_path]
+
+
+def test_dispatch_pending_notification_outbox_treats_sqlite_lock_as_transient(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: Any,
+) -> None:
+    """resident tick 遇到暫時性 SQLite lock 時保留 pending outbox 給下輪重試。"""
+
+    db_path = tmp_path / "app.db"
+
+    def raise_locked(**_kwargs: object) -> int:
+        """模擬 dispatch 開頭遇到其他 writer 持鎖。"""
+
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",
+        raise_locked,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="facebook_monitor.worker.resident_main"):
+        dispatched_count = dispatch_pending_notification_outbox(
+            ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            )
+        )
+
+    assert dispatched_count == 0
+    assert "database locked" in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(

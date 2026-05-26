@@ -274,6 +274,7 @@ def dispatch_notification_outbox_entries(
                 entry_id=entry_id,
                 status=entry.status,
             )
+            app.repositories.notification_outbox.connection.commit()
             entry = refresh_outbox_entry_delivery_endpoint(
                 app=app,
                 target=target,

@@ -5,6 +5,9 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 
+from facebook_monitor.core.keyword_groups import flatten_include_keyword_groups
+from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
+from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.notification_channels import transform_notification_endpoints
 from facebook_monitor.core.models import LegacyTargetConfig
 from facebook_monitor.core.models import TargetConfig
@@ -13,6 +16,7 @@ from facebook_monitor.persistence.row_mappers import legacy_target_config_from_r
 from facebook_monitor.persistence.row_mappers import target_config_from_row
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
+from facebook_monitor.persistence.sqlite_codec import encode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
@@ -34,21 +38,42 @@ class TargetConfigRepository:
         normalized_target_id = target_id.strip()
         if not normalized_target_id:
             raise ValueError("target_id is required for target-scoped config")
+        normalized_groups = normalize_include_keyword_groups(
+            config.include_keyword_groups,
+            fill_empty_slots=True,
+        )
+        include_keywords = (
+            flatten_include_keyword_groups(normalized_groups)
+            if any(group.keywords for group in normalized_groups)
+            else config.include_keywords
+        )
+        if not any(group.keywords for group in normalized_groups) and include_keywords:
+            normalized_groups = legacy_include_keyword_groups(
+                include_keywords,
+                fill_empty_slots=True,
+            )
         target_config = transform_notification_endpoints(
-            replace(config, target_id=normalized_target_id),
+            replace(
+                config,
+                target_id=normalized_target_id,
+                include_keywords=include_keywords,
+                include_keyword_groups=normalized_groups,
+            ),
             self.secret_codec.encrypt,
         )
         self.connection.execute(
             """
             INSERT INTO target_configs (
-                target_id, include_keywords, exclude_keywords, exclude_ignore_phrases, min_refresh_sec,
+                target_id, include_keywords, include_keyword_groups,
+                exclude_keywords, exclude_ignore_phrases, min_refresh_sec,
                 max_refresh_sec, jitter_enabled, fixed_refresh_sec, max_items_per_scan,
                 auto_load_more, auto_adjust_sort, enable_desktop_notification,
                 enable_ntfy, ntfy_topic, enable_discord_notification, discord_webhook
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(target_id) DO UPDATE SET
                 include_keywords=excluded.include_keywords,
+                include_keyword_groups=excluded.include_keyword_groups,
                 exclude_keywords=excluded.exclude_keywords,
                 exclude_ignore_phrases=excluded.exclude_ignore_phrases,
                 min_refresh_sec=excluded.min_refresh_sec,
@@ -67,6 +92,7 @@ class TargetConfigRepository:
             (
                 target_config.target_id,
                 encode_keywords(target_config.include_keywords),
+                encode_include_keyword_groups(target_config.include_keyword_groups),
                 encode_keywords(target_config.exclude_keywords),
                 encode_keywords(target_config.exclude_ignore_phrases),
                 target_config.min_refresh_sec,
@@ -83,7 +109,12 @@ class TargetConfigRepository:
                 target_config.discord_webhook,
             ),
         )
-        return replace(config, target_id=normalized_target_id)
+        return replace(
+            config,
+            target_id=normalized_target_id,
+            include_keywords=include_keywords,
+            include_keyword_groups=normalized_groups,
+        )
 
     def save_for_target(self, target: TargetDescriptor, config: TargetConfig) -> TargetConfig:
         """依 target id 保存 target-scoped config。"""

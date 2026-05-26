@@ -25,6 +25,7 @@ from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
@@ -189,6 +190,14 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
             "is_matched": True,
             "include_rule": "票券",
             "include_rules": ["票券"],
+            "include_group_results": [
+                {
+                    "group_id": "1",
+                    "group_label": "關鍵字 1",
+                    "matched": True,
+                    "rules": ["票券"],
+                }
+            ],
             "exclude_rule": "",
             "eligible_for_notify": True,
             "baseline_mode": False,
@@ -243,6 +252,76 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         }
         assert all(event.status == NotificationStatus.SENT for event in events)
         assert app.repositories.notification_outbox.list_pending() == []
+
+
+def test_finalize_scan_items_requires_all_include_keyword_groups(tmp_path: Path) -> None:
+    """shared finalize 使用 include groups 判斷命中並保存 group 診斷。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(
+                    include_keyword_groups=keyword_group_slots(
+                        (("5/1;5/2",), ("108;109",))
+                    ),
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:1",
+                    alias_keys=("post:1",),
+                    group_id="123",
+                    text="售 5/2 109 區票券",
+                    raw_target_kind="posts",
+                ),
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:2",
+                    alias_keys=("post:2",),
+                    group_id="123",
+                    text="售 5/2 票券",
+                    raw_target_kind="posts",
+                ),
+            ],
+            item_count=2,
+            metadata={"worker": "test_worker"},
+        )
+
+        assert result.matched_count == 1
+        assert result.latest_items[0].matched_keyword == "5/2;109"
+        assert [
+            (match.group_id, match.group_label, match.rule)
+            for match in result.latest_items[0].matched_keyword_groups
+        ] == [("1", "關鍵字 1", "5/2"), ("2", "關鍵字 2", "109")]
+        assert result.latest_items[1].matched_keyword == ""
+        assert result.latest_items[1].debug_metadata["classification"][
+            "include_group_results"
+        ] == [
+            {
+                "group_id": "1",
+                "group_label": "關鍵字 1",
+                "matched": True,
+                "rules": ["5/2"],
+            },
+            {
+                "group_id": "2",
+                "group_label": "關鍵字 2",
+                "matched": False,
+                "rules": [],
+            },
+        ]
 
 
 def test_finalize_scan_items_refuses_stopped_target_commit(tmp_path: Path) -> None:

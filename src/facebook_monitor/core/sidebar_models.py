@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.models import IncludeKeywordGroup
 from facebook_monitor.core.notification_channels import copy_notification_settings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import new_id
@@ -54,6 +55,7 @@ class SidebarGroupConfigTemplate:
 
     sidebar_group_id: str
     include_keywords: tuple[str, ...] = ()
+    include_keyword_groups: tuple[IncludeKeywordGroup, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
     exclude_ignore_phrases: tuple[str, ...] = ()
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
@@ -76,6 +78,7 @@ class SidebarGroupConfigTemplate:
         config = TargetConfig(
             target_id=target_id,
             include_keywords=self.include_keywords,
+            include_keyword_groups=self.include_keyword_groups,
             exclude_keywords=self.exclude_keywords,
             exclude_ignore_phrases=self.exclude_ignore_phrases,
             min_refresh_sec=self.min_refresh_sec,

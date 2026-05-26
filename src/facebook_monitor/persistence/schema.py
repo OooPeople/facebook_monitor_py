@@ -8,7 +8,7 @@ from facebook_monitor.persistence.current_schema import create_current_schema
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:

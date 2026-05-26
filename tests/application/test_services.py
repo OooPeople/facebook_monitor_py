@@ -18,6 +18,7 @@ from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -410,6 +411,7 @@ def test_build_target_config_from_patch_preserves_explicit_values_and_defaults()
 
     assert config.target_id == "target-1"
     assert config.include_keywords == ()
+    assert [group.keywords for group in config.include_keyword_groups] == [(), (), ()]
     assert config.exclude_keywords == ()
     assert config.exclude_ignore_phrases == (
         PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
@@ -444,11 +446,40 @@ def test_merge_target_config_patch_preserves_omitted_values_and_clamps() -> None
 
     assert merged.target_id == "target-1"
     assert merged.include_keywords == ()
+    assert [group.keywords for group in merged.include_keyword_groups] == [(), (), ()]
     assert merged.exclude_keywords == ("old-exclude",)
     assert merged.enable_ntfy is True
     assert merged.ntfy_topic == "old-topic"
     assert merged.max_items_per_scan == 10
     assert merged.auto_load_more is False
+
+
+def test_target_config_patch_syncs_include_keyword_groups_projection() -> None:
+    """include groups 更新時同步維持 legacy flat include_keywords projection。"""
+
+    groups = keyword_group_slots((("5/1;5/2",), ("108;109",)))
+
+    legacy_config = build_target_config_from_patch(
+        "target-1",
+        TargetConfigPatch(include_keywords=("票", "交換")),
+    )
+    config = build_target_config_from_patch(
+        "target-1",
+        TargetConfigPatch(include_keyword_groups=groups),
+    )
+    merged = merge_target_config_patch(
+        TargetConfig(target_id="target-1", include_keywords=("old",)),
+        TargetConfigPatch(include_keyword_groups=groups),
+    )
+
+    assert [
+        group.keywords for group in legacy_config.include_keyword_groups
+    ] == [("票", "交換"), (), ()]
+    assert config.include_keywords == ("5/1;5/2", "108;109")
+    assert merged.include_keywords == ("5/1;5/2", "108;109")
+    assert [
+        group.keywords for group in merged.include_keyword_groups
+    ] == [("5/1;5/2",), ("108;109",), ()]
 
 
 def test_target_facade_exposes_display_next_due_update(tmp_path: Path) -> None:

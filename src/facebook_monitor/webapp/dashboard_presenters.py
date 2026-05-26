@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
+from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
@@ -331,7 +333,51 @@ class TargetSettingsPresenter:
     def include_text(self) -> str:
         """回傳 include keywords 表單文字。"""
 
-        return ";".join(self.config.include_keywords)
+        return self.include_group_texts[0] if self.include_group_texts else ""
+
+    @property
+    def include_text_2(self) -> str:
+        """回傳 include keyword 第 2 組表單文字。"""
+
+        return self.include_group_texts[1] if len(self.include_group_texts) > 1 else ""
+
+    @property
+    def include_text_3(self) -> str:
+        """回傳 include keyword 第 3 組表單文字。"""
+
+        return self.include_group_texts[2] if len(self.include_group_texts) > 2 else ""
+
+    @property
+    def include_group_texts(self) -> tuple[str, ...]:
+        """回傳固定 include group slots 的表單文字。"""
+
+        groups = normalize_include_keyword_groups(
+            self.config.include_keyword_groups,
+            fill_empty_slots=True,
+        )
+        if not any(group.keywords for group in groups) and self.config.include_keywords:
+            groups = legacy_include_keyword_groups(
+                self.config.include_keywords,
+                fill_empty_slots=True,
+            )
+        return tuple(";".join(group.keywords) for group in groups)
+
+    @property
+    def include_summary_label(self) -> str:
+        """回傳收合摘要使用的 include keyword 短文字。"""
+
+        non_empty_groups = [
+            text for text in self.include_group_texts if text
+        ]
+        if not non_empty_groups:
+            return EMPTY_INCLUDE_KEYWORDS_LABEL
+        keyword_count = sum(
+            len(tuple(keyword for keyword in text.split(";") if keyword.strip()))
+            for text in non_empty_groups
+        )
+        if len(non_empty_groups) == 1:
+            return non_empty_groups[0]
+        return f"{len(non_empty_groups)} 組 / {keyword_count} 條"
 
     @property
     def exclude_text(self) -> str:
@@ -463,7 +509,7 @@ class TargetCardSummaryPresenter:
         """回傳收合卡片可共用的摘要 view model。"""
 
         return TargetCardSummary(
-            include_keywords_summary=self.settings.include_text or EMPTY_INCLUDE_KEYWORDS_LABEL,
+            include_keywords_summary=self.settings.include_summary_label,
             exclude_keywords_summary=self.settings.exclude_text or "未設定",
             latest_scan_label=self.latest_scan_label,
             hit_record_total_count=self.hit_record_total_count,

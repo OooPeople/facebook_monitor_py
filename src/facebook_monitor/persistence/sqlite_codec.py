@@ -7,6 +7,8 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import datetime
 
+from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
+from facebook_monitor.core.models import IncludeKeywordGroup
 from facebook_monitor.core.models import TargetRuntimeStatus
 
 
@@ -34,6 +36,52 @@ def decode_keywords(value: str) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(str(item) for item in json.loads(value))
+
+
+def encode_include_keyword_groups(values: Iterable[IncludeKeywordGroup]) -> str:
+    """將 include keyword groups 編碼為 JSON。"""
+
+    groups = normalize_include_keyword_groups(values, fill_empty_slots=True)
+    return json.dumps(
+        [
+            {
+                "group_id": group.group_id,
+                "label": group.label,
+                "keywords": list(group.keywords),
+            }
+            for group in groups
+        ],
+        ensure_ascii=False,
+    )
+
+
+def decode_include_keyword_groups(value: str) -> tuple[IncludeKeywordGroup, ...]:
+    """將 include keyword groups JSON 還原為固定 group slots。"""
+
+    if not value:
+        return ()
+    raw_groups = json.loads(value)
+    if not isinstance(raw_groups, list):
+        return ()
+    groups: list[IncludeKeywordGroup] = []
+    for index, raw_group in enumerate(raw_groups, start=1):
+        if not isinstance(raw_group, dict):
+            continue
+        raw_keywords = raw_group.get("keywords", ())
+        keywords = (
+            tuple(str(item) for item in raw_keywords)
+            if isinstance(raw_keywords, list)
+            else ()
+        )
+        group_id = str(raw_group.get("group_id") or index)
+        groups.append(
+            IncludeKeywordGroup(
+                group_id=group_id,
+                label=str(raw_group.get("label") or ""),
+                keywords=keywords,
+            )
+        )
+    return normalize_include_keyword_groups(groups, fill_empty_slots=True)
 
 
 def decode_runtime_status(value: str) -> TargetRuntimeStatus:

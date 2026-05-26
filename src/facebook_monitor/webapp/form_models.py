@@ -20,12 +20,15 @@ from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_groups import flatten_include_keyword_groups
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.input_limits import normalize_notification_endpoint
 from facebook_monitor.core.input_limits import normalize_ntfy_topic
 from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import clamp_target_post_count
+from facebook_monitor.core.models import IncludeKeywordGroup
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.notifications.discord_url import validate_discord_webhook_url
@@ -358,6 +361,8 @@ class TargetConfigForm:
     """保存 target create/update 共用設定欄位。"""
 
     include_keywords: str = ""
+    include_keywords_2: str = ""
+    include_keywords_3: str = ""
     exclude_keywords: str = ""
     exclude_ignore_phrases: str = ""
     refresh_mode: str = FLOATING_REFRESH_MODE
@@ -381,6 +386,8 @@ class TargetConfigForm:
     def as_form(
         cls,
         include_keywords: Annotated[str, Form()] = "",
+        include_keywords_2: Annotated[str, Form()] = "",
+        include_keywords_3: Annotated[str, Form()] = "",
         exclude_keywords: Annotated[str, Form()] = "",
         exclude_ignore_phrases: Annotated[str, Form()] = "",
         refresh_mode: Annotated[str, Form()] = FLOATING_REFRESH_MODE,
@@ -416,6 +423,8 @@ class TargetConfigForm:
 
         return cls(
             include_keywords=include_keywords,
+            include_keywords_2=include_keywords_2,
+            include_keywords_3=include_keywords_3,
             exclude_keywords=exclude_keywords,
             exclude_ignore_phrases=exclude_ignore_phrases,
             refresh_mode=refresh_mode,
@@ -446,6 +455,8 @@ class TargetConfigForm:
         notification_form = NotificationConfigForm.from_sidebar_template_payload(payload)
         return cls(
             include_keywords=str(payload.get("include_keywords", "")),
+            include_keywords_2=str(payload.get("include_keywords_2", "")),
+            include_keywords_3=str(payload.get("include_keywords_3", "")),
             exclude_keywords=str(payload.get("exclude_keywords", "")),
             exclude_ignore_phrases=str(payload.get("exclude_ignore_phrases", "")),
             refresh_mode=str(payload.get("refresh_mode", FLOATING_REFRESH_MODE)),
@@ -482,7 +493,28 @@ class TargetConfigForm:
     def include_keyword_tuple(self) -> tuple[str, ...]:
         """回傳已解析 include keywords。"""
 
-        return parse_limited_keywords_text(self.include_keywords, field_label="包含關鍵字")
+        return flatten_include_keyword_groups(self.include_keyword_groups)
+
+    @property
+    def include_keyword_groups(self) -> tuple[IncludeKeywordGroup, ...]:
+        """回傳已解析 include keyword groups。"""
+
+        return keyword_group_slots(
+            (
+                parse_limited_keywords_text(
+                    self.include_keywords,
+                    field_label="包含關鍵字 1",
+                ),
+                parse_limited_keywords_text(
+                    self.include_keywords_2,
+                    field_label="包含關鍵字 2",
+                ),
+                parse_limited_keywords_text(
+                    self.include_keywords_3,
+                    field_label="包含關鍵字 3",
+                ),
+            )
+        )
 
     @property
     def exclude_keyword_tuple(self) -> tuple[str, ...]:
@@ -580,6 +612,7 @@ class TargetConfigForm:
         )
         return TargetConfigPatch(
             include_keywords=self.include_keyword_tuple,
+            include_keyword_groups=self.include_keyword_groups,
             exclude_keywords=self.exclude_keyword_tuple,
             exclude_ignore_phrases=self.exclude_ignore_phrase_tuple,
             fixed_refresh_sec=self.refresh_fixed_value,
@@ -621,6 +654,7 @@ class TargetConfigForm:
         return SidebarGroupConfigTemplate(
             sidebar_group_id=sidebar_group_id,
             include_keywords=self.include_keyword_tuple,
+            include_keyword_groups=self.include_keyword_groups,
             exclude_keywords=self.exclude_keyword_tuple,
             exclude_ignore_phrases=self.exclude_ignore_phrase_tuple,
             fixed_refresh_sec=self.refresh_fixed_value,
@@ -799,6 +833,8 @@ class CreateTargetConfigFormFields:
     """保存新增 target 表單欄位，保留缺欄套用關鍵字預設的語義。"""
 
     include_keywords: str = ""
+    include_keywords_2: str = ""
+    include_keywords_3: str = ""
     exclude_keywords: str | None = None
     exclude_ignore_phrases: str | None = None
     refresh_mode: str = FLOATING_REFRESH_MODE
@@ -822,6 +858,8 @@ class CreateTargetConfigFormFields:
     def as_form(
         cls,
         include_keywords: Annotated[str, Form()] = "",
+        include_keywords_2: Annotated[str, Form()] = "",
+        include_keywords_3: Annotated[str, Form()] = "",
         exclude_keywords: Annotated[str | None, Form()] = None,
         exclude_ignore_phrases: Annotated[str | None, Form()] = None,
         refresh_mode: Annotated[str, Form()] = FLOATING_REFRESH_MODE,
@@ -857,6 +895,8 @@ class CreateTargetConfigFormFields:
 
         return cls(
             include_keywords=include_keywords,
+            include_keywords_2=include_keywords_2,
+            include_keywords_3=include_keywords_3,
             exclude_keywords=exclude_keywords,
             exclude_ignore_phrases=exclude_ignore_phrases,
             refresh_mode=refresh_mode,
@@ -887,6 +927,8 @@ class CreateTargetConfigFormFields:
 
         return TargetConfigForm(
             include_keywords=self.include_keywords,
+            include_keywords_2=self.include_keywords_2,
+            include_keywords_3=self.include_keywords_3,
             exclude_keywords=(
                 default_exclude_keywords
                 if self.exclude_keywords is None

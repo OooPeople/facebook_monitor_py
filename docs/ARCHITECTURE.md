@@ -41,7 +41,7 @@
 - posts target 代表社團貼文監視。
 - comments target 代表單篇社團貼文留言監視。
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
-- keyword、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
+- keyword、include keyword groups、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
 - seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
 - 使用者按下「開始」只恢復監看並要求立即掃描；seen、notification outbox 去重狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows 與同一 scan scope 的 `seen_items`，但保留 `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
@@ -59,7 +59,7 @@
 - scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；先建立 target，再由 resident metadata refresh 補齊名稱。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
 - shared finalize 集中處理 seen aliases、keyword classification、match history、notification outbox、latest scan snapshot 與 scan run commit。
-- 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；多組 include 命中會完整保留給通知、history、latest scan 與 UI highlight。
+- 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；include keyword groups 採組內 OR、組間 AND，不展開笛卡兒積；通知沿用 `matched_keyword` 顯示成立的 include rules，group 診斷保留在 history、latest scan、diagnostics 與 UI highlight 資料中。
 - runtime status 只描述 executor 狀態；使用者停止語義由 `Target.paused` 與 `TargetDesiredState.STOPPED` 表示。
 
 ## Notification 與 Secret

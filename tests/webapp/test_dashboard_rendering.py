@@ -264,7 +264,9 @@ def test_index_renders_target_settings_summary_and_collapse_controls(
         "data-collapsed-summary hidden>"
     ) in text
     assert "target-collapsed-summary-field" in text
-    assert "包含關鍵字" in text
+    assert "關鍵字 1" in text
+    assert "關鍵字 2" in text
+    assert "關鍵字 3" in text
     assert "data-include-keyword-help-button" in text
     assert "data-include-keyword-help-modal" in text
     assert "關鍵字輸入規則</h3>" in text

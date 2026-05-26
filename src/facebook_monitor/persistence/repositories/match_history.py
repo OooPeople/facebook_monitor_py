@@ -9,7 +9,9 @@ from dataclasses import replace
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.keyword_rules import format_keyword_rules
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
+from facebook_monitor.core.keyword_groups import keyword_group_match_rules
 from facebook_monitor.core.models import MatchHistoryEntry
+from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import match_history_from_row
 from facebook_monitor.persistence.repositories.sqlite_ids import require_lastrowid
@@ -328,15 +330,26 @@ class MatchHistoryRepository:
         )
         return int(cursor.rowcount)
 
-    def _save_match_rules(self, history_id: int, rules: tuple[str, ...]) -> None:
+    def _save_match_rules(self, history_id: int, matches: tuple[KeywordGroupMatch, ...]) -> None:
         """保存單筆 history 的多命中規則。"""
 
         self.connection.executemany(
             """
-            INSERT INTO match_history_matches (history_id, match_order, rule)
-            VALUES (?, ?, ?)
+            INSERT INTO match_history_matches (
+                history_id, match_order, rule, keyword_group_id, keyword_group_label
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            [(history_id, index, rule) for index, rule in enumerate(rules)],
+            [
+                (
+                    history_id,
+                    index,
+                    match.rule,
+                    match.group_id,
+                    match.group_label,
+                )
+                for index, match in enumerate(matches)
+            ],
         )
 
     def _enrich_entries_with_matches(self, rows: list[sqlite3.Row]) -> list[MatchHistoryEntry]:
@@ -346,20 +359,22 @@ class MatchHistoryRepository:
             return []
         entries = [match_history_from_row(row) for row in rows]
         ids = [int(row["id"]) for row in rows]
-        rules_by_id = self._load_match_rules(ids)
+        matches_by_id = self._load_match_rules(ids)
         enriched_entries: list[MatchHistoryEntry] = []
         for entry, history_id in zip(entries, ids, strict=True):
-            rules = rules_by_id.get(history_id, entry.include_rules)
+            matches = matches_by_id.get(history_id, entry.include_group_matches)
+            rules = keyword_group_match_rules(matches) if matches else entry.include_rules
             enriched_entries.append(
                 replace(
                     entry,
                     include_rule=format_keyword_rules(rules) if rules else entry.include_rule,
                     include_rules=rules,
+                    include_group_matches=matches,
                 )
             )
         return enriched_entries
 
-    def _load_match_rules(self, history_ids: list[int]) -> dict[int, tuple[str, ...]]:
+    def _load_match_rules(self, history_ids: list[int]) -> dict[int, tuple[KeywordGroupMatch, ...]]:
         """批次讀取 match history 的多命中規則。"""
 
         unique_ids = list(dict.fromkeys(history_ids))
@@ -368,21 +383,33 @@ class MatchHistoryRepository:
         placeholders = ",".join("?" for _ in unique_ids)
         rows = self.connection.execute(
             f"""
-            SELECT history_id, rule
+            SELECT history_id, rule, keyword_group_id, keyword_group_label
             FROM match_history_matches
             WHERE history_id IN ({placeholders})
             ORDER BY history_id, match_order
             """,
             tuple(unique_ids),
         ).fetchall()
-        rules_by_id: dict[int, list[str]] = {}
+        rules_by_id: dict[int, list[KeywordGroupMatch]] = {}
         for row in rows:
-            rules_by_id.setdefault(int(row["history_id"]), []).append(row["rule"])
+            rules_by_id.setdefault(int(row["history_id"]), []).append(
+                KeywordGroupMatch(
+                    group_id=str(row["keyword_group_id"] or ""),
+                    group_label=str(row["keyword_group_label"] or ""),
+                    rule=str(row["rule"] or ""),
+                )
+            )
         return {history_id: tuple(rules) for history_id, rules in rules_by_id.items()}
 
 
-def _include_rules_for_entry(entry: MatchHistoryEntry) -> tuple[str, ...]:
+def _include_rules_for_entry(entry: MatchHistoryEntry) -> tuple[KeywordGroupMatch, ...]:
     """回傳 entry 的正規化多命中規則，保留舊欄位相容。"""
 
-    return entry.include_rules or split_keyword_rule_text(entry.include_rule)
+    if entry.include_group_matches:
+        return entry.include_group_matches
+    rules = entry.include_rules or split_keyword_rule_text(entry.include_rule)
+    return tuple(
+        KeywordGroupMatch(group_id="", group_label="", rule=rule)
+        for rule in rules
+    )
 

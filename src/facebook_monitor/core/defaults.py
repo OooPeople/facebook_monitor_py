@@ -18,6 +18,7 @@ DEFAULT_REFRESH_SECONDS = 60
 class TargetConfigDefaults:
     """保存 target config 的 Python 版預設值。"""
 
+    include_keyword_group_count: int = 3
     fixed_refresh_sec: int | None = None
     default_fixed_refresh_sec: int = DEFAULT_REFRESH_SECONDS
     min_refresh_sec: int = 50

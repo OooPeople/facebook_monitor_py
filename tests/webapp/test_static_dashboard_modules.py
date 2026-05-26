@@ -186,6 +186,7 @@ def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     assert "export const setupKeywordTabs" in tabs_js
     assert "[data-keyword-tabs]" in tabs_js
     assert "[data-keyword-panel]" in tabs_js
+    assert "keywordDefaultTab" in tabs_js
     assert "setupKeywordTabs();" in main_js
     assert "[data-include-keyword-help-button]" in modals_js
     assert "[data-include-keyword-help-modal]" in modals_js
@@ -1323,6 +1324,8 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     assert "data-include-keyword-help-button" in card_template
     assert "data-include-keyword-help-modal" in card_template
     assert "include-keywords-{{ row.target.id }}" in card_template
+    assert "include_keywords_2" in card_template
+    assert "include_keywords_3" in card_template
     assert "關鍵字輸入規則" in card_template
     assert '<div class="keyword-help-rule-list">' in card_template
     assert '<section class="modal-section-card keyword-help-rule-list">' not in (
@@ -1330,6 +1333,7 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     )
     assert "<code>;</code> 表示 <strong>OR</strong>" in card_template
     assert "空格表示 <strong>AND</strong>" in card_template
+    assert "關鍵字 1 / 2 / 3 之間也會套用 <strong>AND</strong>" in card_template
     assert "<code>搖滾;6880;5880</code>" in card_template
     assert "只要出現 <code>搖滾</code> 或 <code>6880</code> 或 <code>5880</code> 就通知。" in (
         card_template
@@ -1338,8 +1342,8 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     assert "代表 <code>搖滾</code> 且 <code>6880</code>，或 <code>搖滾</code> 且 <code>5880</code> 才通知。" in (
         card_template
     )
-    assert "排除關鍵字也使用同樣規則。" in card_template
-    assert ".keyword-field-header" in target_card_css
+    assert "排除關鍵字只沿用分號 OR 與空格 AND，不套用關鍵字 1 / 2 / 3 分組。" in card_template
+    assert ".keyword-rule-field-label" in target_card_css
     assert ".keyword-help-example" in modals_css
 
 

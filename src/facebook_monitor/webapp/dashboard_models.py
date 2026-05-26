@@ -127,6 +127,20 @@ class SidebarGroupSection:
         return presenter.include_text if presenter else ""
 
     @property
+    def include_text_2(self) -> str:
+        """回傳 template include keyword 第 2 組表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.include_text_2 if presenter else ""
+
+    @property
+    def include_text_3(self) -> str:
+        """回傳 template include keyword 第 3 組表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.include_text_3 if presenter else ""
+
+    @property
     def exclude_text(self) -> str:
         """回傳 template exclude keywords 表單文字。"""
 
@@ -554,6 +568,18 @@ class TargetRow:
         """回傳 include keywords 表單文字。"""
 
         return self.settings_presenter.include_text
+
+    @property
+    def include_text_2(self) -> str:
+        """回傳 include keyword 第 2 組表單文字。"""
+
+        return self.settings_presenter.include_text_2
+
+    @property
+    def include_text_3(self) -> str:
+        """回傳 include keyword 第 3 組表單文字。"""
+
+        return self.settings_presenter.include_text_3
 
     @property
     def exclude_text(self) -> str:

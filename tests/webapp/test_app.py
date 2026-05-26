@@ -1423,7 +1423,7 @@ def test_target_card_panels_share_preview_height_contract() -> None:
     assert ".section-title .form-status" in styles
     assert "overflow-y: auto;" in styles
     assert ".compact-config-form .keyword-rule-tabs" in styles
-    assert ".keyword-field-header" in styles
+    assert ".keyword-rule-field-label" in styles
     assert ".keyword-rule-tab-row" in styles
     assert ".compact-config-form .keyword-rule-tab" in styles
     assert ".keyword-help-button" in styles
@@ -2370,6 +2370,8 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
         f"/targets/{target.id}/config",
         data={
             "include_keywords": "票,交換",
+            "include_keywords_2": "5/1;5/2",
+            "include_keywords_3": "108;109",
             "exclude_keywords": "售完",
             "exclude_ignore_phrases": "全收,回收",
             "refresh_mode": "fixed",
@@ -2389,7 +2391,12 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
-    assert config.include_keywords == ("票", "交換")
+    assert config.include_keywords == ("票", "交換", "5/1", "5/2", "108", "109")
+    assert [group.keywords for group in config.include_keyword_groups] == [
+        ("票", "交換"),
+        ("5/1", "5/2"),
+        ("108", "109"),
+    ]
     assert config.exclude_keywords == ("售完",)
     assert config.exclude_ignore_phrases == ("全收", "回收")
     assert config.fixed_refresh_sec == 90
@@ -2550,7 +2557,7 @@ def test_update_config_route_rejects_oversized_keyword_text_without_overwrite(
     )
 
     assert response.status_code == 200
-    assert f"包含關鍵字 不可超過 {MAX_KEYWORD_TEXT_LENGTH} 個字元" in response.text
+    assert f"包含關鍵字 1 不可超過 {MAX_KEYWORD_TEXT_LENGTH} 個字元" in response.text
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
@@ -5237,6 +5244,8 @@ def test_sidebar_group_template_route_saves_json_config_payload(
         f"/api/sidebar/groups/{group.id}/template",
         json={
             "include_keywords": "票,交換",
+            "include_keywords_2": "5/1;5/2",
+            "include_keywords_3": "108;109",
             "exclude_keywords": "售完",
             "exclude_ignore_phrases": "全收,回收",
             "refresh_mode": "fixed",
@@ -5259,7 +5268,12 @@ def test_sidebar_group_template_route_saves_json_config_payload(
     with SqliteApplicationContext(db_path) as app_context:
         template = app_context.repositories.sidebar_layout.get_template(group.id)
     assert template is not None
-    assert template.include_keywords == ("票", "交換")
+    assert template.include_keywords == ("票", "交換", "5/1", "5/2", "108", "109")
+    assert [group.keywords for group in template.include_keyword_groups] == [
+        ("票", "交換"),
+        ("5/1", "5/2"),
+        ("108", "109"),
+    ]
     assert template.exclude_keywords == ("售完",)
     assert template.exclude_ignore_phrases == ("全收", "回收")
     assert template.fixed_refresh_sec == 90

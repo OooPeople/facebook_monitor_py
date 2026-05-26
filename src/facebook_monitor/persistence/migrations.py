@@ -11,7 +11,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
+from facebook_monitor.persistence.sqlite_codec import decode_keywords
+from facebook_monitor.persistence.sqlite_codec import encode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
@@ -606,6 +609,46 @@ def migrate_27_to_28(connection: sqlite3.Connection) -> None:
         add_column_if_missing(connection, column)
 
 
+def migrate_28_to_29(connection: sqlite3.Connection) -> None:
+    """新增 include keyword groups 與命中 group 快照欄位。"""
+
+    for column in (
+        MigrationColumn(
+            "target_configs",
+            "include_keyword_groups",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        MigrationColumn(
+            "sidebar_group_config_templates",
+            "include_keyword_groups",
+            "TEXT NOT NULL DEFAULT '[]'",
+        ),
+        MigrationColumn(
+            "match_history_matches",
+            "keyword_group_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "match_history_matches",
+            "keyword_group_label",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "latest_scan_item_matches",
+            "keyword_group_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "latest_scan_item_matches",
+            "keyword_group_label",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+    _backfill_include_keyword_groups(connection, "target_configs")
+    _backfill_include_keyword_groups(connection, "sidebar_group_config_templates")
+
+
 MIGRATIONS: dict[int, Migration] = {
     10: migrate_10_to_11,
     11: migrate_11_to_12,
@@ -625,6 +668,7 @@ MIGRATIONS: dict[int, Migration] = {
     25: migrate_25_to_26,
     26: migrate_26_to_27,
     27: migrate_27_to_28,
+    28: migrate_28_to_29,
 }
 
 
@@ -661,6 +705,32 @@ def add_column_if_missing(
     connection.execute(
         f"ALTER TABLE {column.table_name} ADD COLUMN {column.column_name} {column.definition}"
     )
+
+
+def _backfill_include_keyword_groups(connection: sqlite3.Connection, table_name: str) -> None:
+    """將既有 flat include keywords 回填到 include group 第 1 組。"""
+
+    if not table_exists(connection, table_name):
+        return
+    rows = connection.execute(
+        f"""
+        SELECT rowid, include_keywords, include_keyword_groups
+        FROM {table_name}
+        """
+    ).fetchall()
+    for row in rows:
+        if row["include_keyword_groups"] and row["include_keyword_groups"] != "[]":
+            continue
+        keywords = decode_keywords(row["include_keywords"])
+        groups = legacy_include_keyword_groups(keywords, fill_empty_slots=True)
+        connection.execute(
+            f"""
+            UPDATE {table_name}
+            SET include_keyword_groups = ?
+            WHERE rowid = ?
+            """,
+            (encode_include_keyword_groups(groups), row["rowid"]),
+        )
 
 
 def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
@@ -727,5 +797,6 @@ __all__ = [
     "migrate_25_to_26",
     "migrate_26_to_27",
     "migrate_27_to_28",
+    "migrate_28_to_29",
     "run_known_migrations",
 ]

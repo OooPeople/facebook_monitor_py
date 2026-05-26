@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from dataclasses import field
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.models import IncludeKeywordGroup
 
 
 DEFAULT_WEBUI_FIXED_REFRESH_SECONDS = PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
@@ -27,6 +28,9 @@ class TargetConfigPatch:
     """保存 target config 欄位 patch，集中 posts/comments/update 共用映射。"""
 
     include_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
+    include_keyword_groups: tuple[IncludeKeywordGroup, ...] | UnsetConfigValue = (
+        UNSET_CONFIG_VALUE
+    )
     exclude_keywords: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
     exclude_ignore_phrases: tuple[str, ...] | UnsetConfigValue = UNSET_CONFIG_VALUE
     fixed_refresh_sec: int | None | UnsetConfigValue = UNSET_CONFIG_VALUE

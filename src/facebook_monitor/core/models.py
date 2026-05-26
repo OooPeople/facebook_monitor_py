@@ -283,6 +283,27 @@ class TargetCoverImageRefreshState:
 
 
 @dataclass(frozen=True)
+class IncludeKeywordGroup:
+    """保存 include keyword 的單一分組設定。
+
+    分組內仍沿用既有 keyword 規則；分組之間由 matcher 套用 AND 語義。
+    """
+
+    group_id: str
+    label: str
+    keywords: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class KeywordGroupMatch:
+    """保存一次 keyword 命中的分組快照。"""
+
+    group_id: str
+    group_label: str
+    rule: str
+
+
+@dataclass(frozen=True)
 class TargetConfig:
     """保存單一 target 的監視設定。
 
@@ -292,6 +313,7 @@ class TargetConfig:
 
     target_id: str
     include_keywords: tuple[str, ...] = ()
+    include_keyword_groups: tuple[IncludeKeywordGroup, ...] = ()
     exclude_keywords: tuple[str, ...] = PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
     exclude_ignore_phrases: tuple[str, ...] = PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
@@ -314,6 +336,7 @@ class LegacyTargetConfig:
 
     target_id: str
     include_keywords: tuple[str, ...] = ()
+    include_keyword_groups: tuple[IncludeKeywordGroup, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
     exclude_ignore_phrases: tuple[str, ...] = ()
     min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
@@ -337,6 +360,7 @@ class LegacyTargetConfig:
         config = TargetConfig(
             target_id=target_id or self.target_id,
             include_keywords=self.include_keywords,
+            include_keyword_groups=self.include_keyword_groups,
             exclude_keywords=self.exclude_keywords,
             exclude_ignore_phrases=self.exclude_ignore_phrases,
             min_refresh_sec=self.min_refresh_sec,
@@ -435,6 +459,7 @@ class MatchHistoryEntry:
     notified_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     include_rules: tuple[str, ...] = ()
+    include_group_matches: tuple[KeywordGroupMatch, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -451,6 +476,7 @@ class LatestScanItem:
     permalink: str = ""
     matched_keyword: str = ""
     matched_keywords: tuple[str, ...] = ()
+    matched_keyword_groups: tuple[KeywordGroupMatch, ...] = ()
     debug_metadata: dict[str, Any] = field(default_factory=dict)
     scanned_at: datetime = field(default_factory=utc_now)
 

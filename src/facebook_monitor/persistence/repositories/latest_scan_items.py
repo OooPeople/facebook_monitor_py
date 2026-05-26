@@ -8,8 +8,10 @@ from collections.abc import Iterable
 from dataclasses import replace
 
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
+from facebook_monitor.core.keyword_groups import keyword_group_match_rules
 from facebook_monitor.core.keyword_rules import format_keyword_rules
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
+from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.persistence.row_mappers import latest_scan_item_from_row
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
@@ -57,14 +59,22 @@ class LatestScanItemRepository:
         self.connection.executemany(
             """
             INSERT INTO latest_scan_item_matches (
-                target_id, item_key, match_order, rule
+                target_id, item_key, match_order, rule,
+                keyword_group_id, keyword_group_label
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
-                (item.target_id, item.item_key, index, rule)
+                (
+                    item.target_id,
+                    item.item_key,
+                    index,
+                    match.rule,
+                    match.group_id,
+                    match.group_label,
+                )
                 for item in item_list
-                for index, rule in enumerate(_matched_rules_for_item(item))
+                for index, match in enumerate(_matched_rules_for_item(item))
             ],
         )
 
@@ -134,12 +144,17 @@ class LatestScanItemRepository:
         )
         enriched_items: list[LatestScanItem] = []
         for item in items:
-            rules = rules_by_key.get((item.target_id, item.item_key), item.matched_keywords)
+            matches = rules_by_key.get(
+                (item.target_id, item.item_key),
+                item.matched_keyword_groups,
+            )
+            rules = keyword_group_match_rules(matches) if matches else item.matched_keywords
             enriched_items.append(
                 replace(
                     item,
                     matched_keyword=format_keyword_rules(rules) if rules else item.matched_keyword,
                     matched_keywords=rules,
+                    matched_keyword_groups=matches,
                 )
             )
         return enriched_items
@@ -147,7 +162,7 @@ class LatestScanItemRepository:
     def _load_match_rules(
         self,
         item_keys: list[tuple[str, str]],
-    ) -> dict[tuple[str, str], tuple[str, ...]]:
+    ) -> dict[tuple[str, str], tuple[KeywordGroupMatch, ...]]:
         """批次讀取 latest scan item 的多命中規則。"""
 
         unique_keys = list(dict.fromkeys(item_keys))
@@ -157,21 +172,33 @@ class LatestScanItemRepository:
         params = [value for key in unique_keys for value in key]
         rows = self.connection.execute(
             f"""
-            SELECT target_id, item_key, rule
+            SELECT target_id, item_key, rule, keyword_group_id, keyword_group_label
             FROM latest_scan_item_matches
             WHERE {clauses}
             ORDER BY target_id, item_key, match_order
             """,
             tuple(params),
         ).fetchall()
-        rules_by_key: dict[tuple[str, str], list[str]] = {}
+        rules_by_key: dict[tuple[str, str], list[KeywordGroupMatch]] = {}
         for row in rows:
-            rules_by_key.setdefault((row["target_id"], row["item_key"]), []).append(row["rule"])
+            rules_by_key.setdefault((row["target_id"], row["item_key"]), []).append(
+                KeywordGroupMatch(
+                    group_id=str(row["keyword_group_id"] or ""),
+                    group_label=str(row["keyword_group_label"] or ""),
+                    rule=str(row["rule"] or ""),
+                )
+            )
         return {key: tuple(rules) for key, rules in rules_by_key.items()}
 
 
-def _matched_rules_for_item(item: LatestScanItem) -> tuple[str, ...]:
+def _matched_rules_for_item(item: LatestScanItem) -> tuple[KeywordGroupMatch, ...]:
     """回傳 item 的正規化多命中規則，保留舊欄位相容。"""
 
-    return item.matched_keywords or split_keyword_rule_text(item.matched_keyword)
+    if item.matched_keyword_groups:
+        return item.matched_keyword_groups
+    rules = item.matched_keywords or split_keyword_rule_text(item.matched_keyword)
+    return tuple(
+        KeywordGroupMatch(group_id="", group_label="", rule=rule)
+        for rule in rules
+    )
 

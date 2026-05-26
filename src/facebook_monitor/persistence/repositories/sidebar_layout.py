@@ -10,6 +10,9 @@ import sqlite3
 from dataclasses import replace
 from datetime import datetime
 
+from facebook_monitor.core.keyword_groups import flatten_include_keyword_groups
+from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
+from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.notification_channels import transform_notification_endpoints
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
@@ -17,8 +20,10 @@ from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
+from facebook_monitor.persistence.sqlite_codec import decode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+from facebook_monitor.persistence.sqlite_codec import encode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
@@ -214,19 +219,43 @@ class SidebarLayoutRepository:
     ) -> SidebarGroupConfigTemplate:
         """新增或更新 group config template。"""
 
-        encrypted = transform_notification_endpoints(template, self.secret_codec.encrypt)
+        normalized_groups = normalize_include_keyword_groups(
+            template.include_keyword_groups,
+            fill_empty_slots=True,
+        )
+        include_keywords = (
+            flatten_include_keyword_groups(normalized_groups)
+            if any(group.keywords for group in normalized_groups)
+            else template.include_keywords
+        )
+        if not any(group.keywords for group in normalized_groups) and include_keywords:
+            normalized_groups = legacy_include_keyword_groups(
+                include_keywords,
+                fill_empty_slots=True,
+            )
+        normalized_template = replace(
+            template,
+            include_keywords=include_keywords,
+            include_keyword_groups=normalized_groups,
+        )
+        encrypted = transform_notification_endpoints(
+            normalized_template,
+            self.secret_codec.encrypt,
+        )
         self.connection.execute(
             """
             INSERT INTO sidebar_group_config_templates (
-                sidebar_group_id, include_keywords, exclude_keywords, exclude_ignore_phrases,
+                sidebar_group_id, include_keywords, include_keyword_groups,
+                exclude_keywords, exclude_ignore_phrases,
                 min_refresh_sec, max_refresh_sec, jitter_enabled, fixed_refresh_sec,
                 max_items_per_scan, auto_load_more, auto_adjust_sort,
                 enable_desktop_notification, enable_ntfy, ntfy_topic,
                 enable_discord_notification, discord_webhook, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sidebar_group_id) DO UPDATE SET
                 include_keywords=excluded.include_keywords,
+                include_keyword_groups=excluded.include_keyword_groups,
                 exclude_keywords=excluded.exclude_keywords,
                 exclude_ignore_phrases=excluded.exclude_ignore_phrases,
                 min_refresh_sec=excluded.min_refresh_sec,
@@ -246,6 +275,7 @@ class SidebarLayoutRepository:
             (
                 encrypted.sidebar_group_id,
                 encode_keywords(encrypted.include_keywords),
+                encode_include_keyword_groups(encrypted.include_keyword_groups),
                 encode_keywords(encrypted.exclude_keywords),
                 encode_keywords(encrypted.exclude_ignore_phrases),
                 encrypted.min_refresh_sec,
@@ -263,7 +293,7 @@ class SidebarLayoutRepository:
                 encode_datetime(encrypted.updated_at),
             ),
         )
-        return template
+        return normalized_template
 
     def _decrypt_template(
         self,
@@ -322,6 +352,11 @@ def _template_from_row(row: sqlite3.Row) -> SidebarGroupConfigTemplate:
     return SidebarGroupConfigTemplate(
         sidebar_group_id=row["sidebar_group_id"],
         include_keywords=decode_keywords(row["include_keywords"]),
+        include_keyword_groups=(
+            decode_include_keyword_groups(row["include_keyword_groups"])
+            if "include_keyword_groups" in row.keys()
+            else ()
+        ),
         exclude_keywords=decode_keywords(row["exclude_keywords"]),
         exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
         min_refresh_sec=int(row["min_refresh_sec"]),

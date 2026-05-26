@@ -38,10 +38,14 @@ export const activateKeywordTab = (tabsRoot, tabName) => {
 
 export const setupKeywordTabs = () => {
   document.querySelectorAll("[data-keyword-tabs]").forEach((tabsRoot) => {
-    activateKeywordTab(tabsRoot, "exclude");
+    const defaultTab =
+      tabsRoot.dataset.keywordDefaultTab ||
+      tabsRoot.querySelector("[data-keyword-tab]")?.dataset.keywordTab ||
+      "exclude";
+    activateKeywordTab(tabsRoot, defaultTab);
     tabsRoot.querySelectorAll("[data-keyword-tab]").forEach((tab) => {
       tab.addEventListener("click", () => {
-        activateKeywordTab(tabsRoot, tab.dataset.keywordTab || "exclude");
+        activateKeywordTab(tabsRoot, tab.dataset.keywordTab || defaultTab);
       });
     });
   });

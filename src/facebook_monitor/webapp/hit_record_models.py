@@ -74,6 +74,14 @@ class FullHitRecordRow:
             "author_name": self.entry.author or "(unknown)",
             "matched_keyword": self.entry.include_rule,
             "matched_keywords": list(self.entry.include_rules),
+            "matched_keyword_groups": [
+                {
+                    "group_id": match.group_id,
+                    "group_label": match.group_label,
+                    "rule": match.rule,
+                }
+                for match in self.entry.include_group_matches
+            ],
             "matched_at": self.matched_at,
             "recorded_at": self.recorded_at,
             "notified_at": self.recorded_at,

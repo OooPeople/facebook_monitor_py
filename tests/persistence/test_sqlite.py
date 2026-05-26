@@ -8,8 +8,10 @@ from datetime import timedelta
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
@@ -52,6 +54,7 @@ from facebook_monitor.persistence.schema import repair_duplicate_target_scopes
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
 PLAINTEXT_SECRET_CODEC = PlaintextSecretCodec()
@@ -577,6 +580,114 @@ def test_initialize_schema_migrates_v20_keyword_match_tables(
     assert version == str(SCHEMA_VERSION)
     assert history[0].include_rules == ("6/5", "6/6")
     assert latest_items[0].matched_keywords == ("6/5", "6/6")
+
+
+def test_initialize_schema_migrates_v28_include_keyword_groups(
+    tmp_path: Path,
+) -> None:
+    """v29 會把既有 flat include keywords 回填到第 1 個 include group。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = encode_datetime(utc_now())
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '28');
+
+            CREATE TABLE target_configs (
+                target_id TEXT PRIMARY KEY,
+                include_keywords TEXT NOT NULL,
+                exclude_keywords TEXT NOT NULL,
+                exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+                min_refresh_sec INTEGER NOT NULL,
+                max_refresh_sec INTEGER NOT NULL,
+                jitter_enabled INTEGER NOT NULL,
+                fixed_refresh_sec INTEGER,
+                max_items_per_scan INTEGER NOT NULL,
+                auto_load_more INTEGER NOT NULL,
+                auto_adjust_sort INTEGER NOT NULL,
+                enable_desktop_notification INTEGER NOT NULL,
+                enable_ntfy INTEGER NOT NULL,
+                ntfy_topic TEXT NOT NULL,
+                enable_discord_notification INTEGER NOT NULL,
+                discord_webhook TEXT NOT NULL
+            );
+
+            CREATE TABLE sidebar_group_config_templates (
+                sidebar_group_id TEXT PRIMARY KEY,
+                include_keywords TEXT NOT NULL DEFAULT '[]',
+                exclude_keywords TEXT NOT NULL DEFAULT '[]',
+                exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+                min_refresh_sec INTEGER NOT NULL,
+                max_refresh_sec INTEGER NOT NULL,
+                jitter_enabled INTEGER NOT NULL,
+                fixed_refresh_sec INTEGER,
+                max_items_per_scan INTEGER NOT NULL,
+                auto_load_more INTEGER NOT NULL,
+                auto_adjust_sort INTEGER NOT NULL,
+                enable_desktop_notification INTEGER NOT NULL,
+                enable_ntfy INTEGER NOT NULL,
+                ntfy_topic TEXT NOT NULL,
+                enable_discord_notification INTEGER NOT NULL,
+                discord_webhook TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO target_configs (
+                target_id, include_keywords, exclude_keywords, exclude_ignore_phrases,
+                min_refresh_sec, max_refresh_sec, jitter_enabled, fixed_refresh_sec,
+                max_items_per_scan, auto_load_more, auto_adjust_sort,
+                enable_desktop_notification, enable_ntfy, ntfy_topic,
+                enable_discord_notification, discord_webhook
+            )
+            VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '')
+            """,
+            ("target-1", encode_keywords(("票", "交換"))),
+        )
+        connection.execute(
+            """
+            INSERT INTO sidebar_group_config_templates (
+                sidebar_group_id, include_keywords, exclude_keywords,
+                exclude_ignore_phrases, min_refresh_sec, max_refresh_sec,
+                jitter_enabled, fixed_refresh_sec, max_items_per_scan,
+                auto_load_more, auto_adjust_sort, enable_desktop_notification,
+                enable_ntfy, ntfy_topic, enable_discord_notification,
+                discord_webhook, updated_at
+            )
+            VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '', ?)
+            """,
+            ("group-1", encode_keywords(("模板",)), now_text),
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        config = target_config_repository(connection).get_for_target_id("target-1")
+        template = SidebarLayoutRepository(
+            connection,
+            secret_codec=PLAINTEXT_SECRET_CODEC,
+        ).get_template("group-1")
+
+    assert config is not None
+    assert [group.keywords for group in config.include_keyword_groups] == [
+        ("票", "交換"),
+        (),
+        (),
+    ]
+    assert template is not None
+    assert [group.keywords for group in template.include_keyword_groups] == [
+        ("模板",),
+        (),
+        (),
+    ]
 
 
 def test_initialize_schema_migrates_v18_sidebar_placements(
@@ -1539,6 +1650,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         config = TargetConfig(
             target_id=target.id,
             include_keywords=("票", "交換"),
+            include_keyword_groups=keyword_group_slots((("票",), ("交換",))),
             exclude_ignore_phrases=("全收;回收",),
             enable_desktop_notification=True,
             enable_ntfy=True,
@@ -1558,6 +1670,9 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_config.target_id == target.id
         assert not hasattr(loaded_config, "group_id")
         assert loaded_config.include_keywords == ("票", "交換")
+        assert [
+            group.keywords for group in loaded_config.include_keyword_groups
+        ] == [("票",), ("交換",), ()]
         assert loaded_config.exclude_ignore_phrases == ("全收;回收",)
         assert loaded_config.enable_desktop_notification
         assert loaded_config.enable_ntfy
@@ -1650,6 +1765,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                 permalink="https://www.facebook.com/groups/example/posts/1",
                 include_rule="票;讓票",
                 include_rules=("票", "讓票"),
+                include_group_matches=(
+                    KeywordGroupMatch("1", "關鍵字 1", "票"),
+                    KeywordGroupMatch("2", "關鍵字 2", "讓票"),
+                ),
             )
         )
         assert history_id > 0
@@ -1657,11 +1776,24 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert len(history) == 1
         assert history[0].include_rule == "票;讓票"
         assert history[0].include_rules == ("票", "讓票")
+        assert [
+            (match.group_id, match.group_label, match.rule)
+            for match in history[0].include_group_matches
+        ] == [("1", "關鍵字 1", "票"), ("2", "關鍵字 2", "讓票")]
         history_match_rows = connection.execute(
-            "SELECT rule FROM match_history_matches WHERE history_id = ? ORDER BY match_order",
+            """
+            SELECT rule, keyword_group_id, keyword_group_label
+            FROM match_history_matches
+            WHERE history_id = ?
+            ORDER BY match_order
+            """,
             (history_id,),
         ).fetchall()
         assert [row["rule"] for row in history_match_rows] == ["票", "讓票"]
+        assert [
+            (row["keyword_group_id"], row["keyword_group_label"])
+            for row in history_match_rows
+        ] == [("1", "關鍵字 1"), ("2", "關鍵字 2")]
 
         latest_repo = LatestScanItemRepository(connection)
         latest_repo.replace_for_target(
@@ -1678,6 +1810,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                     permalink="https://www.facebook.com/groups/example/posts/1",
                     matched_keyword="票;讓票",
                     matched_keywords=("票", "讓票"),
+                    matched_keyword_groups=(
+                        KeywordGroupMatch("1", "關鍵字 1", "票"),
+                        KeywordGroupMatch("2", "關鍵字 2", "讓票"),
+                    ),
                     debug_metadata={"textSource": "primary", "expandCount": 1},
                 )
             ],
@@ -1687,10 +1823,14 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert latest_items[0].author == "王小明"
         assert latest_items[0].matched_keyword == "票;讓票"
         assert latest_items[0].matched_keywords == ("票", "讓票")
+        assert [
+            (match.group_id, match.group_label, match.rule)
+            for match in latest_items[0].matched_keyword_groups
+        ] == [("1", "關鍵字 1", "票"), ("2", "關鍵字 2", "讓票")]
         assert latest_items[0].debug_metadata == {"textSource": "primary", "expandCount": 1}
         latest_match_rows = connection.execute(
             """
-            SELECT rule
+            SELECT rule, keyword_group_id, keyword_group_label
             FROM latest_scan_item_matches
             WHERE target_id = ? AND item_key = ?
             ORDER BY match_order
@@ -1698,6 +1838,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             (target.id, "item-hash"),
         ).fetchall()
         assert [row["rule"] for row in latest_match_rows] == ["票", "讓票"]
+        assert [
+            (row["keyword_group_id"], row["keyword_group_label"])
+            for row in latest_match_rows
+        ] == [("1", "關鍵字 1"), ("2", "關鍵字 2")]
 
         event_id = NotificationEventRepository(connection).add(
             NotificationEvent(

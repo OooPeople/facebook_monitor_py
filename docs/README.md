@@ -14,7 +14,6 @@
 | `docs/ENGINEERING_REVIEW.md` | 預設工程審查清單、review 輸出格式與 handoff 要求 | 產品功能規格、短期進度、最近驗證 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、功能進度 |
 | `packaging/README.md` | EXE 打包前置、PyInstaller 與 frozen smoke checklist | source-mode 日常操作、目前進度 |
-| `packaging/MACOS_HANDOFF.md` | macOS Apple Silicon 打包接手摘要、近期驗證與後續邊界 | 詳細打包指令、穩定使用者操作、Windows 打包規則 |
 
 ## 本機協作文件
 

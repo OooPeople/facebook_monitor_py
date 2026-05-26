@@ -63,7 +63,7 @@ uv run playwright install chromium
 uv run facebook-monitor
 ```
 
-詳細安裝、日常使用、命令參數、troubleshooting 與資料路徑，請看 [docs/USAGE.md](docs/USAGE.md)。
+詳細安裝、release zip 使用方式、macOS 首次下載 quarantine 處理、日常使用、命令參數、troubleshooting 與資料路徑，請看 [docs/USAGE.md](docs/USAGE.md)。macOS zip 內也會附 `README.md` 說明首次開啟步驟。
 
 ## 文件
 
@@ -96,5 +96,5 @@ git diff --check
 - Web UI 預設只供本機 loopback 使用，除非明確改用其他 host 設定。
 - ntfy / Discord 通知會把通知內容送到對應第三方服務；不要把不想外送的私人內容放進通知 payload。
 - 需要提供診斷資料時，優先用 Settings 下載 redacted support bundle；不要直接分享 SQLite DB、browser profile、cookies、secrets、logs 或完整 webhook。
-- 自動更新使用免費 Ed25519 signed manifest 驗證 release 內容來源；Windows Authenticode、macOS Developer ID signing 與 notarization 目前未做，可能仍會看到 SmartScreen、Defender 或 Gatekeeper 提示。
+- 自動更新使用免費 Ed25519 signed manifest 驗證 release 內容來源；Windows Authenticode、macOS Developer ID signing 與 notarization 目前未做，可能仍會看到 SmartScreen、Defender、Gatekeeper 或 macOS quarantine 提示。
 - Facebook 可能因登入失效、checkpoint、權限變更、版面改版或自動化偵測而讓掃描暫停或失敗；本工具會保留診斷與失敗 reason，但不能保證 Facebook DOM 長期穩定。

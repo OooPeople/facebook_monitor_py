@@ -38,6 +38,35 @@ from facebook_monitor.version import APP_VERSION
 
 
 ZIP_ROOT_NAME = RELEASE_ARCHIVE_ROOT_NAME
+MACOS_FIRST_RUN_README = """# Facebook Monitor macOS 首次開啟
+
+如果第一次從 GitHub Release 下載後，開啟 `Facebook Monitor.app` 時出現
+「已損毀」、「無法驗證開發者」或被 macOS 阻擋，請打開 Terminal 執行：
+
+```bash
+cd ~/Downloads
+xattr -dr com.apple.quarantine "./facebook-monitor"
+```
+
+如果你把資料夾解壓到其他位置，請把 `~/Downloads` 改成實際位置。完成後
+再開啟 `Facebook Monitor.app`。
+
+這個步驟通常只在第一次用瀏覽器從 GitHub 下載時需要；之後從 app 內更新器
+下載並替換新版，就不需要再執行一次這個指令。
+
+這是因為目前 macOS 版尚未做 Developer ID signing / notarization；
+從瀏覽器下載的 zip 會被 macOS 加上 `com.apple.quarantine` 標記。
+這個指令只會移除 macOS 對這次瀏覽器下載加上的 quarantine 標記，
+不等於正式簽章或 notarization。
+"""
+
+
+@dataclass(frozen=True)
+class ReleaseZipTextFile:
+    """描述 release zip 需要額外放入的使用者文字說明。"""
+
+    relative_path: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -47,6 +76,7 @@ class ReleaseZipTarget:
     artifact_policy: UpdateArtifactPolicy
     layout_policy: UpdaterLayoutPolicy
     executable_paths: frozenset[str] = frozenset()
+    extra_text_files: tuple[ReleaseZipTextFile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,6 +98,12 @@ RELEASE_ZIP_TARGETS = {
         layout_policy=MACOS_ARM64_LAYOUT_POLICY,
         executable_paths=frozenset(
             macos_known_executable_staging_paths(MACOS_ARM64_LAYOUT_POLICY)
+        ),
+        extra_text_files=(
+            ReleaseZipTextFile(
+                relative_path="README.md",
+                content=MACOS_FIRST_RUN_README,
+            ),
         ),
     ),
 }
@@ -146,6 +182,7 @@ def create_release_zip(
         resolved_app_root,
         zip_path,
         executable_paths=target.executable_paths,
+        extra_text_files=target.extra_text_files,
     )
     digest = calculate_sha256(zip_path)
     _write_sha256_file(sha256_path, digest=digest, zip_name=zip_path.name)
@@ -225,9 +262,14 @@ def _write_release_zip(
     zip_path: Path,
     *,
     executable_paths: frozenset[str],
+    extra_text_files: tuple[ReleaseZipTextFile, ...] = (),
 ) -> None:
     """寫出共用 release zip，保留 POSIX mode 與 symlink metadata。"""
 
+    extra_relative_paths = {
+        _normalize_extra_text_file_path(extra.relative_path)
+        for extra in extra_text_files
+    }
     with zipfile.ZipFile(
         zip_path,
         "w",
@@ -237,6 +279,8 @@ def _write_release_zip(
         for path in sorted(app_root.rglob("*"), key=lambda item: item.as_posix()):
             relative_path = path.relative_to(app_root)
             relative_posix = relative_path.as_posix()
+            if relative_posix in extra_relative_paths:
+                continue
             arcname = _archive_name(relative_path)
             if path.is_symlink():
                 _write_symlink(archive, path, arcname)
@@ -252,6 +296,37 @@ def _write_release_zip(
                 if not info.filename.endswith("/"):
                     info.filename += "/"
                 archive.writestr(info, b"")
+        for extra in extra_text_files:
+            relative_posix = _normalize_extra_text_file_path(extra.relative_path)
+            _write_extra_text_file(
+                archive,
+                _archive_name(Path(relative_posix)),
+                extra.content,
+            )
+
+
+def _normalize_extra_text_file_path(path: str) -> str:
+    """確認額外文字檔只能寫進 release root 內的相對路徑。"""
+
+    pure_path = PurePosixPath(path)
+    if pure_path.is_absolute() or not pure_path.parts:
+        raise ValueError(f"release_zip_extra_file_path_invalid:{path}")
+    if any(part in {"", ".", ".."} for part in pure_path.parts):
+        raise ValueError(f"release_zip_extra_file_path_invalid:{path}")
+    return pure_path.as_posix()
+
+
+def _write_extra_text_file(
+    archive: zipfile.ZipFile,
+    arcname: str,
+    content: str,
+) -> None:
+    """寫入 release zip 內的 UTF-8 使用者文字說明。"""
+
+    info = zipfile.ZipInfo(arcname)
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    archive.writestr(info, content.encode("utf-8"))
 
 
 def _archive_name(relative_path: Path) -> str:

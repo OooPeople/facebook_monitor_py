@@ -257,16 +257,16 @@ def record_notification_event(
 ) -> int:
     """寫入單一 notification event 並回傳 row id。"""
 
-    event_kwargs = (
-        {
-            "event_kind": entry.event_kind,
-            "source_scan_run_id": entry.source_scan_run_id,
-            "failure_reason": entry.failure_reason,
-            "failure_count": entry.failure_count,
-        }
-        if entry is not None
-        else {}
-    )
+    if entry is None:
+        return app.repositories.notification_events.add(
+            NotificationEvent(
+                target_id=target.id,
+                item_key=item_key,
+                channel=channel,
+                status=status,
+                message=message,
+            )
+        )
     return app.repositories.notification_events.add(
         NotificationEvent(
             target_id=target.id,
@@ -274,7 +274,10 @@ def record_notification_event(
             channel=channel,
             status=status,
             message=message,
-            **event_kwargs,
+            event_kind=entry.event_kind,
+            source_scan_run_id=entry.source_scan_run_id,
+            failure_reason=entry.failure_reason,
+            failure_count=entry.failure_count,
         )
     )
 

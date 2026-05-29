@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.core.models import TargetRuntimeState
@@ -123,7 +124,7 @@ def recover_stale_runtime_targets_detailed(
 
 def _record_stale_running_failure(
     *,
-    app: object,
+    app: ApplicationContext,
     recovery: StaleRunningRecovery,
 ) -> RunningRecoveryAction | None:
     """為 stale running recovery 記錄 scan run，terminal 時排 runtime failure 通知。"""

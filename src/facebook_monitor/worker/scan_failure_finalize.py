@@ -200,7 +200,7 @@ def record_guarded_scan_failure(
             runtime_message,
         )
     else:
-        updated_state = app.services.targets.apply_scan_failure_decision_if_owner(
+        guarded_state = app.services.targets.apply_scan_failure_decision_if_owner(
             target_id,
             decision,
             runtime_message,
@@ -208,8 +208,9 @@ def record_guarded_scan_failure(
             started_at=commit_guard.started_at,
             page_id=commit_guard.page_id,
         )
-        if updated_state is None:
+        if guarded_state is None:
             return None
+        updated_state = guarded_state
     if decision.terminal and scan_run_id > 0:
         config = app.services.targets.get_config_for_target(target)
         failure_count = (

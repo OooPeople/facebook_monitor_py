@@ -92,6 +92,10 @@ body {
   line-height: 1.5;
 }
 
+html[data-dashboard-restoring-scroll="1"] body {
+  opacity: 0;
+}
+
 button,
 input,
 select,

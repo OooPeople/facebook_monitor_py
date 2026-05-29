@@ -167,8 +167,7 @@
       </footer>
     </div>
   </dialog>
-  <script id="page-feedback" type="application/json">{{ {"message": message, "feedback": feedback, "error": error} | tojson }}</script>
-  {% include "_dashboard_importmap.html" %}
+  <template id="page-feedback">{{ {"message": message, "feedback": feedback, "error": error} | tojson }}</template>
   <script type="module" src="/static/dashboard/settings.js?v={{ asset_version }}"></script>
 </body>
 </html>

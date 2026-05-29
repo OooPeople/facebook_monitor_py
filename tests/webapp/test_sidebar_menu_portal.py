@@ -73,29 +73,23 @@ def _start_webapp(db_path: Path, profile_dir: Path) -> tuple[uvicorn.Server, thr
 def _sidebar_menu_state(page) -> dict[str, object]:
     """回傳 sidebar menu portal 與焦點狀態。"""
 
-    return page.evaluate(
-        """() => {
-          const menu = document.querySelector("[data-sidebar-menu]");
-          const panel = document.querySelector(".sidebar-menu-panel");
-          const trigger = document.querySelector(".sidebar-menu-trigger");
-          const rect = panel.getBoundingClientRect();
-          const point = {
-            x: Math.round(rect.left + rect.width / 2),
-            y: Math.round(rect.top + rect.height / 2),
-          };
-          const topElement = document.elementFromPoint(point.x, point.y);
-          return {
-            activeCreateGroup: document.activeElement?.matches("[data-sidebar-create-group]"),
-            activeTrigger: document.activeElement === trigger,
-            containsTopElement: panel.contains(topElement),
-            floating: panel.dataset.sidebarMenuFloating || "",
-            menuOpen: menu.open,
-            panelParentClass: panel.parentElement?.className || "",
-            panelParentTag: panel.parentElement?.tagName || "",
-            sorting: document.querySelector("[data-sidebar-layout]")?.classList.contains("sorting"),
-          };
-        }"""
-    )
+    panel = page.locator(".sidebar-menu-panel").first
+    panel_in_body = page.locator("body > .sidebar-menu-panel").count() > 0
+    panel_in_details = page.locator("details.sidebar-menu > .sidebar-menu-panel").count() > 0
+    parent_tag = "BODY" if panel_in_body else "DETAILS" if panel_in_details else ""
+    parent_class = "sidebar-menu" if panel_in_details else ""
+    return {
+        "activeCreateGroup": page.locator("[data-sidebar-create-group]:focus").count() > 0,
+        "activeTrigger": page.locator(".sidebar-menu-trigger:focus").count() > 0,
+        "containsTopElement": page.locator(".sidebar-menu-panel [data-sidebar-create-group]")
+        .first
+        .is_visible(),
+        "floating": panel.get_attribute("data-sidebar-menu-floating") or "",
+        "menuOpen": page.locator("[data-sidebar-menu][open]").count() > 0,
+        "panelParentClass": parent_class,
+        "panelParentTag": parent_tag,
+        "sorting": page.locator("[data-sidebar-layout].sorting").count() > 0,
+    }
 
 
 @pytest.mark.parametrize("browser_name", ["chromium", "webkit"])
@@ -113,42 +107,40 @@ def test_sidebar_menu_portal_focus_and_restore(tmp_path: Path, browser_name: str
             except PlaywrightError as exc:
                 pytest.skip(f"{browser_name} browser is not installed: {exc}")
             try:
-                page = browser.new_page(viewport={"width": 1440, "height": 900})
-                page.goto(f"{url}/", wait_until="load")
-                page.click(".sidebar-menu-trigger")
-                page.wait_for_function(
-                    "document.activeElement?.matches('[data-sidebar-create-group]')"
-                )
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                try:
+                    page = context.new_page()
+                    page.goto(f"{url}/", wait_until="load")
+                    page.click(".sidebar-menu-trigger")
+                    page.locator("[data-sidebar-create-group]:focus").wait_for()
 
-                opened = _sidebar_menu_state(page)
-                assert opened["menuOpen"] is True
-                assert opened["panelParentTag"] == "BODY"
-                assert opened["floating"] == "1"
-                assert opened["activeCreateGroup"] is True
-                assert opened["containsTopElement"] is True
+                    opened = _sidebar_menu_state(page)
+                    assert opened["menuOpen"] is True
+                    assert opened["panelParentTag"] == "BODY"
+                    assert opened["floating"] == "1"
+                    assert opened["activeCreateGroup"] is True
+                    assert opened["containsTopElement"] is True
 
-                page.keyboard.press("Escape")
-                page.wait_for_function("!document.querySelector('[data-sidebar-menu]').open")
-                escaped = _sidebar_menu_state(page)
-                assert escaped["panelParentTag"] == "DETAILS"
-                assert escaped["panelParentClass"] == "sidebar-menu"
-                assert escaped["floating"] == ""
-                assert escaped["activeTrigger"] is True
+                    page.keyboard.press("Escape")
+                    page.locator("[data-sidebar-menu]:not([open])").wait_for()
+                    escaped = _sidebar_menu_state(page)
+                    assert escaped["panelParentTag"] == "DETAILS"
+                    assert escaped["panelParentClass"] == "sidebar-menu"
+                    assert escaped["floating"] == ""
+                    assert escaped["activeTrigger"] is True
 
-                page.click(".sidebar-menu-trigger")
-                page.wait_for_function(
-                    "document.querySelector('.sidebar-menu-panel').parentElement === document.body"
-                )
-                page.click("[data-sidebar-start-sort]")
-                page.wait_for_function(
-                    "document.querySelector('[data-sidebar-layout]').classList.contains('sorting')"
-                )
-                sorting = _sidebar_menu_state(page)
-                assert sorting["menuOpen"] is False
-                assert sorting["panelParentTag"] == "DETAILS"
-                assert sorting["panelParentClass"] == "sidebar-menu"
-                assert sorting["floating"] == ""
-                assert sorting["sorting"] is True
+                    page.click(".sidebar-menu-trigger")
+                    page.locator("body > .sidebar-menu-panel").wait_for()
+                    page.click("[data-sidebar-start-sort]")
+                    page.locator("[data-sidebar-layout].sorting").wait_for()
+                    sorting = _sidebar_menu_state(page)
+                    assert sorting["menuOpen"] is False
+                    assert sorting["panelParentTag"] == "DETAILS"
+                    assert sorting["panelParentClass"] == "sidebar-menu"
+                    assert sorting["floating"] == ""
+                    assert sorting["sorting"] is True
+                finally:
+                    context.close()
             finally:
                 browser.close()
     finally:

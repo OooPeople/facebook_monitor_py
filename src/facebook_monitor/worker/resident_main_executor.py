@@ -231,11 +231,15 @@ class ExecutorWorkerPool:
                 current_url=str(getattr(page, "url", "") or ""),
             )
             with SqliteApplicationContext(self.options.db_path) as app:
-                app.services.targets.mark_target_page_reloaded(
+                page_reload_state = app.services.targets.mark_target_page_reloaded_if_owner(
                     target_id,
+                    worker_id=commit_guard.worker_id,
+                    started_at=commit_guard.started_at,
                     page_id=page_id,
                     reloaded_at=reloaded_at,
                 )
+                if page_reload_state is None:
+                    return AsyncTargetScanResult(target_id=target_id, skipped=True)
             with SqliteApplicationContext(self.options.db_path) as app:
                 selected_scan_page = self._select_scan_page(resident_target.target.target_kind)
                 await self._run_scan_with_heartbeat(
@@ -427,11 +431,15 @@ class ExecutorWorkerPool:
             with SqliteApplicationContext(self.options.db_path) as app:
                 if app.repositories.targets.get(target_id) is None:
                     return
-                app.services.targets.record_target_heartbeat(
+                heartbeat_state = app.services.targets.record_target_heartbeat_if_owner(
                     target_id,
                     worker_id=worker_id,
+                    started_at=commit_guard.started_at,
                     page_id=page_id,
                 )
+                if heartbeat_state is None:
+                    scan_task.cancel()
+                    return
 
     def _record_guard_skip(self, target_id: str, reason: str) -> None:
         """將 queue admission guard skip 寫入 runtime state。"""

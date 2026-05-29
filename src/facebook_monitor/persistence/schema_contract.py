@@ -1,8 +1,7 @@
 """SQLite schema 產品語義 contract。
 
 職責：集中目前 DB 欄位允許的 enum、boolean 與 range 規則。這些規則供
-read-only invariant checker 與測試共用；正式 CHECK constraint 仍需透過
-明確 migration 分批導入。
+read-only invariant checker、測試與分批導入的正式 CHECK constraints 對照。
 """
 
 from __future__ import annotations

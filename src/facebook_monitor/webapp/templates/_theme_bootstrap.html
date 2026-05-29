@@ -1,11 +1,3 @@
-<script>
-(() => {
-  const allowedThemes = new Set(["light", "dark"]);
-  let theme = {{ initial_theme | default("dark") | tojson }};
-  if (!allowedThemes.has(theme)) {
-    theme = "dark";
-  }
-  document.documentElement.dataset.theme = theme;
-})();
-</script>
+<meta name="app-theme" content="{{ initial_theme | default('dark') }}">
+<script src="/static/dashboard/theme_bootstrap.js?v={{ asset_version }}"></script>
 <meta name="csrf-token" content="{{ csrf_token }}">

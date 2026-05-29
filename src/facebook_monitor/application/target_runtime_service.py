@@ -172,6 +172,28 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
+    def mark_target_page_reloaded_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+        reloaded_at: datetime | None = None,
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄 page reload/goto。"""
+
+        self._require_target(target_id)
+        now = utc_now()
+        return self.runtime_states.mark_page_reloaded_if_running_owner(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+            reloaded_at=reloaded_at or now,
+            heartbeat_at=now,
+        )
+
     def record_target_heartbeat(
         self,
         target_id: str,
@@ -196,6 +218,25 @@ class TargetRuntimeService:
         )
         self.runtime_states.save(state)
         return state
+
+    def record_target_heartbeat_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才刷新 heartbeat。"""
+
+        self._require_target(target_id)
+        return self.runtime_states.record_heartbeat_if_running_owner(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+            heartbeat_at=utc_now(),
+        )
 
     def record_scan_guard_skip(self, target_id: str, reason: str) -> TargetRuntimeState:
         """記錄 target 被 queue/executor guard 擋下的原因。"""
@@ -281,12 +322,40 @@ class TargetRuntimeService:
 
         self._require_target(target_id)
         existing_state = self.ensure_runtime_state(target_id)
+        state = self._idle_state(existing_state)
+        self.runtime_states.save(state)
+        return state
+
+    def mark_target_idle_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才將 target 標回 idle。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._idle_state(existing_state)
+        return self.runtime_states.save_if_running_owner(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def _idle_state(self, existing_state: TargetRuntimeState) -> TargetRuntimeState:
+        """建立成功完成掃描後的 idle runtime state。"""
+
+        now = utc_now()
         state = replace(
             existing_state,
             runtime_status=TargetRuntimeStatus.IDLE,
             scan_requested_at=_scan_request_after_current_attempt(existing_state),
-            last_finished_at=utc_now(),
-            last_heartbeat_at=utc_now(),
+            last_finished_at=now,
+            last_heartbeat_at=now,
             last_error="",
             last_skip_reason="",
             enqueue_reason="",
@@ -294,9 +363,8 @@ class TargetRuntimeService:
             active_page_id="",
             consecutive_failure_reason="",
             consecutive_failure_count=0,
-            updated_at=utc_now(),
+            updated_at=now,
         )
-        self.runtime_states.save(state)
         return state
 
     def mark_target_retriable_failure(
@@ -309,6 +377,40 @@ class TargetRuntimeService:
         self._require_target(target_id)
         existing_state = self.ensure_runtime_state(target_id)
         now = utc_now()
+        state = self._retriable_failure_state(existing_state, decision, now=now)
+        self.runtime_states.save(state)
+        return state
+
+    def mark_target_retriable_failure_if_owner(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄可重試失敗。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._retriable_failure_state(existing_state, decision, now=utc_now())
+        return self.runtime_states.save_if_running_owner(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def _retriable_failure_state(
+        self,
+        existing_state: TargetRuntimeState,
+        decision: ScanFailureDecision,
+        *,
+        now: datetime,
+    ) -> TargetRuntimeState:
+        """建立可重試失敗後回到 idle 的 runtime state。"""
+
         state = replace(
             existing_state,
             runtime_status=TargetRuntimeStatus.IDLE,
@@ -324,7 +426,6 @@ class TargetRuntimeService:
             consecutive_failure_count=decision.retry_streak,
             updated_at=now,
         )
-        self.runtime_states.save(state)
         return state
 
     def mark_target_error(
@@ -339,12 +440,60 @@ class TargetRuntimeService:
 
         self._require_target(target_id)
         existing_state = self.ensure_runtime_state(target_id)
+        state = self._error_state(
+            existing_state,
+            error,
+            failure_reason=failure_reason,
+            failure_count=failure_count,
+        )
+        self.runtime_states.save(state)
+        return state
+
+    def mark_target_error_if_owner(
+        self,
+        target_id: str,
+        error: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+        failure_reason: str = "",
+        failure_count: int = 0,
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才將 target 標記為 error。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._error_state(
+            existing_state,
+            error,
+            failure_reason=failure_reason,
+            failure_count=failure_count,
+        )
+        return self.runtime_states.save_if_running_owner(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def _error_state(
+        self,
+        existing_state: TargetRuntimeState,
+        error: str,
+        *,
+        failure_reason: str,
+        failure_count: int,
+    ) -> TargetRuntimeState:
+        """建立掃描失敗後的 error runtime state。"""
+
+        now = utc_now()
         state = replace(
             existing_state,
             runtime_status=TargetRuntimeStatus.ERROR,
             scan_requested_at=None,
-            last_finished_at=utc_now(),
-            last_heartbeat_at=utc_now(),
+            last_finished_at=now,
+            last_heartbeat_at=now,
             last_error=error,
             last_skip_reason="",
             enqueue_reason="",
@@ -352,9 +501,8 @@ class TargetRuntimeService:
             active_page_id="",
             consecutive_failure_reason=failure_reason,
             consecutive_failure_count=max(failure_count, 0),
-            updated_at=utc_now(),
+            updated_at=now,
         )
-        self.runtime_states.save(state)
         return state
 
     def decide_scan_failure(
@@ -401,6 +549,50 @@ class TargetRuntimeService:
             failure_count=decision.retry_streak if decision.counts_toward_streak else 0,
         )
 
+    def apply_scan_failure_decision_if_owner(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+        error: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才套用 failure decision。"""
+
+        if decision.target_action == "idle":
+            if decision.counts_toward_streak:
+                return self.mark_target_retriable_failure_if_owner(
+                    target_id,
+                    decision,
+                    worker_id=worker_id,
+                    started_at=started_at,
+                    page_id=page_id,
+                )
+            return self.mark_target_idle_if_owner(
+                target_id,
+                worker_id=worker_id,
+                started_at=started_at,
+                page_id=page_id,
+            )
+        resolved_error = error
+        if decision.counts_toward_streak:
+            resolved_error = format_failure_retry_exhausted_message(
+                decision.reason,
+                retry_streak=decision.retry_streak,
+                retry_limit=decision.retry_limit,
+            )
+        return self.mark_target_error_if_owner(
+            target_id,
+            resolved_error,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+            failure_reason=decision.reason if decision.counts_toward_streak else "",
+            failure_count=decision.retry_streak if decision.counts_toward_streak else 0,
+        )
+
     def recover_stale_running_targets(
         self,
         *,
@@ -418,6 +610,11 @@ class TargetRuntimeService:
             heartbeat_at = state.last_heartbeat_at or state.updated_at
             if current_time - heartbeat_at <= timedelta(seconds=stale_after):
                 continue
+            stale_before = current_time - timedelta(seconds=stale_after)
+            if state.last_started_at is None:
+                continue
+            worker_id = state.active_worker_id
+            started_at = state.last_started_at
             recovered_state = replace(
                 state,
                 runtime_status=TargetRuntimeStatus.ERROR,
@@ -435,8 +632,14 @@ class TargetRuntimeService:
                 consecutive_failure_count=0,
                 updated_at=current_time,
             )
-            self.runtime_states.save(recovered_state)
-            recovered.append(recovered_state)
+            committed_state = self.runtime_states.save_stale_running_error_if_unchanged(
+                recovered_state,
+                worker_id=worker_id,
+                started_at=started_at,
+                stale_before=stale_before,
+            )
+            if committed_state is not None:
+                recovered.append(committed_state)
         return tuple(recovered)
 
     def recover_stale_queued_targets(

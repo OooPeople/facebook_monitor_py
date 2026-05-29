@@ -139,10 +139,16 @@ def test_theme_bootstrap_defaults_to_dark_mode() -> None:
     bootstrap = Path(
         "src/facebook_monitor/webapp/templates/_theme_bootstrap.html"
     ).read_text(encoding="utf-8")
+    bootstrap_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/theme_bootstrap.js"
+    ).read_text(encoding="utf-8")
 
-    assert 'default("dark")' in bootstrap
+    assert "default('dark')" in bootstrap
     assert "initial_theme" in bootstrap
-    assert "prefers-color-scheme" not in bootstrap
+    assert "/static/dashboard/theme_bootstrap.js" in bootstrap
+    assert 'meta[name="app-theme"]' in bootstrap_js
+    assert 'return "dark";' not in bootstrap_js
+    assert "prefers-color-scheme" not in bootstrap + bootstrap_js
 
 
 def test_theme_templates_are_present_on_all_formal_pages() -> None:
@@ -359,19 +365,27 @@ def test_dashboard_scroll_restore_runs_before_dashboard_module_graph() -> None:
     assert '{% include "_dashboard_scroll_restore_head.html" %}' in index_template
     assert '{% include "_dashboard_scroll_restore_body.html" %}' in index_template
     assert index_template.index('{% include "_dashboard_scroll_restore_body.html" %}') < (
-        index_template.index('{% include "_dashboard_importmap.html" %}')
-    )
-    assert index_template.index('{% include "_dashboard_importmap.html" %}') < (
         index_template.index('/static/dashboard/main.js')
     )
-    assert "facebookMonitor.dashboard.scrollY" in head_bootstrap
-    assert "facebookMonitor.dashboard.scrollSavedAt" in head_bootstrap
-    assert 'window.history.scrollRestoration = "manual";' in head_bootstrap
-    assert "dataset.dashboardRestoringScroll" in head_bootstrap
-    assert 'html[data-dashboard-restoring-scroll="1"] body' in head_bootstrap
-    assert "facebookMonitor.dashboard.scrollY" in body_bootstrap
-    assert "window.scrollTo(0, savedScrollY)" in body_bootstrap
-    assert "window.requestAnimationFrame" in body_bootstrap
+    head_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/scroll_restore_head.js"
+    ).read_text(encoding="utf-8")
+    body_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/scroll_restore_body.js"
+    ).read_text(encoding="utf-8")
+    base_css = Path("src/facebook_monitor/webapp/static/styles/base.css").read_text(
+        encoding="utf-8"
+    )
+    assert "/static/dashboard/scroll_restore_head.js" in head_bootstrap
+    assert "/static/dashboard/scroll_restore_body.js" in body_bootstrap
+    assert "facebookMonitor.dashboard.scrollY" in head_js
+    assert "facebookMonitor.dashboard.scrollSavedAt" in head_js
+    assert 'window.history.scrollRestoration = "manual";' in head_js
+    assert "dataset.dashboardRestoringScroll" in head_js
+    assert 'html[data-dashboard-restoring-scroll="1"] body' in base_css
+    assert "facebookMonitor.dashboard.scrollY" in body_js
+    assert "window.scrollTo(0, savedScrollY)" in body_js
+    assert "window.requestAnimationFrame" in body_js
 
 
 def test_modal_close_controls_use_one_visible_dismiss_pattern() -> None:

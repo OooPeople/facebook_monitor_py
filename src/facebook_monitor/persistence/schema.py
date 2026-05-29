@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 
 from facebook_monitor.persistence.current_schema import create_current_schema
+from facebook_monitor.persistence.current_schema import ensure_dashboard_revision_triggers
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -61,6 +62,7 @@ def migrate_or_mark_current_schema(
 def ensure_post_migration_schema_guards(connection: sqlite3.Connection) -> None:
     """建立需要在 migrations 後才可安全建立的 index / repair guard。"""
 
+    ensure_dashboard_revision_triggers(connection)
     ensure_target_metadata_index(connection)
     ensure_target_scope_unique_index(connection)
     drop_redundant_target_scope_index(connection)

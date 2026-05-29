@@ -70,7 +70,10 @@ export const setupDirtyFormStatus = ({
 export const readJsonScript = (id, fallback) => {
   const node = document.getElementById(id);
   if (!node) return fallback;
-  return JSON.parse(node.textContent || JSON.stringify(fallback));
+  const text = node.tagName === "TEMPLATE"
+    ? node.content?.textContent
+    : node.textContent;
+  return JSON.parse(text || JSON.stringify(fallback));
 };
 
 export const showInlineStatus = (node, text, kind, timeoutMs = 0) => {

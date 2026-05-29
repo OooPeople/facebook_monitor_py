@@ -166,21 +166,7 @@ def extract_post_like_items_with_meta(
         POST_LIKE_ITEMS_SCRIPT,
         candidate_limit,
     )
-    raw_meta: dict[str, Any] = {}
-    if isinstance(raw_items, Mapping):
-        raw_meta = dict(raw_items.get("meta") or {})
-        raw_items = raw_items.get("items") or []
-    return [
-        ExtractedItem(
-            text=str(item.get("text") or ""),
-            text_length=int(item.get("textLength") or 0),
-            permalink=str(item.get("permalink") or ""),
-            link_count=int(item.get("linkCount") or 0),
-            author=str(item.get("author") or ""),
-            debug_metadata=normalize_debug_metadata(item),
-        )
-        for item in raw_items
-    ], raw_meta
+    return normalize_feed_extraction_payload(raw_items)
 
 
 async def extract_post_like_items_with_meta_async(
@@ -193,21 +179,124 @@ async def extract_post_like_items_with_meta_async(
         POST_LIKE_ITEMS_SCRIPT,
         candidate_limit,
     )
+    return normalize_feed_extraction_payload(raw_items)
+
+
+def normalize_feed_extraction_payload(
+    raw_payload: object,
+) -> tuple[list[ExtractedItem], dict[str, Any]]:
+    """整理 feed DOM extractor payload，並保留 DOM 層 collected meta。"""
+
     raw_meta: dict[str, Any] = {}
-    if isinstance(raw_items, Mapping):
-        raw_meta = dict(raw_items.get("meta") or {})
-        raw_items = raw_items.get("items") or []
+    raw_items: object = raw_payload
+    if isinstance(raw_payload, Mapping):
+        raw_meta = dict(raw_payload.get("meta") or {})
+        raw_items = raw_payload.get("items") or []
+    if not isinstance(raw_items, list):
+        raw_items = []
     return [
-        ExtractedItem(
-            text=str(item.get("text") or ""),
-            text_length=int(item.get("textLength") or 0),
-            permalink=str(item.get("permalink") or ""),
-            link_count=int(item.get("linkCount") or 0),
-            author=str(item.get("author") or ""),
-            debug_metadata=normalize_debug_metadata(item),
-        )
+        normalize_feed_extraction_item(item)
         for item in raw_items
+        if isinstance(item, Mapping)
     ], raw_meta
+
+
+def normalize_feed_extraction_item(item: Mapping[str, Any]) -> ExtractedItem:
+    """將單一 feed DOM item 轉成 extractor 共用模型。"""
+
+    return ExtractedItem(
+        text=str(item.get("text") or ""),
+        text_length=int(item.get("textLength") or 0),
+        permalink=str(item.get("permalink") or ""),
+        link_count=int(item.get("linkCount") or 0),
+        author=str(item.get("author") or ""),
+        debug_metadata=normalize_debug_metadata(item),
+    )
+
+
+def collect_unique_feed_items(
+    *,
+    collected: list[tuple[tuple[str, ...], ExtractedItem]],
+    round_items: list[ExtractedItem],
+    round_index: int,
+    seen_stop_state: FeedSeenStopState,
+    seen_item_predicate: SeenItemPredicate | None,
+) -> int:
+    """將單輪 feed items 依 aliases 去重併入跨視窗累積結果。"""
+
+    previous_count = len(collected)
+    for round_item_index, item in enumerate(round_items):
+        item_aliases = make_item_key_aliases(item)
+        if not item_aliases:
+            continue
+        if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
+            continue
+        observe_seen_stop_item(
+            state=seen_stop_state,
+            item_aliases=item_aliases,
+            seen_item_predicate=seen_item_predicate,
+        )
+        collected.append(
+            (
+                item_aliases,
+                with_collection_debug_metadata(
+                    item,
+                    first_seen_round=round_index,
+                    round_item_index=round_item_index,
+                    collection_index=len(collected),
+                ),
+            )
+        )
+        if seen_stop_state.triggered:
+            break
+    return len(collected) - previous_count
+
+
+def build_extract_round_stats(
+    *,
+    round_index: int,
+    round_items: list[ExtractedItem],
+    round_meta: Mapping[str, Any],
+    unique_item_count: int,
+    scroll_metrics: Mapping[str, Any],
+    scroll_action: Mapping[str, Any] | None,
+    scroll_rounds: int,
+    added_count: int,
+    stagnant_windows: int,
+) -> ExtractRoundStats:
+    """把單輪 feed 抽取、捲動與 DOM meta 整理成診斷資料。"""
+
+    action = scroll_action or {}
+    return ExtractRoundStats(
+        round_index=round_index,
+        raw_item_count=len(round_items),
+        unique_item_count=unique_item_count,
+        scroll_y=int(scroll_metrics.get("scrollY") or 0),
+        scroll_height=int(scroll_metrics.get("scrollHeight") or 0),
+        scroll_target_label=str(scroll_metrics.get("scrollTargetLabel") or ""),
+        scroll_target_top=int(scroll_metrics.get("scrollTargetTop") or 0),
+        scroll_moved=bool(action.get("moved")) if action else None,
+        scroll_before_top=int(action.get("beforeTop") or 0) if action else None,
+        scroll_after_top=int(action.get("afterTop") or 0) if action else None,
+        scroll_moved_distance=(
+            int(action.get("movedDistance") or 0) if action else None
+        ),
+        scroll_step=int(action.get("scrollStep") or 0) if action else None,
+        load_more_mode=str(action.get("loadMoreMode") or "")
+        if action
+        else ("scroll" if scroll_rounds > 0 else "off"),
+        added_count=added_count,
+        stagnant_windows=stagnant_windows,
+        candidate_count=int(round_meta.get("candidateCount") or len(round_items)),
+        parsed_count=int(round_meta.get("parsedCount") or len(round_items)),
+        filtered_empty_text_count=int(round_meta.get("filteredEmptyTextCount") or 0),
+        filtered_non_post_count=int(round_meta.get("filteredNonPostCount") or 0),
+        filtered_feed_sort_control_count=int(
+            round_meta.get("filteredFeedSortControlCount") or 0
+        ),
+        article_element_count=int(round_meta.get("articleElementCount") or 0),
+        posts_with_post_id_count=int(round_meta.get("postsWithPostIdCount") or 0),
+    )
 
 
 def normalize_debug_metadata(item: Any) -> dict[str, Any]:
@@ -278,36 +367,17 @@ def collect_items_with_diagnostics(
 
     try:
         for round_index in range(rounds + 1):
-            previous_count = len(collected)
             round_items, round_meta = extract_post_like_items_with_meta(
                 page,
                 candidate_limit,
             )
-            for round_item_index, item in enumerate(round_items):
-                item_aliases = make_item_key_aliases(item)
-                if not item_aliases:
-                    continue
-                if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
-                    continue
-                observe_seen_stop_item(
-                    state=seen_stop_state,
-                    item_aliases=item_aliases,
-                    seen_item_predicate=seen_item_predicate,
-                )
-                collected.append(
-                    (
-                        item_aliases,
-                        with_collection_debug_metadata(
-                            item,
-                            first_seen_round=round_index,
-                            round_item_index=round_item_index,
-                            collection_index=len(collected),
-                        ),
-                    )
-                )
-                if seen_stop_state.triggered:
-                    break
-            added_count = len(collected) - previous_count
+            added_count = collect_unique_feed_items(
+                collected=collected,
+                round_items=round_items,
+                round_index=round_index,
+                seen_stop_state=seen_stop_state,
+                seen_item_predicate=seen_item_predicate,
+            )
             if added_count == 0:
                 stagnant_windows += 1
             else:
@@ -322,49 +392,16 @@ def collect_items_with_diagnostics(
             if should_scroll:
                 scroll_action = scroll_load_more(page)
             round_stats.append(
-                ExtractRoundStats(
+                build_extract_round_stats(
                     round_index=round_index,
-                    raw_item_count=len(round_items),
+                    round_items=round_items,
+                    round_meta=round_meta,
                     unique_item_count=len(collected),
-                    scroll_y=int(scroll_metrics.get("scrollY") or 0),
-                    scroll_height=int(scroll_metrics.get("scrollHeight") or 0),
-                    scroll_target_label=str(scroll_metrics.get("scrollTargetLabel") or ""),
-                    scroll_target_top=int(scroll_metrics.get("scrollTargetTop") or 0),
-                    scroll_moved=(
-                        bool(scroll_action.get("moved")) if scroll_action else None
-                    ),
-                    scroll_before_top=(
-                        int(scroll_action.get("beforeTop") or 0) if scroll_action else None
-                    ),
-                    scroll_after_top=(
-                        int(scroll_action.get("afterTop") or 0) if scroll_action else None
-                    ),
-                    scroll_moved_distance=(
-                        int(scroll_action.get("movedDistance") or 0) if scroll_action else None
-                    ),
-                    scroll_step=(
-                        int(scroll_action.get("scrollStep") or 0) if scroll_action else None
-                    ),
-                    load_more_mode=str(scroll_action.get("loadMoreMode") or "")
-                    if scroll_action
-                    else ("scroll" if rounds > 0 else "off"),
+                    scroll_metrics=scroll_metrics,
+                    scroll_action=scroll_action,
+                    scroll_rounds=rounds,
                     added_count=added_count,
                     stagnant_windows=stagnant_windows,
-                    candidate_count=int(round_meta.get("candidateCount") or len(round_items)),
-                    parsed_count=int(round_meta.get("parsedCount") or len(round_items)),
-                    filtered_empty_text_count=int(
-                        round_meta.get("filteredEmptyTextCount") or 0
-                    ),
-                    filtered_non_post_count=int(
-                        round_meta.get("filteredNonPostCount") or 0
-                    ),
-                    filtered_feed_sort_control_count=int(
-                        round_meta.get("filteredFeedSortControlCount") or 0
-                    ),
-                    article_element_count=int(round_meta.get("articleElementCount") or 0),
-                    posts_with_post_id_count=int(
-                        round_meta.get("postsWithPostIdCount") or 0
-                    ),
                 )
             )
             if round_index >= rounds or len(collected) >= max_items:
@@ -414,36 +451,17 @@ async def collect_items_with_diagnostics_async(
 
     try:
         for round_index in range(rounds + 1):
-            previous_count = len(collected)
             round_items, round_meta = await extract_post_like_items_with_meta_async(
                 page,
                 candidate_limit,
             )
-            for round_item_index, item in enumerate(round_items):
-                item_aliases = make_item_key_aliases(item)
-                if not item_aliases:
-                    continue
-                if any(aliases_overlap(item_aliases, aliases) for aliases, _ in collected):
-                    continue
-                observe_seen_stop_item(
-                    state=seen_stop_state,
-                    item_aliases=item_aliases,
-                    seen_item_predicate=seen_item_predicate,
-                )
-                collected.append(
-                    (
-                        item_aliases,
-                        with_collection_debug_metadata(
-                            item,
-                            first_seen_round=round_index,
-                            round_item_index=round_item_index,
-                            collection_index=len(collected),
-                        ),
-                    )
-                )
-                if seen_stop_state.triggered:
-                    break
-            added_count = len(collected) - previous_count
+            added_count = collect_unique_feed_items(
+                collected=collected,
+                round_items=round_items,
+                round_index=round_index,
+                seen_stop_state=seen_stop_state,
+                seen_item_predicate=seen_item_predicate,
+            )
             if added_count == 0:
                 stagnant_windows += 1
             else:
@@ -458,49 +476,16 @@ async def collect_items_with_diagnostics_async(
             if should_scroll:
                 scroll_action = await scroll_load_more_async(page)
             round_stats.append(
-                ExtractRoundStats(
+                build_extract_round_stats(
                     round_index=round_index,
-                    raw_item_count=len(round_items),
+                    round_items=round_items,
+                    round_meta=round_meta,
                     unique_item_count=len(collected),
-                    scroll_y=int(scroll_metrics.get("scrollY") or 0),
-                    scroll_height=int(scroll_metrics.get("scrollHeight") or 0),
-                    scroll_target_label=str(scroll_metrics.get("scrollTargetLabel") or ""),
-                    scroll_target_top=int(scroll_metrics.get("scrollTargetTop") or 0),
-                    scroll_moved=(
-                        bool(scroll_action.get("moved")) if scroll_action else None
-                    ),
-                    scroll_before_top=(
-                        int(scroll_action.get("beforeTop") or 0) if scroll_action else None
-                    ),
-                    scroll_after_top=(
-                        int(scroll_action.get("afterTop") or 0) if scroll_action else None
-                    ),
-                    scroll_moved_distance=(
-                        int(scroll_action.get("movedDistance") or 0) if scroll_action else None
-                    ),
-                    scroll_step=(
-                        int(scroll_action.get("scrollStep") or 0) if scroll_action else None
-                    ),
-                    load_more_mode=str(scroll_action.get("loadMoreMode") or "")
-                    if scroll_action
-                    else ("scroll" if rounds > 0 else "off"),
+                    scroll_metrics=scroll_metrics,
+                    scroll_action=scroll_action,
+                    scroll_rounds=rounds,
                     added_count=added_count,
                     stagnant_windows=stagnant_windows,
-                    candidate_count=int(round_meta.get("candidateCount") or len(round_items)),
-                    parsed_count=int(round_meta.get("parsedCount") or len(round_items)),
-                    filtered_empty_text_count=int(
-                        round_meta.get("filteredEmptyTextCount") or 0
-                    ),
-                    filtered_non_post_count=int(
-                        round_meta.get("filteredNonPostCount") or 0
-                    ),
-                    filtered_feed_sort_control_count=int(
-                        round_meta.get("filteredFeedSortControlCount") or 0
-                    ),
-                    article_element_count=int(round_meta.get("articleElementCount") or 0),
-                    posts_with_post_id_count=int(
-                        round_meta.get("postsWithPostIdCount") or 0
-                    ),
                 )
             )
             if round_index >= rounds or len(collected) >= max_items:

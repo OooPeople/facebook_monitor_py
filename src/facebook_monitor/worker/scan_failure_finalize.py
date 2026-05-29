@@ -181,11 +181,27 @@ def record_guarded_scan_failure(
         retry_limit=decision.retry_limit,
         force_record=decision.counts_toward_streak,
     )
-    app.services.targets.apply_scan_failure_decision(
-        target_id,
-        decision,
-        runtime_error_message or format_scan_failure_message(decision.reason, message),
+    runtime_message = runtime_error_message or format_scan_failure_message(
+        decision.reason,
+        message,
     )
+    if commit_guard is None:
+        app.services.targets.apply_scan_failure_decision(
+            target_id,
+            decision,
+            runtime_message,
+        )
+    else:
+        updated_state = app.services.targets.apply_scan_failure_decision_if_owner(
+            target_id,
+            decision,
+            runtime_message,
+            worker_id=commit_guard.worker_id,
+            started_at=commit_guard.started_at,
+            page_id=commit_guard.page_id,
+        )
+        if updated_state is None:
+            return None
     return decision
 
 

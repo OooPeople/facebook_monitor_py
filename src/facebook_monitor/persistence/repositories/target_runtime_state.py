@@ -117,6 +117,233 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(target_id)
 
+    def save_if_running_owner(
+        self,
+        state: TargetRuntimeState,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只在目前 running owner 仍相同時更新 runtime state。"""
+
+        started_at_text = encode_datetime(started_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                desired_state = ?,
+                runtime_status = ?,
+                scan_requested_at = ?,
+                last_enqueued_at = ?,
+                last_started_at = ?,
+                last_finished_at = ?,
+                last_heartbeat_at = ?,
+                last_error = ?,
+                last_skip_reason = ?,
+                enqueue_reason = ?,
+                active_worker_id = ?,
+                active_page_id = ?,
+                last_page_reloaded_at = ?,
+                scan_guard_count = ?,
+                display_next_due_at = ?,
+                consecutive_failure_reason = ?,
+                consecutive_failure_count = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND active_worker_id = ?
+              AND last_started_at = ?
+              AND (? = '' OR active_page_id = ?)
+            """,
+            (
+                state.desired_state.value,
+                state.runtime_status.value,
+                encode_datetime(state.scan_requested_at),
+                encode_datetime(state.last_enqueued_at),
+                encode_datetime(state.last_started_at),
+                encode_datetime(state.last_finished_at),
+                encode_datetime(state.last_heartbeat_at),
+                state.last_error,
+                state.last_skip_reason,
+                state.enqueue_reason,
+                state.active_worker_id,
+                state.active_page_id,
+                encode_datetime(state.last_page_reloaded_at),
+                state.scan_guard_count,
+                encode_datetime(state.display_next_due_at),
+                state.consecutive_failure_reason,
+                state.consecutive_failure_count,
+                encode_datetime(state.updated_at),
+                state.target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                started_at_text,
+                page_id,
+                page_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(state.target_id)
+
+    def record_heartbeat_if_running_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        heartbeat_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只在目前 running owner 仍相同時刷新 heartbeat。"""
+
+        started_at_text = encode_datetime(started_at)
+        heartbeat_at_text = encode_datetime(heartbeat_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                active_page_id = CASE WHEN ? = '' THEN active_page_id ELSE ? END,
+                last_heartbeat_at = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND active_worker_id = ?
+              AND last_started_at = ?
+              AND (? = '' OR active_page_id = ?)
+            """,
+            (
+                page_id,
+                page_id,
+                heartbeat_at_text,
+                heartbeat_at_text,
+                target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                started_at_text,
+                page_id,
+                page_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def mark_page_reloaded_if_running_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        reloaded_at: datetime,
+        heartbeat_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只在目前 running owner 仍相同時記錄 page reload/goto。"""
+
+        started_at_text = encode_datetime(started_at)
+        heartbeat_at_text = encode_datetime(heartbeat_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                active_page_id = CASE WHEN ? = '' THEN active_page_id ELSE ? END,
+                last_page_reloaded_at = ?,
+                last_heartbeat_at = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND active_worker_id = ?
+              AND last_started_at = ?
+              AND (? = '' OR active_page_id = ?)
+            """,
+            (
+                page_id,
+                page_id,
+                encode_datetime(reloaded_at),
+                heartbeat_at_text,
+                heartbeat_at_text,
+                target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                started_at_text,
+                page_id,
+                page_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def save_stale_running_error_if_unchanged(
+        self,
+        state: TargetRuntimeState,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        stale_before: datetime,
+    ) -> TargetRuntimeState | None:
+        """只在 row 仍是同一個 stale running owner 時標記逾時錯誤。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                desired_state = ?,
+                runtime_status = ?,
+                scan_requested_at = ?,
+                last_enqueued_at = ?,
+                last_started_at = ?,
+                last_finished_at = ?,
+                last_heartbeat_at = ?,
+                last_error = ?,
+                last_skip_reason = ?,
+                enqueue_reason = ?,
+                active_worker_id = ?,
+                active_page_id = ?,
+                last_page_reloaded_at = ?,
+                scan_guard_count = ?,
+                display_next_due_at = ?,
+                consecutive_failure_reason = ?,
+                consecutive_failure_count = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND active_worker_id = ?
+              AND last_started_at = ?
+              AND last_heartbeat_at <= ?
+            """,
+            (
+                state.desired_state.value,
+                state.runtime_status.value,
+                encode_datetime(state.scan_requested_at),
+                encode_datetime(state.last_enqueued_at),
+                encode_datetime(state.last_started_at),
+                encode_datetime(state.last_finished_at),
+                encode_datetime(state.last_heartbeat_at),
+                state.last_error,
+                state.last_skip_reason,
+                state.enqueue_reason,
+                state.active_worker_id,
+                state.active_page_id,
+                encode_datetime(state.last_page_reloaded_at),
+                state.scan_guard_count,
+                encode_datetime(state.display_next_due_at),
+                state.consecutive_failure_reason,
+                state.consecutive_failure_count,
+                encode_datetime(state.updated_at),
+                state.target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                encode_datetime(started_at),
+                encode_datetime(stale_before),
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(state.target_id)
+
     def get(self, target_id: str) -> TargetRuntimeState | None:
         """依 target id 查詢 runtime state。"""
 

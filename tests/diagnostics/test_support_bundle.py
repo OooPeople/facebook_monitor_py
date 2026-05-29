@@ -72,6 +72,7 @@ def test_support_bundle_hashes_invariant_row_ids(tmp_path: Path) -> None:
     with SqliteConnection(paths.db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             """
             INSERT INTO seen_items (
@@ -90,6 +91,7 @@ def test_support_bundle_hashes_invariant_row_ids(tmp_path: Path) -> None:
                 now,
             ),
         )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
 
     result = create_support_bundle(
         paths=paths,
@@ -106,3 +108,21 @@ def test_support_bundle_hashes_invariant_row_ids(tmp_path: Path) -> None:
     assert "222518561920110" not in summary_text
     assert "9999999999999999" not in summary_text
     assert "4444444444444444" not in summary_text
+
+
+def test_support_bundle_readme_marks_redaction_as_best_effort(tmp_path: Path) -> None:
+    """支援包 README 必須提醒 redaction 是 best-effort，分享前仍需檢查。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        readme = archive.read("README.txt").decode("utf-8")
+    assert "best-effort" in readme
+    assert "review the extracted files before sharing" in readme

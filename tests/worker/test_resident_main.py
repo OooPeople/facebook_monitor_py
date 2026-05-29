@@ -19,6 +19,7 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
+from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -178,6 +179,23 @@ class FakeLoggedOutMetadataBrowserContext:
         page = FakeLoggedOutMetadataPage()
         self.pages.append(page)
         return page
+
+
+class FakeShutdownMetadataBrowserContext:
+    """模擬 scheduler 停止時 Playwright driver 已關閉的 browser context。"""
+
+    def __init__(self, on_new_page: Any) -> None:
+        self.on_new_page = on_new_page
+        self.new_page_count = 0
+
+    async def new_page(self) -> FakeMetadataPage:
+        """在開頁時切換 stop 狀態並丟出 Playwright shutdown 例外。"""
+
+        self.new_page_count += 1
+        self.on_new_page()
+        raise Exception(
+            "BrowserContext.new_page: Connection closed while reading from the driver"
+        )
 
 
 class RecordingSchedulePlanner(TargetSchedulePlanner):
@@ -752,6 +770,91 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
     assert state.last_result == "failed"
     assert state.changed is False
     assert "Facebook 尚未登入" in state.error
+
+
+def test_resident_scheduler_tick_keeps_cover_refresh_pending_on_shutdown(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    """scheduler 停止造成的 Playwright 關閉不應被記成 cover refresh 失敗。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("shutdown should stop before enqueueing scans")
+
+    async def run_test() -> None:
+        stop_requested = False
+
+        def request_stop() -> None:
+            nonlocal stop_requested
+            stop_requested = True
+
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            shutdown_context = FakeShutdownMetadataBrowserContext(request_stop)
+            with caplog.at_level(
+                logging.INFO,
+                logger="facebook_monitor.worker.resident_main",
+            ):
+                summary = await run_resident_main_scheduler_tick(
+                    options=executor.options,
+                    browser_context=shutdown_context,
+                    page_pool=page_pool,
+                    target_queue=target_queue,
+                    executor=executor,
+                    schedule_planner=planner,
+                    cycle_index=1,
+                    should_stop=lambda: stop_requested,
+                )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.metadata_refresh_count == 0
+        assert summary.cover_image_refresh_count == 0
+        assert shutdown_context.new_page_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_result == TargetCoverImageRefreshResult.ATTEMPTED
+    assert state.error == ""
+    assert "cover image refresh skipped because scheduler is stopping" in caplog.text
+    assert "cover image refresh failed" not in caplog.text
 
 
 def test_resident_scheduler_tick_marks_pending_metadata_failed(tmp_path: Path) -> None:

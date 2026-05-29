@@ -183,6 +183,7 @@ async def run_resident_main_loop(
                                     executor=executor,
                                     schedule_planner=schedule_planner,
                                     cycle_index=cycle_index,
+                                    should_stop=stop_requested,
                                 )
                                 summaries.append(summary)
                                 if on_cycle:
@@ -231,30 +232,40 @@ async def run_resident_main_scheduler_tick(
     executor: ExecutorWorkerPool,
     schedule_planner: TargetSchedulePlanner,
     cycle_index: int,
+    should_stop: StopCheckCallable | None = None,
 ) -> ResidentCycleSummary:
     """producer-only scheduler tick：只負責發現 due targets 並 enqueue。"""
 
+    stop_requested = should_stop or (lambda: False)
     recovered_runtime_count = recover_stale_runtime_targets(
         options.db_path,
         options.stale_running_after_seconds,
     )
     notification_dispatch_count = dispatch_pending_notification_outbox(options)
-    metadata_refresh_count = await refresh_requested_target_metadata(
-        options=options,
-        browser_context=browser_context,
-    )
-    cover_image_refresh_count = await refresh_pending_target_cover_images(
-        options=options,
-        browser_context=browser_context,
-    )
+    metadata_refresh_count = 0
+    if not stop_requested():
+        metadata_refresh_count = await refresh_requested_target_metadata(
+            options=options,
+            browser_context=browser_context,
+            should_stop=stop_requested,
+        )
+    cover_image_refresh_count = 0
+    if not stop_requested():
+        cover_image_refresh_count = await refresh_pending_target_cover_images(
+            options=options,
+            browser_context=browser_context,
+            should_stop=stop_requested,
+        )
     active_target_ids = list_active_resident_target_ids(options.db_path)
     closed_page_count = await page_pool.close_inactive(active_target_ids)
-    due_targets = schedule_planner.list_due_targets(
-        options.db_path,
-        default_interval_seconds=options.interval_seconds,
-        max_count=None,
-    )
-    enqueued_count = await executor.enqueue_due_targets(due_targets)
+    enqueued_count = 0
+    if not stop_requested():
+        due_targets = schedule_planner.list_due_targets(
+            options.db_path,
+            default_interval_seconds=options.interval_seconds,
+            max_count=None,
+        )
+        enqueued_count = await executor.enqueue_due_targets(due_targets)
     counters = await executor.take_counters()
     queued_count, running_count, queued_ids = await target_queue.snapshot()
     return ResidentCycleSummary(
@@ -311,13 +322,17 @@ async def refresh_requested_target_metadata(
     *,
     options: ResidentRuntimeOptions,
     browser_context: Any | None,
+    should_stop: StopCheckCallable | None = None,
 ) -> int:
     """消化 Web UI request 與 DB pending metadata refresh job。"""
 
-    if browser_context is None:
+    stop_requested = should_stop or (lambda: False)
+    if browser_context is None or stop_requested():
         return 0
     refreshed_count = 0
     for target_id in list_metadata_refresh_target_ids(options):
+        if stop_requested():
+            break
         try:
             if await refresh_target_group_name_from_context(
                 options=options,
@@ -325,7 +340,13 @@ async def refresh_requested_target_metadata(
                 target_id=target_id,
             ):
                 refreshed_count += 1
-        except Exception:
+        except Exception as exc:
+            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
+                logger.info(
+                    "metadata refresh skipped because scheduler is stopping",
+                    extra={"target_id": target_id},
+                )
+                break
             logger.exception(
                 "metadata refresh failed",
                 extra={"target_id": target_id},
@@ -359,10 +380,12 @@ async def refresh_pending_target_cover_images(
     *,
     options: ResidentRuntimeOptions,
     browser_context: Any | None,
+    should_stop: StopCheckCallable | None = None,
 ) -> int:
     """消化 dashboard 壞圖上報排入的 image-only cover refresh jobs。"""
 
-    if browser_context is None:
+    stop_requested = should_stop or (lambda: False)
+    if browser_context is None or stop_requested():
         return 0
     refreshed_count = 0
     with SqliteApplicationContext(options.db_path) as app:
@@ -370,6 +393,8 @@ async def refresh_pending_target_cover_images(
             limit=COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK,
         )
     for state in states:
+        if stop_requested():
+            break
         try:
             if await refresh_target_group_cover_image_from_context(
                 options=options,
@@ -378,6 +403,12 @@ async def refresh_pending_target_cover_images(
             ):
                 refreshed_count += 1
         except Exception as exc:
+            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
+                logger.info(
+                    "cover image refresh skipped because scheduler is stopping",
+                    extra={"target_id": state.target_id},
+                )
+                break
             logger.exception(
                 "cover image refresh failed",
                 extra={"target_id": state.target_id},
@@ -390,6 +421,15 @@ async def refresh_pending_target_cover_images(
                 requested_at=state.requested_at,
             )
     return refreshed_count
+
+
+def _should_skip_refresh_failure_for_shutdown(
+    exc: Exception,
+    should_stop: StopCheckCallable,
+) -> bool:
+    """停止流程中 Playwright driver 關閉不應污染 maintenance job 診斷。"""
+
+    return should_stop() and _is_playwright_driver_shutdown_exception(exc)
 
 
 async def refresh_target_group_cover_image_from_context(

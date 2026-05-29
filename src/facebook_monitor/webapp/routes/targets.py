@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends
@@ -14,19 +17,23 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_actions import delete_target_action
 from facebook_monitor.application.target_actions import pause_target_monitoring_action
 from facebook_monitor.application.target_actions import request_target_scan_once_action
 from facebook_monitor.application.target_actions import restart_target_monitoring_action
 from facebook_monitor.application.target_actions import reset_target_notification_state_action
+from facebook_monitor.application.target_actions import TargetActionOutcome
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
+from facebook_monitor.application.target_route_service import DetectedPostsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.input_limits import normalize_display_name
 from facebook_monitor.core.input_limits import normalize_target_url
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
@@ -63,6 +70,20 @@ from facebook_monitor.webapp.profile_session import ProfileSessionError
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _CreateTargetRouteContext:
+    """保存新增 target route 已解析的表單與 scheduler 狀態。"""
+
+    route: DetectedCommentsTargetRoute | DetectedPostsTargetRoute
+    config_form: TargetConfigForm
+    custom_name: str
+    scheduler_running: bool
+
+
+class _TargetNotificationTestNotFound(Exception):
+    """表示測試通知 route 找不到指定 target。"""
+
+
 def _wants_json_response(request: Request) -> bool:
     """判斷前端是否要求保留目前頁面並以 JSON 接收操作結果。"""
 
@@ -96,6 +117,239 @@ async def _resolve_group_metadata_if_needed(
     if isinstance(resolved, GroupMetadata):
         return resolved
     return GroupMetadata(group_name=str(resolved or ""))
+
+
+def _build_create_target_context(
+    request: Request,
+    *,
+    group_url: str,
+    config_fields: CreateTargetConfigFormFields,
+    display_name: str,
+) -> _CreateTargetRouteContext:
+    """解析新增 target 表單，保留 route handler 外的純表單轉換。"""
+
+    keyword_defaults = get_target_keyword_defaults(request)
+    config_form = config_fields.to_target_config_form(
+        default_exclude_keywords=keyword_defaults.exclude_keywords_text,
+        default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
+    )
+    return _CreateTargetRouteContext(
+        route=detect_target_route_from_url(normalize_target_url(group_url)),
+        config_form=config_form,
+        custom_name=clean_facebook_page_title(normalize_display_name(display_name)),
+        scheduler_running=get_scheduler_manager(request).state().running,
+    )
+
+
+async def _upsert_target_from_route_context(
+    request: Request,
+    context: _CreateTargetRouteContext,
+) -> TargetDescriptor:
+    """依 URL detection 結果建立 posts 或 comments target。"""
+
+    if isinstance(context.route, DetectedCommentsTargetRoute):
+        return await _upsert_comments_target_from_route_context(request, context)
+    return await _upsert_group_posts_target_from_route_context(request, context)
+
+
+async def _upsert_comments_target_from_route_context(
+    request: Request,
+    context: _CreateTargetRouteContext,
+) -> TargetDescriptor:
+    """建立 comments target 並保留 metadata refresh pending 語義。"""
+
+    route = context.route
+    if not isinstance(route, DetectedCommentsTargetRoute):
+        raise TypeError("comments route context expected")
+    resolved_metadata = await _resolve_group_metadata_if_needed(
+        request,
+        custom_name=context.custom_name,
+        canonical_url=route.group_canonical_url,
+    )
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        target = app_context.services.targets.upsert_comments_target(
+            context.config_form.to_comments_upsert_request(
+                group_id=route.group_id,
+                parent_post_id=route.parent_post_id,
+                canonical_url=route.canonical_url,
+                name=context.custom_name,
+                group_name=resolved_metadata.group_name,
+                group_cover_image_url=resolved_metadata.group_cover_image_url,
+            )
+        )
+        return _mark_metadata_refresh_pending_if_needed(
+            app_context,
+            target=target,
+            context=context,
+        )
+
+
+async def _upsert_group_posts_target_from_route_context(
+    request: Request,
+    context: _CreateTargetRouteContext,
+) -> TargetDescriptor:
+    """建立 group posts target 並保留 metadata refresh pending 語義。"""
+
+    route = context.route
+    if not isinstance(route, DetectedPostsTargetRoute):
+        raise TypeError("posts route context expected")
+    resolved_metadata = await _resolve_group_metadata_if_needed(
+        request,
+        custom_name=context.custom_name,
+        canonical_url=route.canonical_url,
+    )
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            context.config_form.to_group_posts_upsert_request(
+                group_id=route.group_id,
+                canonical_url=route.canonical_url,
+                name=context.custom_name,
+                group_name=resolved_metadata.group_name,
+                group_cover_image_url=resolved_metadata.group_cover_image_url,
+            )
+        )
+        return _mark_metadata_refresh_pending_if_needed(
+            app_context,
+            target=target,
+            context=context,
+        )
+
+
+def _mark_metadata_refresh_pending_if_needed(
+    app_context: ApplicationContext,
+    *,
+    target: TargetDescriptor,
+    context: _CreateTargetRouteContext,
+) -> TargetDescriptor:
+    """scheduler 執行中且未自訂名稱時，標記背景 metadata refresh。"""
+
+    if not context.scheduler_running or context.custom_name:
+        return target
+    return app_context.services.targets.mark_target_metadata_refresh_pending(target.id)
+
+
+def _request_metadata_refresh_if_needed(
+    request: Request,
+    *,
+    target: TargetDescriptor,
+    context: _CreateTargetRouteContext,
+) -> None:
+    """在 DB commit 後通知 scheduler 背景補 target metadata。"""
+
+    if context.scheduler_running and not context.custom_name:
+        get_scheduler_manager(request).request_metadata_refresh(target.id)
+
+
+async def _create_or_update_target_from_form(
+    request: Request,
+    *,
+    group_url: str,
+    config_fields: CreateTargetConfigFormFields,
+    display_name: str,
+) -> TargetDescriptor:
+    """從新增 target 表單完成 URL detection、upsert 與 metadata refresh 排程。"""
+
+    context = _build_create_target_context(
+        request,
+        group_url=group_url,
+        config_fields=config_fields,
+        display_name=display_name,
+    )
+    target = await _upsert_target_from_route_context(request, context)
+    _request_metadata_refresh_if_needed(request, target=target, context=context)
+    return target
+
+
+async def _send_target_test_notifications(
+    request: Request,
+    *,
+    target_id: str,
+    notification_form: NotificationConfigForm,
+) -> list[str]:
+    """依表單欄位送出 target 測試通知，並回傳已在 UI 顯示前本地化的結果。"""
+
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        target = app_context.repositories.targets.get(target_id)
+        if target is None:
+            raise _TargetNotificationTestNotFound
+        existing_config = app_context.services.targets.get_config_for_target(target)
+    config = notification_form.to_target_config(
+        target_id=target.id,
+        existing_ntfy_topic=existing_config.ntfy_topic,
+        existing_discord_webhook=existing_config.discord_webhook,
+    )
+    results = await run_in_threadpool(
+        send_manual_test_notification,
+        config=config,
+        ntfy_sender=get_ntfy_sender(request),
+        desktop_sender=get_desktop_sender(request),
+        discord_sender=get_discord_sender(request),
+    )
+    return [format_notification_event_message(result) for result in results]
+
+
+def _target_notification_test_error_response(
+    request: Request,
+    *,
+    error_message: str,
+    return_to: str,
+    status_code: int,
+) -> JSONResponse | RedirectResponse:
+    """依 Accept header 回傳 target 測試通知的 JSON 或 redirect 錯誤。"""
+
+    if _wants_json_response(request):
+        return JSONResponse(
+            {"ok": False, "error": error_message},
+            status_code=status_code,
+        )
+    return redirect_with_error(error_message, return_to=return_to)
+
+
+def _target_notification_test_success_response(
+    request: Request,
+    *,
+    localized_results: list[str],
+    return_to: str,
+) -> JSONResponse | RedirectResponse:
+    """依 Accept header 回傳 target 測試通知成功結果。"""
+
+    message = "測試通知結果：" + " / ".join(localized_results)
+    if _wants_json_response(request):
+        return JSONResponse({"ok": True, "message": message, "results": localized_results})
+    return redirect_with_message(message, return_to=return_to)
+
+
+def _run_target_action_redirect(
+    request: Request,
+    *,
+    target_id: str,
+    return_to: str,
+    action: Callable[[Path, str], TargetActionOutcome],
+    failure_prefix: str,
+    log_exception_message: str = "",
+) -> RedirectResponse:
+    """執行 target action 並集中 redirect / scheduler side effect 語義。"""
+
+    try:
+        outcome = action(get_db_path(request), target_id)
+        if not outcome.ok:
+            return redirect_with_error(outcome.message, return_to=return_to)
+        if outcome.wake_scheduler:
+            get_scheduler_manager(request).wake()
+        if outcome.start_scheduler:
+            start_resident_scheduler_if_needed(request)
+    except Exception as exc:
+        if log_exception_message:
+            logger.exception(log_exception_message, extra={"target_id": target_id})
+        return redirect_with_error(
+            failure_prefix + format_failure_message_text(str(exc)),
+            return_to=return_to,
+        )
+    return redirect_with_message(
+        outcome.message,
+        return_to=return_to,
+        feedback=outcome.feedback,
+    )
 
 
 def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -135,59 +389,12 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """從表單 URL 建立或更新 posts/comments target。"""
 
         try:
-            keyword_defaults = get_target_keyword_defaults(request)
-            config_form = config_fields.to_target_config_form(
-                default_exclude_keywords=keyword_defaults.exclude_keywords_text,
-                default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
+            await _create_or_update_target_from_form(
+                request,
+                group_url=group_url,
+                config_fields=config_fields,
+                display_name=display_name,
             )
-            custom_name = clean_facebook_page_title(normalize_display_name(display_name))
-            scheduler_running = get_scheduler_manager(request).state().running
-            route = detect_target_route_from_url(normalize_target_url(group_url))
-            if isinstance(route, DetectedCommentsTargetRoute):
-                resolved_metadata = await _resolve_group_metadata_if_needed(
-                    request,
-                    custom_name=custom_name,
-                    canonical_url=route.group_canonical_url,
-                )
-                with SqliteApplicationContext(get_db_path(request)) as app_context:
-                    target = app_context.services.targets.upsert_comments_target(
-                        config_form.to_comments_upsert_request(
-                            group_id=route.group_id,
-                            parent_post_id=route.parent_post_id,
-                            canonical_url=route.canonical_url,
-                            name=custom_name,
-                            group_name=resolved_metadata.group_name,
-                            group_cover_image_url=resolved_metadata.group_cover_image_url,
-                        )
-                    )
-                    if scheduler_running and not custom_name:
-                        target = app_context.services.targets.mark_target_metadata_refresh_pending(
-                            target.id,
-                        )
-                if scheduler_running and not custom_name:
-                    get_scheduler_manager(request).request_metadata_refresh(target.id)
-            else:
-                resolved_metadata = await _resolve_group_metadata_if_needed(
-                    request,
-                    custom_name=custom_name,
-                    canonical_url=route.canonical_url,
-                )
-                with SqliteApplicationContext(get_db_path(request)) as app_context:
-                    target = app_context.services.targets.upsert_group_posts_target(
-                        config_form.to_group_posts_upsert_request(
-                            group_id=route.group_id,
-                            canonical_url=route.canonical_url,
-                            name=custom_name,
-                            group_name=resolved_metadata.group_name,
-                            group_cover_image_url=resolved_metadata.group_cover_image_url,
-                        )
-                    )
-                    if scheduler_running and not custom_name:
-                        target = app_context.services.targets.mark_target_metadata_refresh_pending(
-                            target.id,
-                        )
-                if scheduler_running and not custom_name:
-                    get_scheduler_manager(request).request_metadata_refresh(target.id)
         except RouteDetectionError as exc:
             return redirect_new_target_with_error(str(exc))
         except GroupMetadataError as exc:
@@ -336,38 +543,25 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """依 target 設定 modal 目前欄位送出一則測試通知，不保存設定。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                target = app_context.repositories.targets.get(target_id)
-                if target is None:
-                    if _wants_json_response(request):
-                        return JSONResponse(
-                            {"ok": False, "error": "測試通知失敗: target 不存在"},
-                            status_code=404,
-                        )
-                    return redirect_with_error("測試通知失敗: target 不存在", return_to=return_to)
-                existing_config = app_context.services.targets.get_config_for_target(target)
-            config = notification_form.to_target_config(
-                target_id=target.id,
-                existing_ntfy_topic=existing_config.ntfy_topic,
-                existing_discord_webhook=existing_config.discord_webhook,
+            localized_results = await _send_target_test_notifications(
+                request,
+                target_id=target_id,
+                notification_form=notification_form,
             )
-            results = await run_in_threadpool(
-                send_manual_test_notification,
-                config=config,
-                ntfy_sender=get_ntfy_sender(request),
-                desktop_sender=get_desktop_sender(request),
-                discord_sender=get_discord_sender(request),
+        except _TargetNotificationTestNotFound:
+            return _target_notification_test_error_response(
+                request,
+                error_message="測試通知失敗: target 不存在",
+                return_to=return_to,
+                status_code=404,
             )
         except ValueError as exc:
             error_message = "測試通知失敗: " + format_notification_form_error(exc)
-            if _wants_json_response(request):
-                return JSONResponse(
-                    {"ok": False, "error": error_message},
-                    status_code=400,
-                )
-            return redirect_with_error(
-                error_message,
+            return _target_notification_test_error_response(
+                request,
+                error_message=error_message,
                 return_to=return_to,
+                status_code=400,
             )
         except Exception as exc:
             error_message = (
@@ -376,23 +570,17 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                     safe_exception_message("notification_test_failed", exc)
                 )
             )
-            if _wants_json_response(request):
-                return JSONResponse(
-                    {"ok": False, "error": error_message},
-                    status_code=400,
-                )
-            return redirect_with_error(
-                error_message,
+            return _target_notification_test_error_response(
+                request,
+                error_message=error_message,
                 return_to=return_to,
+                status_code=400,
             )
-        localized_results = [
-            format_notification_event_message(result)
-            for result in results
-        ]
-        message = "測試通知結果：" + " / ".join(localized_results)
-        if _wants_json_response(request):
-            return JSONResponse({"ok": True, "message": message, "results": localized_results})
-        return redirect_with_message(message, return_to=return_to)
+        return _target_notification_test_success_response(
+            request,
+            localized_results=localized_results,
+            return_to=return_to,
+        )
 
     @app.post("/targets/{target_id}/start")
     async def restart_target_monitoring_route(
@@ -402,19 +590,12 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """開始單一 target，保留 seen/outbox 並要求立即掃描。"""
 
-        try:
-            outcome = restart_target_monitoring_action(get_db_path(request), target_id)
-            if outcome.wake_scheduler:
-                get_scheduler_manager(request).wake()
-        except Exception as exc:
-            return redirect_with_error(
-                "啟動失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
+        return _run_target_action_redirect(
+            request,
+            target_id=target_id,
             return_to=return_to,
-            feedback=outcome.feedback,
+            action=restart_target_monitoring_action,
+            failure_prefix="啟動失敗：",
         )
 
     @app.post("/targets/{target_id}/notifications/clear")
@@ -425,17 +606,12 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """重置單一 target 的通知與 seen 去重狀態。"""
 
-        try:
-            outcome = reset_target_notification_state_action(get_db_path(request), target_id)
-        except Exception as exc:
-            return redirect_with_error(
-                "重置通知狀態失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
+        return _run_target_action_redirect(
+            request,
+            target_id=target_id,
             return_to=return_to,
-            feedback=outcome.feedback,
+            action=reset_target_notification_state_action,
+            failure_prefix="重置通知狀態失敗：",
         )
 
     @app.post("/targets/{target_id}/stop")
@@ -446,19 +622,12 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """暫停單一 target，保留 seen scope 與歷史紀錄。"""
 
-        try:
-            outcome = pause_target_monitoring_action(get_db_path(request), target_id)
-            if outcome.wake_scheduler:
-                get_scheduler_manager(request).wake()
-        except Exception as exc:
-            return redirect_with_error(
-                "停止失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
+        return _run_target_action_redirect(
+            request,
+            target_id=target_id,
             return_to=return_to,
-            feedback=outcome.feedback,
+            action=pause_target_monitoring_action,
+            failure_prefix="停止失敗：",
         )
 
     @app.post("/targets/{target_id}/delete")
@@ -469,30 +638,23 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """刪除單一 target。"""
 
-        try:
-            outcome = delete_target_action(get_db_path(request), target_id)
-        except Exception as exc:
-            return redirect_with_error(
-                "刪除失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
+        return _run_target_action_redirect(
+            request,
+            target_id=target_id,
             return_to=return_to,
-            feedback=outcome.feedback,
+            action=delete_target_action,
+            failure_prefix="刪除失敗：",
         )
 
     @app.post("/targets/{target_id}/scan-once")
     async def scan_once(request: Request, target_id: str) -> RedirectResponse:
         """要求 resident scheduler 對單一 target 執行一次掃描。"""
 
-        try:
-            outcome = request_target_scan_once_action(get_db_path(request), target_id)
-            if not outcome.ok:
-                return redirect_with_error(outcome.message)
-            if outcome.start_scheduler:
-                start_resident_scheduler_if_needed(request)
-        except Exception as exc:
-            logger.exception("scan once failed", extra={"target_id": target_id})
-            return redirect_with_error("掃描失敗：" + format_failure_message_text(str(exc)))
-        return redirect_with_message(outcome.message, feedback=outcome.feedback)
+        return _run_target_action_redirect(
+            request,
+            target_id=target_id,
+            return_to="",
+            action=request_target_scan_once_action,
+            failure_prefix="掃描失敗：",
+            log_exception_message="scan once failed",
+        )

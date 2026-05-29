@@ -40,24 +40,24 @@ CREATE TABLE IF NOT EXISTS target_configs (
     include_keyword_groups TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL,
     exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
-    min_refresh_sec INTEGER NOT NULL,
-    max_refresh_sec INTEGER NOT NULL,
-    jitter_enabled INTEGER NOT NULL,
+    min_refresh_sec INTEGER NOT NULL CHECK (min_refresh_sec >= 5),
+    max_refresh_sec INTEGER NOT NULL CHECK (max_refresh_sec >= 5 AND max_refresh_sec >= min_refresh_sec),
+    jitter_enabled INTEGER NOT NULL CHECK (jitter_enabled IN (0, 1)),
     fixed_refresh_sec INTEGER,
-    max_items_per_scan INTEGER NOT NULL,
-    auto_load_more INTEGER NOT NULL,
-    auto_adjust_sort INTEGER NOT NULL,
-    enable_desktop_notification INTEGER NOT NULL,
-    enable_ntfy INTEGER NOT NULL,
+    max_items_per_scan INTEGER NOT NULL CHECK (max_items_per_scan > 0),
+    auto_load_more INTEGER NOT NULL CHECK (auto_load_more IN (0, 1)),
+    auto_adjust_sort INTEGER NOT NULL CHECK (auto_adjust_sort IN (0, 1)),
+    enable_desktop_notification INTEGER NOT NULL CHECK (enable_desktop_notification IN (0, 1)),
+    enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
     ntfy_topic TEXT NOT NULL,
-    enable_discord_notification INTEGER NOT NULL,
+    enable_discord_notification INTEGER NOT NULL CHECK (enable_discord_notification IN (0, 1)),
     discord_webhook TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS seen_items (
     scope_id TEXT NOT NULL,
     item_key TEXT NOT NULL,
-    item_kind TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
     parent_post_id TEXT NOT NULL,
     comment_id TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS seen_items (
 
 CREATE TABLE IF NOT EXISTS scan_scope_state (
     scope_id TEXT PRIMARY KEY,
-    initialized INTEGER NOT NULL,
+    initialized INTEGER NOT NULL CHECK (initialized IN (0, 1)),
     updated_at TEXT NOT NULL
 );
 
@@ -132,9 +132,9 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     started_at TEXT NOT NULL,
     finished_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    item_count INTEGER NOT NULL,
-    matched_count INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+    item_count INTEGER NOT NULL CHECK (item_count >= 0),
+    matched_count INTEGER NOT NULL CHECK (matched_count >= 0),
     error_message TEXT NOT NULL,
     worker_mode TEXT NOT NULL,
     metadata TEXT NOT NULL
@@ -144,8 +144,8 @@ CREATE TABLE IF NOT EXISTS notification_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     item_key TEXT NOT NULL,
-    channel TEXT NOT NULL,
-    status TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+    status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
     message TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -155,14 +155,14 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     idempotency_key TEXT NOT NULL UNIQUE,
     target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     item_key TEXT NOT NULL,
-    item_kind TEXT NOT NULL,
-    channel TEXT NOT NULL,
-    status TEXT NOT NULL,
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+    channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing_pending', 'sent', 'failed', 'processing_failed', 'skipped')),
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     endpoint TEXT NOT NULL DEFAULT '',
     permalink TEXT NOT NULL,
-    attempts INTEGER NOT NULL,
+    attempts INTEGER NOT NULL CHECK (attempts >= 0),
     last_error TEXT NOT NULL,
     notification_event_id INTEGER,
     created_at TEXT NOT NULL,
@@ -171,8 +171,8 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
 
 CREATE TABLE IF NOT EXISTS target_runtime_state (
     target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
-    desired_state TEXT NOT NULL,
-    runtime_status TEXT NOT NULL,
+    desired_state TEXT NOT NULL CHECK (desired_state IN ('active', 'stopped')),
+    runtime_status TEXT NOT NULL CHECK (runtime_status IN ('idle', 'queued', 'running', 'error')),
     scan_requested_at TEXT NOT NULL DEFAULT '',
     last_enqueued_at TEXT NOT NULL DEFAULT '',
     last_started_at TEXT NOT NULL DEFAULT '',
@@ -184,34 +184,34 @@ CREATE TABLE IF NOT EXISTS target_runtime_state (
     active_worker_id TEXT NOT NULL,
     active_page_id TEXT NOT NULL DEFAULT '',
     last_page_reloaded_at TEXT NOT NULL DEFAULT '',
-    scan_guard_count INTEGER NOT NULL DEFAULT 0,
+    scan_guard_count INTEGER NOT NULL DEFAULT 0 CHECK (scan_guard_count >= 0),
     display_next_due_at TEXT NOT NULL DEFAULT '',
     consecutive_failure_reason TEXT NOT NULL DEFAULT '',
-    consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
+    consecutive_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failure_count >= 0),
     updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
     target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('idle', 'pending', 'failed')),
     requested_at TEXT NOT NULL DEFAULT '',
     last_attempted_at TEXT NOT NULL DEFAULT '',
     last_succeeded_at TEXT NOT NULL DEFAULT '',
     last_failed_at TEXT NOT NULL DEFAULT '',
     last_reported_url TEXT NOT NULL DEFAULT '',
     last_resolved_url TEXT NOT NULL DEFAULT '',
-    last_result TEXT NOT NULL DEFAULT '',
-    changed INTEGER NOT NULL DEFAULT 0,
+    last_result TEXT NOT NULL DEFAULT '' CHECK (last_result IN ('', 'queued', 'attempted', 'succeeded_changed', 'succeeded_unchanged', 'stale_skipped', 'failed')),
+    changed INTEGER NOT NULL DEFAULT 0 CHECK (changed IN (0, 1)),
     error TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS global_notification_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    enable_desktop_notification INTEGER NOT NULL,
-    enable_ntfy INTEGER NOT NULL,
+    enable_desktop_notification INTEGER NOT NULL CHECK (enable_desktop_notification IN (0, 1)),
+    enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
     ntfy_topic TEXT NOT NULL,
-    enable_discord_notification INTEGER NOT NULL,
+    enable_discord_notification INTEGER NOT NULL CHECK (enable_discord_notification IN (0, 1)),
     discord_webhook TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -244,17 +244,17 @@ CREATE TABLE IF NOT EXISTS sidebar_group_config_templates (
     include_keyword_groups TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL DEFAULT '[]',
     exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
-    min_refresh_sec INTEGER NOT NULL,
-    max_refresh_sec INTEGER NOT NULL,
-    jitter_enabled INTEGER NOT NULL,
+    min_refresh_sec INTEGER NOT NULL CHECK (min_refresh_sec >= 5),
+    max_refresh_sec INTEGER NOT NULL CHECK (max_refresh_sec >= 5 AND max_refresh_sec >= min_refresh_sec),
+    jitter_enabled INTEGER NOT NULL CHECK (jitter_enabled IN (0, 1)),
     fixed_refresh_sec INTEGER,
-    max_items_per_scan INTEGER NOT NULL,
-    auto_load_more INTEGER NOT NULL,
-    auto_adjust_sort INTEGER NOT NULL,
-    enable_desktop_notification INTEGER NOT NULL,
-    enable_ntfy INTEGER NOT NULL,
+    max_items_per_scan INTEGER NOT NULL CHECK (max_items_per_scan > 0),
+    auto_load_more INTEGER NOT NULL CHECK (auto_load_more IN (0, 1)),
+    auto_adjust_sort INTEGER NOT NULL CHECK (auto_adjust_sort IN (0, 1)),
+    enable_desktop_notification INTEGER NOT NULL CHECK (enable_desktop_notification IN (0, 1)),
+    enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
     ntfy_topic TEXT NOT NULL,
-    enable_discord_notification INTEGER NOT NULL,
+    enable_discord_notification INTEGER NOT NULL CHECK (enable_discord_notification IN (0, 1)),
     discord_webhook TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

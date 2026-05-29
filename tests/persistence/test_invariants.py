@@ -104,6 +104,7 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
             "UPDATE targets SET target_kind = ?, enabled = ? WHERE id = ?",
             ("pages", 2, target.id),
         )
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             """
             UPDATE target_configs
@@ -113,6 +114,7 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
             """,
             (target.id,),
         )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
         connection.execute(
             """
             UPDATE target_runtime_state

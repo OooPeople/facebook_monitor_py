@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from dataclasses import dataclass
 import platform
 import sys
+from typing import Annotated
 
 from fastapi import FastAPI
 from fastapi import Form
@@ -26,11 +27,15 @@ from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
+from facebook_monitor.diagnostics.support_bundle import SupportBundleResult
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
+from facebook_monitor.runtime.build_metadata import BuildMetadata
 from facebook_monitor.runtime.build_metadata import collect_build_metadata
+from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.release_check import build_idle_update_check
 from facebook_monitor.updates.release_check import check_github_release_updates
+from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import reveal_in_file_manager
 from facebook_monitor.updates.handoff import pending_update_path
@@ -55,6 +60,21 @@ from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
 
 
+@dataclass(frozen=True)
+class _SettingsUpdateContext:
+    """Settings route 執行更新流程時共用的 runtime context。"""
+
+    metadata: BuildMetadata
+    paths: RuntimePaths
+    update_capability: UpdateCapability
+
+    @property
+    def allow_env_repository_override(self) -> bool:
+        """source mode 保留測試與 debug repository override。"""
+
+        return not self.metadata.frozen
+
+
 def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     """註冊 settings / notification / profile routes。"""
 
@@ -65,43 +85,19 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         message = request.query_params.get("message", "")
         feedback = request.query_params.get("feedback", "")
         error = request.query_params.get("error", "")
-        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        paths = get_runtime_paths(request)
-        update_capability = _resolve_update_capability(
-            packaging_mode=metadata.packaging_mode,
-            frozen=metadata.frozen,
-            app_base_dir=paths.app_base_dir,
-        )
-        update_check = build_idle_update_check(
-            current_version=metadata.app_version,
-            channel="stable",
-            allow_env_repository_override=not metadata.frozen,
-        )
-        if request.query_params.get("update_check") == "1":
-            update_check = await check_github_release_updates(
-                current_version=metadata.app_version,
-                channel="stable",
-                allow_env_repository_override=not metadata.frozen,
-            )
+        update_context = _build_settings_update_context(request)
+        update_check = await _load_settings_update_check(request, update_context)
         return templates.TemplateResponse(
             request,
             "settings.html",
-            {
-                "message": message,
-                "feedback": feedback,
-                "error": error,
-                "profile_dir": str(get_profile_dir(request)),
-                "target_keyword_defaults": get_target_keyword_defaults(request),
-                "notification_outbox_health": load_notification_outbox_health(
-                    get_db_path(request)
-                ),
-                "update_check": update_check,
-                "update_download_supported": update_capability.download_supported,
-                "update_apply_supported": update_capability.apply_supported,
-                "update_unsupported_reason": update_capability.unsupported_reason,
-                "pending_update_available": pending_update_path(paths.runtime_dir).is_file(),
-                "initial_theme": get_app_theme(request),
-            },
+            _settings_template_context(
+                request,
+                update_context,
+                update_check,
+                message=message,
+                feedback=feedback,
+                error=error,
+            ),
         )
 
     @app.post("/settings/theme")
@@ -112,9 +108,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         theme = str(payload.get("theme", "")).strip()
         if theme not in {"light", "dark"}:
             raise HTTPException(status_code=400, detail="invalid theme")
-        with SqliteApplicationContext(get_db_path(request)) as app_context:
-            saved_theme = app_context.repositories.app_settings.save_theme(theme)
-        return {"theme": saved_theme}
+        return {"theme": _save_app_theme(request, theme)}
 
     @app.post("/settings/target-keywords")
     async def update_target_keyword_defaults(
@@ -125,19 +119,13 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """更新新增 target 時套用的關鍵字預設值。"""
 
         try:
-            parse_limited_keywords_text(exclude_keywords, field_label="排除關鍵字預設")
-            parse_limited_keywords_text(
-                exclude_ignore_phrases,
-                field_label="排除字忽略片語預設",
+            settings = _parse_target_keyword_defaults(
+                exclude_keywords=exclude_keywords,
+                exclude_ignore_phrases=exclude_ignore_phrases,
             )
         except ValueError as exc:
             return redirect_settings_with_error(str(exc))
-        settings = TargetKeywordDefaultSettings(
-            exclude_keywords_text=exclude_keywords,
-            exclude_ignore_phrases_text=exclude_ignore_phrases,
-        )
-        with SqliteApplicationContext(get_db_path(request)) as app_context:
-            app_context.repositories.app_settings.save_target_keyword_defaults(settings)
+        _save_target_keyword_defaults(request, settings)
         return redirect_settings_with_message(
             "關鍵字預設值已保存",
             feedback="target_keyword_defaults_saved",
@@ -147,22 +135,16 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def download_update(request: Request) -> RedirectResponse:
         """下載並驗證更新包；不支援自動套用的平台只保留下載結果。"""
 
-        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        paths = get_runtime_paths(request)
-        update_capability = _resolve_update_capability(
-            packaging_mode=metadata.packaging_mode,
-            frozen=metadata.frozen,
-            app_base_dir=paths.app_base_dir,
-        )
-        if not update_capability.download_supported:
+        update_context = _build_settings_update_context(request)
+        if not update_context.update_capability.download_supported:
             return redirect_settings_with_error(
-                update_capability.unsupported_reason
+                update_context.update_capability.unsupported_reason
             )
         outcome = await download_verified_update(
-            current_version=metadata.app_version,
-            paths=paths,
-            update_capability=update_capability,
-            allow_env_repository_override=not metadata.frozen,
+            current_version=update_context.metadata.app_version,
+            paths=update_context.paths,
+            update_capability=update_context.update_capability,
+            allow_env_repository_override=update_context.allow_env_repository_override,
             check_updates=check_github_release_updates,
             download_update=download_and_verify_update,
             reveal_file_manager=reveal_in_file_manager,
@@ -177,18 +159,14 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def apply_update(request: Request) -> RedirectResponse:
         """啟動 temp updater，讓它等待主程式退出後套用已驗證更新。"""
 
-        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        paths = get_runtime_paths(request)
-        update_capability = _resolve_update_capability(
-            packaging_mode=metadata.packaging_mode,
-            frozen=metadata.frozen,
-            app_base_dir=paths.app_base_dir,
-        )
-        if not update_capability.apply_supported:
-            return redirect_settings_with_error(update_capability.unsupported_reason)
+        update_context = _build_settings_update_context(request)
+        if not update_context.update_capability.apply_supported:
+            return redirect_settings_with_error(
+                update_context.update_capability.unsupported_reason
+            )
         outcome = launch_verified_update(
-            paths=paths,
-            update_capability=update_capability,
+            paths=update_context.paths,
+            update_capability=update_context.update_capability,
             launch_updater=launch_temp_updater,
             request_shutdown=lambda: _request_app_shutdown(request),
         )
@@ -200,20 +178,17 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def download_and_apply_update(request: Request) -> JSONResponse:
         """下載、驗證並啟動 updater；供 settings 頁 modal 流程使用。"""
 
-        metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-        paths = get_runtime_paths(request)
-        update_capability = _resolve_update_capability(
-            packaging_mode=metadata.packaging_mode,
-            frozen=metadata.frozen,
-            app_base_dir=paths.app_base_dir,
-        )
-        if not update_capability.apply_supported:
-            return _update_json_error(update_capability.unsupported_reason, stage="environment")
+        update_context = _build_settings_update_context(request)
+        if not update_context.update_capability.apply_supported:
+            return _update_json_error(
+                update_context.update_capability.unsupported_reason,
+                stage="environment",
+            )
         outcome = await download_and_launch_verified_update(
-            current_version=metadata.app_version,
-            paths=paths,
-            update_capability=update_capability,
-            allow_env_repository_override=not metadata.frozen,
+            current_version=update_context.metadata.app_version,
+            paths=update_context.paths,
+            update_capability=update_context.update_capability,
+            allow_env_repository_override=update_context.allow_env_repository_override,
             check_updates=check_github_release_updates,
             download_update=download_and_verify_update,
             write_pending_update=write_pending_update,
@@ -237,10 +212,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """手動清除 failed notification outbox rows，不影響 pending rows。"""
 
         try:
-            cleared_count = await run_in_threadpool(
-                clear_failed_notifications,
-                db_path=get_db_path(request),
-            )
+            cleared_count = await _clear_failed_notifications_for_settings(request)
         except Exception as exc:
             return redirect_settings_with_error(
                 "清除失敗通知失敗："
@@ -258,20 +230,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """建立並下載 redacted support bundle。"""
 
         try:
-            paths = get_runtime_paths(request)
-            metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-            diagnostics = build_runtime_diagnostics_view(request.app.state)
-            result = await run_in_threadpool(
-                create_support_bundle,
-                paths=paths,
-                runtime_diagnostics_text=diagnostics.copy_text,
-                app_metadata={
-                    "app_version": metadata.app_version,
-                    "asset_version": metadata.asset_version,
-                    "packaging_mode": metadata.packaging_mode,
-                    "python_version": metadata.python_version,
-                },
-            )
+            result = await _create_support_bundle_for_settings(request)
         except Exception as exc:
             return redirect_settings_with_error(
                 "支援診斷包建立失敗：" + format_failure_message_text(str(exc))
@@ -287,15 +246,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """開啟 Facebook automation profile 設定視窗。"""
 
         try:
-            pause_scheduler_for_profile_use(request)
-            try:
-                await run_in_threadpool(
-                    get_profile_manager(request).open,
-                    open_profile_options(request),
-                )
-            except Exception:
-                resume_scheduler_after_profile_use(request)
-                raise
+            await _open_facebook_profile_for_settings(request)
         except ProfileSessionError as exc:
             return redirect_settings_with_error(format_failure_message_text(str(exc)))
         return redirect_settings_with_message("Facebook 設定視窗已開啟")
@@ -304,9 +255,159 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def close_facebook_profile(request: Request) -> RedirectResponse:
         """關閉 Facebook automation profile 設定視窗。"""
 
-        await run_in_threadpool(get_profile_manager(request).close)
-        resume_scheduler_after_profile_use(request)
+        await _close_facebook_profile_for_settings(request)
         return redirect_settings_with_message("Facebook 設定視窗已關閉")
+
+
+def _build_settings_update_context(request: Request) -> _SettingsUpdateContext:
+    """收集 settings 頁所有更新流程共用的 build、path 與 capability。"""
+
+    metadata = collect_build_metadata(asset_version=ASSET_VERSION)
+    paths = get_runtime_paths(request)
+    return _SettingsUpdateContext(
+        metadata=metadata,
+        paths=paths,
+        update_capability=_resolve_update_capability(
+            packaging_mode=metadata.packaging_mode,
+            frozen=metadata.frozen,
+            app_base_dir=paths.app_base_dir,
+        ),
+    )
+
+
+async def _load_settings_update_check(
+    request: Request,
+    update_context: _SettingsUpdateContext,
+) -> UpdateCheckResult:
+    """依 query 決定 settings 頁只顯示 idle 狀態或實際檢查 GitHub release。"""
+
+    update_check = build_idle_update_check(
+        current_version=update_context.metadata.app_version,
+        channel="stable",
+        allow_env_repository_override=update_context.allow_env_repository_override,
+    )
+    if request.query_params.get("update_check") != "1":
+        return update_check
+    return await check_github_release_updates(
+        current_version=update_context.metadata.app_version,
+        channel="stable",
+        allow_env_repository_override=update_context.allow_env_repository_override,
+    )
+
+
+def _settings_template_context(
+    request: Request,
+    update_context: _SettingsUpdateContext,
+    update_check: UpdateCheckResult,
+    *,
+    message: str,
+    feedback: str,
+    error: str,
+) -> dict[str, object]:
+    """組出 settings template 既有 context，集中頁面 read model 來源。"""
+
+    return {
+        "message": message,
+        "feedback": feedback,
+        "error": error,
+        "profile_dir": str(get_profile_dir(request)),
+        "target_keyword_defaults": get_target_keyword_defaults(request),
+        "notification_outbox_health": load_notification_outbox_health(
+            get_db_path(request)
+        ),
+        "update_check": update_check,
+        "update_download_supported": update_context.update_capability.download_supported,
+        "update_apply_supported": update_context.update_capability.apply_supported,
+        "update_unsupported_reason": update_context.update_capability.unsupported_reason,
+        "pending_update_available": pending_update_path(
+            update_context.paths.runtime_dir
+        ).is_file(),
+        "initial_theme": get_app_theme(request),
+    }
+
+
+def _save_app_theme(request: Request, theme: str) -> str:
+    """保存 settings 頁 theme preference 並回傳實際寫入值。"""
+
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        return app_context.repositories.app_settings.save_theme(theme)
+
+
+def _parse_target_keyword_defaults(
+    *,
+    exclude_keywords: str,
+    exclude_ignore_phrases: str,
+) -> TargetKeywordDefaultSettings:
+    """驗證並建立新增 target 時套用的關鍵字預設設定。"""
+
+    parse_limited_keywords_text(exclude_keywords, field_label="排除關鍵字預設")
+    parse_limited_keywords_text(
+        exclude_ignore_phrases,
+        field_label="排除字忽略片語預設",
+    )
+    return TargetKeywordDefaultSettings(
+        exclude_keywords_text=exclude_keywords,
+        exclude_ignore_phrases_text=exclude_ignore_phrases,
+    )
+
+
+def _save_target_keyword_defaults(
+    request: Request,
+    settings: TargetKeywordDefaultSettings,
+) -> None:
+    """保存 settings 頁 target keyword defaults。"""
+
+    with SqliteApplicationContext(get_db_path(request)) as app_context:
+        app_context.repositories.app_settings.save_target_keyword_defaults(settings)
+
+
+async def _clear_failed_notifications_for_settings(request: Request) -> int:
+    """清除 settings 頁允許的 failed notification outbox rows。"""
+
+    return await run_in_threadpool(
+        clear_failed_notifications,
+        db_path=get_db_path(request),
+    )
+
+
+async def _create_support_bundle_for_settings(request: Request) -> SupportBundleResult:
+    """建立 settings 頁下載用的 redacted support bundle。"""
+
+    paths = get_runtime_paths(request)
+    metadata = collect_build_metadata(asset_version=ASSET_VERSION)
+    diagnostics = build_runtime_diagnostics_view(request.app.state)
+    return await run_in_threadpool(
+        create_support_bundle,
+        paths=paths,
+        runtime_diagnostics_text=diagnostics.copy_text,
+        app_metadata={
+            "app_version": metadata.app_version,
+            "asset_version": metadata.asset_version,
+            "packaging_mode": metadata.packaging_mode,
+            "python_version": metadata.python_version,
+        },
+    )
+
+
+async def _open_facebook_profile_for_settings(request: Request) -> None:
+    """暫停 scheduler 後開啟 settings 頁管理的 Facebook profile 視窗。"""
+
+    pause_scheduler_for_profile_use(request)
+    try:
+        await run_in_threadpool(
+            get_profile_manager(request).open,
+            open_profile_options(request),
+        )
+    except Exception:
+        resume_scheduler_after_profile_use(request)
+        raise
+
+
+async def _close_facebook_profile_for_settings(request: Request) -> None:
+    """關閉 settings 頁管理的 Facebook profile 視窗並恢復 scheduler。"""
+
+    await run_in_threadpool(get_profile_manager(request).close)
+    resume_scheduler_after_profile_use(request)
 
 
 def _resolve_update_capability(

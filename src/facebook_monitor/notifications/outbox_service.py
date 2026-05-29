@@ -15,6 +15,7 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import TargetConfig
@@ -37,6 +38,7 @@ from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import build_compact_notification_body
 from facebook_monitor.notifications.payload import build_match_notification_payload
 from facebook_monitor.notifications.safe_messages import safe_exception_message
+from facebook_monitor.core.user_messages import format_failure_reason
 
 
 DEFAULT_STALE_PROCESSING_SECONDS = (
@@ -67,6 +69,37 @@ def build_match_notification_message(
             permalink=permalink,
         )
     )
+
+
+def build_runtime_failure_notification_message(
+    *,
+    target: TargetDescriptor,
+    reason: str,
+    failure_count: int,
+    error_message: str,
+    target_stopped: bool = True,
+) -> tuple[str, str]:
+    """建立 target runtime failure 通知標題與內容。"""
+
+    target_name = target.name or target.group_name or target.group_id or target.id
+    reason_label = format_failure_reason(reason)
+    count = max(int(failure_count), 1)
+    title = "Facebook Monitor target error"
+    final_line = (
+        "系統已停止此監視項目，請開啟 Web UI 檢查。"
+        if target_stopped
+        else "系統已記錄背景掃描錯誤，請開啟 Web UI 檢查。"
+    )
+    message = "\n".join(
+        (
+            f"監視項目: {target_name}",
+            f"錯誤類型: {reason_label}",
+            f"連續次數: {count}",
+            f"狀態: {error_message or reason_label}",
+            final_line,
+        )
+    )
+    return title, message
 
 
 def queue_match_notifications_after_commit(
@@ -112,6 +145,50 @@ def queue_match_notifications_after_commit(
             "notification_outbox_dispatch",
             dispatch_after_commit,
         )
+
+
+def queue_runtime_failure_notifications_after_commit(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    scan_run_id: int,
+    reason: str,
+    failure_count: int,
+    error_message: str,
+    target_stopped: bool = True,
+    ntfy_sender: NtfySender = send_ntfy_notification,
+    desktop_sender: DesktopSender = send_desktop_notification,
+    discord_sender: DiscordSender = send_discord_notification,
+) -> tuple[NotificationOutboxEntry, ...]:
+    """將 terminal runtime failure 通知寫入 outbox，commit 後才做外部 I/O。"""
+
+    entries = enqueue_runtime_failure_notifications(
+        app=app,
+        target=target,
+        config=config,
+        scan_run_id=scan_run_id,
+        reason=reason,
+        failure_count=failure_count,
+        error_message=error_message,
+        target_stopped=target_stopped,
+    )
+    if entries:
+        def dispatch_after_commit() -> None:
+            if app.db_path is None:
+                raise RuntimeError("notification outbox dispatch requires application db_path")
+            dispatch_new_pending_notification_outbox_for_db(
+                db_path=app.db_path,
+                ntfy_sender=ntfy_sender,
+                desktop_sender=desktop_sender,
+                discord_sender=discord_sender,
+            )
+
+        app.run_after_commit_once(
+            "notification_outbox_dispatch",
+            dispatch_after_commit,
+        )
+    return entries
 
 
 def enqueue_match_notifications(
@@ -163,6 +240,61 @@ def enqueue_match_notifications(
                     message=message_for_channel,
                     endpoint=plan.endpoint,
                     permalink=permalink,
+                )
+            )
+        )
+    return tuple(entries)
+
+
+def enqueue_runtime_failure_notifications(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    scan_run_id: int,
+    reason: str,
+    failure_count: int,
+    error_message: str,
+    target_stopped: bool = True,
+) -> tuple[NotificationOutboxEntry, ...]:
+    """將 target runtime failure 通知寫入 outbox。"""
+
+    if scan_run_id <= 0:
+        return ()
+    title, message = build_runtime_failure_notification_message(
+        target=target,
+        reason=reason,
+        failure_count=failure_count,
+        error_message=error_message,
+        target_stopped=target_stopped,
+    )
+    item_key = f"runtime-failure:{scan_run_id}"
+    entries: list[NotificationOutboxEntry] = []
+    for plan in build_enabled_channel_plans(config):
+        entries.append(
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=build_notification_idempotency_key(
+                        target_id=target.id,
+                        item_key=item_key,
+                        channel=plan.channel,
+                    ),
+                    target_id=target.id,
+                    item_key=item_key,
+                    item_kind=(
+                        ItemKind.COMMENT
+                        if target.target_kind.value == "comments"
+                        else ItemKind.POST
+                    ),
+                    channel=plan.channel,
+                    title=title,
+                    message=message if not plan.use_compact_message else message.replace("\n", " | "),
+                    endpoint=plan.endpoint,
+                    permalink=target.canonical_url,
+                    event_kind=NotificationEventKind.RUNTIME_FAILURE,
+                    source_scan_run_id=scan_run_id,
+                    failure_reason=reason,
+                    failure_count=max(int(failure_count), 1),
                 )
             )
         )

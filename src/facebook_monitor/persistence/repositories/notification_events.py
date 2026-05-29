@@ -30,15 +30,20 @@ class NotificationEventRepository:
         cursor = self.connection.execute(
             """
             INSERT INTO notification_events (
-                target_id, item_key, channel, status, message, created_at
+                target_id, item_key, channel, status, event_kind, source_scan_run_id,
+                failure_reason, failure_count, message, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.target_id,
                 event.item_key,
                 event.channel.value,
                 event.status.value,
+                event.event_kind.value,
+                event.source_scan_run_id,
+                event.failure_reason,
+                event.failure_count,
                 event.message,
                 encode_datetime(event.created_at),
             ),

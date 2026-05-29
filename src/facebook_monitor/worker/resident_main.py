@@ -25,7 +25,7 @@ from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import TargetCoverImageRefreshState
@@ -45,6 +45,7 @@ from facebook_monitor.worker.resident_main_executor import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
+from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinator
 
 
 logger = logging.getLogger(__name__)
@@ -237,10 +238,15 @@ async def run_resident_main_scheduler_tick(
     """producer-only scheduler tick：只負責發現 due targets 並 enqueue。"""
 
     stop_requested = should_stop or (lambda: False)
-    recovered_runtime_count = recover_stale_runtime_targets(
+    recovery_summary = recover_stale_runtime_targets_detailed(
         options.db_path,
         options.stale_running_after_seconds,
     )
+    recovery_result = await ResidentRecoveryCoordinator(
+        executor=executor,
+        page_pool=page_pool,
+        target_queue=target_queue,
+    ).apply(recovery_summary.running_actions)
     notification_dispatch_count = dispatch_pending_notification_outbox(options)
     metadata_refresh_count = 0
     if not stop_requested():
@@ -278,7 +284,8 @@ async def run_resident_main_scheduler_tick(
         reused_page_count=counters.reused_page_count,
         closed_page_count=closed_page_count
         + metadata_refresh_count
-        + cover_image_refresh_count,
+        + cover_image_refresh_count
+        + recovery_result.discarded_page_count,
         queued_count=queued_count,
         running_count=running_count,
         queue_length=queued_count,
@@ -286,7 +293,7 @@ async def run_resident_main_scheduler_tick(
         worker_ids=executor.worker_ids,
         page_pool_size=await page_pool.size(),
         resident_browser_alive=executor.worker_health_ok(),
-        recovered_runtime_count=recovered_runtime_count,
+        recovered_runtime_count=recovery_summary.recovered_count,
         metadata_refresh_count=metadata_refresh_count,
         cover_image_refresh_count=cover_image_refresh_count,
         notification_dispatch_count=notification_dispatch_count,
@@ -633,6 +640,7 @@ async def run_resident_main_cycle(
             cycle_index=cycle_index,
         )
         await target_queue.join()
+        await asyncio.sleep(0)
         counters = await executor.take_counters()
         queued_count, running_count, queued_ids = await target_queue.snapshot()
         return ResidentCycleSummary(

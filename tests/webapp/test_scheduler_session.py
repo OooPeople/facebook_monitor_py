@@ -6,6 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 from threading import Event
 
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.webapp import scheduler_session as scheduler_session_module
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
@@ -125,6 +127,64 @@ def test_background_scheduler_manager_passes_metadata_refresh_requests(
     manager.thread.join(timeout=2)
 
     assert calls == [("target-1", "target-2"), ()]
+
+
+def test_background_scheduler_manager_notifies_on_resident_crash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """resident main 整體崩潰時，manager 會通知目前 active targets。"""
+
+    calls: list[dict[str, object]] = []
+
+    def failing_resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        _stop_event: Event,
+        _on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        """模擬 Playwright/browser context 整體壞掉。"""
+
+        raise RuntimeError("Target page, context or browser has been closed")
+
+    def fake_record_notifications(**kwargs: object) -> int:
+        """記錄 manager 傳給 runtime failure helper 的參數。"""
+
+        calls.append(kwargs)
+        return 1
+
+    def stop_after_failure(stop_event: Event, _seconds: float) -> bool:
+        """讓測試在第一次 resident crash 後結束背景 thread。"""
+
+        stop_event.set()
+        return True
+
+    monkeypatch.setattr(
+        scheduler_session_module,
+        "record_active_targets_runtime_failure_notifications_for_db",
+        fake_record_notifications,
+    )
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=failing_resident_main_runner,
+        wait_fn=stop_after_failure,
+    )
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    assert manager.thread is not None
+    manager.thread.join(timeout=2)
+    state = manager.state()
+
+    assert state.lifecycle_state == SchedulerLifecycleState.ERROR
+    assert "背景掃描執行錯誤" in state.last_error
+    assert len(calls) == 1
+    assert calls[0]["db_path"] == tmp_path / "app.db"
+    assert calls[0]["reason"] == SCHEDULER_RUNTIME_REASON
+    assert calls[0]["worker_path"] == "resident_scheduler"
+    assert calls[0]["exception_class"] == "RuntimeError"
 
 
 def test_background_scheduler_stop_timeout_keeps_stopping_state(tmp_path: Path) -> None:

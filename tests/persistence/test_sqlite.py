@@ -280,6 +280,107 @@ def test_initialize_schema_migrates_v29_check_constraints(tmp_path: Path) -> Non
     assert "target_runtime_state" in trigger_tables
 
 
+def test_initialize_schema_migrates_v31_runtime_notification_constraints(
+    tmp_path: Path,
+) -> None:
+    """v30 升級後 runtime notification 欄位也應帶 CHECK constraints。"""
+
+    db_path = tmp_path / "app.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '30');
+            CREATE TABLE notification_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+                status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE notification_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                target_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+                channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'pending', 'processing_pending', 'sent', 'failed',
+                        'processing_failed', 'skipped'
+                    )
+                ),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '',
+                permalink TEXT NOT NULL,
+                attempts INTEGER NOT NULL CHECK (attempts >= 0),
+                last_error TEXT NOT NULL,
+                notification_event_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        notification_events_sql = table_sql(connection, "notification_events")
+        notification_outbox_sql = table_sql(connection, "notification_outbox")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO notification_events (
+                    target_id, item_key, channel, status, event_kind, message, created_at
+                )
+                VALUES (
+                    'target-a', 'item-a', 'ntfy', 'sent', 'bad',
+                    'message', '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v30 -> v31 migration should constrain event_kind")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO notification_outbox (
+                    idempotency_key, target_id, item_key, item_kind, channel, status,
+                    title, message, endpoint, permalink, failure_count,
+                    attempts, last_error, created_at, updated_at
+                )
+                VALUES (
+                    'key-a', 'target-a', 'item-a', 'post', 'ntfy', 'pending',
+                    'title', 'message', '', '', -1,
+                    0, '', '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v30 -> v31 migration should constrain failure_count")
+
+    assert version == str(SCHEMA_VERSION)
+    assert "CHECK (event_kind IN" in notification_events_sql
+    assert "CHECK (failure_count >= 0)" in notification_outbox_sql
+
+
 def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
     """schema 初始化會移除舊版 dashboard revision triggers，避免長時間 UI 更新過密。"""
 

@@ -276,15 +276,16 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(target_id)
 
-    def save_stale_running_error_if_unchanged(
+    def save_stale_running_state_if_unchanged(
         self,
         state: TargetRuntimeState,
         *,
         worker_id: str,
         started_at: datetime,
+        page_id: str = "",
         stale_before: datetime,
     ) -> TargetRuntimeState | None:
-        """只在 row 仍是同一個 stale running owner 時標記逾時錯誤。"""
+        """只在 row 仍是同一個 stale running owner 時保存 recovery state。"""
 
         cursor = self.connection.execute(
             """
@@ -312,6 +313,7 @@ class TargetRuntimeStateRepository:
               AND runtime_status = ?
               AND active_worker_id = ?
               AND last_started_at = ?
+              AND (? = '' OR active_page_id = ?)
               AND last_heartbeat_at <= ?
             """,
             (
@@ -337,12 +339,31 @@ class TargetRuntimeStateRepository:
                 TargetRuntimeStatus.RUNNING.value,
                 worker_id,
                 encode_datetime(started_at),
+                page_id,
+                page_id,
                 encode_datetime(stale_before),
             ),
         )
         if cursor.rowcount != 1:
             return None
         return self.get(state.target_id)
+
+    def save_stale_running_error_if_unchanged(
+        self,
+        state: TargetRuntimeState,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        stale_before: datetime,
+    ) -> TargetRuntimeState | None:
+        """相容舊呼叫端：只在 stale running owner 未變時保存 error state。"""
+
+        return self.save_stale_running_state_if_unchanged(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            stale_before=stale_before,
+        )
 
     def get(self, target_id: str) -> TargetRuntimeState | None:
         """依 target id 查詢 runtime state。"""

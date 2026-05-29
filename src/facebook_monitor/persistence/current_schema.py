@@ -146,6 +146,10 @@ CREATE TABLE IF NOT EXISTS notification_events (
     item_key TEXT NOT NULL,
     channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
     status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+    event_kind TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure')),
+    source_scan_run_id INTEGER,
+    failure_reason TEXT NOT NULL DEFAULT '',
+    failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
     message TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -162,6 +166,10 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     message TEXT NOT NULL,
     endpoint TEXT NOT NULL DEFAULT '',
     permalink TEXT NOT NULL,
+    event_kind TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure')),
+    source_scan_run_id INTEGER,
+    failure_reason TEXT NOT NULL DEFAULT '',
+    failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
     attempts INTEGER NOT NULL CHECK (attempts >= 0),
     last_error TEXT NOT NULL,
     notification_event_id INTEGER,

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+import logging
 from pathlib import Path
 from time import monotonic
 from threading import Event
@@ -18,11 +19,17 @@ from typing import Protocol
 
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.user_messages import format_failure_message
-from facebook_monitor.core.user_messages import format_failure_message_text
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_active_targets_runtime_failure_notifications_for_db,
+)
 from facebook_monitor.worker.resident_main import run_resident_main_loop_sync
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerLifecycleState(StrEnum):
@@ -312,15 +319,19 @@ class BackgroundSchedulerManager:
                 )
                 return
             except Exception as exc:
-                reason = getattr(exc, "reason", "")
+                reason = _scheduler_failure_reason(exc)
+                message = str(exc)
                 with self._lock:
-                    self.last_error = (
-                        format_failure_message(str(reason), str(exc))
-                        if reason
-                        else format_failure_message_text(str(exc))
-                    )
+                    self.last_error = format_failure_message(reason, message)
                     self.resident_browser_alive = False
                     self.lifecycle_state = SchedulerLifecycleState.ERROR
+                if not self.stop_event.is_set():
+                    self._record_runtime_failure_notifications(
+                        options=options,
+                        reason=reason,
+                        message=message,
+                        exc=exc,
+                    )
                 if self.wait_fn(self.stop_event, max(options.scheduler_tick_seconds, 1)):
                     self.wake_event.clear()
                     return
@@ -365,6 +376,27 @@ class BackgroundSchedulerManager:
 
         return bool(self.thread and self.thread.is_alive())
 
+    def _record_runtime_failure_notifications(
+        self,
+        *,
+        options: SchedulerSessionOptions,
+        reason: str,
+        message: str,
+        exc: Exception,
+    ) -> None:
+        """背景 resident 整體失敗時，對 active targets 寫入 runtime failure 通知。"""
+
+        try:
+            record_active_targets_runtime_failure_notifications_for_db(
+                db_path=options.db_path,
+                reason=reason,
+                message=message,
+                worker_path="resident_scheduler",
+                exception_class=exc.__class__.__name__,
+            )
+        except Exception:
+            logger.exception("scheduler runtime failure notification enqueue failed")
+
 
 def _run_resident_main(
     options: ResidentRuntimeOptions,
@@ -380,6 +412,13 @@ def _run_resident_main(
         on_cycle=on_cycle,
         sleep_fn=sleep_fn or (lambda seconds: stop_event.wait(seconds)),
     )
+
+
+def _scheduler_failure_reason(exc: Exception) -> str:
+    """將 resident main 全域例外轉成可通知的 failure reason。"""
+
+    reason = str(getattr(exc, "reason", "") or "").strip()
+    return reason or SCHEDULER_RUNTIME_REASON
 
 
 def _wait_for_stop(stop_event: Event, seconds: float) -> bool:

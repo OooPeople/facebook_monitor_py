@@ -10,6 +10,7 @@ from facebook_monitor.core.models import LegacyTargetConfig
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
@@ -227,6 +228,10 @@ def notification_event_from_row(row: sqlite3.Row) -> NotificationEvent:
         channel=NotificationChannel(row["channel"]),
         status=NotificationStatus(row["status"]),
         message=row["message"],
+        event_kind=NotificationEventKind(row["event_kind"]),
+        source_scan_run_id=row["source_scan_run_id"],
+        failure_reason=row["failure_reason"],
+        failure_count=int(row["failure_count"]),
         created_at=created_at,
     )
 
@@ -250,6 +255,10 @@ def notification_outbox_from_row(row: sqlite3.Row) -> NotificationOutboxEntry:
         message=row["message"],
         endpoint=row["endpoint"],
         permalink=row["permalink"],
+        event_kind=NotificationEventKind(row["event_kind"]),
+        source_scan_run_id=row["source_scan_run_id"],
+        failure_reason=row["failure_reason"],
+        failure_count=int(row["failure_count"]),
         attempts=int(row["attempts"]),
         last_error=row["last_error"],
         notification_event_id=row["notification_event_id"],

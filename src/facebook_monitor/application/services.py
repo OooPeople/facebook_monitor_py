@@ -26,6 +26,7 @@ from facebook_monitor.application.target_requests import UpsertCommentsTargetReq
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
+from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
@@ -540,8 +541,8 @@ class TargetApplicationService:
         *,
         stale_after_seconds: float,
         now: datetime | None = None,
-    ) -> tuple[TargetRuntimeState, ...]:
-        """將 heartbeat 過舊的 running target 標成 error。"""
+    ) -> tuple[StaleRunningRecovery, ...]:
+        """修復 heartbeat 過舊的 running target。"""
 
         return self.runtime_service.recover_stale_running_targets(
             stale_after_seconds=stale_after_seconds,
@@ -565,6 +566,18 @@ class TargetApplicationService:
         """要求 scheduler 下一輪立即掃描 target，不修改 seen 狀態。"""
 
         return self.runtime_service.request_target_scan(target_id)
+
+    def request_target_retry_after_runtime_failure(
+        self,
+        target_id: str,
+        reason: str,
+    ) -> TargetRuntimeState:
+        """背景 runtime 整體失敗後要求 target 下一輪立即重掃。"""
+
+        return self.runtime_service.request_target_retry_after_runtime_failure(
+            target_id,
+            reason,
+        )
 
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""

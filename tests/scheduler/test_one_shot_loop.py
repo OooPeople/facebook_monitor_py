@@ -296,8 +296,8 @@ def test_target_schedule_planner_skips_error_target(tmp_path: Path) -> None:
     )
 
 
-def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) -> None:
-    """scheduler 入口可修復上次 process 中斷留下的 running 狀態。"""
+def test_recover_stale_running_targets_requeues_stale_target(tmp_path: Path) -> None:
+    """scheduler 入口可重啟上次 process 中斷留下的 running 狀態。"""
 
     db_path = tmp_path / "app.db"
     now = utc_now()
@@ -324,8 +324,15 @@ def test_recover_stale_running_targets_marks_stale_target_error(tmp_path: Path) 
         loaded = app.repositories.runtime_states.get(target.id)
     assert recovered_count == 1
     assert loaded is not None
-    assert loaded.runtime_status == TargetRuntimeStatus.ERROR
-    assert "掃描狀態逾時" in loaded.last_error
+    assert loaded.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded.scan_requested_at is not None
+    assert loaded.last_error == ""
+    assert loaded.last_skip_reason == "target_page_restart: retry 1/3"
+    assert list_schedulable_target_ids(
+        db_path,
+        default_interval_seconds=60,
+        now=now,
+    ) == (target.id,)
 
 
 def test_recover_stale_runtime_targets_requeues_stale_queued_target(tmp_path: Path) -> None:

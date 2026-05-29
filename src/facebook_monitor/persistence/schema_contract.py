@@ -12,6 +12,7 @@ from typing import Any
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
@@ -93,6 +94,12 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         _enum_values(NotificationStatus),
     ),
     SchemaEnumContract(
+        "notification_events",
+        "id",
+        "event_kind",
+        _enum_values(NotificationEventKind),
+    ),
+    SchemaEnumContract(
         "notification_outbox",
         "id",
         "item_kind",
@@ -109,6 +116,12 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         "id",
         "status",
         _enum_values(NotificationOutboxStatus),
+    ),
+    SchemaEnumContract(
+        "notification_outbox",
+        "id",
+        "event_kind",
+        _enum_values(NotificationEventKind),
     ),
     SchemaEnumContract(
         "target_runtime_state",
@@ -202,7 +215,24 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         "max_items_per_scan <= 0",
     ),
     SchemaRangeContract("scan_runs", "id", "item_count", "item_count < 0 OR matched_count < 0"),
-    SchemaRangeContract("notification_outbox", "id", "attempts", "attempts < 0"),
+    SchemaRangeContract(
+        "notification_outbox",
+        "id",
+        "attempts",
+        "attempts < 0",
+    ),
+    SchemaRangeContract(
+        "notification_outbox",
+        "id",
+        "failure_count",
+        "failure_count < 0",
+    ),
+    SchemaRangeContract(
+        "notification_events",
+        "id",
+        "failure_count",
+        "failure_count < 0",
+    ),
     SchemaRangeContract(
         "target_runtime_state",
         "target_id",

@@ -1599,8 +1599,8 @@ def test_update_target_status_request(tmp_path: Path) -> None:
         assert updated.paused
 
 
-def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Path) -> None:
-    """application service 會修復過舊 running state，避免 target 永久卡住。"""
+def test_recover_stale_running_targets_restarts_old_heartbeat(tmp_path: Path) -> None:
+    """application service 會重啟過舊 running state，避免 target 永久卡住。"""
 
     db_path = tmp_path / "app.db"
     now = utc_now()
@@ -1644,9 +1644,15 @@ def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Pa
     assert len(recovered) == 1
     assert loaded_stale is not None
     assert loaded_fresh is not None
-    assert loaded_stale.runtime_status == TargetRuntimeStatus.ERROR
+    assert loaded_stale.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded_stale.scan_requested_at == now
     assert loaded_stale.active_worker_id == ""
-    assert "掃描狀態逾時" in loaded_stale.last_error
+    assert loaded_stale.last_error == ""
+    assert loaded_stale.last_skip_reason == "target_page_restart: retry 1/3"
+    assert loaded_stale.consecutive_failure_reason == "stale_running"
+    assert loaded_stale.consecutive_failure_count == 1
+    assert recovered[0].previous_worker_id == "old-worker"
+    assert recovered[0].decision.auto_restart
     assert loaded_fresh.runtime_status == TargetRuntimeStatus.RUNNING
 
 

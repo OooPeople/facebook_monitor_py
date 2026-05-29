@@ -29,7 +29,7 @@ class TargetQueue:
         self._queue: asyncio.Queue[QueueItem | None] = asyncio.Queue()
         self._queued_target_ids: set[str] = set()
         self._queued_order: list[str] = []
-        self._running_target_ids: set[str] = set()
+        self._running_target_owners: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     async def enqueue(self, item: QueueItem) -> bool:
@@ -37,7 +37,7 @@ class TargetQueue:
 
         target_id = item.due_target.target_id
         async with self._lock:
-            if target_id in self._queued_target_ids or target_id in self._running_target_ids:
+            if target_id in self._queued_target_ids or target_id in self._running_target_owners:
                 return False
             self._queued_target_ids.add(target_id)
             self._queued_order.append(target_id)
@@ -58,14 +58,35 @@ class TargetQueue:
                 self._queued_order.remove(target_id)
             except ValueError:
                 pass
-            self._running_target_ids.add(target_id)
+            self._running_target_owners[target_id] = ""
         return item
 
-    async def complete(self, target_id: str) -> None:
+    async def bind_running_owner(self, target_id: str, owner_key: str) -> None:
+        """為已取出的 running target 綁定 attempt owner token。"""
+
+        async with self._lock:
+            if target_id in self._running_target_owners:
+                self._running_target_owners[target_id] = owner_key
+
+    async def release_running_if_owner(self, target_id: str, owner_key: str) -> bool:
+        """只在 owner token 相符時釋放 running target；不呼叫 task_done。"""
+
+        async with self._lock:
+            current_owner = self._running_target_owners.get(target_id)
+            if current_owner != owner_key:
+                return False
+            self._running_target_owners.pop(target_id, None)
+            return True
+
+    async def complete(self, target_id: str, owner_key: str = "") -> None:
         """標記 target worker 已結束，並通知 queue task done。"""
 
         async with self._lock:
-            self._running_target_ids.discard(target_id)
+            current_owner = self._running_target_owners.get(target_id)
+            if (owner_key and current_owner == owner_key) or (
+                not owner_key and current_owner == ""
+            ):
+                self._running_target_owners.pop(target_id, None)
         self._queue.task_done()
 
     async def stop_worker(self) -> None:
@@ -106,5 +127,5 @@ class TargetQueue:
 
         async with self._lock:
             queued_ids = tuple(self._queued_order)
-            running_count = len(self._running_target_ids)
+            running_count = len(self._running_target_owners)
         return len(queued_ids), running_count, queued_ids

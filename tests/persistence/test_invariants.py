@@ -26,9 +26,11 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("scan_runs", "worker_mode"),
     ("notification_events", "channel"),
     ("notification_events", "status"),
+    ("notification_events", "event_kind"),
     ("notification_outbox", "item_kind"),
     ("notification_outbox", "channel"),
     ("notification_outbox", "status"),
+    ("notification_outbox", "event_kind"),
     ("target_runtime_state", "desired_state"),
     ("target_runtime_state", "runtime_status"),
     ("target_cover_image_refresh_state", "status"),
@@ -65,6 +67,8 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("sidebar_group_config_templates", "max_items_per_scan"),
     ("scan_runs", "item_count"),
     ("notification_outbox", "attempts"),
+    ("notification_outbox", "failure_count"),
+    ("notification_events", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
 }
 

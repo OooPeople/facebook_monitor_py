@@ -115,6 +115,7 @@ def _record_send_result(
         channel=entry.channel,
         status=event_status,
         message=message,
+        entry=entry,
     )
     return event_id, outbox_status
 
@@ -135,6 +136,7 @@ def _record_skipped_channel(
         channel=entry.channel,
         status=NotificationStatus.SKIPPED,
         message=message,
+        entry=entry,
     )
     return event_id, NotificationOutboxStatus.SKIPPED
 
@@ -251,9 +253,20 @@ def record_notification_event(
     channel: NotificationChannel,
     status: NotificationStatus,
     message: str,
+    entry: NotificationOutboxEntry | None = None,
 ) -> int:
     """寫入單一 notification event 並回傳 row id。"""
 
+    event_kwargs = (
+        {
+            "event_kind": entry.event_kind,
+            "source_scan_run_id": entry.source_scan_run_id,
+            "failure_reason": entry.failure_reason,
+            "failure_count": entry.failure_count,
+        }
+        if entry is not None
+        else {}
+    )
     return app.repositories.notification_events.add(
         NotificationEvent(
             target_id=target.id,
@@ -261,6 +274,7 @@ def record_notification_event(
             channel=channel,
             status=status,
             message=message,
+            **event_kwargs,
         )
     )
 
@@ -281,4 +295,5 @@ def record_failed_notification_event_for_outbox_error(
         channel=entry.channel,
         status=NotificationStatus.FAILED,
         message=message,
+        entry=entry,
     )

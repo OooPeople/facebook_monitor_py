@@ -12,6 +12,7 @@ from typing import Literal
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 
@@ -21,6 +22,7 @@ ScanFailureSource = Literal[
     "playwright",
     "unknown_exception",
     "scheduler_cancel",
+    "runtime_recovery",
 ]
 TargetFailureAction = Literal["idle", "error"]
 FailureRuntimeAction = Literal["idle", "will_retry", "error"]
@@ -33,8 +35,19 @@ STREAK_RETRY_FAILURE_LIMITS = {
     PAGE_LOAD_TIMEOUT_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit
     ),
+    STALE_RUNNING_REASON: (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_failure_limit
+    ),
 }
-DISCARD_PAGE_FAILURE_SOURCES = frozenset({"playwright", "unknown_exception"})
+AUTO_RESTART_FAILURE_REASONS = frozenset(
+    {
+        PAGE_LOAD_TIMEOUT_REASON,
+        STALE_RUNNING_REASON,
+    }
+)
+DISCARD_PAGE_FAILURE_SOURCES = frozenset(
+    {"playwright", "unknown_exception", "runtime_recovery"}
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,8 @@ class ScanFailureDecision:
     counts_toward_streak: bool = False
     retry_streak: int = 0
     retry_limit: int = 0
+    auto_restart: bool = False
+    recovery_action: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -96,6 +111,13 @@ def decide_scan_failure(
             counts_toward_streak=True,
             retry_streak=retry_streak,
             retry_limit=retry_limit,
+            auto_restart=will_retry
+            and normalized_reason in AUTO_RESTART_FAILURE_REASONS,
+            recovery_action=(
+                "target_page_restart"
+                if normalized_reason in AUTO_RESTART_FAILURE_REASONS
+                else ""
+            ),
         )
     if normalized_reason in RETRYABLE_IDLE_FAILURE_REASONS:
         return ScanFailureDecision(

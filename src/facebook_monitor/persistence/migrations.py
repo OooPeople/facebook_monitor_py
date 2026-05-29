@@ -666,6 +666,54 @@ def migrate_29_to_30(connection: sqlite3.Connection) -> None:
     ensure_v30_rebuilt_table_indexes(connection)
 
 
+def migrate_30_to_31(connection: sqlite3.Connection) -> None:
+    """為 notification outbox/events 補 runtime failure 事件語義欄位。"""
+
+    for column in (
+        MigrationColumn(
+            "notification_events",
+            "event_kind",
+            "TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure'))",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "source_scan_run_id",
+            "INTEGER",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "failure_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "failure_count",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0)",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "event_kind",
+            "TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure'))",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "source_scan_run_id",
+            "INTEGER",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "failure_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "failure_count",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0)",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+
+
 V29_TO_V30_CHECKED_TABLES: tuple[CheckedTableRebuild, ...] = (
     CheckedTableRebuild(
         "target_configs",
@@ -1041,6 +1089,7 @@ MIGRATIONS: dict[int, Migration] = {
     27: migrate_27_to_28,
     28: migrate_28_to_29,
     29: migrate_29_to_30,
+    30: migrate_30_to_31,
 }
 
 

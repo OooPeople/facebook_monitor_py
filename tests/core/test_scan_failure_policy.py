@@ -37,6 +37,30 @@ def test_page_load_timeout_retries_until_third_failure() -> None:
     assert third.retry_streak == 3
 
 
+def test_scheduler_runtime_retries_until_third_failure() -> None:
+    """scheduler_runtime 前兩次只要求重啟 runtime，第三次才進 error。"""
+
+    first = decide_scan_failure("scheduler_runtime", source="unknown_exception")
+    third = decide_scan_failure(
+        "scheduler_runtime",
+        source="unknown_exception",
+        previous_failure_reason="scheduler_runtime",
+        previous_failure_count=2,
+    )
+
+    assert first.retryable is True
+    assert first.target_action == "idle"
+    assert first.runtime_action == "will_retry"
+    assert first.auto_restart is True
+    assert first.recovery_action == "scheduler_runtime_restart"
+    assert first.retry_streak == 1
+    assert first.retry_limit == 3
+    assert third.retryable is False
+    assert third.target_action == "error"
+    assert third.runtime_action == "error"
+    assert third.retry_streak == 3
+
+
 def test_legacy_retryable_idle_failures_do_not_count_toward_streak() -> None:
     """extractor_empty / target_stopped 保留既有回 idle 語義但不累計 streak。"""
 

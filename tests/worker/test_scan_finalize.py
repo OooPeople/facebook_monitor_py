@@ -611,10 +611,10 @@ def test_record_guarded_scan_failure_starts_write_transaction_before_failure_wri
     assert saw_write_transaction == [True]
 
 
-def test_active_targets_runtime_failure_uses_runtime_outbox(
+def test_active_targets_runtime_failure_notifies_after_retry_limit(
     tmp_path: Path,
 ) -> None:
-    """resident 全域錯誤會走 runtime_failure outbox，而不是另寫通知函式。"""
+    """resident 全域錯誤前兩次只重試，第三次才通知並停止 target。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -667,31 +667,74 @@ def test_active_targets_runtime_failure_uses_runtime_outbox(
         app.services.targets.pause_target_monitoring(paused.id)
         app.services.targets.restart_target_monitoring(errored.id)
         app.services.targets.mark_target_error(errored.id, "existing terminal error")
-        count = scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
-            app=app,
-            reason=SCHEDULER_RUNTIME_REASON,
-            message="Target page, context or browser has been closed",
-            worker_path="resident_scheduler",
-            exception_class="RuntimeError",
+        first_count = (
+            scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+                app=app,
+                reason=SCHEDULER_RUNTIME_REASON,
+                message="Target page, context or browser has been closed",
+                worker_path="resident_scheduler",
+                exception_class="RuntimeError",
+            )
         )
+        first_state = app.repositories.runtime_states.get(active.id)
+        first_entries = app.repositories.notification_outbox.list_pending()
+
+        second_count = (
+            scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+                app=app,
+                reason=SCHEDULER_RUNTIME_REASON,
+                message="Target page, context or browser has been closed",
+                worker_path="resident_scheduler",
+                exception_class="RuntimeError",
+            )
+        )
+        second_state = app.repositories.runtime_states.get(active.id)
+        second_entries = app.repositories.notification_outbox.list_pending()
+
+        third_count = (
+            scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+                app=app,
+                reason=SCHEDULER_RUNTIME_REASON,
+                message="Target page, context or browser has been closed",
+                worker_path="resident_scheduler",
+                exception_class="RuntimeError",
+            )
+        )
+        third_state = app.repositories.runtime_states.get(active.id)
+        entries = app.repositories.notification_outbox.list_pending()
         active_run = app.repositories.scan_runs.latest_by_target(active.id)
         stopped_run = app.repositories.scan_runs.latest_by_target(stopped.id)
         paused_run = app.repositories.scan_runs.latest_by_target(paused.id)
         errored_run = app.repositories.scan_runs.latest_by_target(errored.id)
-        active_state = app.repositories.runtime_states.get(active.id)
         errored_state = app.repositories.runtime_states.get(errored.id)
-        entries = app.repositories.notification_outbox.list_pending()
 
-    assert count == 1
+    assert first_count == 1
+    assert first_state is not None
+    assert first_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert first_state.scan_requested_at is not None
+    assert first_state.consecutive_failure_reason == SCHEDULER_RUNTIME_REASON
+    assert first_state.consecutive_failure_count == 1
+    assert first_entries == []
+    assert second_count == 1
+    assert second_state is not None
+    assert second_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert second_state.scan_requested_at is not None
+    assert second_state.consecutive_failure_reason == SCHEDULER_RUNTIME_REASON
+    assert second_state.consecutive_failure_count == 2
+    assert second_entries == []
+    assert third_count == 1
+    assert third_state is not None
+    assert third_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert third_state.consecutive_failure_reason == SCHEDULER_RUNTIME_REASON
+    assert third_state.consecutive_failure_count == 3
     assert active_run is not None
     assert active_run.metadata["worker"] == "resident_scheduler"
     assert active_run.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert active_run.metadata["retry_streak"] == 3
+    assert active_run.metadata["retry_limit"] == 3
     assert stopped_run is None
     assert paused_run is None
     assert errored_run is None
-    assert active_state is not None
-    assert active_state.runtime_status == TargetRuntimeStatus.IDLE
-    assert active_state.scan_requested_at is not None
     assert errored_state is not None
     assert errored_state.runtime_status == TargetRuntimeStatus.ERROR
     assert len(entries) == 1
@@ -700,11 +743,59 @@ def test_active_targets_runtime_failure_uses_runtime_outbox(
     assert entry.event_kind == NotificationEventKind.RUNTIME_FAILURE
     assert entry.source_scan_run_id is not None
     assert entry.failure_reason == SCHEDULER_RUNTIME_REASON
-    assert entry.failure_count == 1
+    assert entry.failure_count == 3
     assert entry.item_key.startswith("runtime-failure:")
     assert "背景掃描執行錯誤" in entry.message
-    assert "系統已記錄背景掃描錯誤" in entry.message
-    assert "系統已停止此監視項目" not in entry.message
+    assert "連續次數: 3" in entry.message
+    assert "系統已停止此監視項目" in entry.message
+    assert "系統已記錄背景掃描錯誤" not in entry.message
+
+
+def test_active_targets_runtime_failure_immediate_notify_for_non_retryable_reason(
+    tmp_path: Path,
+) -> None:
+    """非 retryable 全域錯誤仍要立即通知並停止 target。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-non-retryable",
+                canonical_url="https://www.facebook.com/groups/active-non-retryable",
+                group_name="Active target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(active.id)
+        count = scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+            app=app,
+            reason="login_required",
+            message="login required",
+            worker_path="resident_scheduler",
+            exception_class="RuntimeError",
+        )
+        active_run = app.repositories.scan_runs.latest_by_target(active.id)
+        active_state = app.repositories.runtime_states.get(active.id)
+        entries = app.repositories.notification_outbox.list_pending()
+
+    assert count == 1
+    assert active_run is not None
+    assert active_run.metadata["worker"] == "resident_scheduler"
+    assert active_run.metadata["reason"] == "login_required"
+    assert active_state is not None
+    assert active_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.target_id == active.id
+    assert entry.event_kind == NotificationEventKind.RUNTIME_FAILURE
+    assert entry.source_scan_run_id is not None
+    assert entry.failure_reason == "login_required"
+    assert entry.failure_count == 1
+    assert entry.item_key.startswith("runtime-failure:")
+    assert "系統已停止此監視項目" in entry.message
 
 
 def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) -> None:

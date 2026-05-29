@@ -567,18 +567,6 @@ class TargetApplicationService:
 
         return self.runtime_service.request_target_scan(target_id)
 
-    def request_target_retry_after_runtime_failure(
-        self,
-        target_id: str,
-        reason: str,
-    ) -> TargetRuntimeState:
-        """背景 runtime 整體失敗後要求 target 下一輪立即重掃。"""
-
-        return self.runtime_service.request_target_retry_after_runtime_failure(
-            target_id,
-            reason,
-        )
-
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""
 

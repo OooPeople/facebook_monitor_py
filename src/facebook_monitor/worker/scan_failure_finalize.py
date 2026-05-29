@@ -309,10 +309,12 @@ def record_active_targets_runtime_failure_notifications(
             continue
         if runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
             continue
-        app.services.targets.request_target_retry_after_runtime_failure(
+        decision = app.services.targets.decide_scan_failure(
             target.id,
             normalized_reason,
+            source="unknown_exception",
         )
+        runtime_message = format_scan_failure_message(normalized_reason, message)
         scan_run_id = record_scan_failure(
             app=app,
             target=target,
@@ -321,12 +323,22 @@ def record_active_targets_runtime_failure_notifications(
             worker_path=worker_path,
             worker_mode=worker_mode,
             exception_class=exception_class,
-            retryable=False,
-            runtime_action="error",
+            retryable=decision.retryable,
+            runtime_action=decision.runtime_action,
+            retry_streak=decision.retry_streak,
+            retry_limit=decision.retry_limit,
+            force_record=decision.counts_toward_streak,
+        )
+        updated_state = app.services.targets.apply_scan_failure_decision(
+            target.id,
+            decision,
+            runtime_message,
         )
         if scan_run_id <= 0:
             continue
         scan_run_count += 1
+        if not decision.terminal:
+            continue
         config = app.services.targets.get_config_for_target(target)
         enqueue_runtime_failure_notifications(
             app=app,
@@ -334,9 +346,13 @@ def record_active_targets_runtime_failure_notifications(
             config=config,
             scan_run_id=scan_run_id,
             reason=normalized_reason,
-            failure_count=1,
-            error_message=format_scan_failure_message(normalized_reason, message),
-            target_stopped=False,
+            failure_count=(
+                decision.retry_streak
+                if decision.counts_toward_streak
+                else max(decision.retry_streak, 1)
+            ),
+            error_message=updated_state.last_error or runtime_message,
+            target_stopped=True,
         )
     return scan_run_count
 

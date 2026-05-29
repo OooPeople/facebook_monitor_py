@@ -725,33 +725,6 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
-    def request_target_retry_after_runtime_failure(
-        self,
-        target_id: str,
-        reason: str,
-    ) -> TargetRuntimeState:
-        """背景 runtime 整體失敗後，釋放 target ownership 並要求立即重掃。"""
-
-        self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        now = utc_now()
-        state = replace(
-            existing_state,
-            runtime_status=TargetRuntimeStatus.IDLE,
-            scan_requested_at=now,
-            last_enqueued_at=None,
-            last_finished_at=now,
-            last_heartbeat_at=now,
-            last_error="",
-            last_skip_reason=f"{reason}: retry_after_runtime_failure",
-            enqueue_reason="",
-            active_worker_id="",
-            active_page_id="",
-            updated_at=now,
-        )
-        self.runtime_states.save(state)
-        return state
-
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""
 

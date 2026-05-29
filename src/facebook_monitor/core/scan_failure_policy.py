@@ -12,6 +12,7 @@ from typing import Literal
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
@@ -38,13 +39,16 @@ STREAK_RETRY_FAILURE_LIMITS = {
     STALE_RUNNING_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_failure_limit
     ),
+    SCHEDULER_RUNTIME_REASON: (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_runtime_failure_limit
+    ),
 }
-AUTO_RESTART_FAILURE_REASONS = frozenset(
-    {
-        PAGE_LOAD_TIMEOUT_REASON,
-        STALE_RUNNING_REASON,
-    }
-)
+AUTO_RESTART_FAILURE_ACTIONS = {
+    PAGE_LOAD_TIMEOUT_REASON: "target_page_restart",
+    STALE_RUNNING_REASON: "target_page_restart",
+    SCHEDULER_RUNTIME_REASON: "scheduler_runtime_restart",
+}
+AUTO_RESTART_FAILURE_REASONS = frozenset(AUTO_RESTART_FAILURE_ACTIONS)
 DISCARD_PAGE_FAILURE_SOURCES = frozenset(
     {"playwright", "unknown_exception", "runtime_recovery"}
 )
@@ -111,13 +115,8 @@ def decide_scan_failure(
             counts_toward_streak=True,
             retry_streak=retry_streak,
             retry_limit=retry_limit,
-            auto_restart=will_retry
-            and normalized_reason in AUTO_RESTART_FAILURE_REASONS,
-            recovery_action=(
-                "target_page_restart"
-                if normalized_reason in AUTO_RESTART_FAILURE_REASONS
-                else ""
-            ),
+            auto_restart=will_retry and normalized_reason in AUTO_RESTART_FAILURE_REASONS,
+            recovery_action=AUTO_RESTART_FAILURE_ACTIONS.get(normalized_reason, ""),
         )
     if normalized_reason in RETRYABLE_IDLE_FAILURE_REASONS:
         return ScanFailureDecision(

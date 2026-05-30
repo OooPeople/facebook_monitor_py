@@ -613,10 +613,10 @@ def test_scheduler_loop_skips_stale_failure_after_target_restart(tmp_path: Path)
     assert state.scan_requested_at is not None
 
 
-def test_scheduler_loop_marks_extractor_empty_as_idle_after_failed_scan(
+def test_scheduler_loop_retries_extractor_empty_until_third_failure(
     tmp_path: Path,
 ) -> None:
-    """extractor_empty 會記錄失敗但 target 回到 idle，讓下一輪可再嘗試。"""
+    """extractor_empty 走可修復失敗策略，第三次才讓 target 進 error。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -633,22 +633,39 @@ def test_scheduler_loop_marks_extractor_empty_as_idle_after_failed_scan(
 
         raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
 
-    summaries = run_one_shot_scheduler_loop(
-        SchedulerOptions(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            max_cycles=1,
-        ),
-        scan_once=fake_scan_once,
-        sleep_fn=lambda _seconds: None,
-    )
-
-    with SqliteApplicationContext(db_path) as app:
-        state = app.repositories.runtime_states.get(target.id)
-    assert summaries[0].failure_count == 1
-    assert state is not None
-    assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert state.last_error == ""
+    for attempt in range(1, 4):
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.request_target_scan(target.id)
+        summaries = run_one_shot_scheduler_loop(
+            SchedulerOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                max_cycles=1,
+            ),
+            scan_once=fake_scan_once,
+            sleep_fn=lambda _seconds: None,
+        )
+        assert summaries[0].failure_count == 1
+        with SqliteApplicationContext(db_path) as app:
+            state = app.repositories.runtime_states.get(target.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        assert state is not None
+        assert latest_scan is not None
+        assert latest_scan.metadata["reason"] == "extractor_empty"
+        assert latest_scan.metadata["retry_streak"] == attempt
+        assert latest_scan.metadata["retry_limit"] == 3
+        if attempt < 3:
+            assert state.runtime_status == TargetRuntimeStatus.IDLE
+            assert state.last_error == ""
+            assert latest_scan.metadata["runtime_action"] == "will_retry"
+            assert latest_scan.metadata["retryable"] is True
+        else:
+            assert state.runtime_status == TargetRuntimeStatus.ERROR
+            assert "已連續 3 次失敗" in state.last_error
+            assert "已連續 3 次失敗" in latest_scan.error_message
+            assert "會重啟" not in latest_scan.error_message
+            assert latest_scan.metadata["runtime_action"] == "error"
+            assert latest_scan.metadata["retryable"] is False
 
 
 def test_scheduler_loop_marks_page_load_timeout_error_after_third_failure(
@@ -701,5 +718,7 @@ def test_scheduler_loop_marks_page_load_timeout_error_after_third_failure(
         else:
             assert state.runtime_status == TargetRuntimeStatus.ERROR
             assert "已連續 3 次失敗" in state.last_error
+            assert "已連續 3 次失敗" in latest_scan.error_message
+            assert "會重啟" not in latest_scan.error_message
             assert latest_scan.metadata["runtime_action"] == "error"
             assert latest_scan.metadata["retryable"] is False

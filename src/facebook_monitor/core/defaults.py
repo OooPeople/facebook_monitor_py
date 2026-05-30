@@ -57,6 +57,7 @@ class SchedulerRuntimeDefaults:
     page_load_timeout_failure_limit: int = 3
     stale_running_failure_limit: int = 3
     scheduler_runtime_failure_limit: int = 3
+    recoverable_failure_limit: int = 3
 
 
 @dataclass(frozen=True)

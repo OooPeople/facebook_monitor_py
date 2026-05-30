@@ -195,13 +195,14 @@ def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> 
     assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
 
 
-def test_resident_main_fallback_records_extractor_empty_but_returns_target_to_idle(
+def test_resident_main_fallback_retries_extractor_empty_until_third_failure(
     tmp_path: Path,
 ) -> None:
-    """extractor_empty 會記錄 failed scan run，但 target 回到 idle 供下輪重試。"""
+    """sync fallback 也要重啟 target page，第三次 extractor_empty 才停止 target。"""
 
     db_path = tmp_path / "app.db"
     context = FakeBrowserContext()
+    page_pool = SyncResidentPagePool(context)
 
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
@@ -217,27 +218,47 @@ def test_resident_main_fallback_records_extractor_empty_but_returns_target_to_id
 
         raise WorkerFailure("extractor_empty", "No post-like items were extracted.")
 
-    summary = run_sync_resident_fallback_cycle(
-        options=ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            interval_seconds=0,
-        ),
-        page_pool=SyncResidentPagePool(context),
-        scan_page=failing_scan_page,
-        cycle_index=1,
-    )
+    for attempt in range(1, 4):
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.request_target_scan(target.id)
+        summary = run_sync_resident_fallback_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=page_pool,
+            scan_page=failing_scan_page,
+            cycle_index=attempt,
+        )
 
-    assert summary.failure_count == 1
-    with SqliteApplicationContext(db_path) as app:
-        runtime_state = app.repositories.runtime_states.get(target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-    assert runtime_state is not None
-    assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
-    assert runtime_state.last_error == ""
-    assert latest_scan is not None
-    assert latest_scan.status == ScanStatus.FAILED
-    assert latest_scan.metadata["worker"] == "resident_main"
+        assert summary.failure_count == 1
+        assert summary.opened_page_count == 1
+        assert summary.reused_page_count == 0
+        assert len(page_pool.pages) == 0
+        assert context.pages[-1].closed
+        with SqliteApplicationContext(db_path) as app:
+            runtime_state = app.repositories.runtime_states.get(target.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        assert runtime_state is not None
+        assert latest_scan is not None
+        assert latest_scan.status == ScanStatus.FAILED
+        assert latest_scan.metadata["worker"] == "resident_main"
+        assert latest_scan.metadata["reason"] == "extractor_empty"
+        assert latest_scan.metadata["retry_streak"] == attempt
+        assert latest_scan.metadata["retry_limit"] == 3
+        if attempt < 3:
+            assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
+            assert runtime_state.last_error == ""
+            assert latest_scan.metadata["runtime_action"] == "will_retry"
+            assert latest_scan.metadata["retryable"] is True
+        else:
+            assert runtime_state.runtime_status == TargetRuntimeStatus.ERROR
+            assert "已連續 3 次失敗" in runtime_state.last_error
+            assert "已連續 3 次失敗" in latest_scan.error_message
+            assert "會重啟" not in latest_scan.error_message
+            assert latest_scan.metadata["runtime_action"] == "error"
+            assert latest_scan.metadata["retryable"] is False
 
 
 def test_resident_fallback_closes_page_after_target_stop(tmp_path: Path) -> None:

@@ -24,8 +24,8 @@ from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failures import PROFILE_SESSION_FAILURE_REASONS
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.core.user_messages import format_failure_retry_exhausted_message
 from facebook_monitor.notifications.outbox_service import (
-    enqueue_runtime_failure_notifications,
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.worker.errors import WorkerFailure
@@ -95,6 +95,7 @@ def record_scan_failure(
     retry_streak: int = 0,
     retry_limit: int = 0,
     force_record: bool = False,
+    error_message_override: str = "",
 ) -> int:
     """透過 application context 記錄一筆標準失敗 scan run。"""
 
@@ -103,7 +104,7 @@ def record_scan_failure(
             reason=reason,
             source=worker_path,
         )
-    error_message = format_scan_failure_message(reason, message)
+    error_message = error_message_override or format_scan_failure_message(reason, message)
     latest = app.repositories.scan_runs.latest_by_target(target.id)
     if (
         not force_record
@@ -172,6 +173,11 @@ def record_guarded_scan_failure(
         reason,
         source=source,
     )
+    scan_error_message = format_scan_failure_run_message(
+        reason=decision.reason,
+        message=message,
+        decision=decision,
+    )
     scan_run_id = record_scan_failure(
         app=app,
         target=target,
@@ -187,7 +193,8 @@ def record_guarded_scan_failure(
         runtime_action=decision.runtime_action,
         retry_streak=decision.retry_streak,
         retry_limit=decision.retry_limit,
-        force_record=decision.counts_toward_streak,
+        force_record=decision.counts_toward_streak or decision.terminal,
+        error_message_override=scan_error_message,
     )
     runtime_message = runtime_error_message or format_scan_failure_message(
         decision.reason,
@@ -315,6 +322,11 @@ def record_active_targets_runtime_failure_notifications(
             source="unknown_exception",
         )
         runtime_message = format_scan_failure_message(normalized_reason, message)
+        scan_error_message = format_scan_failure_run_message(
+            reason=normalized_reason,
+            message=message,
+            decision=decision,
+        )
         scan_run_id = record_scan_failure(
             app=app,
             target=target,
@@ -327,7 +339,8 @@ def record_active_targets_runtime_failure_notifications(
             runtime_action=decision.runtime_action,
             retry_streak=decision.retry_streak,
             retry_limit=decision.retry_limit,
-            force_record=decision.counts_toward_streak,
+            force_record=decision.counts_toward_streak or decision.terminal,
+            error_message_override=scan_error_message,
         )
         updated_state = app.services.targets.apply_scan_failure_decision(
             target.id,
@@ -340,7 +353,7 @@ def record_active_targets_runtime_failure_notifications(
         if not decision.terminal:
             continue
         config = app.services.targets.get_config_for_target(target)
-        enqueue_runtime_failure_notifications(
+        queue_runtime_failure_notifications_after_commit(
             app=app,
             target=target,
             config=config,
@@ -361,3 +374,20 @@ def format_scan_failure_message(reason: str, message: str) -> str:
     """建立一致的 scan failure error_message。"""
 
     return format_failure_message(reason, message)
+
+
+def format_scan_failure_run_message(
+    *,
+    reason: str,
+    message: str,
+    decision: ScanFailureDecision,
+) -> str:
+    """依 failure decision 建立 scan run 顯示訊息。"""
+
+    if decision.terminal and decision.counts_toward_streak:
+        return format_failure_retry_exhausted_message(
+            reason,
+            retry_streak=decision.retry_streak,
+            retry_limit=decision.retry_limit,
+        )
+    return format_scan_failure_message(reason, message)

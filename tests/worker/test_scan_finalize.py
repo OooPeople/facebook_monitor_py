@@ -85,6 +85,24 @@ class RunningTargetFixture:
     commit_guard: ScanCommitGuard
 
 
+def _stub_outbox_dispatch(monkeypatch: Any) -> list[Path]:
+    """攔截 after-commit outbox dispatch，避免測試打到外部通知服務。"""
+
+    dispatch_calls: list[Path] = []
+
+    def fake_dispatch(**kwargs: object) -> int:
+        db_path = kwargs["db_path"]
+        assert isinstance(db_path, Path)
+        dispatch_calls.append(db_path)
+        return 1
+
+    monkeypatch.setattr(
+        "facebook_monitor.notifications.outbox_service.dispatch_new_pending_notification_outbox_for_db",
+        fake_dispatch,
+    )
+    return dispatch_calls
+
+
 def _create_running_target_with_guard(
     app: ApplicationContext,
     *,
@@ -613,10 +631,12 @@ def test_record_guarded_scan_failure_starts_write_transaction_before_failure_wri
 
 def test_active_targets_runtime_failure_notifies_after_retry_limit(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
     """resident 全域錯誤前兩次只重試，第三次才通知並停止 target。"""
 
     db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_outbox_dispatch(monkeypatch)
     with SqliteApplicationContext(db_path) as app:
         active = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -732,6 +752,8 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
     assert active_run.metadata["reason"] == SCHEDULER_RUNTIME_REASON
     assert active_run.metadata["retry_streak"] == 3
     assert active_run.metadata["retry_limit"] == 3
+    assert "已連續 3 次失敗" in active_run.error_message
+    assert "會重啟" not in active_run.error_message
     assert stopped_run is None
     assert paused_run is None
     assert errored_run is None
@@ -749,14 +771,79 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
     assert "連續次數: 3" in entry.message
     assert "系統已停止此監視項目" in entry.message
     assert "系統已記錄背景掃描錯誤" not in entry.message
+    assert dispatch_calls == [db_path]
+
+
+def test_active_targets_unknown_runtime_failure_uses_default_retry_limit(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """未列入 terminal denylist 的全域錯誤預設第三次才通知。"""
+
+    db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_outbox_dispatch(monkeypatch)
+    with SqliteApplicationContext(db_path) as app:
+        active = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-unknown",
+                canonical_url="https://www.facebook.com/groups/active-unknown",
+                group_name="Active target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(active.id)
+
+        for attempt in range(1, 4):
+            count = (
+                scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+                    app=app,
+                    reason="unknown",
+                    message="unexpected resident failure",
+                    worker_path="resident_scheduler",
+                    exception_class="RuntimeError",
+                )
+            )
+            state = app.repositories.runtime_states.get(active.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(active.id)
+            entries = app.repositories.notification_outbox.list_pending()
+
+            assert count == 1
+            assert state is not None
+            assert latest_scan is not None
+            assert latest_scan.metadata["reason"] == "unknown"
+            assert latest_scan.metadata["retry_streak"] == attempt
+            assert latest_scan.metadata["retry_limit"] == 3
+            if attempt < 3:
+                assert state.runtime_status == TargetRuntimeStatus.IDLE
+                assert state.scan_requested_at is not None
+                assert entries == []
+                assert latest_scan.metadata["runtime_action"] == "will_retry"
+                assert latest_scan.metadata["retryable"] is True
+            else:
+                assert state.runtime_status == TargetRuntimeStatus.ERROR
+                assert state.consecutive_failure_count == 3
+                assert "已連續 3 次失敗" in latest_scan.error_message
+                assert "會重啟" not in latest_scan.error_message
+                assert latest_scan.metadata["runtime_action"] == "error"
+                assert latest_scan.metadata["retryable"] is False
+                assert len(entries) == 1
+                assert entries[0].failure_reason == "unknown"
+                assert entries[0].failure_count == 3
+
+    assert dispatch_calls == [db_path]
 
 
 def test_active_targets_runtime_failure_immediate_notify_for_non_retryable_reason(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
     """非 retryable 全域錯誤仍要立即通知並停止 target。"""
 
     db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_outbox_dispatch(monkeypatch)
     with SqliteApplicationContext(db_path) as app:
         active = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -796,6 +883,92 @@ def test_active_targets_runtime_failure_immediate_notify_for_non_retryable_reaso
     assert entry.failure_count == 1
     assert entry.item_key.startswith("runtime-failure:")
     assert "系統已停止此監視項目" in entry.message
+    assert dispatch_calls == [db_path]
+
+
+def test_immediate_terminal_failure_records_again_after_manual_restart(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """同一 terminal 錯誤在手動重啟後再次發生，仍要新增 scan run 並通知。"""
+
+    db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_outbox_dispatch(monkeypatch)
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="terminal-repeat",
+                canonical_url="https://www.facebook.com/groups/terminal-repeat",
+                group_name="Terminal target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.mark_target_running(
+            target.id,
+            "worker-a",
+            page_id="page-a",
+        )
+        first_decision = record_guarded_scan_failure(
+            app=app,
+            target_id=target.id,
+            reason="login_required",
+            message="login required",
+            source="worker_failure",
+            worker_path="resident_main",
+            commit_guard=scan_commit_guard_from_runtime_state(running),
+        )
+        first_run = app.repositories.scan_runs.latest_by_target(target.id)
+        first_run_id = app.repositories.scan_runs.connection.execute(
+            "SELECT MAX(id) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert first_decision is not None
+    assert first_run is not None
+
+    with SqliteApplicationContext(db_path) as app:
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.mark_target_running(
+            target.id,
+            "worker-b",
+            page_id="page-b",
+        )
+        second_decision = record_guarded_scan_failure(
+            app=app,
+            target_id=target.id,
+            reason="login_required",
+            message="login required",
+            source="worker_failure",
+            worker_path="resident_main",
+            commit_guard=scan_commit_guard_from_runtime_state(running),
+        )
+        second_run = app.repositories.scan_runs.latest_by_target(target.id)
+        second_run_id = app.repositories.scan_runs.connection.execute(
+            "SELECT MAX(id) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+        run_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+        entries = app.repositories.notification_outbox.list_pending()
+
+    assert second_decision is not None
+    assert second_run is not None
+    assert first_run_id is not None
+    assert second_run_id is not None
+    assert second_run_id != first_run_id
+    assert run_count == 2
+    assert len(entries) == 2
+    assert [entry.failure_reason for entry in entries] == [
+        "login_required",
+        "login_required",
+    ]
+    assert dispatch_calls == [db_path, db_path]
 
 
 def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) -> None:

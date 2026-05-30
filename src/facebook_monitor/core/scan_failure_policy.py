@@ -10,10 +10,19 @@ from dataclasses import dataclass
 from typing import Literal
 
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
+from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
+from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
+from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
+from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
+from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
+from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 
@@ -28,10 +37,22 @@ ScanFailureSource = Literal[
 TargetFailureAction = Literal["idle", "error"]
 FailureRuntimeAction = Literal["idle", "will_retry", "error"]
 
-RETRYABLE_IDLE_FAILURE_REASONS = frozenset(
-    {EXTRACTOR_EMPTY_REASON, TARGET_STOPPED_REASON}
-)
+IDLE_FAILURE_REASONS = frozenset({TARGET_STOPPED_REASON})
 SCHEDULER_CANCEL_IDLE_FAILURE_REASONS = frozenset({"scheduler_stopping"})
+IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
+    {
+        CHECKPOINT_REQUIRED_REASON,
+        CONTENT_UNAVAILABLE_REASON,
+        LOGIN_REQUIRED_REASON,
+        PROFILE_LOCKED_REASON,
+        PROFILE_MISSING_REASON,
+        SESSION_INVALID_REASON,
+        TARGET_ARGUMENT_CONFLICT_REASON,
+        TARGET_INVALID_REASON,
+        TARGET_KIND_UNSUPPORTED_REASON,
+        TARGET_MISSING_REASON,
+    }
+)
 STREAK_RETRY_FAILURE_LIMITS = {
     PAGE_LOAD_TIMEOUT_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit
@@ -48,7 +69,7 @@ AUTO_RESTART_FAILURE_ACTIONS = {
     STALE_RUNNING_REASON: "target_page_restart",
     SCHEDULER_RUNTIME_REASON: "scheduler_runtime_restart",
 }
-AUTO_RESTART_FAILURE_REASONS = frozenset(AUTO_RESTART_FAILURE_ACTIONS)
+DEFAULT_AUTO_RESTART_ACTION = "target_page_restart"
 DISCARD_PAGE_FAILURE_SOURCES = frozenset(
     {"playwright", "unknown_exception", "runtime_recovery"}
 )
@@ -98,27 +119,7 @@ def decide_scan_failure(
             runtime_action="idle",
             discard_page=discard_page,
         )
-    retry_limit = STREAK_RETRY_FAILURE_LIMITS.get(normalized_reason)
-    if retry_limit is not None:
-        retry_streak = _next_retry_streak(
-            reason=normalized_reason,
-            previous_failure_reason=previous_failure_reason,
-            previous_failure_count=previous_failure_count,
-        )
-        will_retry = retry_streak < retry_limit
-        return ScanFailureDecision(
-            reason=normalized_reason,
-            retryable=will_retry,
-            target_action="idle" if will_retry else "error",
-            runtime_action="will_retry" if will_retry else "error",
-            discard_page=discard_page,
-            counts_toward_streak=True,
-            retry_streak=retry_streak,
-            retry_limit=retry_limit,
-            auto_restart=will_retry and normalized_reason in AUTO_RESTART_FAILURE_REASONS,
-            recovery_action=AUTO_RESTART_FAILURE_ACTIONS.get(normalized_reason, ""),
-        )
-    if normalized_reason in RETRYABLE_IDLE_FAILURE_REASONS:
+    if normalized_reason in IDLE_FAILURE_REASONS:
         return ScanFailureDecision(
             reason=normalized_reason,
             retryable=True,
@@ -126,12 +127,37 @@ def decide_scan_failure(
             runtime_action="idle",
             discard_page=discard_page,
         )
+    if normalized_reason in IMMEDIATE_TERMINAL_FAILURE_REASONS:
+        return ScanFailureDecision(
+            reason=normalized_reason,
+            retryable=False,
+            target_action="error",
+            runtime_action="error",
+            discard_page=discard_page,
+        )
+
+    retry_limit = _retry_limit_for_reason(normalized_reason)
+    retry_streak = _next_retry_streak(
+        reason=normalized_reason,
+        previous_failure_reason=previous_failure_reason,
+        previous_failure_count=previous_failure_count,
+    )
+    will_retry = retry_streak < retry_limit
+    recovery_action = AUTO_RESTART_FAILURE_ACTIONS.get(
+        normalized_reason,
+        DEFAULT_AUTO_RESTART_ACTION,
+    )
     return ScanFailureDecision(
         reason=normalized_reason,
-        retryable=False,
-        target_action="error",
-        runtime_action="error",
-        discard_page=discard_page,
+        retryable=will_retry,
+        target_action="idle" if will_retry else "error",
+        runtime_action="will_retry" if will_retry else "error",
+        discard_page=discard_page or recovery_action == "target_page_restart",
+        counts_toward_streak=True,
+        retry_streak=retry_streak,
+        retry_limit=retry_limit,
+        auto_restart=will_retry,
+        recovery_action=recovery_action,
     )
 
 
@@ -146,3 +172,12 @@ def _next_retry_streak(
     if previous_failure_reason == reason:
         return max(previous_failure_count, 0) + 1
     return 1
+
+
+def _retry_limit_for_reason(reason: str) -> int:
+    """回傳指定 reason 的連續失敗 retry 上限。"""
+
+    return STREAK_RETRY_FAILURE_LIMITS.get(
+        reason,
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.recoverable_failure_limit,
+    )

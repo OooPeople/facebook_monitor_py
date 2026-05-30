@@ -61,13 +61,63 @@ def test_scheduler_runtime_retries_until_third_failure() -> None:
     assert third.retry_streak == 3
 
 
-def test_legacy_retryable_idle_failures_do_not_count_toward_streak() -> None:
-    """extractor_empty / target_stopped 保留既有回 idle 語義但不累計 streak。"""
+def test_unknown_retries_by_default_until_third_failure() -> None:
+    """未明確列為 terminal 的 reason 預設三次重試。"""
+
+    first = decide_scan_failure("unknown", source="unknown_exception")
+    third = decide_scan_failure(
+        "unknown",
+        source="unknown_exception",
+        previous_failure_reason="unknown",
+        previous_failure_count=2,
+    )
+
+    assert first.retryable is True
+    assert first.target_action == "idle"
+    assert first.runtime_action == "will_retry"
+    assert first.discard_page is True
+    assert first.auto_restart is True
+    assert first.recovery_action == "target_page_restart"
+    assert first.retry_streak == 1
+    assert first.retry_limit == 3
+    assert third.retryable is False
+    assert third.target_action == "error"
+    assert third.retry_streak == 3
+
+
+def test_scan_timeout_retries_and_discards_page() -> None:
+    """scan_timeout 也應重啟 page，避免同一頁面狀態持續卡住。"""
+
+    decision = decide_scan_failure("scan_timeout", source="worker_failure")
+
+    assert decision.retryable is True
+    assert decision.target_action == "idle"
+    assert decision.runtime_action == "will_retry"
+    assert decision.counts_toward_streak is True
+    assert decision.discard_page is True
+    assert decision.auto_restart is True
+
+
+def test_extractor_empty_retries_instead_of_silent_idle() -> None:
+    """extractor_empty 代表抽取異常，應累計重試而不是永遠安靜略過。"""
+
+    decision = decide_scan_failure("extractor_empty", source="worker_failure")
+
+    assert decision.retryable is True
+    assert decision.target_action == "idle"
+    assert decision.runtime_action == "will_retry"
+    assert decision.counts_toward_streak is True
+    assert decision.retry_streak == 1
+    assert decision.discard_page is True
+
+
+def test_target_stopped_keeps_target_idle_without_streak() -> None:
+    """target_stopped 是使用者停止造成的非錯誤收斂，不應累計 streak。"""
 
     decision = decide_scan_failure(
-        "extractor_empty",
+        "target_stopped",
         source="worker_failure",
-        previous_failure_reason="page_load_timeout",
+        previous_failure_reason="unknown",
         previous_failure_count=2,
     )
 
@@ -78,16 +128,30 @@ def test_legacy_retryable_idle_failures_do_not_count_toward_streak() -> None:
     assert decision.retry_streak == 0
 
 
-def test_scan_timeout_still_errors_immediately() -> None:
-    """scan_timeout 是 worker 自身逾時，不能被 page_load_timeout 策略同化。"""
+def test_login_required_errors_immediately() -> None:
+    """登入/session 類錯誤需要使用者介入，不能延後到第三次才通知。"""
 
-    decision = decide_scan_failure("scan_timeout", source="worker_failure")
+    terminal_reasons = (
+        "login_required",
+        "checkpoint_required",
+        "session_invalid",
+        "profile_missing",
+        "profile_locked",
+        "target_missing",
+        "target_invalid",
+        "target_kind_unsupported",
+        "target_argument_conflict",
+        "content_unavailable",
+    )
 
-    assert decision.retryable is False
-    assert decision.target_action == "error"
-    assert decision.runtime_action == "error"
-    assert decision.counts_toward_streak is False
-    assert decision.discard_page is False
+    for reason in terminal_reasons:
+        decision = decide_scan_failure(reason, source="worker_failure")
+
+        assert decision.reason == reason
+        assert decision.retryable is False
+        assert decision.target_action == "error"
+        assert decision.runtime_action == "error"
+        assert decision.counts_toward_streak is False
 
 
 def test_scheduler_cancel_keeps_target_idle() -> None:

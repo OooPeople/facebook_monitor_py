@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 
 
@@ -25,8 +26,25 @@ def classify_playwright_exception(error: Exception) -> str:
     message = str(error).lower()
     if "user data directory is already in use" in message or "processsingleton" in message:
         return PROFILE_LOCKED_REASON
+    if _is_playwright_runtime_closed_message(message):
+        return SCHEDULER_RUNTIME_REASON
     if "timeout" in message:
         return PAGE_LOAD_TIMEOUT_REASON
     if "net::" in message or "navigation" in message:
         return PAGE_LOAD_TIMEOUT_REASON
     return UNKNOWN_REASON
+
+
+def _is_playwright_runtime_closed_message(message: str) -> bool:
+    """判斷 Playwright page/context/browser 已關閉的可恢復 runtime 例外。"""
+
+    closed_tokens = (
+        "connection closed while reading from the driver",
+        "target page, context or browser has been closed",
+        "page, context or browser has been closed",
+        "browser has been closed",
+        "context has been closed",
+        "page has been closed",
+        "target closed",
+    )
+    return any(token in message for token in closed_tokens)

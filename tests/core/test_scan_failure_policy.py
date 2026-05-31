@@ -111,6 +111,27 @@ def test_extractor_empty_retries_instead_of_silent_idle() -> None:
     assert decision.discard_page is True
 
 
+def test_sort_adjust_unconfirmed_is_recoverable_page_restart() -> None:
+    """排序未確認升級後應走 target page restart，第三次才 terminal。"""
+
+    first = decide_scan_failure("sort_adjust_unconfirmed", source="worker_failure")
+    third = decide_scan_failure(
+        "sort_adjust_unconfirmed",
+        source="worker_failure",
+        previous_failure_reason="sort_adjust_unconfirmed",
+        previous_failure_count=2,
+    )
+
+    assert first.retryable is True
+    assert first.target_action == "idle"
+    assert first.recovery_action == "target_page_restart"
+    assert first.retry_streak == 1
+    assert first.retry_limit == 3
+    assert third.retryable is False
+    assert third.target_action == "error"
+    assert third.retry_streak == 3
+
+
 def test_target_stopped_keeps_target_idle_without_streak() -> None:
     """target_stopped 是使用者停止造成的非錯誤收斂，不應累計 streak。"""
 

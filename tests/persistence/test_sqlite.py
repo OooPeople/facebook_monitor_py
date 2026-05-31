@@ -644,6 +644,91 @@ def test_initialize_schema_migrates_v32_logical_dedupe_tables(
     assert outbox_only_alias_count == 1
 
 
+def test_initialize_schema_migrates_v33_runtime_scan_skip_columns(
+    tmp_path: Path,
+) -> None:
+    """v32 既有 runtime rows 需保留，並回填 scan skip streak 預設值。"""
+
+    db_path = tmp_path / "app.db"
+    now = "2026-05-01T00:00:00+00:00"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            f"""
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '32');
+            CREATE TABLE target_runtime_state (
+                target_id TEXT PRIMARY KEY,
+                desired_state TEXT NOT NULL,
+                runtime_status TEXT NOT NULL,
+                scan_requested_at TEXT NOT NULL DEFAULT '',
+                last_enqueued_at TEXT NOT NULL DEFAULT '',
+                last_started_at TEXT NOT NULL DEFAULT '',
+                last_finished_at TEXT NOT NULL DEFAULT '',
+                last_heartbeat_at TEXT NOT NULL,
+                last_error TEXT NOT NULL,
+                last_skip_reason TEXT NOT NULL DEFAULT '',
+                enqueue_reason TEXT NOT NULL DEFAULT '',
+                active_worker_id TEXT NOT NULL,
+                active_page_id TEXT NOT NULL DEFAULT '',
+                last_page_reloaded_at TEXT NOT NULL DEFAULT '',
+                scan_guard_count INTEGER NOT NULL DEFAULT 0 CHECK (scan_guard_count >= 0),
+                display_next_due_at TEXT NOT NULL DEFAULT '',
+                consecutive_failure_reason TEXT NOT NULL DEFAULT '',
+                consecutive_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                    consecutive_failure_count >= 0
+                ),
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO target_runtime_state (
+                target_id, desired_state, runtime_status, scan_requested_at,
+                last_enqueued_at, last_started_at, last_finished_at,
+                last_heartbeat_at, last_error, last_skip_reason, enqueue_reason,
+                active_worker_id, active_page_id, last_page_reloaded_at,
+                scan_guard_count, display_next_due_at, consecutive_failure_reason,
+                consecutive_failure_count, updated_at
+            )
+            VALUES (
+                'target-a', 'active', 'idle', '', '', '', '', '{now}',
+                '', 'previous skip', '', '', '', '', 2, '',
+                'page_load_timeout', 2, '{now}'
+            );
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        runtime_row = connection.execute(
+            "SELECT * FROM target_runtime_state WHERE target_id = 'target-a'"
+        ).fetchone()
+        has_skip_reason = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_scan_skip_reason",
+        )
+        has_skip_count = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_scan_skip_count",
+        )
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_skip_reason
+    assert has_skip_count
+    assert runtime_row is not None
+    assert runtime_row["last_skip_reason"] == "previous skip"
+    assert runtime_row["consecutive_failure_reason"] == "page_load_timeout"
+    assert runtime_row["consecutive_failure_count"] == 2
+    assert runtime_row["consecutive_scan_skip_reason"] == ""
+    assert runtime_row["consecutive_scan_skip_count"] == 0
+
+
 def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
     """schema 初始化會移除舊版 dashboard revision triggers，避免長時間 UI 更新過密。"""
 
@@ -1539,6 +1624,16 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
             "target_runtime_state",
             "consecutive_failure_count",
         )
+        has_runtime_scan_skip_reason = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_scan_skip_reason",
+        )
+        has_runtime_scan_skip_count = table_has_column(
+            connection,
+            "target_runtime_state",
+            "consecutive_scan_skip_count",
+        )
         has_target_discord = table_has_column(
             connection,
             "target_configs",
@@ -1573,6 +1668,8 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
     assert has_runtime_display_due
     assert has_runtime_failure_reason
     assert has_runtime_failure_count
+    assert has_runtime_scan_skip_reason
+    assert has_runtime_scan_skip_count
     assert has_target_discord
     assert has_target_exclude_ignore
     assert has_target_metadata_status

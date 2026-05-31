@@ -33,12 +33,15 @@ from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.target_validation import is_valid_posts_target_route
 from facebook_monitor.worker.target_validation import validate_posts_target_route
@@ -136,10 +139,25 @@ def record_failure(
     *,
     exception_class: str = "",
     profile_lease_state: str = "",
+    source: ScanFailureSource = "worker_failure",
+    commit_guard: ScanCommitGuard | None = None,
 ) -> None:
     """在已知 target 時記錄失敗 scan run。"""
 
     if target is None:
+        return
+    recorded = record_guarded_scan_failure_for_db(
+        db_path=db_path,
+        target_id=target.id,
+        reason=reason,
+        message=message,
+        source=source,
+        worker_path="one_shot_posts_scan",
+        commit_guard=commit_guard,
+        exception_class=exception_class,
+        profile_lease_state=profile_lease_state,
+    )
+    if recorded is not None:
         return
     with SqliteApplicationContext(db_path) as app:
         record_scan_failure(
@@ -151,6 +169,24 @@ def record_failure(
             exception_class=exception_class,
             profile_lease_state=profile_lease_state,
         )
+
+
+def mark_direct_success_idle(
+    *,
+    app: ApplicationContext,
+    target_id: str,
+    summary: PostsScanSummary,
+    commit_guard: ScanCommitGuard | None,
+) -> None:
+    """debug one-shot 無 owner guard 成功時，也要清掉 runtime retry streak。"""
+
+    if commit_guard is not None or summary.scan_skipped:
+        return
+    mark_target_idle_for_scan_commit(
+        app=app,
+        target_id=target_id,
+        commit_guard=None,
+    )
 
 
 def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
@@ -179,8 +215,8 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
             )
         return max(remaining_ms, 1000)
 
-    with SqliteApplicationContext(options.db_path) as app:
-        try:
+    try:
+        with SqliteApplicationContext(options.db_path) as app:
             target = select_one_shot_target(app, options.target_id, options.group_id)
             config = app.services.targets.get_config_for_target(target)
 
@@ -206,7 +242,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                         context.set_default_timeout(remaining_timeout_ms())
                         page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
                         context.set_default_timeout(remaining_timeout_ms())
-                        return scan_posts_page(
+                        summary = scan_posts_page(
                             page=page,
                             app=app,
                             target=target,
@@ -215,37 +251,48 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                             scroll_wait_ms=options.scroll_wait_ms,
                             commit_guard=options.commit_guard,
                         )
+                        mark_direct_success_idle(
+                            app=app,
+                            target_id=target.id,
+                            summary=summary,
+                            commit_guard=options.commit_guard,
+                        )
+                        return summary
                     finally:
                         context.close()
-        except ProfileLeaseError as error:
-            if options.record_failures:
-                record_failure(
-                    options.db_path,
-                    target,
-                    PROFILE_LOCKED_REASON,
-                    str(error),
-                    exception_class=error.__class__.__name__,
-                    profile_lease_state="locked",
-                )
-            raise WorkerFailure(PROFILE_LOCKED_REASON, str(error)) from error
-        except WorkerFailure as error:
-            if options.record_failures:
-                record_failure(
-                    options.db_path,
-                    target,
-                    error.reason,
-                    str(error),
-                    exception_class=error.__class__.__name__,
-                )
-            raise
-        except (PlaywrightTimeoutError, PlaywrightError) as error:
-            reason = classify_playwright_exception(error)
-            if options.record_failures:
-                record_failure(
-                    options.db_path,
-                    target,
-                    reason,
-                    str(error),
-                    exception_class=error.__class__.__name__,
-                )
-            raise WorkerFailure(reason, str(error)) from error
+    except ProfileLeaseError as error:
+        if options.record_failures:
+            record_failure(
+                options.db_path,
+                target,
+                PROFILE_LOCKED_REASON,
+                str(error),
+                exception_class=error.__class__.__name__,
+                profile_lease_state="locked",
+                commit_guard=options.commit_guard,
+            )
+        raise WorkerFailure(PROFILE_LOCKED_REASON, str(error)) from error
+    except WorkerFailure as error:
+        if options.record_failures:
+            record_failure(
+                options.db_path,
+                target,
+                error.reason,
+                str(error),
+                exception_class=error.__class__.__name__,
+                commit_guard=options.commit_guard,
+            )
+        raise
+    except (PlaywrightTimeoutError, PlaywrightError) as error:
+        reason = classify_playwright_exception(error)
+        if options.record_failures:
+            record_failure(
+                options.db_path,
+                target,
+                reason,
+                str(error),
+                exception_class=error.__class__.__name__,
+                source="playwright",
+                commit_guard=options.commit_guard,
+            )
+        raise WorkerFailure(reason, str(error)) from error

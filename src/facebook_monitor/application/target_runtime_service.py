@@ -40,6 +40,21 @@ class StaleRunningRecovery:
     stale_after_seconds: float
 
 
+@dataclass(frozen=True)
+class ScanSkipDecision:
+    """描述一次保護性 skipped scan 是否需要升級成 recoverable failure。"""
+
+    reason: str
+    skip_streak: int
+    skip_limit: int
+
+    @property
+    def escalate(self) -> bool:
+        """回傳本次 skip 是否已達升級門檻。"""
+
+        return self.skip_streak >= self.skip_limit
+
+
 class TargetRuntimeService:
     """協調 target runtime state repository。"""
 
@@ -327,6 +342,8 @@ class TargetRuntimeService:
             display_next_due_at=None,
             consecutive_failure_reason="",
             consecutive_failure_count=0,
+            consecutive_scan_skip_reason="",
+            consecutive_scan_skip_count=0,
             updated_at=now,
         )
         self.runtime_states.save(state)
@@ -378,9 +395,96 @@ class TargetRuntimeService:
             active_page_id="",
             consecutive_failure_reason="",
             consecutive_failure_count=0,
+            consecutive_scan_skip_reason="",
+            consecutive_scan_skip_count=0,
             updated_at=now,
         )
         return state
+
+    def decide_scan_skip(
+        self,
+        target_id: str,
+        reason: str,
+        *,
+        skip_limit: int,
+    ) -> ScanSkipDecision:
+        """依目前 skipped scan streak 決定本輪 skip 是否要升級成失敗。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        normalized_reason = str(reason or "").strip()
+        previous_count = (
+            existing_state.consecutive_scan_skip_count
+            if existing_state.consecutive_scan_skip_reason == normalized_reason
+            else 0
+        )
+        return ScanSkipDecision(
+            reason=normalized_reason,
+            skip_streak=max(previous_count, 0) + 1,
+            skip_limit=max(int(skip_limit), 1),
+        )
+
+    def apply_scan_skip_decision(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+    ) -> TargetRuntimeState:
+        """記錄保護性 skipped scan 並回 idle，保留既有 failure streak。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._scan_skipped_state(existing_state, decision, now=utc_now())
+        self.runtime_states.save(state)
+        return state
+
+    def apply_scan_skip_decision_if_owner(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄 skipped scan state。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._scan_skipped_state(existing_state, decision, now=utc_now())
+        return self.runtime_states.save_if_running_owner(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def _scan_skipped_state(
+        self,
+        existing_state: TargetRuntimeState,
+        decision: ScanSkipDecision,
+        *,
+        now: datetime,
+    ) -> TargetRuntimeState:
+        """建立 skipped scan 後的 idle state，避免誤清未恢復的 failure streak。"""
+
+        return replace(
+            existing_state,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=_scan_request_after_current_attempt(existing_state),
+            last_finished_at=now,
+            last_heartbeat_at=now,
+            last_error="",
+            last_skip_reason=(
+                f"{decision.reason}: skip "
+                f"{decision.skip_streak}/{decision.skip_limit}"
+            ),
+            enqueue_reason="",
+            active_worker_id="",
+            active_page_id="",
+            consecutive_scan_skip_reason=decision.reason,
+            consecutive_scan_skip_count=decision.skip_streak,
+            updated_at=now,
+        )
 
     def mark_target_retriable_failure(
         self,
@@ -448,6 +552,8 @@ class TargetRuntimeService:
             active_page_id="",
             consecutive_failure_reason=decision.reason,
             consecutive_failure_count=decision.retry_streak,
+            consecutive_scan_skip_reason="",
+            consecutive_scan_skip_count=0,
             updated_at=now,
         )
         return state
@@ -525,6 +631,8 @@ class TargetRuntimeService:
             active_page_id="",
             consecutive_failure_reason=failure_reason,
             consecutive_failure_count=max(failure_count, 0),
+            consecutive_scan_skip_reason="",
+            consecutive_scan_skip_count=0,
             updated_at=now,
         )
         return state

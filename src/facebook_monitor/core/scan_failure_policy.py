@@ -18,6 +18,7 @@ from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
@@ -63,11 +64,15 @@ STREAK_RETRY_FAILURE_LIMITS = {
     SCHEDULER_RUNTIME_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_runtime_failure_limit
     ),
+    SORT_ADJUST_UNCONFIRMED_REASON: (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_failure_limit
+    ),
 }
 AUTO_RESTART_FAILURE_ACTIONS = {
     PAGE_LOAD_TIMEOUT_REASON: "target_page_restart",
     STALE_RUNNING_REASON: "target_page_restart",
     SCHEDULER_RUNTIME_REASON: "scheduler_runtime_restart",
+    SORT_ADJUST_UNCONFIRMED_REASON: "target_page_restart",
 }
 DEFAULT_AUTO_RESTART_ACTION = "target_page_restart"
 DISCARD_PAGE_FAILURE_SOURCES = frozenset(

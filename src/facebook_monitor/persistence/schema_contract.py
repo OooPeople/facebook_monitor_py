@@ -237,6 +237,9 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         "target_runtime_state",
         "target_id",
         "scan_guard_count",
-        "scan_guard_count < 0 OR consecutive_failure_count < 0",
+        (
+            "scan_guard_count < 0 OR consecutive_failure_count < 0 "
+            "OR consecutive_scan_skip_count < 0"
+        ),
     ),
 )

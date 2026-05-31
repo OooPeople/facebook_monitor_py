@@ -32,6 +32,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 
 
 def test_target_runtime_state_default_is_stopped() -> None:
@@ -122,6 +123,93 @@ def test_success_idle_resets_failure_streak(tmp_path: Path) -> None:
     assert state.consecutive_failure_count == 0
 
 
+def test_scan_skip_streak_escalates_on_third_skip(tmp_path: Path) -> None:
+    """排序保護性 skip 連續三次才升級成 recoverable failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+        first = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        app.services.targets.apply_scan_skip_decision(target.id, first)
+        first_state = app.repositories.runtime_states.get(target.id)
+
+        second = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        app.services.targets.apply_scan_skip_decision(target.id, second)
+
+        third = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        third_state = app.repositories.runtime_states.get(target.id)
+
+    assert first_state is not None
+    assert first_state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert first_state.consecutive_scan_skip_count == 1
+    assert not first.escalate
+    assert not second.escalate
+    assert third.escalate
+    assert third_state is not None
+    assert third_state.consecutive_scan_skip_count == 2
+
+
+def test_scan_skip_preserves_failure_streak_until_real_success(
+    tmp_path: Path,
+) -> None:
+    """排序 skipped success 不代表恢復，不能清掉已折算的 failure streak。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        failure = app.services.targets.decide_scan_failure(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            source="worker_failure",
+        )
+        app.services.targets.apply_scan_failure_decision(target.id, failure, "sort failed")
+
+        first_skip = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        app.services.targets.apply_scan_skip_decision(target.id, first_skip)
+        skipped_state = app.repositories.runtime_states.get(target.id)
+        app.services.targets.mark_target_idle(target.id)
+        success_state = app.repositories.runtime_states.get(target.id)
+
+    assert skipped_state is not None
+    assert skipped_state.consecutive_failure_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert skipped_state.consecutive_failure_count == 1
+    assert skipped_state.consecutive_scan_skip_count == 1
+    assert success_state is not None
+    assert success_state.consecutive_failure_reason == ""
+    assert success_state.consecutive_failure_count == 0
+    assert success_state.consecutive_scan_skip_reason == ""
+    assert success_state.consecutive_scan_skip_count == 0
+
+
 def test_target_status_update_resets_runtime_state(tmp_path: Path) -> None:
     """target 停止時 runtime reset 需清除錯誤與 retry streak。"""
 
@@ -140,6 +228,12 @@ def test_target_status_update_resets_runtime_state(tmp_path: Path) -> None:
             source="playwright",
         )
         app.services.targets.apply_scan_failure_decision(target.id, decision, "timeout")
+        skip = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        app.services.targets.apply_scan_skip_decision(target.id, skip)
         app.services.targets.pause_target_monitoring(target.id)
         state = app.repositories.runtime_states.get(target.id)
 
@@ -150,6 +244,8 @@ def test_target_status_update_resets_runtime_state(tmp_path: Path) -> None:
     assert state.last_error == ""
     assert state.consecutive_failure_reason == ""
     assert state.consecutive_failure_count == 0
+    assert state.consecutive_scan_skip_reason == ""
+    assert state.consecutive_scan_skip_count == 0
 
 
 def test_restart_target_monitoring_resets_runtime_and_requests_scan(
@@ -165,15 +261,26 @@ def test_restart_target_monitoring_resets_runtime_and_requests_scan(
                 canonical_url="https://www.facebook.com/groups/123",
             )
         )
-        app.services.targets.mark_target_error(
+        app.services.targets.restart_target_monitoring(target.id)
+        decision = app.services.targets.decide_scan_failure(
             target.id,
-            "timeout",
-            failure_reason="page_load_timeout",
-            failure_count=3,
+            "page_load_timeout",
+            source="playwright",
         )
+        app.services.targets.apply_scan_failure_decision(target.id, decision, "timeout")
+        skip = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        app.services.targets.apply_scan_skip_decision(target.id, skip)
+        seeded_state = app.repositories.runtime_states.get(target.id)
         app.services.targets.restart_target_monitoring(target.id)
         state = app.repositories.runtime_states.get(target.id)
 
+    assert seeded_state is not None
+    assert seeded_state.consecutive_failure_count == 1
+    assert seeded_state.consecutive_scan_skip_count == 1
     assert state is not None
     assert state.desired_state == TargetDesiredState.ACTIVE
     assert state.runtime_status == TargetRuntimeStatus.IDLE
@@ -181,6 +288,8 @@ def test_restart_target_monitoring_resets_runtime_and_requests_scan(
     assert state.last_error == ""
     assert state.consecutive_failure_reason == ""
     assert state.consecutive_failure_count == 0
+    assert state.consecutive_scan_skip_reason == ""
+    assert state.consecutive_scan_skip_count == 0
 
 
 def test_scan_request_during_running_survives_current_scan_finish(

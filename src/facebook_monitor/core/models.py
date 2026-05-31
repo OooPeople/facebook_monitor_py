@@ -415,6 +415,8 @@ class TargetRuntimeState:
     display_next_due_at: datetime | None = None
     consecutive_failure_reason: str = ""
     consecutive_failure_count: int = 0
+    consecutive_scan_skip_reason: str = ""
+    consecutive_scan_skip_count: int = 0
     updated_at: datetime = field(default_factory=utc_now)
 
     @property

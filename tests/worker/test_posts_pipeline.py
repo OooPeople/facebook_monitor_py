@@ -977,6 +977,63 @@ def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -
     assert notifications == []
 
 
+def test_scan_posts_page_escalates_third_sort_unconfirmed(tmp_path: Path) -> None:
+    """posts 排序未確認連續三輪後，升級交給 scan failure policy。"""
+
+    db_path = tmp_path / "app.db"
+    page = UnconfirmedSortFakePage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        scan_posts_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        scan_posts_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            scan_posts_page(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=3,
+                scroll_wait_ms=0,
+            )
+
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert excinfo.value.reason == "sort_adjust_unconfirmed"
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["skip_streak"] == 2
+    assert scan_count == 2
+
+
 def test_scan_posts_page_raises_content_unavailable_before_sort(tmp_path: Path) -> None:
     """內容不可見頁應分類成 target 失效，不應落到排序失敗。"""
 

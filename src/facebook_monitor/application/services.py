@@ -27,6 +27,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
+from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
@@ -463,6 +464,49 @@ class TargetApplicationService:
 
         return self.runtime_service.mark_target_idle_if_owner(
             target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def decide_scan_skip(
+        self,
+        target_id: str,
+        reason: str,
+        *,
+        skip_limit: int,
+    ) -> ScanSkipDecision:
+        """依目前 skipped scan streak 決定是否升級為 failure。"""
+
+        return self.runtime_service.decide_scan_skip(
+            target_id,
+            reason,
+            skip_limit=skip_limit,
+        )
+
+    def apply_scan_skip_decision(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+    ) -> TargetRuntimeState:
+        """記錄保護性 skipped scan 並回 idle。"""
+
+        return self.runtime_service.apply_scan_skip_decision(target_id, decision)
+
+    def apply_scan_skip_decision_if_owner(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄 skipped scan state。"""
+
+        return self.runtime_service.apply_scan_skip_decision_if_owner(
+            target_id,
+            decision,
             worker_id=worker_id,
             started_at=started_at,
             page_id=page_id,

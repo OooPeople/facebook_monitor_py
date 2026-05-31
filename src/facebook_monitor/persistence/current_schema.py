@@ -253,6 +253,8 @@ CREATE TABLE IF NOT EXISTS target_runtime_state (
     display_next_due_at TEXT NOT NULL DEFAULT '',
     consecutive_failure_reason TEXT NOT NULL DEFAULT '',
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failure_count >= 0),
+    consecutive_scan_skip_reason TEXT NOT NULL DEFAULT '',
+    consecutive_scan_skip_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_scan_skip_count >= 0),
     updated_at TEXT NOT NULL
 );
 

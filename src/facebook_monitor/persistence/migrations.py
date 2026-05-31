@@ -133,6 +133,20 @@ V12_TO_13_COLUMNS = (
 )
 
 
+V32_TO_33_COLUMNS = (
+    MigrationColumn(
+        "target_runtime_state",
+        "consecutive_scan_skip_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    ),
+    MigrationColumn(
+        "target_runtime_state",
+        "consecutive_scan_skip_count",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_scan_skip_count >= 0)",
+    ),
+)
+
+
 def migrate_10_to_11(connection: sqlite3.Connection) -> None:
     """將舊 target-scoped config 搬到 group-scoped config。"""
 
@@ -735,6 +749,13 @@ def migrate_31_to_32(connection: sqlite3.Connection) -> None:
     _backfill_target_dedupe_state(connection)
     _backfill_logical_items_from_seen_items(connection)
     _backfill_notification_dedupe_from_outbox(connection)
+
+
+def migrate_32_to_33(connection: sqlite3.Connection) -> None:
+    """新增 skipped scan 連續計數欄位，支援排序未確認升級重試。"""
+
+    for column in V32_TO_33_COLUMNS:
+        add_column_if_missing(connection, column)
 
 
 def ensure_v32_logical_dedupe_schema(connection: sqlite3.Connection) -> None:
@@ -1515,6 +1536,7 @@ MIGRATIONS: dict[int, Migration] = {
     29: migrate_29_to_30,
     30: migrate_30_to_31,
     31: migrate_31_to_32,
+    32: migrate_32_to_33,
 }
 
 
@@ -1702,6 +1724,7 @@ __all__ = [
     "migrate_29_to_30",
     "migrate_30_to_31",
     "migrate_31_to_32",
+    "migrate_32_to_33",
     "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

@@ -68,6 +68,7 @@ class PostsScanSummary:
     matched_count: int
     scan_run_id: int
     round_stats: tuple[ExtractRoundStats, ...]
+    scan_skipped: bool = False
 
 
 class NotificationSender(NtfySender, Protocol):
@@ -254,6 +255,7 @@ def scan_posts_page(
             matched_count=0,
             scan_run_id=finalize_result.scan_run_id,
             round_stats=(),
+            scan_skipped=True,
         )
     items, round_stats, collection_meta = collect_items_with_diagnostics(
         page=page,
@@ -341,6 +343,7 @@ async def scan_posts_page_async(
             matched_count=0,
             scan_run_id=finalize_result.scan_run_id,
             round_stats=(),
+            scan_skipped=True,
         )
     items, round_stats, collection_meta = await collect_items_with_diagnostics_async(
         page=page,

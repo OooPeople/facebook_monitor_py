@@ -31,6 +31,8 @@ from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
@@ -139,7 +141,7 @@ UNGUARDED_SCAN_COMMIT: ScanCommitGuard | None = None
 """明確標示 debug / one-shot 入口允許不綁定 runtime admission identity。"""
 
 SORT_ADJUST_UNCONFIRMED_STOP_REASON = "sort_adjust_unconfirmed_skip"
-SORT_ADJUST_UNCONFIRMED_SKIP_REASON = "sort_adjust_unconfirmed"
+SORT_ADJUST_UNCONFIRMED_SKIP_REASON = SORT_ADJUST_UNCONFIRMED_REASON
 
 
 def scan_commit_guard_from_runtime_state(
@@ -163,16 +165,34 @@ def record_skipped_scan(
     metadata: dict[str, Any],
     commit_guard: ScanCommitGuard | None = None,
 ) -> ScanFinalizeResult:
-    """記錄保護性跳過的 scan run，且清空本輪 latest scan 快照。"""
+    """記錄保護性 skipped scan；達門檻時升級為 worker failure。"""
 
     begin_scan_commit_transaction(app)
     ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
+    skip_reason = str(
+        metadata.get("skip_reason") or SORT_ADJUST_UNCONFIRMED_SKIP_REASON
+    )
+    skip_decision = app.services.targets.decide_scan_skip(
+        target.id,
+        skip_reason,
+        skip_limit=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_skip_limit,
+    )
+    if skip_decision.escalate:
+        raise WorkerFailure(
+            skip_decision.reason,
+            (
+                "protective scan skip reached "
+                f"{skip_decision.skip_streak}/{skip_decision.skip_limit}"
+            ),
+        )
     scan_metadata = dict(metadata)
     scan_metadata.setdefault("scan_skipped", True)
-    scan_metadata.setdefault("skip_reason", SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
+    scan_metadata.setdefault("skip_reason", skip_decision.reason)
     scan_metadata.setdefault("stop_reason", SORT_ADJUST_UNCONFIRMED_STOP_REASON)
     scan_metadata.setdefault("new_count", 0)
     scan_metadata.setdefault("matched_count", 0)
+    scan_metadata.setdefault("skip_streak", skip_decision.skip_streak)
+    scan_metadata.setdefault("skip_limit", skip_decision.skip_limit)
     scan_run_id = app.services.scans.record_scan(
         RecordScanRequest(
             target_id=target.id,
@@ -183,6 +203,21 @@ def record_skipped_scan(
         )
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, [])
+    if commit_guard is None:
+        app.services.targets.apply_scan_skip_decision(target.id, skip_decision)
+    else:
+        updated_state = app.services.targets.apply_scan_skip_decision_if_owner(
+            target.id,
+            skip_decision,
+            worker_id=commit_guard.worker_id,
+            started_at=commit_guard.started_at,
+            page_id=commit_guard.page_id,
+        )
+        if updated_state is None:
+            raise WorkerFailure(
+                TARGET_STOPPED_REASON,
+                "target stopped before skipped scan finalize",
+            )
     return ScanFinalizeResult(
         scan_run_id=scan_run_id,
         new_items=(),

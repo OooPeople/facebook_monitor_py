@@ -19,6 +19,7 @@ from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
@@ -43,6 +44,7 @@ _FAILURE_REASON_LABELS = {
     EXTRACTOR_EMPTY_REASON: "未抽取到可用項目",
     SCAN_TIMEOUT_REASON: "掃描逾時",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入逾時",
+    SORT_ADJUST_UNCONFIRMED_REASON: "調整排序失敗",
     "scheduler_stopping": "背景掃描正在停止",
     TARGET_STOPPED_REASON: "監視項目已停止",
     TARGET_MISSING_REASON: "找不到監視項目",
@@ -65,6 +67,7 @@ _FAILURE_REASON_DETAILS = {
     EXTRACTOR_EMPTY_REASON: "頁面載入完成但沒有抽取到可辨識的貼文或留言，系統會重啟頁面並重試。",
     SCAN_TIMEOUT_REASON: "本輪掃描超過設定時間，系統已中止本輪並會重啟頁面重試。",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入、重新導向或重新整理時中斷，掃描中的頁面內容已失效；請稍後重試。",
+    SORT_ADJUST_UNCONFIRMED_REASON: "連續多輪未能確認 Facebook 排序已切到最新，系統會重啟頁面並重試。",
     "scheduler_stopping": "背景掃描服務正在停止，本輪掃描已取消。",
     TARGET_STOPPED_REASON: "監視項目在掃描期間被停止，本輪掃描已取消。",
     TARGET_MISSING_REASON: "掃描前找不到這個監視項目，可能已被刪除。",

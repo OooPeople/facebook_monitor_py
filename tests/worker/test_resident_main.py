@@ -22,6 +22,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
@@ -30,6 +31,7 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
@@ -49,6 +51,7 @@ from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.scan_finalize import record_skipped_scan
 
 
 class FakeAsyncPage:
@@ -3020,6 +3023,82 @@ def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) 
     assert latest_scan.metadata["retryable"] is False
     assert latest_scan.metadata["retry_streak"] == 3
     assert latest_scan.metadata["retry_limit"] == 3
+
+
+def test_resident_main_escalates_sort_skip_after_three_skipped_scans(
+    tmp_path: Path,
+) -> None:
+    """async resident 的 sort skip 前兩次只跳過，第三次折算 recoverable failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def skipping_scan_page(**kwargs: Any) -> PostsScanSummary:
+        result = record_skipped_scan(
+            app=kwargs["app"],
+            target=kwargs["target"],
+            metadata={
+                "worker": "resident_main",
+                "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
+            },
+            commit_guard=kwargs["commit_guard"],
+        )
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=str(kwargs["page"].url),
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=result.scan_run_id,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        context = FakeAsyncBrowserContext()
+        page_pool = AsyncResidentPagePool(context)
+        for attempt in range(1, 4):
+            with SqliteApplicationContext(db_path) as app:
+                app.services.targets.request_target_scan(target.id)
+            summary = await run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                ),
+                page_pool=page_pool,
+                scan_page=skipping_scan_page,
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=attempt,
+            )
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+            assert state is not None
+            assert latest_scan is not None
+            if attempt < 3:
+                assert summary.failure_count == 0
+                assert summary.skipped_count == 1
+                assert latest_scan.status == ScanStatus.SUCCESS
+                assert state.consecutive_scan_skip_count == attempt
+            else:
+                assert summary.failure_count == 1
+                assert latest_scan.status == ScanStatus.FAILED
+                assert latest_scan.metadata["reason"] == SORT_ADJUST_UNCONFIRMED_REASON
+                assert latest_scan.metadata["retry_streak"] == 1
+                assert state.runtime_status == TargetRuntimeStatus.IDLE
+                assert state.consecutive_failure_count == 1
+                assert state.consecutive_scan_skip_count == 0
+                assert await page_pool.size() == 0
+                assert context.pages[-1].closed is True
+
+    asyncio.run(run_test())
 
 
 def test_resident_main_page_load_timeout_retries_until_third_failure(

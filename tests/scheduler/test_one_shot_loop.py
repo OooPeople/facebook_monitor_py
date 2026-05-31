@@ -14,6 +14,7 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.one_shot_loop import SchedulerOptions
 from facebook_monitor.scheduler.one_shot_loop import list_schedulable_target_ids
 from facebook_monitor.scheduler.one_shot_loop import run_one_shot_scheduler_loop
@@ -23,6 +24,7 @@ from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_ta
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
+from facebook_monitor.worker.scan_finalize import record_skipped_scan
 
 
 def test_list_schedulable_target_ids_respects_target_stop(tmp_path: Path) -> None:
@@ -666,6 +668,82 @@ def test_scheduler_loop_retries_extractor_empty_until_third_failure(
             assert "會重啟" not in latest_scan.error_message
             assert latest_scan.metadata["runtime_action"] == "error"
             assert latest_scan.metadata["retryable"] is False
+
+
+def test_scheduler_loop_escalates_sort_skip_after_three_skipped_scans(
+    tmp_path: Path,
+) -> None:
+    """one-shot scheduler 的 sort skip 前兩次保護跳過，第三次才折算 failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def skipping_scan_once(options: OneShotScanOptions) -> PostsScanSummary:
+        """模擬 worker 在排序未確認時走 shared skipped finalize。"""
+
+        assert options.commit_guard is not None
+        with SqliteApplicationContext(db_path) as app:
+            selected_target = app.repositories.targets.get(options.target_id)
+            assert selected_target is not None
+            result = record_skipped_scan(
+                app=app,
+                target=selected_target,
+                metadata={
+                    "worker": "one_shot_scheduler",
+                    "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
+                },
+                commit_guard=options.commit_guard,
+            )
+        return PostsScanSummary(
+            target_id=options.target_id,
+            url="https://www.facebook.com/groups/111",
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=result.scan_run_id,
+            round_stats=(),
+        )
+
+    for attempt in range(1, 4):
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.request_target_scan(target.id)
+        summaries = run_one_shot_scheduler_loop(
+            SchedulerOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                max_cycles=1,
+            ),
+            scan_once=skipping_scan_once,
+            sleep_fn=lambda _seconds: None,
+        )
+        with SqliteApplicationContext(db_path) as app:
+            state = app.repositories.runtime_states.get(target.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        assert state is not None
+        assert latest_scan is not None
+        if attempt < 3:
+            assert summaries[0].failure_count == 0
+            assert summaries[0].skipped_count == 1
+            assert latest_scan.status == ScanStatus.SUCCESS
+            assert latest_scan.metadata["skip_streak"] == attempt
+            assert state.consecutive_scan_skip_count == attempt
+            assert state.consecutive_failure_count == 0
+        else:
+            assert summaries[0].failure_count == 1
+            assert latest_scan.status == ScanStatus.FAILED
+            assert latest_scan.metadata["reason"] == SORT_ADJUST_UNCONFIRMED_REASON
+            assert latest_scan.metadata["retry_streak"] == 1
+            assert latest_scan.metadata["retryable"] is True
+            assert state.runtime_status == TargetRuntimeStatus.IDLE
+            assert state.consecutive_failure_count == 1
+            assert state.consecutive_scan_skip_count == 0
 
 
 def test_scheduler_loop_marks_page_load_timeout_error_after_third_failure(

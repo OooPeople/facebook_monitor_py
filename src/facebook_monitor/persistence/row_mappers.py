@@ -212,6 +212,8 @@ def runtime_state_from_row(row: sqlite3.Row) -> TargetRuntimeState:
         display_next_due_at=decode_datetime(row["display_next_due_at"]),
         consecutive_failure_reason=row["consecutive_failure_reason"],
         consecutive_failure_count=row["consecutive_failure_count"],
+        consecutive_scan_skip_reason=row["consecutive_scan_skip_reason"],
+        consecutive_scan_skip_count=row["consecutive_scan_skip_count"],
         updated_at=updated_at,
     )
 

@@ -24,12 +24,14 @@ from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.notifications.outbox_service import enqueue_runtime_failure_notifications
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
@@ -1054,6 +1056,150 @@ def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
         )
 
     assert saw_write_transaction == [True]
+
+
+def test_record_skipped_scan_escalates_on_third_sort_skip(
+    tmp_path: Path,
+) -> None:
+    """第三次排序保護性 skip 應升級成 WorkerFailure，不再寫 skipped success。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        record_skipped_scan(
+            app=app,
+            target=fixture.target,
+            metadata={"worker": "test_worker"},
+            commit_guard=fixture.commit_guard,
+        )
+        state = app.services.targets.mark_target_running(
+            fixture.target.id,
+            "worker-b",
+            page_id="page-b",
+        )
+        second_guard = scan_commit_guard_from_runtime_state(state)
+        record_skipped_scan(
+            app=app,
+            target=fixture.target,
+            metadata={"worker": "test_worker"},
+            commit_guard=second_guard,
+        )
+        state = app.services.targets.mark_target_running(
+            fixture.target.id,
+            "worker-c",
+            page_id="page-c",
+        )
+        third_guard = scan_commit_guard_from_runtime_state(state)
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            record_skipped_scan(
+                app=app,
+                target=fixture.target,
+                metadata={"worker": "test_worker"},
+                commit_guard=third_guard,
+            )
+
+        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
+        runtime_state = app.repositories.runtime_states.get(fixture.target.id)
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (fixture.target.id,),
+        ).fetchone()[0]
+
+    assert excinfo.value.reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["skip_streak"] == 2
+    assert scan_count == 2
+    assert runtime_state is not None
+    assert runtime_state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert runtime_state.consecutive_scan_skip_count == 2
+
+
+def test_sort_adjust_skip_notifies_after_three_escalated_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3 次排序 skip 折算 1 次 failure；第 3 次 failure 才排 runtime 通知。"""
+
+    queued_notifications: list[dict[str, object]] = []
+
+    def fake_queue_runtime_failure_notifications_after_commit(
+        **kwargs: object,
+    ) -> tuple[object, ...]:
+        """記錄 terminal runtime failure notification 參數，不做外部 I/O。"""
+
+        queued_notifications.append(dict(kwargs))
+        return ()
+
+    monkeypatch.setattr(
+        scan_failure_finalize_module,
+        "queue_runtime_failure_notifications_after_commit",
+        fake_queue_runtime_failure_notifications_after_commit,
+    )
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+            )
+        )
+        target = _activate_target(app, target)
+        decisions = []
+        for _attempt_index in range(9):
+            try:
+                record_skipped_scan(
+                    app=app,
+                    target=target,
+                    metadata={"worker": "test_worker"},
+                    commit_guard=UNGUARDED_SCAN_COMMIT,
+                )
+            except WorkerFailure as exc:
+                decision = record_guarded_scan_failure(
+                    app=app,
+                    target_id=target.id,
+                    reason=exc.reason,
+                    message=str(exc),
+                    source="worker_failure",
+                    worker_path="test_worker",
+                    commit_guard=UNGUARDED_SCAN_COMMIT,
+                    exception_class=exc.__class__.__name__,
+                )
+                assert decision is not None
+                decisions.append(decision)
+
+        state = app.repositories.runtime_states.get(target.id)
+        success_count = app.repositories.scan_runs.connection.execute(
+            """
+            SELECT COUNT(*) FROM scan_runs
+            WHERE target_id = ? AND status = ?
+            """,
+            (target.id, ScanStatus.SUCCESS.value),
+        ).fetchone()[0]
+        failed_count = app.repositories.scan_runs.connection.execute(
+            """
+            SELECT COUNT(*) FROM scan_runs
+            WHERE target_id = ? AND status = ?
+            """,
+            (target.id, ScanStatus.FAILED.value),
+        ).fetchone()[0]
+
+    assert [decision.retry_streak for decision in decisions] == [1, 2, 3]
+    assert decisions[0].auto_restart is True
+    assert decisions[1].auto_restart is True
+    assert decisions[2].terminal is True
+    assert success_count == 6
+    assert failed_count == 3
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.ERROR
+    assert state.consecutive_failure_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert state.consecutive_failure_count == 3
+    assert state.consecutive_scan_skip_count == 0
+    assert len(queued_notifications) == 1
+    assert queued_notifications[0]["reason"] == SORT_ADJUST_UNCONFIRMED_REASON
+    assert queued_notifications[0]["failure_count"] == 3
 
 
 def test_restart_monitoring_preserves_previously_seen_match_notification_state(

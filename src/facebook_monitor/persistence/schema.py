@@ -9,7 +9,8 @@ from facebook_monitor.persistence.current_schema import ensure_dashboard_revisio
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
+MIN_SUPPORTED_SCHEMA_VERSION = 10
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -36,6 +37,12 @@ def read_supported_schema_version(connection: sqlite3.Connection) -> int:
         raise RuntimeError(
             f"Unsupported SQLite schema version {existing_version}. "
             f"This app supports up to version {SCHEMA_VERSION}."
+        )
+    if 0 < existing_version < MIN_SUPPORTED_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Unsupported SQLite schema version {existing_version}. "
+            f"This app supports automatic migration from version "
+            f"{MIN_SUPPORTED_SCHEMA_VERSION}."
         )
     return existing_version
 

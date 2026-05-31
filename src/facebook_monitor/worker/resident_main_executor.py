@@ -25,9 +25,11 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
@@ -52,9 +54,6 @@ from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_fa
 
 
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
-SCHEDULER_RUNTIME_RESTART_ACTION = "scheduler_runtime_restart"
-
-
 class AsyncResidentPageLike(Protocol):
     """resident executor page preparation 需要的 async Playwright page 能力。"""
 
@@ -351,7 +350,11 @@ class ExecutorWorkerPool:
             await prepare_resident_main_page(
                 page=page,
                 target=resident_target,
-                timeout_ms=max(self.options.scan_timeout_seconds, 10) * 1000,
+                timeout_ms=max(
+                    self.options.scan_timeout_seconds,
+                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                )
+                * 1000,
             )
             reloaded_at = await self.page_pool.mark_reloaded_if_page_id(
                 target_id,
@@ -442,7 +445,7 @@ class ExecutorWorkerPool:
             record_guarded_scan_failure_for_db(
                 db_path=self.options.db_path,
                 target_id=target_id,
-                reason="scheduler_stopping",
+                reason=SCHEDULER_STOPPING_REASON,
                 message="resident scheduler is stopping",
                 source="scheduler_cancel",
                 worker_path="resident_main",

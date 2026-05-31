@@ -77,6 +77,15 @@ class NotificationOutboxStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class NotificationDedupeStatus(StrEnum):
+    """通知 dedupe ledger 狀態。"""
+
+    QUEUED = "queued"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class TargetDesiredState(StrEnum):
     """target 在 scheduler 中期望維持的狀態。"""
 

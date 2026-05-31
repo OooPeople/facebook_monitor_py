@@ -50,6 +50,8 @@ class ScanFailureMetadata:
     runtime_action: str = ""
     retry_streak: int = 0
     retry_limit: int = 0
+    auto_restart: bool = False
+    recovery_action: str = ""
     raw_failure_detail: str = ""
 
     def to_metadata(self) -> dict[str, Any]:
@@ -69,6 +71,10 @@ class ScanFailureMetadata:
             metadata["page_reused"] = self.page_reused
         if self.runtime_action:
             metadata["runtime_action"] = self.runtime_action
+        if self.recovery_action:
+            metadata["recovery_action"] = self.recovery_action
+        if self.auto_restart:
+            metadata["auto_restart"] = True
         if self.retry_limit > 0:
             metadata["retry_streak"] = max(self.retry_streak, 0)
             metadata["retry_limit"] = self.retry_limit
@@ -94,6 +100,8 @@ def record_scan_failure(
     runtime_action: str = "",
     retry_streak: int = 0,
     retry_limit: int = 0,
+    auto_restart: bool = False,
+    recovery_action: str = "",
     force_record: bool = False,
     error_message_override: str = "",
 ) -> int:
@@ -132,6 +140,8 @@ def record_scan_failure(
                 runtime_action=runtime_action,
                 retry_streak=retry_streak,
                 retry_limit=retry_limit,
+                auto_restart=auto_restart,
+                recovery_action=recovery_action,
                 raw_failure_detail=message,
             ).to_metadata(),
         )
@@ -181,7 +191,7 @@ def record_guarded_scan_failure(
     scan_run_id = record_scan_failure(
         app=app,
         target=target,
-        reason=reason,
+        reason=decision.reason,
         message=message,
         worker_path=worker_path,
         worker_mode=worker_mode,
@@ -193,6 +203,8 @@ def record_guarded_scan_failure(
         runtime_action=decision.runtime_action,
         retry_streak=decision.retry_streak,
         retry_limit=decision.retry_limit,
+        auto_restart=decision.auto_restart,
+        recovery_action=decision.recovery_action,
         force_record=decision.counts_toward_streak or decision.terminal,
         error_message_override=scan_error_message,
     )
@@ -220,18 +232,13 @@ def record_guarded_scan_failure(
         updated_state = guarded_state
     if decision.terminal and scan_run_id > 0:
         config = app.services.targets.get_config_for_target(target)
-        failure_count = (
-            decision.retry_streak
-            if decision.counts_toward_streak
-            else max(decision.retry_streak, 1)
-        )
         queue_runtime_failure_notifications_after_commit(
             app=app,
             target=target,
             config=config,
             scan_run_id=scan_run_id,
             reason=decision.reason,
-            failure_count=failure_count,
+            failure_count=decision.notification_failure_count,
             error_message=updated_state.last_error or runtime_message,
         )
     return decision
@@ -308,29 +315,27 @@ def record_active_targets_runtime_failure_notifications(
 
     normalized_reason = str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
     scan_run_count = 0
+    begin_scan_commit_transaction(app)
     for target in app.repositories.targets.list_enabled():
         if target.target_kind not in {TargetKind.POSTS, TargetKind.COMMENTS}:
             continue
-        runtime_state = app.services.targets.ensure_runtime_state(target.id)
-        if runtime_state.desired_state != TargetDesiredState.ACTIVE:
-            continue
-        if runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
+        if not _target_allows_active_runtime_failure(app, target.id):
             continue
         decision = app.services.targets.decide_scan_failure(
             target.id,
             normalized_reason,
             source="unknown_exception",
         )
-        runtime_message = format_scan_failure_message(normalized_reason, message)
+        runtime_message = format_scan_failure_message(decision.reason, message)
         scan_error_message = format_scan_failure_run_message(
-            reason=normalized_reason,
+            reason=decision.reason,
             message=message,
             decision=decision,
         )
         scan_run_id = record_scan_failure(
             app=app,
             target=target,
-            reason=normalized_reason,
+            reason=decision.reason,
             message=message,
             worker_path=worker_path,
             worker_mode=worker_mode,
@@ -339,6 +344,8 @@ def record_active_targets_runtime_failure_notifications(
             runtime_action=decision.runtime_action,
             retry_streak=decision.retry_streak,
             retry_limit=decision.retry_limit,
+            auto_restart=decision.auto_restart,
+            recovery_action=decision.recovery_action,
             force_record=decision.counts_toward_streak or decision.terminal,
             error_message_override=scan_error_message,
         )
@@ -358,16 +365,28 @@ def record_active_targets_runtime_failure_notifications(
             target=target,
             config=config,
             scan_run_id=scan_run_id,
-            reason=normalized_reason,
-            failure_count=(
-                decision.retry_streak
-                if decision.counts_toward_streak
-                else max(decision.retry_streak, 1)
-            ),
+            reason=decision.reason,
+            failure_count=decision.notification_failure_count,
             error_message=updated_state.last_error or runtime_message,
             target_stopped=True,
         )
     return scan_run_count
+
+
+def _target_allows_active_runtime_failure(
+    app: ApplicationContext,
+    target_id: str,
+) -> bool:
+    """確認全域 runtime failure 仍可套用到目前 active target。"""
+
+    target = app.repositories.targets.get(target_id)
+    if target is None or not target.enabled or target.paused:
+        return False
+    runtime_state = app.services.targets.ensure_runtime_state(target_id)
+    return (
+        runtime_state.desired_state == TargetDesiredState.ACTIVE
+        and runtime_state.runtime_status != TargetRuntimeStatus.ERROR
+    )
 
 
 def format_scan_failure_message(reason: str, message: str) -> str:

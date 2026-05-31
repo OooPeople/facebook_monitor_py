@@ -285,8 +285,24 @@ def enqueue_runtime_failure_notifications(
         target_stopped=target_stopped,
     )
     item_key = f"runtime-failure:{scan_run_id}"
+    item_kind = (
+        ItemKind.COMMENT
+        if target.target_kind.value == "comments"
+        else ItemKind.POST
+    )
     entries: list[NotificationOutboxEntry] = []
     for plan in build_enabled_channel_plans(config):
+        reservation = app.repositories.notification_dedupe.reserve_runtime_failure(
+            target_id=target.id,
+            scan_run_id=scan_run_id,
+            item_key=item_key,
+            item_kind=item_kind,
+            channel=plan.channel,
+            failure_reason=reason,
+            failure_count=max(int(failure_count), 1),
+        )
+        if not reservation.created:
+            continue
         entries.append(
             app.repositories.notification_outbox.enqueue(
                 NotificationOutboxEntry(
@@ -295,13 +311,10 @@ def enqueue_runtime_failure_notifications(
                         item_key=item_key,
                         channel=plan.channel,
                     ),
+                    dedupe_id=reservation.dedupe_id,
                     target_id=target.id,
                     item_key=item_key,
-                    item_kind=(
-                        ItemKind.COMMENT
-                        if target.target_kind.value == "comments"
-                        else ItemKind.POST
-                    ),
+                    item_kind=item_kind,
                     channel=plan.channel,
                     title=title,
                     message=message if not plan.use_compact_message else message.replace("\n", " | "),

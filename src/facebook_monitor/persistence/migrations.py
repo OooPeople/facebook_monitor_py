@@ -318,6 +318,7 @@ def migrate_13_to_14(connection: sqlite3.Connection) -> None:
             defaults.discord_webhook,
         ),
     )
+    connection.execute("DROP TABLE IF EXISTS group_configs")
 
 
 def migrate_14_to_15(connection: sqlite3.Connection) -> None:
@@ -756,6 +757,12 @@ def migrate_32_to_33(connection: sqlite3.Connection) -> None:
 
     for column in V32_TO_33_COLUMNS:
         add_column_if_missing(connection, column)
+
+
+def migrate_33_to_34(connection: sqlite3.Connection) -> None:
+    """移除 legacy group_configs，避免舊 webhook secrets 留在正式 DB。"""
+
+    connection.execute("DROP TABLE IF EXISTS group_configs")
 
 
 def ensure_v32_logical_dedupe_schema(connection: sqlite3.Connection) -> None:
@@ -1537,6 +1544,7 @@ MIGRATIONS: dict[int, Migration] = {
     30: migrate_30_to_31,
     31: migrate_31_to_32,
     32: migrate_32_to_33,
+    33: migrate_33_to_34,
 }
 
 
@@ -1725,6 +1733,7 @@ __all__ = [
     "migrate_30_to_31",
     "migrate_31_to_32",
     "migrate_32_to_33",
+    "migrate_33_to_34",
     "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

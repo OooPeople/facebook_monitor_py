@@ -20,6 +20,7 @@ from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
@@ -30,6 +31,8 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
+from facebook_monitor.core.scan_failure_policy import TARGET_PAGE_RESTART_ACTION
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.keyword_groups import keyword_group_slots
@@ -757,6 +760,8 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
     assert active_run.metadata["reason"] == SCHEDULER_RUNTIME_REASON
     assert active_run.metadata["retry_streak"] == 3
     assert active_run.metadata["retry_limit"] == 3
+    assert active_run.metadata["recovery_action"] == SCHEDULER_RUNTIME_RESTART_ACTION
+    assert "auto_restart" not in active_run.metadata
     assert "已連續 3 次失敗" in active_run.error_message
     assert "會重啟" not in active_run.error_message
     assert stopped_run is None
@@ -768,6 +773,7 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
     entry = entries[0]
     assert entry.target_id == active.id
     assert entry.event_kind == NotificationEventKind.RUNTIME_FAILURE
+    assert entry.dedupe_id is not None
     assert entry.source_scan_run_id is not None
     assert entry.failure_reason == SCHEDULER_RUNTIME_REASON
     assert entry.failure_count == 3
@@ -827,6 +833,8 @@ def test_active_targets_unknown_runtime_failure_uses_default_retry_limit(
                 assert entries == []
                 assert latest_scan.metadata["runtime_action"] == "will_retry"
                 assert latest_scan.metadata["retryable"] is True
+                assert latest_scan.metadata["auto_restart"] is True
+                assert latest_scan.metadata["recovery_action"] == TARGET_PAGE_RESTART_ACTION
             else:
                 assert state.runtime_status == TargetRuntimeStatus.ERROR
                 assert state.consecutive_failure_count == 3
@@ -834,6 +842,8 @@ def test_active_targets_unknown_runtime_failure_uses_default_retry_limit(
                 assert "會重啟" not in latest_scan.error_message
                 assert latest_scan.metadata["runtime_action"] == "error"
                 assert latest_scan.metadata["retryable"] is False
+                assert "auto_restart" not in latest_scan.metadata
+                assert latest_scan.metadata["recovery_action"] == TARGET_PAGE_RESTART_ACTION
                 assert len(entries) == 1
                 assert entries[0].failure_reason == "unknown"
                 assert entries[0].failure_count == 3
@@ -1008,14 +1018,39 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
             failure_count=2,
             error_message="背景掃描執行錯誤",
         )
+        duplicate_entries = enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=123,
+            reason=SCHEDULER_RUNTIME_REASON,
+            failure_count=2,
+            error_message="背景掃描執行錯誤",
+        )
 
         sent_count = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
         event = app.repositories.notification_events.latest_by_target(target.id)
+        assert entries[0].dedupe_id is not None
+        dedupe_row = app.repositories.notification_outbox.connection.execute(
+            """
+            SELECT
+                event_kind,
+                status,
+                logical_item_id,
+                failure_reason,
+                failure_count,
+                notification_event_id
+            FROM notification_dedupe
+            WHERE id = ?
+            """,
+            (entries[0].dedupe_id,),
+        ).fetchone()
 
     assert len(entries) == 1
+    assert duplicate_entries == ()
     assert sent_count == 1
     assert sent_messages
     assert event is not None
@@ -1023,6 +1058,13 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
     assert event.source_scan_run_id == 123
     assert event.failure_reason == SCHEDULER_RUNTIME_REASON
     assert event.failure_count == 2
+    assert dedupe_row is not None
+    assert dedupe_row["event_kind"] == NotificationEventKind.RUNTIME_FAILURE.value
+    assert dedupe_row["status"] == NotificationDedupeStatus.SENT.value
+    assert dedupe_row["logical_item_id"] is None
+    assert dedupe_row["failure_reason"] == SCHEDULER_RUNTIME_REASON
+    assert dedupe_row["failure_count"] == 2
+    assert dedupe_row["notification_event_id"] is not None
 
 
 def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(

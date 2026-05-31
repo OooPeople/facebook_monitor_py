@@ -729,6 +729,41 @@ def test_initialize_schema_migrates_v33_runtime_scan_skip_columns(
     assert runtime_row["consecutive_scan_skip_count"] == 0
 
 
+def test_initialize_schema_v34_drops_stale_group_configs_from_currentish_db(
+    tmp_path: Path,
+) -> None:
+    """v33 之後仍殘留的 legacy group_configs 也必須被 forward migration 移除。"""
+
+    db_path = tmp_path / "app.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '33');
+            CREATE TABLE group_configs (
+                group_id TEXT PRIMARY KEY,
+                discord_webhook TEXT NOT NULL
+            );
+            INSERT INTO group_configs (group_id, discord_webhook)
+            VALUES ('legacy', 'https://discord.com/api/webhooks/secret');
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        has_group_configs = table_exists(connection, "group_configs")
+
+    assert version == str(SCHEMA_VERSION)
+    assert not has_group_configs
+
+
 def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
     """schema 初始化會移除舊版 dashboard revision triggers，避免長時間 UI 更新過密。"""
 
@@ -1654,11 +1689,7 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
             "targets",
             "metadata_error",
         )
-        has_group_discord_webhook = table_has_column(
-            connection,
-            "group_configs",
-            "discord_webhook",
-        )
+        has_group_configs = table_exists(connection, "group_configs")
 
     assert version == str(SCHEMA_VERSION)
     assert has_outbox_endpoint
@@ -1674,7 +1705,7 @@ def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Pat
     assert has_target_exclude_ignore
     assert has_target_metadata_status
     assert has_target_metadata_error
-    assert has_group_discord_webhook
+    assert not has_group_configs
 
 
 def test_initialize_schema_migrates_v27_cover_refresh_state_to_current(
@@ -1811,6 +1842,7 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
         )
         fallback_config = target_config_repository(connection).get_for_target(fallback_target)
         defaults_config = target_config_repository(connection).get_for_target(defaults_target)
+        has_group_configs = table_exists(connection, "group_configs")
 
     assert version == str(SCHEMA_VERSION)
     assert posts_config is not None
@@ -1843,6 +1875,7 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
     assert fallback_config.include_keywords == ("fallback",)
     assert defaults_config is not None
     assert defaults_config.include_keywords == ()
+    assert not has_group_configs
 
 
 def create_raw_v12_missing_columns_schema(connection: sqlite3.Connection) -> None:
@@ -2278,6 +2311,38 @@ def test_initialize_schema_rejects_existing_db_with_invalid_schema_version(
         assert "valid schema_metadata version" in str(exc)
     else:
         raise AssertionError("existing DB with invalid schema version should fail fast")
+
+
+def test_initialize_schema_rejects_too_old_schema_before_creating_current_tables(
+    tmp_path: Path,
+) -> None:
+    """低於支援下限的 schema 不應先建立 current tables 才失敗。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO schema_metadata (key, value) VALUES ('version', '9')")
+
+    try:
+        with SqliteConnection(db_path) as sqlite:
+            initialize_schema(sqlite.require_connection())
+    except RuntimeError as exc:
+        assert "Unsupported SQLite schema version 9" in str(exc)
+        assert "automatic migration from version 10" in str(exc)
+    else:
+        raise AssertionError("schema version below migration floor should fail fast")
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        table_names = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert table_names == {"schema_metadata"}
 
 
 def test_initialize_schema_rejects_future_schema_version(tmp_path: Path) -> None:
@@ -2882,6 +2947,80 @@ def test_notification_dedupe_blocks_duplicate_after_terminal_outbox_pruned(
 
     assert first.created
     assert not second.created
+
+
+def test_notification_dedupe_duplicate_match_preserves_failed_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """match dedupe duplicate 不應清空既有 failed ledger 診斷。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_result = LogicalItemRepository(connection).mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="item-a",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("item-a",),
+        )
+        dedupe_repo = NotificationDedupeRepository(connection)
+        first = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=logical_result.logical_item_id,
+            item_key="item-a",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        outbox_repo = notification_outbox_repository(connection)
+        outbox = outbox_repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-a:ntfy",
+                dedupe_id=first.dedupe_id,
+                target_id=target.id,
+                item_key="item-a",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        assert outbox.id is not None
+        outbox_repo.mark_result(
+            entry_id=outbox.id,
+            status=NotificationOutboxStatus.FAILED,
+            attempts=1,
+            message="ntfy failed",
+        )
+        second = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=logical_result.logical_item_id,
+            item_key="item-a",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        dedupe_row = connection.execute(
+            """
+            SELECT status, failure_reason, failure_count
+            FROM notification_dedupe
+            WHERE id = ?
+            """,
+            (first.dedupe_id,),
+        ).fetchone()
+
+    assert not second.created
+    assert dedupe_row is not None
+    assert dedupe_row["status"] == "failed"
+    assert dedupe_row["failure_reason"] == "ntfy failed"
+    assert dedupe_row["failure_count"] == 0
 
 
 def test_notification_outbox_clear_failed_only_deletes_failed_rows(
@@ -3862,3 +4001,52 @@ def test_match_history_repository_preserves_latest_scan_display_order(
             "newer",
             "older",
         ]
+
+
+def test_match_history_repository_batch_window_matches_single_target_order(
+    tmp_path: Path,
+) -> None:
+    """批次查詢每個 target 的 window 排序要與單 target 查詢一致。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        targets = TargetRepository(connection)
+        history = MatchHistoryRepository(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        targets.save(target)
+        base_time = utc_now()
+        history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                item_kind=ItemKind.POST,
+                item_key="newer",
+                include_rule="票",
+                text="newer",
+                notified_at=base_time + timedelta(seconds=1),
+                created_at=base_time + timedelta(seconds=1),
+            )
+        )
+        history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                item_kind=ItemKind.POST,
+                item_key="older",
+                include_rule="票",
+                text="older",
+                notified_at=base_time,
+                created_at=base_time,
+            )
+        )
+
+        single = history.list_by_target(target.id, limit=1)
+        batch = history.list_by_targets([target.id], limit_per_target=1)
+
+    assert [entry.item_key for entry in single] == ["newer"]
+    assert [entry.item_key for entry in batch[target.id]] == ["newer"]

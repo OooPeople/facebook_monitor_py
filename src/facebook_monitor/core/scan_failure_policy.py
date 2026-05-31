@@ -17,6 +17,7 @@ from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
@@ -39,7 +40,7 @@ TargetFailureAction = Literal["idle", "error"]
 FailureRuntimeAction = Literal["idle", "will_retry", "error"]
 
 IDLE_FAILURE_REASONS = frozenset({TARGET_STOPPED_REASON})
-SCHEDULER_CANCEL_IDLE_FAILURE_REASONS = frozenset({"scheduler_stopping"})
+SCHEDULER_CANCEL_IDLE_FAILURE_REASONS = frozenset({SCHEDULER_STOPPING_REASON})
 IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
     {
         CHECKPOINT_REQUIRED_REASON,
@@ -68,13 +69,15 @@ STREAK_RETRY_FAILURE_LIMITS = {
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_failure_limit
     ),
 }
+TARGET_PAGE_RESTART_ACTION = "target_page_restart"
+SCHEDULER_RUNTIME_RESTART_ACTION = "scheduler_runtime_restart"
 AUTO_RESTART_FAILURE_ACTIONS = {
-    PAGE_LOAD_TIMEOUT_REASON: "target_page_restart",
-    STALE_RUNNING_REASON: "target_page_restart",
-    SCHEDULER_RUNTIME_REASON: "scheduler_runtime_restart",
-    SORT_ADJUST_UNCONFIRMED_REASON: "target_page_restart",
+    PAGE_LOAD_TIMEOUT_REASON: TARGET_PAGE_RESTART_ACTION,
+    STALE_RUNNING_REASON: TARGET_PAGE_RESTART_ACTION,
+    SCHEDULER_RUNTIME_REASON: SCHEDULER_RUNTIME_RESTART_ACTION,
+    SORT_ADJUST_UNCONFIRMED_REASON: TARGET_PAGE_RESTART_ACTION,
 }
-DEFAULT_AUTO_RESTART_ACTION = "target_page_restart"
+DEFAULT_AUTO_RESTART_ACTION = TARGET_PAGE_RESTART_ACTION
 DISCARD_PAGE_FAILURE_SOURCES = frozenset(
     {"playwright", "unknown_exception", "runtime_recovery"}
 )
@@ -100,6 +103,14 @@ class ScanFailureDecision:
         """回傳本次失敗是否已讓 target 進入 error 停止排程。"""
 
         return self.target_action == "error"
+
+    @property
+    def notification_failure_count(self) -> int:
+        """回傳通知使用的失敗次數，保留 non-streak terminal 至少為 1。"""
+
+        if self.counts_toward_streak:
+            return self.retry_streak
+        return max(self.retry_streak, 1)
 
 
 def decide_scan_failure(
@@ -157,7 +168,7 @@ def decide_scan_failure(
         retryable=will_retry,
         target_action="idle" if will_retry else "error",
         runtime_action="will_retry" if will_retry else "error",
-        discard_page=discard_page or recovery_action == "target_page_restart",
+        discard_page=discard_page or recovery_action == TARGET_PAGE_RESTART_ACTION,
         counts_toward_streak=True,
         retry_streak=retry_streak,
         retry_limit=retry_limit,

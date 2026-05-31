@@ -607,16 +607,23 @@ def _runtime_state_allows_maintenance_refresh(
 
     if state is None:
         return True
-    if (
-        state.consecutive_failure_reason == SCHEDULER_RUNTIME_REASON
-        and state.scan_requested_at is not None
-    ):
+    if _runtime_state_has_pending_failure_retry(state):
         return False
     return state.runtime_status not in {
         TargetRuntimeStatus.QUEUED,
         TargetRuntimeStatus.RUNNING,
         TargetRuntimeStatus.ERROR,
     }
+
+
+def _runtime_state_has_pending_failure_retry(state: TargetRuntimeState) -> bool:
+    """判斷 target 是否正等待 failure policy 自動重試掃描。"""
+
+    return (
+        state.runtime_status == TargetRuntimeStatus.IDLE
+        and state.scan_requested_at is not None
+        and state.consecutive_failure_count > 0
+    )
 
 
 def record_refresh_runtime_failure(

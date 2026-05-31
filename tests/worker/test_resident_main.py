@@ -30,6 +30,7 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import DueTarget
@@ -38,6 +39,7 @@ from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import _is_playwright_driver_shutdown_exception
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
+from facebook_monitor.worker.resident_main import refresh_requested_target_metadata
 from facebook_monitor.worker.resident_main import refresh_target_group_cover_image_from_context
 from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
 from facebook_monitor.worker.resident_main import run_resident_main_cycle
@@ -51,6 +53,7 @@ from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
 
 
@@ -118,6 +121,30 @@ class FakeAsyncBrowserContext:
         """標記 browser context 已關閉。"""
 
         self.closed = True
+
+
+def test_list_active_resident_target_ids_excludes_error_runtime(tmp_path: Path) -> None:
+    """resident page pool 不應保留已進入 error 的 active target page。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active",
+                canonical_url="https://www.facebook.com/groups/active",
+            )
+        )
+        errored = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="errored",
+                canonical_url="https://www.facebook.com/groups/errored",
+            )
+        )
+        app.services.targets.restart_target_monitoring(active.id)
+        app.services.targets.restart_target_monitoring(errored.id)
+        app.services.targets.mark_target_error(errored.id, "terminal error")
+
+    assert list_active_resident_target_ids(db_path) == {active.id}
 
 
 class FakeMetadataLocator:
@@ -1483,6 +1510,58 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
+
+
+def test_metadata_refresh_defers_while_failure_retry_scan_is_pending(
+    tmp_path: Path,
+) -> None:
+    """page retry 等待期間，maintenance metadata refresh 不應搶先執行。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="retrying",
+                canonical_url="https://www.facebook.com/groups/retrying",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.mark_target_metadata_refresh_pending(target.id)
+        decision = app.services.targets.decide_scan_failure(
+            target.id,
+            PAGE_LOAD_TIMEOUT_REASON,
+            source="playwright",
+        )
+        app.services.targets.apply_scan_failure_decision(
+            target.id,
+            decision,
+            "page load timeout",
+        )
+
+    context = FakeMetadataBrowserContext()
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=context,
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert refreshed_count == 0
+    assert context.pages == []
+    assert updated is not None
+    assert updated.metadata_status == TargetMetadataStatus.PENDING
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.scan_requested_at is not None
+    assert state.consecutive_failure_reason == PAGE_LOAD_TIMEOUT_REASON
+    assert state.consecutive_failure_count == 1
 
 
 def test_resident_scheduler_tick_dispatches_existing_pending_outbox(

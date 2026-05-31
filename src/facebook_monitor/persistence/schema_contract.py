@@ -12,6 +12,7 @@ from typing import Any
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
@@ -79,6 +80,7 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         "item_kind",
         _enum_values(ItemKind),
     ),
+    SchemaEnumContract("logical_items", "id", "item_kind", _enum_values(ItemKind)),
     SchemaEnumContract("scan_runs", "id", "status", _enum_values(ScanStatus)),
     SchemaEnumContract("scan_runs", "id", "worker_mode", _enum_values(WorkerMode)),
     SchemaEnumContract(
@@ -122,6 +124,30 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         "id",
         "event_kind",
         _enum_values(NotificationEventKind),
+    ),
+    SchemaEnumContract(
+        "notification_dedupe",
+        "id",
+        "event_kind",
+        _enum_values(NotificationEventKind),
+    ),
+    SchemaEnumContract(
+        "notification_dedupe",
+        "id",
+        "channel",
+        _enum_values(NotificationChannel),
+    ),
+    SchemaEnumContract(
+        "notification_dedupe",
+        "id",
+        "item_kind",
+        _enum_values(ItemKind),
+    ),
+    SchemaEnumContract(
+        "notification_dedupe",
+        "id",
+        "status",
+        _enum_values(NotificationDedupeStatus),
     ),
     SchemaEnumContract(
         "target_runtime_state",
@@ -229,6 +255,36 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
     ),
     SchemaRangeContract(
         "notification_events",
+        "id",
+        "failure_count",
+        "failure_count < 0",
+    ),
+    SchemaRangeContract(
+        "target_dedupe_state",
+        "target_id",
+        "dedupe_epoch",
+        "dedupe_epoch < 0",
+    ),
+    SchemaRangeContract(
+        "logical_items",
+        "id",
+        "dedupe_epoch",
+        "dedupe_epoch < 0",
+    ),
+    SchemaRangeContract(
+        "logical_item_aliases",
+        "id",
+        "dedupe_epoch",
+        "dedupe_epoch < 0",
+    ),
+    SchemaRangeContract(
+        "notification_dedupe",
+        "id",
+        "dedupe_epoch",
+        "dedupe_epoch < 0",
+    ),
+    SchemaRangeContract(
+        "notification_dedupe",
         "id",
         "failure_count",
         "failure_count < 0",

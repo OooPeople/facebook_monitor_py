@@ -9,6 +9,7 @@ from datetime import timedelta
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxSummary
+from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import notification_outbox_from_row
@@ -317,6 +318,7 @@ class NotificationOutboxRepository:
     ) -> None:
         """同步更新 outbox 綁定的 notification dedupe ledger。"""
 
+        dedupe_status = _dedupe_status_for_outbox_status(status)
         self.connection.execute(
             """
             UPDATE notification_dedupe
@@ -332,9 +334,9 @@ class NotificationOutboxRepository:
             )
             """,
             (
-                status.value,
+                dedupe_status.value,
                 notification_event_id,
-                status.value,
+                dedupe_status.value,
                 message,
                 encode_datetime(utc_now()),
                 encode_datetime(utc_now()),
@@ -515,4 +517,16 @@ class NotificationOutboxRepository:
         """還原 repository 對外回傳的 notification endpoint。"""
 
         return replace(entry, endpoint=self.secret_codec.decrypt(entry.endpoint))
+
+
+def _dedupe_status_for_outbox_status(
+    status: NotificationOutboxStatus,
+) -> NotificationDedupeStatus:
+    """將 terminal outbox status 轉成 dedupe ledger status。"""
+
+    if status == NotificationOutboxStatus.SENT:
+        return NotificationDedupeStatus.SENT
+    if status == NotificationOutboxStatus.SKIPPED:
+        return NotificationDedupeStatus.SKIPPED
+    return NotificationDedupeStatus.FAILED
 

@@ -22,6 +22,7 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("seen_items", "item_kind"),
     ("match_history", "item_kind"),
     ("latest_scan_items", "item_kind"),
+    ("logical_items", "item_kind"),
     ("scan_runs", "status"),
     ("scan_runs", "worker_mode"),
     ("notification_events", "channel"),
@@ -31,6 +32,10 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("notification_outbox", "channel"),
     ("notification_outbox", "status"),
     ("notification_outbox", "event_kind"),
+    ("notification_dedupe", "event_kind"),
+    ("notification_dedupe", "channel"),
+    ("notification_dedupe", "item_kind"),
+    ("notification_dedupe", "status"),
     ("target_runtime_state", "desired_state"),
     ("target_runtime_state", "runtime_status"),
     ("target_cover_image_refresh_state", "status"),
@@ -69,6 +74,11 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("notification_outbox", "attempts"),
     ("notification_outbox", "failure_count"),
     ("notification_events", "failure_count"),
+    ("target_dedupe_state", "dedupe_epoch"),
+    ("logical_items", "dedupe_epoch"),
+    ("logical_item_aliases", "dedupe_epoch"),
+    ("notification_dedupe", "dedupe_epoch"),
+    ("notification_dedupe", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
 }
 
@@ -118,6 +128,13 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
             """,
             (target.id,),
         )
+        connection.execute(
+            """
+            INSERT INTO target_dedupe_state (target_id, dedupe_epoch, updated_at)
+            VALUES (?, -1, '2026-05-01T00:00:00+00:00')
+            """,
+            (target.id,),
+        )
         connection.execute("PRAGMA ignore_check_constraints = OFF")
         connection.execute(
             """
@@ -136,6 +153,8 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
     assert "enabled" in formatted
     assert "target_configs" in formatted
     assert "refresh_range" in formatted
+    assert "target_dedupe_state" in formatted
+    assert "dedupe_epoch" in formatted
     assert "target_runtime_state" in formatted
     assert "non-running state must not keep active worker/page ownership" in formatted
 

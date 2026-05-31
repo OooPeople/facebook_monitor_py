@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
@@ -51,6 +52,33 @@ class NotificationDedupeRepository:
             item_kind=item_kind,
         )
 
+    def reserve_runtime_failure(
+        self,
+        *,
+        target_id: str,
+        scan_run_id: int,
+        item_key: str,
+        item_kind: ItemKind,
+        channel: NotificationChannel,
+        failure_reason: str,
+        failure_count: int,
+    ) -> NotificationDedupeReservation:
+        """為 runtime failure notification 建立 dedupe reservation。"""
+
+        if scan_run_id <= 0:
+            raise ValueError("scan_run_id is required for runtime failure dedupe")
+        return self._reserve(
+            target_id=target_id,
+            event_kind=NotificationEventKind.RUNTIME_FAILURE,
+            channel=channel,
+            subject_key=f"runtime-failure:{scan_run_id}",
+            logical_item_id=None,
+            item_key=item_key,
+            item_kind=item_kind,
+            failure_reason=failure_reason,
+            failure_count=max(int(failure_count), 1),
+        )
+
     def _reserve(
         self,
         *,
@@ -61,6 +89,8 @@ class NotificationDedupeRepository:
         logical_item_id: int | None,
         item_key: str,
         item_kind: ItemKind,
+        failure_reason: str = "",
+        failure_count: int = 0,
     ) -> NotificationDedupeReservation:
         """建立或讀取 dedupe reservation。"""
 
@@ -71,9 +101,10 @@ class NotificationDedupeRepository:
             INSERT OR IGNORE INTO notification_dedupe (
                 target_id, dedupe_epoch, event_kind, channel, subject_key,
                 logical_item_id, item_key, item_kind, status,
-                first_queued_at, last_deduped_at, created_at, updated_at
+                failure_reason, failure_count, first_queued_at, last_deduped_at,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 target_id,
@@ -84,6 +115,9 @@ class NotificationDedupeRepository:
                 logical_item_id,
                 item_key,
                 item_kind.value,
+                NotificationDedupeStatus.QUEUED.value,
+                failure_reason,
+                max(int(failure_count), 0),
                 now_text,
                 now_text,
                 now_text,
@@ -92,27 +126,54 @@ class NotificationDedupeRepository:
         )
         created = cursor.rowcount == 1
         if not created:
-            self.connection.execute(
-                """
-                UPDATE notification_dedupe
-                SET last_deduped_at = ?,
-                    updated_at = ?
-                WHERE target_id = ?
-                  AND dedupe_epoch = ?
-                  AND event_kind = ?
-                  AND channel = ?
-                  AND subject_key = ?
-                """,
-                (
-                    now_text,
-                    now_text,
-                    target_id,
-                    epoch,
-                    event_kind.value,
-                    channel.value,
-                    subject_key,
-                ),
-            )
+            if event_kind == NotificationEventKind.RUNTIME_FAILURE:
+                self.connection.execute(
+                    """
+                    UPDATE notification_dedupe
+                    SET last_deduped_at = ?,
+                        failure_reason = ?,
+                        failure_count = ?,
+                        updated_at = ?
+                    WHERE target_id = ?
+                      AND dedupe_epoch = ?
+                      AND event_kind = ?
+                      AND channel = ?
+                      AND subject_key = ?
+                    """,
+                    (
+                        now_text,
+                        failure_reason,
+                        max(int(failure_count), 0),
+                        now_text,
+                        target_id,
+                        epoch,
+                        event_kind.value,
+                        channel.value,
+                        subject_key,
+                    ),
+                )
+            else:
+                self.connection.execute(
+                    """
+                    UPDATE notification_dedupe
+                    SET last_deduped_at = ?,
+                        updated_at = ?
+                    WHERE target_id = ?
+                      AND dedupe_epoch = ?
+                      AND event_kind = ?
+                      AND channel = ?
+                      AND subject_key = ?
+                    """,
+                    (
+                        now_text,
+                        now_text,
+                        target_id,
+                        epoch,
+                        event_kind.value,
+                        channel.value,
+                        subject_key,
+                    ),
+                )
         row = self.connection.execute(
             """
             SELECT id

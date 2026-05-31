@@ -28,6 +28,7 @@ def test_page_load_timeout_retries_until_third_failure() -> None:
     assert first.discard_page is True
     assert first.retry_streak == 1
     assert first.retry_limit == 3
+    assert first.notification_failure_count == 1
     assert second.retryable is True
     assert second.target_action == "idle"
     assert second.retry_streak == 2
@@ -35,6 +36,7 @@ def test_page_load_timeout_retries_until_third_failure() -> None:
     assert third.target_action == "error"
     assert third.runtime_action == "error"
     assert third.retry_streak == 3
+    assert third.notification_failure_count == 3
 
 
 def test_scheduler_runtime_retries_until_third_failure() -> None:
@@ -173,6 +175,7 @@ def test_login_required_errors_immediately() -> None:
         assert decision.target_action == "error"
         assert decision.runtime_action == "error"
         assert decision.counts_toward_streak is False
+        assert decision.notification_failure_count == 1
 
 
 def test_scheduler_cancel_keeps_target_idle() -> None:

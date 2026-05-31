@@ -324,12 +324,16 @@ def test_recover_stale_running_targets_requeues_stale_target(tmp_path: Path) -> 
 
     with SqliteApplicationContext(db_path) as app:
         loaded = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
     assert recovered_count == 1
     assert loaded is not None
     assert loaded.runtime_status == TargetRuntimeStatus.IDLE
     assert loaded.scan_requested_at is not None
     assert loaded.last_error == ""
     assert loaded.last_skip_reason == "target_page_restart: retry 1/3"
+    assert latest_scan is not None
+    assert latest_scan.metadata["auto_restart"] is True
+    assert latest_scan.metadata["recovery_action"] == "target_page_restart"
     assert list_schedulable_target_ids(
         db_path,
         default_interval_seconds=60,

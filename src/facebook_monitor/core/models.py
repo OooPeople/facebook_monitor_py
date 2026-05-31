@@ -444,6 +444,16 @@ class SeenItem:
 
 
 @dataclass(frozen=True)
+class SeenAliasMarkResult:
+    """保存 logical item alias 去重寫入結果。"""
+
+    is_new: bool
+    logical_item_id: int
+    canonical_item_key: str
+    alias_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class MatchHistoryEntry:
     """保存一次 keyword match 的歷史紀錄。
 
@@ -540,6 +550,7 @@ class NotificationOutboxEntry:
     attempts: int = 0
     last_error: str = ""
     notification_event_id: int | None = None
+    dedupe_id: int | None = None
     id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)

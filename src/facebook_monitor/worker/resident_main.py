@@ -22,23 +22,25 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
-from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
-from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
-from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.notifications.outbox_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
+from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
@@ -54,6 +56,7 @@ from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinato
 
 
 logger = logging.getLogger(__name__)
+_LAST_RETENTION_MAINTENANCE_BY_DB: dict[Path, datetime] = {}
 AsyncSleepCallable = Callable[[float], Coroutine[Any, Any, None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
@@ -277,6 +280,7 @@ async def run_resident_main_scheduler_tick(
         target_queue=target_queue,
     ).apply(recovery_summary.running_actions)
     notification_dispatch_count = dispatch_pending_notification_outbox(options)
+    run_bounded_retention_maintenance_if_due(options)
     metadata_refresh_count = 0
     if not stop_requested() and not executor.runtime_restart_requested():
         metadata_refresh_count = await refresh_requested_target_metadata(
@@ -348,8 +352,32 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
             return 0
         logger.exception("pending notification outbox dispatch failed")
         return 0
+
+
+def run_bounded_retention_maintenance_if_due(options: ResidentRuntimeOptions) -> int:
+    """週期性清理 bounded retention horizon 外的內部資料。"""
+
+    now = utc_now()
+    last_run = _LAST_RETENTION_MAINTENANCE_BY_DB.get(options.db_path)
+    if (
+        last_run is not None
+        and (now - last_run).total_seconds()
+        < PYTHON_PERSISTENCE_RETENTION_DEFAULTS.maintenance_interval_seconds
+    ):
+        return 0
+    try:
+        with SqliteApplicationContext(options.db_path) as app:
+            result = app.repositories.maintenance.prune_bounded_retention(now=now)
+        _LAST_RETENTION_MAINTENANCE_BY_DB[options.db_path] = now
+        return result.total_deleted
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_database_locked(exc):
+            logger.warning("bounded retention maintenance skipped: database locked")
+            return 0
+        logger.exception("bounded retention maintenance failed")
+        return 0
     except Exception:
-        logger.exception("pending notification outbox dispatch failed")
+        logger.exception("bounded retention maintenance failed")
         return 0
 
 

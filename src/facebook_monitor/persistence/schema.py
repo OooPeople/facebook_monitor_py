@@ -9,7 +9,7 @@ from facebook_monitor.persistence.current_schema import ensure_dashboard_revisio
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -65,6 +65,7 @@ def ensure_post_migration_schema_guards(connection: sqlite3.Connection) -> None:
     ensure_dashboard_revision_triggers(connection)
     ensure_target_metadata_index(connection)
     ensure_target_scope_unique_index(connection)
+    ensure_notification_outbox_dedupe_index(connection)
     drop_redundant_target_scope_index(connection)
 
 
@@ -111,6 +112,23 @@ def drop_redundant_target_scope_index(connection: sqlite3.Connection) -> None:
     connection.execute("DROP INDEX IF EXISTS idx_targets_kind_scope")
 
 
+def ensure_notification_outbox_dedupe_index(connection: sqlite3.Connection) -> None:
+    """在 v32 migration 補欄位後建立 outbox/dedupe 查詢索引。"""
+
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(notification_outbox)").fetchall()
+    }
+    if "dedupe_id" not in columns:
+        return
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_dedupe
+            ON notification_outbox(dedupe_id)
+        """
+    )
+
+
 def repair_duplicate_target_scopes(connection: sqlite3.Connection) -> None:
     """合併歷史上可能產生的重複 target scope，保留最早建立的 target。"""
 
@@ -150,6 +168,7 @@ def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, dup
         "target_runtime_state",
         "target_cover_image_refresh_state",
         "sidebar_target_placements",
+        "target_dedupe_state",
     ):
         _move_single_target_row_if_keep_missing(
             connection,
@@ -157,6 +176,16 @@ def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, dup
             keep_id=keep_id,
             duplicate_id=duplicate_id,
         )
+    _merge_duplicate_logical_items(
+        connection,
+        keep_id=keep_id,
+        duplicate_id=duplicate_id,
+    )
+    _merge_duplicate_notification_dedupe(
+        connection,
+        keep_id=keep_id,
+        duplicate_id=duplicate_id,
+    )
     connection.execute(
         """
         DELETE FROM latest_scan_items
@@ -259,6 +288,198 @@ def _move_single_target_row_if_keep_missing(
         )
         return
     connection.execute(f"DELETE FROM {table_name} WHERE target_id = ?", (duplicate_id,))
+
+
+def _merge_duplicate_logical_items(
+    connection: sqlite3.Connection,
+    *,
+    keep_id: str,
+    duplicate_id: str,
+) -> None:
+    """合併 duplicate target 的 logical item state，避免 scope repair 遺失去重資料。"""
+
+    if not _table_exists(connection, "logical_items"):
+        return
+    rows = connection.execute(
+        """
+        SELECT id, dedupe_epoch
+        FROM logical_items
+        WHERE target_id = ?
+        ORDER BY id
+        """,
+        (duplicate_id,),
+    ).fetchall()
+    for row in rows:
+        logical_item_id = int(row["id"])
+        alias_rows = connection.execute(
+            """
+            SELECT alias_key, dedupe_epoch
+            FROM logical_item_aliases
+            WHERE logical_item_id = ?
+            """,
+            (logical_item_id,),
+        ).fetchall()
+        has_alias_conflict = False
+        for alias_row in alias_rows:
+            conflict = connection.execute(
+                """
+                SELECT logical_item_id
+                FROM logical_item_aliases
+                WHERE target_id = ?
+                  AND dedupe_epoch = ?
+                  AND alias_key = ?
+                LIMIT 1
+                """,
+                (keep_id, alias_row["dedupe_epoch"], alias_row["alias_key"]),
+            ).fetchone()
+            if conflict is not None:
+                has_alias_conflict = True
+                _move_logical_notification_dedupe(
+                    connection,
+                    from_logical_item_id=logical_item_id,
+                    to_logical_item_id=int(conflict["logical_item_id"]),
+                )
+                break
+        if has_alias_conflict:
+            connection.execute("DELETE FROM logical_items WHERE id = ?", (logical_item_id,))
+            continue
+        connection.execute(
+            "UPDATE logical_items SET target_id = ? WHERE id = ?",
+            (keep_id, logical_item_id),
+        )
+        connection.execute(
+            "UPDATE logical_item_aliases SET target_id = ? WHERE logical_item_id = ?",
+            (keep_id, logical_item_id),
+        )
+
+
+def _move_logical_notification_dedupe(
+    connection: sqlite3.Connection,
+    *,
+    from_logical_item_id: int,
+    to_logical_item_id: int,
+) -> None:
+    """把被合併 logical item 的 notification dedupe 指向保留 logical item。"""
+
+    if from_logical_item_id == to_logical_item_id:
+        return
+    if not _table_exists(connection, "notification_dedupe"):
+        return
+    rows = connection.execute(
+        """
+        SELECT id, target_id, dedupe_epoch, event_kind, channel
+        FROM notification_dedupe
+        WHERE logical_item_id = ?
+          AND event_kind = 'match'
+        """,
+        (from_logical_item_id,),
+    ).fetchall()
+    new_subject_key = f"logical:{to_logical_item_id}"
+    for row in rows:
+        dedupe_id = int(row["id"])
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM notification_dedupe
+            WHERE target_id = ?
+              AND dedupe_epoch = ?
+              AND event_kind = ?
+              AND channel = ?
+              AND subject_key = ?
+              AND id <> ?
+            """,
+            (
+                row["target_id"],
+                row["dedupe_epoch"],
+                row["event_kind"],
+                row["channel"],
+                new_subject_key,
+                dedupe_id,
+            ),
+        ).fetchone()
+        if existing is not None:
+            connection.execute(
+                "UPDATE notification_outbox SET dedupe_id = ? WHERE dedupe_id = ?",
+                (int(existing["id"]), dedupe_id),
+            )
+            connection.execute("DELETE FROM notification_dedupe WHERE id = ?", (dedupe_id,))
+            continue
+        connection.execute(
+            """
+            UPDATE notification_dedupe
+            SET logical_item_id = ?,
+                subject_key = ?
+            WHERE id = ?
+            """,
+            (to_logical_item_id, new_subject_key, dedupe_id),
+        )
+
+
+def _merge_duplicate_notification_dedupe(
+    connection: sqlite3.Connection,
+    *,
+    keep_id: str,
+    duplicate_id: str,
+) -> None:
+    """合併 duplicate target 的 notification dedupe rows。"""
+
+    if not _table_exists(connection, "notification_dedupe"):
+        return
+    rows = connection.execute(
+        """
+        SELECT id, dedupe_epoch, event_kind, channel, subject_key
+        FROM notification_dedupe
+        WHERE target_id = ?
+        ORDER BY id
+        """,
+        (duplicate_id,),
+    ).fetchall()
+    for row in rows:
+        dedupe_id = int(row["id"])
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM notification_dedupe
+            WHERE target_id = ?
+              AND dedupe_epoch = ?
+              AND event_kind = ?
+              AND channel = ?
+              AND subject_key = ?
+            """,
+            (
+                keep_id,
+                row["dedupe_epoch"],
+                row["event_kind"],
+                row["channel"],
+                row["subject_key"],
+            ),
+        ).fetchone()
+        if existing is not None:
+            connection.execute(
+                "UPDATE notification_outbox SET dedupe_id = ? WHERE dedupe_id = ?",
+                (int(existing["id"]), dedupe_id),
+            )
+            connection.execute("DELETE FROM notification_dedupe WHERE id = ?", (dedupe_id,))
+            continue
+        connection.execute(
+            "UPDATE notification_dedupe SET target_id = ? WHERE id = ?",
+            (keep_id, dedupe_id),
+        )
+
+
+def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    """回傳 schema repair 需要的 table 是否存在。"""
+
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        LIMIT 1
+        """,
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 

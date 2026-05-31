@@ -262,6 +262,7 @@ def notification_outbox_from_row(row: sqlite3.Row) -> NotificationOutboxEntry:
         attempts=int(row["attempts"]),
         last_error=row["last_error"],
         notification_event_id=row["notification_event_id"],
+        dedupe_id=row["dedupe_id"],
         created_at=created_at,
         updated_at=updated_at,
     )

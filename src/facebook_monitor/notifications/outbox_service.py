@@ -112,6 +112,7 @@ def queue_match_notifications_after_commit(
     item_text: str,
     permalink: str,
     matched_keyword: str,
+    logical_item_id: int | None = None,
     item_kind: ItemKind = ItemKind.POST,
     ntfy_sender: NtfySender = send_ntfy_notification,
     desktop_sender: DesktopSender = send_desktop_notification,
@@ -124,6 +125,7 @@ def queue_match_notifications_after_commit(
         target=target,
         config=config,
         item_key=item_key,
+        logical_item_id=logical_item_id,
         author=author,
         item_text=item_text,
         permalink=permalink,
@@ -201,6 +203,7 @@ def enqueue_match_notifications(
     item_text: str,
     permalink: str,
     matched_keyword: str,
+    logical_item_id: int | None = None,
     item_kind: ItemKind = ItemKind.POST,
 ) -> tuple[NotificationOutboxEntry, ...]:
     """將 match 通知寫入 outbox；不在 DB transaction 內做外部 I/O。"""
@@ -223,6 +226,18 @@ def enqueue_match_notifications(
         matched_keyword=matched_keyword,
     )
     for plan in build_enabled_channel_plans(config):
+        dedupe_id: int | None = None
+        if logical_item_id is not None:
+            reservation = app.repositories.notification_dedupe.reserve_match(
+                target_id=target.id,
+                logical_item_id=logical_item_id,
+                item_key=item_key,
+                item_kind=item_kind,
+                channel=plan.channel,
+            )
+            if not reservation.created:
+                continue
+            dedupe_id = reservation.dedupe_id
         message_for_channel = compact_message if plan.use_compact_message else message
         entries.append(
             app.repositories.notification_outbox.enqueue(
@@ -232,6 +247,7 @@ def enqueue_match_notifications(
                         item_key=item_key,
                         channel=plan.channel,
                     ),
+                    dedupe_id=dedupe_id,
                     target_id=target.id,
                     item_key=item_key,
                     item_kind=item_kind,

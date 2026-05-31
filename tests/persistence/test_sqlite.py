@@ -32,10 +32,12 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
-from facebook_monitor.persistence.sqlite import MatchHistoryRepository
 from facebook_monitor.persistence.sqlite import AppSettingsRepository
 from facebook_monitor.persistence.sqlite import GlobalNotificationSettingsRepository
 from facebook_monitor.persistence.sqlite import LatestScanItemRepository
+from facebook_monitor.persistence.sqlite import LogicalItemRepository
+from facebook_monitor.persistence.sqlite import MatchHistoryRepository
+from facebook_monitor.persistence.sqlite import NotificationDedupeRepository
 from facebook_monitor.persistence.sqlite import NotificationEventRepository
 from facebook_monitor.persistence.sqlite import NotificationOutboxRepository
 from facebook_monitor.persistence.sqlite import ScanRunRepository
@@ -157,6 +159,7 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
         "idx_latest_scan_items_target_index",
         "idx_runtime_state_status_updated",
         "idx_runtime_state_desired_updated",
+        "idx_notification_outbox_dedupe",
     }.issubset(indexes)
     assert "idx_targets_kind_scope" not in indexes
     assert "latest_scan_item_matches" not in revision_trigger_tables
@@ -173,6 +176,11 @@ def test_current_schema_enforces_selected_check_constraints(tmp_path: Path) -> N
 
         assert "CHECK (runtime_status IN" in table_sql(connection, "target_runtime_state")
         assert "CHECK (status IN" in table_sql(connection, "notification_outbox")
+        assert "CREATE TABLE logical_items" in table_sql(connection, "logical_items")
+        assert "CREATE TABLE notification_dedupe" in table_sql(
+            connection,
+            "notification_dedupe",
+        )
         assert "CHECK (min_refresh_sec >= 5)" in table_sql(connection, "target_configs")
 
         try:
@@ -209,6 +217,29 @@ def test_current_schema_enforces_selected_check_constraints(tmp_path: Path) -> N
             assert "CHECK constraint failed" in str(exc)
         else:
             raise AssertionError("seen_items.item_kind should be constrained")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO notification_dedupe (
+                    target_id, dedupe_epoch, event_kind, channel, subject_key,
+                    item_key, item_kind, status, first_queued_at, last_deduped_at,
+                    created_at, updated_at
+                )
+                VALUES (
+                    'target-a', 0, 'match', 'ntfy', 'subject-a',
+                    'item-a', 'post', 'unexpected_status',
+                    '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("notification_dedupe.status should be constrained")
 
 
 def test_initialize_schema_migrates_v29_check_constraints(tmp_path: Path) -> None:
@@ -379,6 +410,238 @@ def test_initialize_schema_migrates_v31_runtime_notification_constraints(
     assert version == str(SCHEMA_VERSION)
     assert "CHECK (event_kind IN" in notification_events_sql
     assert "CHECK (failure_count >= 0)" in notification_outbox_sql
+
+
+def test_initialize_schema_migrates_v32_logical_dedupe_tables(
+    tmp_path: Path,
+) -> None:
+    """v31 升級會回填 logical item aliases 與 notification dedupe ledger。"""
+
+    db_path = tmp_path / "app.db"
+    now = "2026-05-01T00:00:00+00:00"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            f"""
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '31');
+            CREATE TABLE targets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                group_cover_image_url TEXT NOT NULL DEFAULT '',
+                parent_post_id TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                metadata_status TEXT NOT NULL DEFAULT 'resolved',
+                metadata_error TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL,
+                paused INTEGER NOT NULL,
+                worker_mode TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE seen_items (
+                scope_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+                parent_post_id TEXT NOT NULL,
+                comment_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (scope_id, item_key)
+            );
+            CREATE TABLE notification_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+                item_key TEXT NOT NULL,
+                item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+                channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'pending',
+                        'processing_pending',
+                        'sent',
+                        'failed',
+                        'processing_failed',
+                        'skipped'
+                    )
+                ),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '',
+                permalink TEXT NOT NULL,
+                event_kind TEXT NOT NULL DEFAULT 'match'
+                    CHECK (event_kind IN ('match', 'runtime_failure')),
+                source_scan_run_id INTEGER,
+                failure_reason TEXT NOT NULL DEFAULT '',
+                failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+                attempts INTEGER NOT NULL CHECK (attempts >= 0),
+                last_error TEXT NOT NULL,
+                notification_event_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO targets (
+                id, name, target_kind, group_id, group_name, group_cover_image_url,
+                parent_post_id, scope_id, canonical_url, metadata_status, metadata_error,
+                enabled, paused, worker_mode, created_at, updated_at
+            )
+            VALUES
+                (
+                    'posts-target', 'posts', 'posts', '111', 'group', '',
+                    '', '111', 'https://www.facebook.com/groups/111',
+                    'resolved', '', 1, 0, 'headless', '{now}', '{now}'
+                ),
+                (
+                    'comments-target', 'comments', 'comments', '111', 'group', '',
+                    '999', '111:post:999:comments',
+                    'https://www.facebook.com/groups/111/posts/999',
+                    'resolved', '', 1, 0, 'headless', '{now}', '{now}'
+                );
+            INSERT INTO seen_items (
+                scope_id, item_key, item_kind, parent_post_id, comment_id,
+                first_seen_at, last_seen_at
+            )
+            VALUES
+                ('111', 'post-alias-a', 'post', '', '', '{now}', '{now}'),
+                ('111', 'post-alias-b', 'post', '', '', '{now}', '{now}'),
+                (
+                    '111:post:999:comments', 'comment-alias-a', 'comment',
+                    '999', 'comment-1', '{now}', '{now}'
+                ),
+                (
+                    '111:post:999:comments', 'comment-alias-b', 'comment',
+                    '999', 'comment-1', '{now}', '{now}'
+                );
+            INSERT INTO notification_outbox (
+                idempotency_key, target_id, item_key, item_kind, channel, status,
+                title, message, endpoint, permalink, event_kind, source_scan_run_id,
+                failure_reason, failure_count, attempts, last_error,
+                notification_event_id, created_at, updated_at
+            )
+            VALUES
+                (
+                    'comments-target:comment-alias-a:ntfy',
+                    'comments-target', 'comment-alias-a', 'comment', 'ntfy', 'sent',
+                    'title', 'message', '', '', 'match', NULL, '', 0, 1, '',
+                    10, '{now}', '{now}'
+                ),
+                (
+                    'posts-target:post-alias-a:ntfy',
+                    'posts-target', 'post-alias-a', 'post', 'ntfy', 'pending',
+                    'title', 'message', '', '', 'match', NULL, '', 0, 0, '',
+                    NULL, '{now}', '{now}'
+                ),
+                (
+                    'posts-target:outbox-only:ntfy',
+                    'posts-target', 'outbox-only', 'post', 'ntfy', 'sent',
+                    'title', 'message', '', '', 'match', NULL, '', 0, 1, '',
+                    20, '{now}', '{now}'
+                ),
+                (
+                    'posts-target:outbox-only:discord',
+                    'posts-target', 'outbox-only', 'post', 'discord', 'sent',
+                    'title', 'message', '', '', 'match', NULL, '', 0, 1, '',
+                    21, '{now}', '{now}'
+                );
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        post_logical_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM logical_items
+            WHERE target_id = 'posts-target'
+            """
+        ).fetchone()[0]
+        comment_logical_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM logical_items
+            WHERE target_id = 'comments-target'
+            """
+        ).fetchone()[0]
+        comment_alias_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM logical_item_aliases
+            WHERE target_id = 'comments-target'
+            """
+        ).fetchone()[0]
+        sent_dedupe = connection.execute(
+            """
+            SELECT notification_dedupe.status, notification_dedupe.logical_item_id
+            FROM notification_dedupe
+            JOIN notification_outbox
+              ON notification_outbox.dedupe_id = notification_dedupe.id
+            WHERE notification_outbox.idempotency_key = 'comments-target:comment-alias-a:ntfy'
+            """
+        ).fetchone()
+        pending_dedupe = connection.execute(
+            """
+            SELECT notification_dedupe.status
+            FROM notification_dedupe
+            JOIN notification_outbox
+              ON notification_outbox.dedupe_id = notification_dedupe.id
+            WHERE notification_outbox.idempotency_key = 'posts-target:post-alias-a:ntfy'
+            """
+        ).fetchone()
+        outbox_only_dedupe_rows = connection.execute(
+            """
+            SELECT
+                notification_dedupe.status,
+                notification_dedupe.logical_item_id,
+                notification_dedupe.subject_key,
+                notification_dedupe.channel
+            FROM notification_dedupe
+            JOIN notification_outbox
+              ON notification_outbox.dedupe_id = notification_dedupe.id
+            WHERE notification_outbox.item_key = 'outbox-only'
+            ORDER BY notification_dedupe.channel
+            """
+        ).fetchall()
+        outbox_only_alias_count = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM logical_item_aliases
+            WHERE target_id = 'posts-target'
+              AND alias_key = 'outbox-only'
+            """
+        ).fetchone()[0]
+
+    assert version == str(SCHEMA_VERSION)
+    assert post_logical_count == 3
+    assert comment_logical_count == 1
+    assert comment_alias_count == 2
+    assert sent_dedupe is not None
+    assert sent_dedupe["status"] == "sent"
+    assert sent_dedupe["logical_item_id"] is not None
+    assert pending_dedupe is not None
+    assert pending_dedupe["status"] == "queued"
+    assert len(outbox_only_dedupe_rows) == 2
+    assert {row["channel"] for row in outbox_only_dedupe_rows} == {"discord", "ntfy"}
+    assert {row["status"] for row in outbox_only_dedupe_rows} == {"sent"}
+    assert {
+        int(row["logical_item_id"])
+        for row in outbox_only_dedupe_rows
+        if row["logical_item_id"] is not None
+    } == {int(outbox_only_dedupe_rows[0]["logical_item_id"])}
+    assert {row["subject_key"] for row in outbox_only_dedupe_rows} == {
+        f"logical:{int(outbox_only_dedupe_rows[0]['logical_item_id'])}"
+    }
+    assert outbox_only_alias_count == 1
 
 
 def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
@@ -691,6 +954,135 @@ def test_repair_duplicate_target_scopes_rewrites_notification_outbox_keys(
         f"{first.id}:unique-item:discord",
     ]
     assert [row["item_key"] for row in rows] == ["same-item", "unique-item"]
+
+
+def test_repair_duplicate_target_scopes_merges_conflicting_logical_dedupe(
+    tmp_path: Path,
+) -> None:
+    """duplicate logical dedupe 合併到同一 keep logical item 時不應撞 unique constraint。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        target_repository = TargetRepository(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-target",
+            name="duplicate",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        target_repository.save(first)
+        target_repository.save(duplicate)
+        logical_repo = LogicalItemRepository(connection)
+        keep_logical = logical_repo.mark_seen_aliases(
+            target_id=first.id,
+            item=SeenItem(
+                scope_id=first.scope_id,
+                item_key="keep-a",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("alias-a", "alias-b"),
+        )
+        duplicate_logical_a = logical_repo.mark_seen_aliases(
+            target_id=duplicate.id,
+            item=SeenItem(
+                scope_id=duplicate.scope_id,
+                item_key="duplicate-a",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("alias-a",),
+        )
+        duplicate_logical_b = logical_repo.mark_seen_aliases(
+            target_id=duplicate.id,
+            item=SeenItem(
+                scope_id=duplicate.scope_id,
+                item_key="duplicate-b",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("alias-b",),
+        )
+        dedupe_repo = NotificationDedupeRepository(connection)
+        dedupe_a = dedupe_repo.reserve_match(
+            target_id=duplicate.id,
+            logical_item_id=duplicate_logical_a.logical_item_id,
+            item_key="duplicate-a",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        dedupe_b = dedupe_repo.reserve_match(
+            target_id=duplicate.id,
+            logical_item_id=duplicate_logical_b.logical_item_id,
+            item_key="duplicate-b",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        outbox = notification_outbox_repository(connection)
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:duplicate-a:ntfy",
+                dedupe_id=dedupe_a.dedupe_id,
+                target_id=duplicate.id,
+                item_key="duplicate-a",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:duplicate-b:ntfy",
+                dedupe_id=dedupe_b.dedupe_id,
+                target_id=duplicate.id,
+                item_key="duplicate-b",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+        repair_duplicate_target_scopes(connection)
+
+        dedupe_rows = connection.execute(
+            """
+            SELECT id, target_id, subject_key
+            FROM notification_dedupe
+            WHERE subject_key = ?
+            ORDER BY id
+            """,
+            (f"logical:{keep_logical.logical_item_id}",),
+        ).fetchall()
+        outbox_dedupe_ids = {
+            int(row["dedupe_id"])
+            for row in connection.execute(
+                """
+                SELECT dedupe_id
+                FROM notification_outbox
+                WHERE item_key IN ('duplicate-a', 'duplicate-b')
+                """
+            ).fetchall()
+        }
+        remaining_duplicate_logical = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM logical_items
+            WHERE target_id = ?
+            """,
+            (duplicate.id,),
+        ).fetchone()[0]
+
+    assert len(dedupe_rows) == 1
+    assert dedupe_rows[0]["target_id"] == first.id
+    assert outbox_dedupe_ids == {int(dedupe_rows[0]["id"])}
+    assert remaining_duplicate_logical == 0
 
 
 def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path) -> None:
@@ -2208,6 +2600,193 @@ def test_seen_items_clear_scope_only_deletes_that_scan_scope(tmp_path: Path) -> 
         assert repo.has_seen("scope-b", "same-item")
 
 
+def test_logical_items_reuse_alias_and_comment_identity(tmp_path: Path) -> None:
+    """logical item 以 alias 與 comments parent/comment id 防止 identity drift。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_comments(
+            group_id="111",
+            parent_post_id="999",
+            canonical_url="https://www.facebook.com/groups/111/posts/999",
+        )
+        TargetRepository(connection).save(target)
+        repo = LogicalItemRepository(connection)
+
+        first = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="comment-alias-a",
+                item_kind=ItemKind.COMMENT,
+                parent_post_id="999",
+                comment_id="comment-1",
+            ),
+            item_keys=("comment-alias-a", "comment-alias-b"),
+        )
+        second = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="comment-alias-c",
+                item_kind=ItemKind.COMMENT,
+                parent_post_id="999",
+                comment_id="comment-1",
+            ),
+            item_keys=("comment-alias-c",),
+        )
+
+    assert first.is_new
+    assert not second.is_new
+    assert second.logical_item_id == first.logical_item_id
+
+
+def test_logical_items_reuse_post_alias_drift_without_merging_conflicts(
+    tmp_path: Path,
+) -> None:
+    """posts 透過重疊 alias 承接 identity drift，已屬他項目的 alias 不強制合併。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        TargetRepository(connection).save(target)
+        repo = LogicalItemRepository(connection)
+
+        first = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="post-a-canonical",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("post-a-canonical", "post-a-permalink"),
+        )
+        second = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="post-a-new-key",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("post-a-permalink", "post-a-new-key"),
+        )
+        conflicting = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="post-b-canonical",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("post-b-canonical",),
+        )
+        conflict_owner_before = connection.execute(
+            """
+            SELECT logical_item_id
+            FROM logical_item_aliases
+            WHERE target_id = ?
+              AND alias_key = 'post-b-canonical'
+            """,
+            (target.id,),
+        ).fetchone()
+        conflict_attempt = repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="post-a-new-key",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("post-a-new-key", "post-b-canonical"),
+        )
+        conflict_owner_after = connection.execute(
+            """
+            SELECT logical_item_id
+            FROM logical_item_aliases
+            WHERE target_id = ?
+              AND alias_key = 'post-b-canonical'
+            """,
+            (target.id,),
+        ).fetchone()
+
+    assert first.is_new
+    assert not second.is_new
+    assert second.logical_item_id == first.logical_item_id
+    assert conflicting.logical_item_id != first.logical_item_id
+    assert conflict_attempt.logical_item_id == first.logical_item_id
+    assert conflict_owner_before is not None
+    assert conflict_owner_after is not None
+    assert conflict_owner_after["logical_item_id"] == conflict_owner_before["logical_item_id"]
+
+
+def test_notification_dedupe_blocks_duplicate_after_terminal_outbox_pruned(
+    tmp_path: Path,
+) -> None:
+    """terminal outbox 刪除後仍由 notification_dedupe 擋同 logical item/channel。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_result = LogicalItemRepository(connection).mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="item-a",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("item-a", "item-a-alias"),
+        )
+        dedupe_repo = NotificationDedupeRepository(connection)
+        first = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=logical_result.logical_item_id,
+            item_key="item-a",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        outbox_repo = notification_outbox_repository(connection)
+        outbox = outbox_repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-a:ntfy",
+                dedupe_id=first.dedupe_id,
+                target_id=target.id,
+                item_key="item-a",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        assert outbox.id is not None
+        outbox_repo.mark_result(
+            entry_id=outbox.id,
+            status=NotificationOutboxStatus.SENT,
+            attempts=1,
+        )
+        connection.execute("DELETE FROM notification_outbox WHERE id = ?", (outbox.id,))
+        second = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=logical_result.logical_item_id,
+            item_key="item-a-alias",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+
+    assert first.created
+    assert not second.created
+
+
 def test_notification_outbox_clear_failed_only_deletes_failed_rows(
     tmp_path: Path,
 ) -> None:
@@ -2622,6 +3201,400 @@ def test_runtime_data_maintenance_resets_missing_scope_state_rows(
         assert result.seen_items == 1
         assert result.scan_scope_state == 1
         assert not ScanScopeStateRepository(connection).is_initialized(target.scope_id)
+
+
+def test_bounded_retention_prunes_terminal_state_but_keeps_recent_failed_outbox(
+    tmp_path: Path,
+) -> None:
+    """bounded retention 清舊 terminal rows，近期 failed outbox 仍保留診斷。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    old = encode_datetime(now - timedelta(days=61))
+    recent_failed = encode_datetime(now - timedelta(days=13))
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_repo = LogicalItemRepository(connection)
+        sent_logical = logical_repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="sent-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("sent-item",),
+        )
+        failed_logical = logical_repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="failed-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("failed-item",),
+        )
+        expired_failed_logical = logical_repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="expired-failed-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("expired-failed-item",),
+        )
+        SeenItemRepository(connection).mark_seen(
+            SeenItem(
+                scope_id=target.scope_id,
+                item_key="legacy-old",
+                item_kind=ItemKind.POST,
+            )
+        )
+        dedupe_repo = NotificationDedupeRepository(connection)
+        sent_dedupe = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=sent_logical.logical_item_id,
+            item_key="sent-item",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        failed_dedupe = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=failed_logical.logical_item_id,
+            item_key="failed-item",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        expired_failed_dedupe = dedupe_repo.reserve_match(
+            target_id=target.id,
+            logical_item_id=expired_failed_logical.logical_item_id,
+            item_key="expired-failed-item",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        outbox_repo = notification_outbox_repository(connection)
+        sent_outbox = outbox_repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:sent-item:ntfy",
+                dedupe_id=sent_dedupe.dedupe_id,
+                target_id=target.id,
+                item_key="sent-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="sent",
+                message="sent",
+            )
+        )
+        failed_outbox = outbox_repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:failed-item:ntfy",
+                dedupe_id=failed_dedupe.dedupe_id,
+                target_id=target.id,
+                item_key="failed-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="failed",
+                message="failed",
+            )
+        )
+        expired_failed_outbox = outbox_repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:expired-failed-item:ntfy",
+                dedupe_id=expired_failed_dedupe.dedupe_id,
+                target_id=target.id,
+                item_key="expired-failed-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="expired failed",
+                message="expired failed",
+            )
+        )
+        assert sent_outbox.id is not None
+        assert failed_outbox.id is not None
+        assert expired_failed_outbox.id is not None
+        outbox_repo.mark_result(
+            entry_id=sent_outbox.id,
+            status=NotificationOutboxStatus.SENT,
+            attempts=1,
+        )
+        outbox_repo.mark_result(
+            entry_id=failed_outbox.id,
+            status=NotificationOutboxStatus.FAILED,
+            attempts=1,
+            message="failed",
+        )
+        outbox_repo.mark_result(
+            entry_id=expired_failed_outbox.id,
+            status=NotificationOutboxStatus.FAILED,
+            attempts=1,
+            message="expired failed",
+        )
+        connection.execute(
+            "UPDATE notification_outbox SET updated_at = ? WHERE status = 'sent'",
+            (old,),
+        )
+        connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = ?
+            WHERE item_key = 'failed-item'
+            """,
+            (recent_failed,),
+        )
+        connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = ?
+            WHERE item_key = 'expired-failed-item'
+            """,
+            (old,),
+        )
+        connection.execute(
+            """
+            UPDATE notification_dedupe
+            SET last_deduped_at = ?, updated_at = ?
+            """,
+            (old, old),
+        )
+        connection.execute(
+            """
+            UPDATE logical_items
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old, old),
+        )
+        connection.execute(
+            """
+            UPDATE logical_item_aliases
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old, old),
+        )
+        connection.execute(
+            """
+            UPDATE seen_items
+            SET last_seen_at = ?
+            """,
+            (old,),
+        )
+
+        result = RuntimeDataMaintenanceRepository(connection).prune_bounded_retention(
+            now=now,
+        )
+        remaining_outbox_statuses = {
+            row["status"]
+            for row in connection.execute("SELECT status FROM notification_outbox").fetchall()
+        }
+
+    assert result.terminal_outbox == 2
+    assert result.notification_dedupe == 2
+    assert result.logical_items == 2
+    assert result.legacy_seen_items == 1
+    assert remaining_outbox_statuses == {"failed"}
+
+
+def test_bounded_retention_outbox_status_matrix(tmp_path: Path) -> None:
+    """bounded retention 依狀態保護 active rows，並套用 terminal TTL。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    old_61_days = encode_datetime(now - timedelta(days=61))
+    old_15_days = encode_datetime(now - timedelta(days=15))
+    old_13_days = encode_datetime(now - timedelta(days=13))
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_repo = LogicalItemRepository(connection)
+        dedupe_repo = NotificationDedupeRepository(connection)
+        outbox_repo = notification_outbox_repository(connection)
+
+        def add_outbox_state(
+            item_key: str,
+            status: NotificationOutboxStatus,
+            updated_at: str,
+        ) -> None:
+            logical = logical_repo.mark_seen_aliases(
+                target_id=target.id,
+                item=SeenItem(
+                    scope_id=target.scope_id,
+                    item_key=item_key,
+                    item_kind=ItemKind.POST,
+                ),
+                item_keys=(item_key,),
+            )
+            dedupe = dedupe_repo.reserve_match(
+                target_id=target.id,
+                logical_item_id=logical.logical_item_id,
+                item_key=item_key,
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+            )
+            outbox_repo.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:{item_key}:ntfy",
+                    dedupe_id=dedupe.dedupe_id,
+                    target_id=target.id,
+                    item_key=item_key,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title=item_key,
+                    message=item_key,
+                    status=status,
+                )
+            )
+            connection.execute(
+                """
+                UPDATE notification_outbox
+                SET updated_at = ?
+                WHERE item_key = ?
+                """,
+                (updated_at, item_key),
+            )
+
+        add_outbox_state("old-skipped", NotificationOutboxStatus.SKIPPED, old_61_days)
+        add_outbox_state(
+            "old-processing-failed",
+            NotificationOutboxStatus.PROCESSING_FAILED,
+            old_15_days,
+        )
+        add_outbox_state("old-pending", NotificationOutboxStatus.PENDING, old_61_days)
+        add_outbox_state(
+            "old-processing-pending",
+            NotificationOutboxStatus.PROCESSING_PENDING,
+            old_61_days,
+        )
+        add_outbox_state("recent-failed", NotificationOutboxStatus.FAILED, old_13_days)
+        add_outbox_state(
+            "recent-processing-failed",
+            NotificationOutboxStatus.PROCESSING_FAILED,
+            old_13_days,
+        )
+        connection.execute(
+            """
+            UPDATE notification_dedupe
+            SET last_deduped_at = ?, updated_at = ?
+            """,
+            (old_61_days, old_61_days),
+        )
+        connection.execute(
+            """
+            UPDATE logical_items
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old_61_days, old_61_days),
+        )
+        connection.execute(
+            """
+            UPDATE logical_item_aliases
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old_61_days, old_61_days),
+        )
+
+        result = RuntimeDataMaintenanceRepository(connection).prune_bounded_retention(
+            now=now,
+        )
+        remaining_item_keys = {
+            row["item_key"]
+            for row in connection.execute(
+                "SELECT item_key FROM notification_outbox"
+            ).fetchall()
+        }
+
+    assert result.terminal_outbox == 2
+    assert result.notification_dedupe == 2
+    assert result.logical_items == 2
+    assert remaining_item_keys == {
+        "old-pending",
+        "old-processing-pending",
+        "recent-failed",
+        "recent-processing-failed",
+    }
+
+
+def test_bounded_retention_keeps_latest_scan_logical_item(
+    tmp_path: Path,
+) -> None:
+    """latest scan 仍引用的 logical item 即使過 horizon 也不被清掉。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    old = encode_datetime(now - timedelta(days=61))
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_repo = LogicalItemRepository(connection)
+        kept = logical_repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="latest-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("latest-item",),
+        )
+        stale = logical_repo.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="stale-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("stale-item",),
+        )
+        LatestScanItemRepository(connection).replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="latest-item",
+                    item_index=0,
+                )
+            ],
+        )
+        connection.execute(
+            """
+            UPDATE logical_items
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old, old),
+        )
+        connection.execute(
+            """
+            UPDATE logical_item_aliases
+            SET last_seen_at = ?, updated_at = ?
+            """,
+            (old, old),
+        )
+
+        result = RuntimeDataMaintenanceRepository(connection).prune_bounded_retention(
+            now=now,
+        )
+        remaining_logical_ids = {
+            int(row["id"])
+            for row in connection.execute("SELECT id FROM logical_items").fetchall()
+        }
+
+    assert result.logical_items == 1
+    assert kept.logical_item_id in remaining_logical_ids
+    assert stale.logical_item_id not in remaining_logical_ids
 
 
 def test_match_history_repository_counts_offsets_and_clears_by_target(

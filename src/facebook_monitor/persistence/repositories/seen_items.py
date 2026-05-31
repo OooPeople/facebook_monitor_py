@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
+from datetime import datetime
 
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
@@ -104,6 +105,30 @@ class SeenItemRepository:
             LIMIT 1
             """,
             (scope_id, *keys),
+        ).fetchone()
+        return row is not None
+
+    def has_seen_any_since(
+        self,
+        scope_id: str,
+        item_keys: Iterable[str],
+        cutoff: datetime,
+    ) -> bool:
+        """檢查任一 alias 是否仍在 bounded retention horizon 內。"""
+
+        keys = tuple(dict.fromkeys(key.strip() for key in item_keys if key.strip()))
+        if not keys:
+            return False
+        placeholders = ", ".join("?" for _ in keys)
+        row = self.connection.execute(
+            f"""
+            SELECT 1 FROM seen_items
+            WHERE scope_id = ?
+              AND item_key IN ({placeholders})
+              AND last_seen_at >= ?
+            LIMIT 1
+            """,
+            (scope_id, *keys, encode_datetime(cutoff)),
         ).fetchone()
         return row is not None
 

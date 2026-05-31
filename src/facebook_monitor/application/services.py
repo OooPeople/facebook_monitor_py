@@ -45,6 +45,11 @@ from facebook_monitor.persistence.repositories.target_configs import TargetConfi
 from facebook_monitor.persistence.repositories.target_cover_image_refresh import (
     TargetCoverImageRefreshRepository,
 )
+from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import (
+    NotificationDedupeRepository,
+)
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
@@ -69,16 +74,22 @@ class TargetApplicationService:
         configs: TargetConfigRepository,
         cover_image_refreshes: TargetCoverImageRefreshRepository,
         runtime_states: TargetRuntimeStateRepository,
+        dedupe_state: DedupeStateRepository,
         seen_items: SeenItemRepository,
+        logical_items: LogicalItemRepository,
         scan_scope_state: ScanScopeStateRepository,
+        notification_dedupe: NotificationDedupeRepository,
         notification_outbox: NotificationOutboxRepository,
     ) -> None:
         self.targets = targets
         self.configs = configs
         self.cover_image_refreshes = cover_image_refreshes
         self.runtime_states = runtime_states
+        self.dedupe_state = dedupe_state
         self.seen_items = seen_items
+        self.logical_items = logical_items
         self.scan_scope_state = scan_scope_state
+        self.notification_dedupe = notification_dedupe
         self.notification_outbox = notification_outbox
         self.config_service = TargetConfigService(targets=targets, configs=configs)
         self.runtime_service = TargetRuntimeService(
@@ -93,8 +104,11 @@ class TargetApplicationService:
         self.monitoring_commands = TargetMonitoringCommands(
             targets=targets,
             runtime_states=runtime_states,
+            dedupe_state=dedupe_state,
             seen_items=seen_items,
+            logical_items=logical_items,
             scan_scope_state=scan_scope_state,
+            notification_dedupe=notification_dedupe,
             notification_outbox=notification_outbox,
             registry=self.registry_service,
             configs=self.config_service,

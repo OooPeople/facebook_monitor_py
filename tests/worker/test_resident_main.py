@@ -21,6 +21,7 @@ from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
@@ -31,10 +32,12 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import _is_playwright_driver_shutdown_exception
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
 from facebook_monitor.worker.resident_main import refresh_target_group_cover_image_from_context
+from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
 from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
@@ -1588,6 +1591,62 @@ def test_dispatch_pending_notification_outbox_treats_sqlite_lock_as_transient(
     assert dispatched_count == 0
     assert "database locked" in caplog.text
     assert "Traceback" not in caplog.text
+
+
+def test_bounded_retention_maintenance_runs_once_per_interval(
+    tmp_path: Path,
+) -> None:
+    """resident bounded retention 每個 DB path 依 interval 節流。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        outbox = app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:old:desktop",
+                target_id=target.id,
+                item_key="old",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="old",
+                message="old",
+            )
+        )
+        assert outbox.id is not None
+        app.repositories.notification_outbox.mark_result(
+            entry_id=outbox.id,
+            status=NotificationOutboxStatus.SENT,
+            attempts=1,
+        )
+        app.repositories.notification_outbox.connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (encode_datetime(utc_now() - timedelta(days=8)), outbox.id),
+        )
+
+    options = ResidentRuntimeOptions(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+    )
+    first_deleted = run_bounded_retention_maintenance_if_due(options)
+    second_deleted = run_bounded_retention_maintenance_if_due(options)
+
+    with SqliteApplicationContext(db_path) as app:
+        remaining_outbox_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_outbox"
+        ).fetchone()[0]
+
+    assert first_deleted == 1
+    assert second_deleted == 0
+    assert remaining_outbox_count == 0
 
 
 def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(

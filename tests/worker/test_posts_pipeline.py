@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +20,20 @@ from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
+from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
+from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.posts_pipeline import build_feed_seen_stop_predicate
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 
 
@@ -308,6 +314,13 @@ def build_post_payload(post_id: str, text: str) -> dict[str, Any]:
     }
 
 
+def table_count(connection: Any, table_name: str) -> int:
+    """回傳指定測試資料表目前筆數。"""
+
+    row = connection.execute(f"SELECT COUNT(1) FROM {table_name}").fetchone()
+    return int(row[0])
+
+
 def mark_post_payload_seen(
     app: ApplicationContext,
     *,
@@ -580,6 +593,118 @@ def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
         assert latest_scan.metadata["collected_meta"]["seenStopThreshold"] == 4
         assert latest_scan.metadata["collected_meta"]["seenStopSeenCount"] == 4
         assert latest_scan.metadata["collected_meta"]["seenStopNewCount"] == 0
+
+
+def test_feed_seen_stop_logical_read_does_not_create_epoch_state(
+    tmp_path: Path,
+) -> None:
+    """seen-stop 的 logical 查詢是唯讀；缺 epoch row 時不應補寫狀態。"""
+
+    db_path = tmp_path / "app.db"
+    payload = build_post_payload("10000001", "舊貼文 1")
+    item = ExtractedItem(
+        text=str(payload["text"]),
+        text_length=int(payload["textLength"]),
+        permalink=str(payload["permalink"]),
+        link_count=int(payload["linkCount"]),
+        author=str(payload["author"]),
+    )
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=10,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+        connection = app.repositories.seen_items.connection
+        connection.commit()
+        assert table_count(connection, "target_dedupe_state") == 0
+
+        predicate = build_feed_seen_stop_predicate(
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=5,
+            sort_adjust_result=SortAdjustResult(
+                attempted=True,
+                changed=True,
+                after_label=FEED_SORT_NEWEST_LABEL,
+            ),
+        )
+        assert predicate is not None
+        assert predicate(make_item_key_aliases(item))
+
+        assert table_count(connection, "target_dedupe_state") == 0
+        assert not connection.in_transaction
+
+
+def test_feed_seen_stop_ignores_legacy_seen_outside_retention_horizon(
+    tmp_path: Path,
+) -> None:
+    """legacy seen fallback 超過 bounded horizon 時不應觸發 feed seen-stop。"""
+
+    db_path = tmp_path / "app.db"
+    payload = build_post_payload("10000001", "舊貼文 1")
+    item = ExtractedItem(
+        text=str(payload["text"]),
+        text_length=int(payload["textLength"]),
+        permalink=str(payload["permalink"]),
+        link_count=int(payload["linkCount"]),
+        author=str(payload["author"]),
+    )
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    max_items_per_scan=10,
+                    auto_load_more=True,
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        mark_post_payload_seen(app, scope_id=target.scope_id, payload=payload)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+        connection = app.repositories.seen_items.connection
+        connection.execute(
+            """
+            UPDATE seen_items
+            SET last_seen_at = ?
+            """,
+            (encode_datetime(utc_now() - timedelta(days=61)),),
+        )
+        connection.commit()
+
+        predicate = build_feed_seen_stop_predicate(
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=5,
+            sort_adjust_result=SortAdjustResult(
+                attempted=True,
+                changed=True,
+                after_label=FEED_SORT_NEWEST_LABEL,
+            ),
+        )
+        assert predicate is not None
+
+        assert not predicate(make_item_key_aliases(item))
+        assert table_count(connection, "target_dedupe_state") == 0
+        assert not connection.in_transaction
 
 
 def test_scan_posts_page_keeps_seen_stop_when_sort_control_is_absent(

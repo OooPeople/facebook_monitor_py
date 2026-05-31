@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from typing import cast
@@ -27,10 +28,12 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.notifications.outbox_service import enqueue_runtime_failure_notifications
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
@@ -1103,7 +1106,19 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
         assert first_result.new_count == 1
         assert first_result.matched_count == 1
         assert not first_result.baseline_mode
-        assert len(app.repositories.notification_outbox.list_pending()) == 1
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+        assert len(pending_outbox) == 1
+        assert pending_outbox[0].dedupe_id is not None
+        dedupe_count = app.repositories.notification_outbox.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM notification_dedupe
+            WHERE target_id = ?
+              AND channel = 'ntfy'
+            """,
+            (target.id,),
+        ).fetchone()[0]
+        assert dedupe_count == 1
         assert len(app.repositories.match_history.list_by_target(target.id)) == 1
         target_id = target.id
 
@@ -1145,6 +1160,105 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
 
     assert sent_ntfy == ["phase0test"]
+
+
+def test_finalize_keeps_dedupe_after_terminal_outbox_retention(
+    tmp_path: Path,
+) -> None:
+    """terminal outbox 被 retention 清掉後，下一輪仍不重送同一 logical item。"""
+
+    sent_ntfy: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_ntfy.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        first_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+        assert len(pending_outbox) == 1
+        assert pending_outbox[0].id is not None
+        app.repositories.notification_outbox.mark_result(
+            entry_id=pending_outbox[0].id,
+            status=NotificationOutboxStatus.SENT,
+            attempts=1,
+        )
+        app.repositories.notification_outbox.connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = ?
+            """,
+            (encode_datetime(utc_now() - timedelta(days=8)),),
+        )
+        retention_result = app.repositories.maintenance.prune_bounded_retention(
+            now=utc_now()
+        )
+        remaining_outbox_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_outbox"
+        ).fetchone()[0]
+        remaining_dedupe_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_dedupe"
+        ).fetchone()[0]
+        app.repositories.notification_outbox.connection.commit()
+        second_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+    assert first_result.new_count == 1
+    assert len(first_result.notification_payloads) == 1
+    assert retention_result.terminal_outbox == 1
+    assert remaining_outbox_count == 0
+    assert remaining_dedupe_count == 1
+    assert second_result.new_count == 0
+    assert second_result.notification_payloads == ()
+    assert sent_ntfy == []
 
 
 def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
@@ -1195,6 +1309,7 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
 
         assert first_result.new_count == 1
         assert not first_result.baseline_mode
+        first_epoch = app.repositories.dedupe_state.peek_current_epoch(target.id)
         target_id = target.id
 
     assert sent_ntfy == ["phase0test"]
@@ -1205,6 +1320,8 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
         clear_result = app.services.targets.reset_target_notification_state(
             reloaded_target.id
         )
+        assert first_epoch == 0
+        assert app.repositories.dedupe_state.peek_current_epoch(reloaded_target.id) == 1
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
         assert app.repositories.scan_scope_state.is_initialized(reloaded_target.scope_id)
         config = app.services.targets.get_config_for_target(reloaded_target)
@@ -1235,6 +1352,18 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
             "eligible_for_notify"
         ] is True
         assert len(second_result.notification_payloads) == 1
+        dedupe_epochs = {
+            int(row["dedupe_epoch"])
+            for row in app.repositories.notification_outbox.connection.execute(
+                """
+                SELECT dedupe_epoch
+                FROM notification_dedupe
+                WHERE target_id = ?
+                """,
+                (reloaded_target.id,),
+            ).fetchall()
+        }
+        assert dedupe_epochs == {0, 1}
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
 
     assert sent_ntfy == ["phase0test", "phase0test"]

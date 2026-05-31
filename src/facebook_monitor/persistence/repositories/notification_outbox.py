@@ -41,15 +41,16 @@ class NotificationOutboxRepository:
         self.connection.execute(
             """
             INSERT OR IGNORE INTO notification_outbox (
-                idempotency_key, target_id, item_key, item_kind, channel, status,
+                idempotency_key, dedupe_id, target_id, item_key, item_kind, channel, status,
                 title, message, endpoint, permalink, event_kind, source_scan_run_id,
                 failure_reason, failure_count, attempts, last_error, notification_event_id,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.idempotency_key,
+                entry.dedupe_id,
                 entry.target_id,
                 entry.item_key,
                 entry.item_kind.value,
@@ -290,6 +291,52 @@ class NotificationOutboxRepository:
                 attempts,
                 message,
                 notification_event_id,
+                encode_datetime(utc_now()),
+                entry_id,
+            ),
+        )
+        if status in {
+            NotificationOutboxStatus.SENT,
+            NotificationOutboxStatus.FAILED,
+            NotificationOutboxStatus.SKIPPED,
+        }:
+            self._mark_dedupe_result(
+                entry_id=entry_id,
+                status=status,
+                message=message,
+                notification_event_id=notification_event_id,
+            )
+
+    def _mark_dedupe_result(
+        self,
+        *,
+        entry_id: int,
+        status: NotificationOutboxStatus,
+        message: str,
+        notification_event_id: int | None,
+    ) -> None:
+        """同步更新 outbox 綁定的 notification dedupe ledger。"""
+
+        self.connection.execute(
+            """
+            UPDATE notification_dedupe
+            SET status = ?,
+                notification_event_id = COALESCE(?, notification_event_id),
+                failure_reason = CASE WHEN ? = 'failed' THEN ? ELSE failure_reason END,
+                last_deduped_at = ?,
+                updated_at = ?
+            WHERE id = (
+                SELECT dedupe_id
+                FROM notification_outbox
+                WHERE id = ?
+            )
+            """,
+            (
+                status.value,
+                notification_event_id,
+                status.value,
+                message,
+                encode_datetime(utc_now()),
                 encode_datetime(utc_now()),
                 entry_id,
             ),

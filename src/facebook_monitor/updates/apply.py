@@ -65,7 +65,7 @@ from facebook_monitor.versioning import parse_version
 
 STAGING_DIR_NAME = "update_staging"
 BACKUP_DIR_NAME = "update_backups"
-BACKUP_RETENTION_COUNT = 3
+BACKUP_RETENTION_COUNT = 1
 
 
 @dataclass(frozen=True)
@@ -977,7 +977,7 @@ def _cleanup_old_backup_dirs(
     keep_count: int,
     preserve: Path | None,
 ) -> tuple[str, ...]:
-    """保留最近 backup，清除舊 backup；失敗只回傳 warning。"""
+    """保留指定 backup 與必要數量的 managed backup；失敗只回傳 warning。"""
 
     warnings: list[str] = []
     if keep_count < 1:

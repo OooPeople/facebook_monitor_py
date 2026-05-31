@@ -943,7 +943,7 @@ def test_apply_pending_update_file_removes_verified_sha256_asset(tmp_path: Path)
 
 
 def test_apply_pending_update_file_prunes_old_backups(tmp_path: Path) -> None:
-    """成功套用後只保留最近 backup，避免舊備份無限制累積。"""
+    """成功套用後只保留本次 backup，避免舊備份無限制累積。"""
 
     app_root = tmp_path / "app"
     make_app_root(app_root, exe_text="old")
@@ -972,10 +972,7 @@ def test_apply_pending_update_file_prunes_old_backups(tmp_path: Path) -> None:
     assert result.applied
     assert result.backup_dir is not None
     retained = {path.name for path in backup_root.iterdir() if path.is_dir()}
-    assert len(retained) == 3
-    assert result.backup_dir.name in retained
-    assert "0.1.0-20260517T000004000000Z-deadbee4" in retained
-    assert "0.1.0-20260517T000003000000Z-deadbee3" in retained
+    assert retained == {result.backup_dir.name}
 
 
 def test_backup_folder_name_uses_unique_suffix() -> None:
@@ -1005,6 +1002,51 @@ def test_cleanup_old_backup_dirs_skips_unknown_backup_names(tmp_path: Path) -> N
     assert new.exists()
     assert not old.exists()
     assert any("backup_unknown" in warning for warning in warnings)
+
+
+def test_cleanup_old_backup_dirs_preserves_current_backup_over_newer_backups(
+    tmp_path: Path,
+) -> None:
+    """保留數量為一時，仍以本次套用產生的 backup 作為 rollback anchor。"""
+
+    backup_root = tmp_path / "runtime" / "update_backups"
+    backup_root.mkdir(parents=True)
+    current = backup_root / "0.1.0-20260517T000001000000Z-deadbee1"
+    newer = backup_root / "0.1.0-20260517T000002000000Z-deadbee2"
+    current.mkdir()
+    newer.mkdir()
+
+    warnings = _cleanup_old_backup_dirs(backup_root, keep_count=1, preserve=current)
+
+    assert warnings == ()
+    assert current.exists()
+    assert not newer.exists()
+
+
+def test_cleanup_old_backup_dirs_skips_symlinked_managed_backup(
+    tmp_path: Path,
+) -> None:
+    """managed backup 若是 symlink/junction，不可 follow 後刪除外部目錄。"""
+
+    backup_root = tmp_path / "runtime" / "update_backups"
+    backup_root.mkdir(parents=True)
+    current = backup_root / "0.1.0-20260517T000001000000Z-deadbee1"
+    current.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("external data", encoding="utf-8")
+    linked = backup_root / "0.1.0-20260517T000002000000Z-deadbee2"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    warnings = _cleanup_old_backup_dirs(backup_root, keep_count=1, preserve=current)
+
+    assert current.exists()
+    assert linked.is_symlink()
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "external data"
+    assert any("backup_unsafe" in warning for warning in warnings)
 
 
 def test_cleanup_old_backup_dirs_rejects_root_that_escapes_runtime(

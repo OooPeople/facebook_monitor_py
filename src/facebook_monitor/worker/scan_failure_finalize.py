@@ -240,6 +240,7 @@ def record_guarded_scan_failure(
             reason=decision.reason,
             failure_count=decision.notification_failure_count,
             error_message=updated_state.last_error or runtime_message,
+            failure_source=source,
         )
     return decision
 
@@ -369,6 +370,7 @@ def record_active_targets_runtime_failure_notifications(
             failure_count=decision.notification_failure_count,
             error_message=updated_state.last_error or runtime_message,
             target_stopped=True,
+            failure_source="unknown_exception",
         )
     return scan_run_count
 

@@ -33,8 +33,11 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.core.scan_failure_policy import TARGET_PAGE_RESTART_ACTION
+from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.notifications.outbox_service import enqueue_runtime_failure_notifications
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
@@ -47,6 +50,9 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
 from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
 from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
+from facebook_monitor.notifications.outbox_service import (
+    queue_runtime_failure_notifications_after_commit,
+)
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
@@ -1015,7 +1021,7 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
             config=config,
             scan_run_id=123,
             reason=SCHEDULER_RUNTIME_REASON,
-            failure_count=2,
+            failure_count=3,
             error_message="背景掃描執行錯誤",
         )
         duplicate_entries = enqueue_runtime_failure_notifications(
@@ -1024,7 +1030,7 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
             config=config,
             scan_run_id=123,
             reason=SCHEDULER_RUNTIME_REASON,
-            failure_count=2,
+            failure_count=3,
             error_message="背景掃描執行錯誤",
         )
 
@@ -1057,14 +1063,132 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
     assert event.event_kind == NotificationEventKind.RUNTIME_FAILURE
     assert event.source_scan_run_id == 123
     assert event.failure_reason == SCHEDULER_RUNTIME_REASON
-    assert event.failure_count == 2
+    assert event.failure_count == 3
     assert dedupe_row is not None
     assert dedupe_row["event_kind"] == NotificationEventKind.RUNTIME_FAILURE.value
     assert dedupe_row["status"] == NotificationDedupeStatus.SENT.value
     assert dedupe_row["logical_item_id"] is None
     assert dedupe_row["failure_reason"] == SCHEDULER_RUNTIME_REASON
-    assert dedupe_row["failure_count"] == 2
+    assert dedupe_row["failure_count"] == 3
     assert dedupe_row["notification_event_id"] is not None
+
+
+def test_runtime_failure_outbox_blocks_recoverable_unknown_before_retry_limit(
+    tmp_path: Path,
+) -> None:
+    """通知入口本身也要擋住未達 retry limit 的 recoverable failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-unknown",
+                canonical_url="https://www.facebook.com/groups/runtime-unknown",
+                group_name="Runtime unknown",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+
+        first_entries = enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=124,
+            reason=UNKNOWN_REASON,
+            failure_count=1,
+            error_message="未分類錯誤",
+        )
+        terminal_entries = enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=125,
+            reason=UNKNOWN_REASON,
+            failure_count=3,
+            error_message="未分類錯誤",
+        )
+
+    assert first_entries == ()
+    assert len(terminal_entries) == 1
+    assert terminal_entries[0].failure_reason == UNKNOWN_REASON
+    assert terminal_entries[0].failure_count == 3
+
+
+def test_runtime_failure_after_commit_queue_blocks_preterminal_unknown(
+    tmp_path: Path,
+) -> None:
+    """after-commit wrapper 不應為未達 retry limit 的錯誤註冊 dispatch。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-queue-unknown",
+                canonical_url="https://www.facebook.com/groups/runtime-queue-unknown",
+                group_name="Runtime queue unknown",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+
+        entries = queue_runtime_failure_notifications_after_commit(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=127,
+            reason=UNKNOWN_REASON,
+            failure_count=1,
+            error_message="未分類錯誤",
+        )
+
+        pending = app.repositories.notification_outbox.list_pending()
+        after_commit_hooks = list(app.after_commit_hooks)
+
+    assert entries == ()
+    assert pending == []
+    assert after_commit_hooks == []
+
+
+def test_runtime_failure_outbox_allows_immediate_terminal_failure(
+    tmp_path: Path,
+) -> None:
+    """立即 terminal 的登入類錯誤仍要第一次就通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-login",
+                canonical_url="https://www.facebook.com/groups/runtime-login",
+                group_name="Runtime login",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+
+        entries = enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=126,
+            reason=f" {LOGIN_REQUIRED_REASON} ",
+            failure_count=1,
+            error_message="需要重新登入",
+        )
+
+    assert len(entries) == 1
+    assert entries[0].failure_reason == LOGIN_REQUIRED_REASON
+    assert entries[0].failure_count == 1
 
 
 def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
@@ -2200,6 +2324,137 @@ def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(
 
     assert sent_count == 1
     assert in_transaction_during_send == [False]
+
+
+def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(
+    tmp_path: Path,
+) -> None:
+    """升級前殘留的 pre-terminal runtime failure pending row 不應被送出。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="legacy-runtime-unknown",
+                canonical_url="https://www.facebook.com/groups/legacy-runtime-unknown",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        idempotency_key = build_notification_idempotency_key(
+            target_id=target.id,
+            item_key="runtime-failure:legacy",
+            channel=NotificationChannel.NTFY,
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=idempotency_key,
+                target_id=target.id,
+                item_key="runtime-failure:legacy",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="掃描狀態發生錯誤",
+                message="連續次數: 1",
+                endpoint="runtime-test",
+                event_kind=NotificationEventKind.RUNTIME_FAILURE,
+                source_scan_run_id=128,
+                failure_reason=UNKNOWN_REASON,
+                failure_count=1,
+            )
+        )
+
+        processed_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            idempotency_key
+        )
+        event = app.repositories.notification_events.latest_by_target(target.id)
+
+    assert processed_count == 1
+    assert sent_topics == []
+    assert entry is not None
+    assert entry.status == NotificationOutboxStatus.SKIPPED
+    assert entry.attempts == 1
+    assert entry.last_error == "runtime_failure_not_terminal"
+    assert event is not None
+    assert event.status == NotificationStatus.SKIPPED
+    assert event.event_kind == NotificationEventKind.RUNTIME_FAILURE
+    assert event.failure_reason == UNKNOWN_REASON
+    assert event.failure_count == 1
+
+
+def test_outbox_dispatch_skips_scheduler_stopping_runtime_failure_pending_row(
+    tmp_path: Path,
+) -> None:
+    """scheduler shutdown/cancel 類 runtime failure pending row 不應被送出。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="legacy-runtime-stopping",
+                canonical_url="https://www.facebook.com/groups/legacy-runtime-stopping",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        idempotency_key = build_notification_idempotency_key(
+            target_id=target.id,
+            item_key="runtime-failure:scheduler-stopping",
+            channel=NotificationChannel.NTFY,
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=idempotency_key,
+                target_id=target.id,
+                item_key="runtime-failure:scheduler-stopping",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="掃描狀態發生錯誤",
+                message="連續次數: 3",
+                endpoint="runtime-test",
+                event_kind=NotificationEventKind.RUNTIME_FAILURE,
+                source_scan_run_id=129,
+                failure_reason=SCHEDULER_STOPPING_REASON,
+                failure_count=3,
+            )
+        )
+
+        processed_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            idempotency_key
+        )
+        event = app.repositories.notification_events.latest_by_target(target.id)
+
+    assert processed_count == 1
+    assert sent_topics == []
+    assert entry is not None
+    assert entry.status == NotificationOutboxStatus.SKIPPED
+    assert event is not None
+    assert event.status == NotificationStatus.SKIPPED
+    assert event.failure_reason == SCHEDULER_STOPPING_REASON
+    assert event.failure_count == 3
 
 
 def test_stale_failed_retry_processing_does_not_become_pending_dispatch(

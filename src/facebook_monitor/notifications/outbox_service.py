@@ -18,13 +18,18 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
+from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
+from facebook_monitor.core.scan_failure_policy import is_runtime_failure_notification_terminal
+from facebook_monitor.core.scan_failure_policy import normalize_scan_failure_reason
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_dispatch import dispatch_notification_outbox_entry
 from facebook_monitor.notifications.channel_dispatch import get_channel_definition
+from facebook_monitor.notifications.channel_dispatch import record_notification_event
 from facebook_monitor.notifications.channel_dispatch import (
     record_failed_notification_event_for_outbox_error,
 )
@@ -45,6 +50,7 @@ DEFAULT_STALE_PROCESSING_SECONDS = (
     PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.stale_processing_seconds
 )
 DEFAULT_DISPATCH_BATCH_LIMIT = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.dispatch_batch_limit
+INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE = "runtime_failure_not_terminal"
 
 
 def build_match_notification_message(
@@ -159,6 +165,7 @@ def queue_runtime_failure_notifications_after_commit(
     failure_count: int,
     error_message: str,
     target_stopped: bool = True,
+    failure_source: ScanFailureSource = "unknown_exception",
     ntfy_sender: NtfySender = send_ntfy_notification,
     desktop_sender: DesktopSender = send_desktop_notification,
     discord_sender: DiscordSender = send_discord_notification,
@@ -174,6 +181,7 @@ def queue_runtime_failure_notifications_after_commit(
         failure_count=failure_count,
         error_message=error_message,
         target_stopped=target_stopped,
+        failure_source=failure_source,
     )
     if entries:
         def dispatch_after_commit() -> None:
@@ -272,14 +280,22 @@ def enqueue_runtime_failure_notifications(
     failure_count: int,
     error_message: str,
     target_stopped: bool = True,
+    failure_source: ScanFailureSource = "unknown_exception",
 ) -> tuple[NotificationOutboxEntry, ...]:
     """將 target runtime failure 通知寫入 outbox。"""
 
     if scan_run_id <= 0:
         return ()
+    normalized_reason = normalize_scan_failure_reason(reason)
+    if not is_runtime_failure_notification_terminal(
+        reason=normalized_reason,
+        failure_count=failure_count,
+        source=failure_source,
+    ):
+        return ()
     title, message = build_runtime_failure_notification_message(
         target=target,
-        reason=reason,
+        reason=normalized_reason,
         failure_count=failure_count,
         error_message=error_message,
         target_stopped=target_stopped,
@@ -298,7 +314,7 @@ def enqueue_runtime_failure_notifications(
             item_key=item_key,
             item_kind=item_kind,
             channel=plan.channel,
-            failure_reason=reason,
+            failure_reason=normalized_reason,
             failure_count=max(int(failure_count), 1),
         )
         if not reservation.created:
@@ -322,7 +338,7 @@ def enqueue_runtime_failure_notifications(
                     permalink=target.canonical_url,
                     event_kind=NotificationEventKind.RUNTIME_FAILURE,
                     source_scan_run_id=scan_run_id,
-                    failure_reason=reason,
+                    failure_reason=normalized_reason,
                     failure_count=max(int(failure_count), 1),
                 )
             )
@@ -431,6 +447,22 @@ def dispatch_notification_outbox_entries(
         try:
             if target is None:
                 raise ValueError(f"Target not found: {entry.target_id}")
+            if _runtime_failure_outbox_entry_should_skip(entry):
+                event_id = _record_skipped_runtime_failure_outbox_entry(
+                    app=app,
+                    target=target,
+                    entry=entry,
+                )
+                app.repositories.notification_outbox.mark_result(
+                    entry_id=entry_id,
+                    status=NotificationOutboxStatus.SKIPPED,
+                    attempts=attempts,
+                    message=INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
+                    notification_event_id=event_id,
+                )
+                app.repositories.notification_outbox.connection.commit()
+                dispatched_count += 1
+                continue
             app.repositories.notification_outbox.touch_processing(
                 entry_id=entry_id,
                 status=entry.status,
@@ -478,6 +510,37 @@ def dispatch_notification_outbox_entries(
             )
             app.repositories.notification_outbox.connection.commit()
     return dispatched_count
+
+
+def _runtime_failure_outbox_entry_should_skip(entry: NotificationOutboxEntry) -> bool:
+    """舊 pending runtime failure 若未達 terminal 門檻，dispatch 時直接略過。"""
+
+    return (
+        entry.event_kind == NotificationEventKind.RUNTIME_FAILURE
+        and not is_runtime_failure_notification_terminal(
+            entry.failure_reason,
+            failure_count=entry.failure_count,
+        )
+    )
+
+
+def _record_skipped_runtime_failure_outbox_entry(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    entry: NotificationOutboxEntry,
+) -> int:
+    """為被 policy 擋下的 runtime failure outbox 寫入 skipped event。"""
+
+    return record_notification_event(
+        app=app,
+        target=target,
+        item_key=entry.item_key,
+        channel=entry.channel,
+        status=NotificationStatus.SKIPPED,
+        message=INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
+        entry=entry,
+    )
 
 
 def refresh_outbox_entry_delivery_endpoint(

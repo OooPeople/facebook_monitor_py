@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from facebook_monitor.core.scan_failure_policy import decide_scan_failure
+from facebook_monitor.core.scan_failure_policy import is_runtime_failure_notification_terminal
 
 
 def test_page_load_timeout_retries_until_third_failure() -> None:
@@ -85,6 +86,27 @@ def test_unknown_retries_by_default_until_third_failure() -> None:
     assert third.retryable is False
     assert third.target_action == "error"
     assert third.retry_streak == 3
+
+
+def test_runtime_failure_notification_terminal_uses_failure_count() -> None:
+    """runtime failure 通知資格用 failure_count 對齊 retry terminal 門檻。"""
+
+    assert (
+        is_runtime_failure_notification_terminal("unknown", failure_count=1)
+        is False
+    )
+    assert (
+        is_runtime_failure_notification_terminal("unknown", failure_count=3)
+        is True
+    )
+    assert (
+        is_runtime_failure_notification_terminal("login_required", failure_count=1)
+        is True
+    )
+    assert (
+        is_runtime_failure_notification_terminal("scheduler_stopping", failure_count=3)
+        is False
+    )
 
 
 def test_scan_timeout_retries_and_discards_page() -> None:

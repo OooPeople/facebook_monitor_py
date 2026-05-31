@@ -2948,9 +2948,11 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
 
 def test_resident_main_executor_keeps_third_target_queued(
     tmp_path: Path,
+    caplog: Any,
 ) -> None:
     """queue-based executor 會讓兩個 target running，第三個保持 queued。"""
 
+    caplog.set_level(logging.INFO, logger="facebook_monitor.worker")
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         targets = [
@@ -3034,6 +3036,11 @@ def test_resident_main_executor_keeps_third_target_queued(
             await executor.stop()
 
     asyncio.run(run_test())
+    log_text = caplog.text
+    assert "resident_executor_start max_concurrent_scans=2" in log_text
+    assert "resident_target_enqueued target_id=" in log_text
+    assert "resident_target_running target_id=" in log_text
+    assert "resident_scheduler_tick cycle=1 selected=3" in log_text
 
 
 def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) -> None:

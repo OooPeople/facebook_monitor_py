@@ -118,6 +118,19 @@ async def run_resident_main_loop(
 
     if not options.profile_dir.exists():
         raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
+    logger.info(
+        "resident_main_start db_path=%s profile_dir=%s interval_seconds=%s "
+        "scheduler_tick_seconds=%s max_concurrent_scans=%s scan_timeout_seconds=%s "
+        "stale_running_after_seconds=%s headed_compat=%s",
+        options.db_path,
+        options.profile_dir,
+        options.interval_seconds,
+        options.scheduler_tick_seconds,
+        options.max_concurrent_scans,
+        options.scan_timeout_seconds,
+        options.stale_running_after_seconds,
+        options.headed_compat,
+    )
 
     summaries: list[ResidentCycleSummary] = []
     cycle_index = 0
@@ -312,7 +325,7 @@ async def run_resident_main_scheduler_tick(
         executor.worker_health_ok() and not executor.runtime_restart_requested()
     )
     queued_count, running_count, queued_ids = await target_queue.snapshot()
-    return ResidentCycleSummary(
+    summary = ResidentCycleSummary(
         cycle_index=cycle_index,
         selected_count=enqueued_count,
         success_count=counters.success_count,
@@ -336,6 +349,69 @@ async def run_resident_main_scheduler_tick(
         cover_image_refresh_count=cover_image_refresh_count,
         notification_dispatch_count=notification_dispatch_count,
         worker_health_ok=worker_health_ok,
+    )
+    _log_resident_scheduler_tick_summary(summary, options=options)
+    return summary
+
+
+def _log_resident_scheduler_tick_summary(
+    summary: ResidentCycleSummary,
+    *,
+    options: ResidentRuntimeOptions,
+) -> None:
+    """記錄 resident scheduler tick 的 queue/worker 診斷摘要。"""
+
+    if not _should_log_resident_scheduler_tick_summary(summary):
+        return
+    logger.info(
+        "resident_scheduler_tick cycle=%s selected=%s success=%s failure=%s "
+        "skipped=%s running=%s queued=%s queue_length=%s queued_target_ids=%s "
+        "max_concurrent_scans=%s worker_ids=%s opened_pages=%s reused_pages=%s "
+        "closed_pages=%s page_pool_size=%s recovered_runtime=%s metadata_refresh=%s "
+        "cover_image_refresh=%s notification_dispatch=%s browser_alive=%s "
+        "worker_health_ok=%s",
+        summary.cycle_index,
+        summary.selected_count,
+        summary.success_count,
+        summary.failure_count,
+        summary.skipped_count,
+        summary.running_count,
+        summary.queued_count,
+        summary.queue_length,
+        ",".join(summary.queued_target_ids),
+        options.max_concurrent_scans,
+        ",".join(summary.worker_ids),
+        summary.opened_page_count,
+        summary.reused_page_count,
+        summary.closed_page_count,
+        summary.page_pool_size,
+        summary.recovered_runtime_count,
+        summary.metadata_refresh_count,
+        summary.cover_image_refresh_count,
+        summary.notification_dispatch_count,
+        summary.resident_browser_alive,
+        summary.worker_health_ok,
+    )
+
+
+def _should_log_resident_scheduler_tick_summary(summary: ResidentCycleSummary) -> bool:
+    """只在本輪有排程活動或可診斷狀態時輸出 INFO log。"""
+
+    return any(
+        (
+            summary.selected_count,
+            summary.success_count,
+            summary.failure_count,
+            summary.skipped_count,
+            summary.running_count,
+            summary.queued_count,
+            summary.recovered_runtime_count,
+            summary.metadata_refresh_count,
+            summary.cover_image_refresh_count,
+            summary.notification_dispatch_count,
+            not summary.worker_health_ok,
+            not summary.resident_browser_alive,
+        )
     )
 
 

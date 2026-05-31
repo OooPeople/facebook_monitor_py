@@ -27,6 +27,7 @@ import uvicorn
 import uvicorn.server
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
@@ -231,6 +232,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             auto_port=effective_auto_port,
                             open_browser=open_browser_on_start,
                             scheduler_interval_seconds=args.scheduler_interval_seconds,
+                            scheduler_tick_seconds=(
+                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds
+                            ),
+                            max_concurrent_scans=(
+                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans
+                            ),
                             reset_targets_on_startup=True,
                             resume_active_targets_on_startup=False,
                             reset_runtime_data_on_startup=not args.keep_runtime_data_on_startup,

@@ -290,6 +290,77 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert app.repositories.notification_outbox.list_pending() == []
 
 
+def test_finalize_scan_items_uses_renamed_target_display_name_for_notifications(
+    tmp_path: Path,
+) -> None:
+    """手動改名後的新通知使用使用者顯示名稱，不回退到舊 group metadata。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄 ntfy payload，避免測試送出真實通知。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_name="(20+) 測試社團 | Facebook",
+            )
+        )
+        app.services.targets.update_target_name(
+            target.id,
+            "(20+) 我的票券社團 | Facebook",
+        )
+        reloaded_target = app.repositories.targets.get(target.id)
+        assert reloaded_target is not None
+        config = app.services.targets.get_config_for_target(reloaded_target)
+
+        finalize_scan_items(
+            app=app,
+            target=reloaded_target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:1",
+                    alias_keys=("post:1",),
+                    group_id="123",
+                    author="作者",
+                    text="這是一篇票券貼文",
+                    permalink="https://www.facebook.com/groups/123/posts/1",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+        history = app.repositories.match_history.list_by_target(target.id)
+        assert history[0].group_name == "測試社團"
+
+    assert sent_ntfy
+    assert "社團: 我的票券社團" in sent_ntfy[0][2]
+    assert "社團: 測試社團" not in sent_ntfy[0][2]
+    assert "(20+)" not in sent_ntfy[0][2]
+
+
 def test_finalize_scan_items_requires_all_include_keyword_groups(tmp_path: Path) -> None:
     """shared finalize 使用 include groups 判斷命中並保存 group 診斷。"""
 
@@ -696,7 +767,14 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
                 ),
             )
         )
-        app.services.targets.restart_target_monitoring(active.id)
+        active = app.services.targets.restart_target_monitoring(active.id)
+        app.repositories.targets.save(
+            replace(
+                active,
+                name="(20+) Active custom | Facebook",
+                group_name="(20+) Active target | Facebook",
+            )
+        )
         app.services.targets.restart_target_monitoring(paused.id)
         app.services.targets.pause_target_monitoring(paused.id)
         app.services.targets.restart_target_monitoring(errored.id)
@@ -784,6 +862,9 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
     assert entry.failure_reason == SCHEDULER_RUNTIME_REASON
     assert entry.failure_count == 3
     assert entry.item_key.startswith("runtime-failure:")
+    assert "監視項目: Active custom" in entry.message
+    assert "(20+)" not in entry.message
+    assert "Active target" not in entry.message
     assert "背景掃描執行錯誤" in entry.message
     assert "連續次數: 3" in entry.message
     assert "系統已停止此監視項目" in entry.message

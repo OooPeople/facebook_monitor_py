@@ -201,7 +201,7 @@ class FakeMetadataPage:
     async def title(self) -> str:
         """回傳可清理的 Facebook title。"""
 
-        return "(2) 測試社團 | Facebook"
+        return "(20+) 測試社團 | Facebook"
 
     async def evaluate(self, script: str) -> str:
         """回傳 metadata resolver 抽到的 cover image URL。"""

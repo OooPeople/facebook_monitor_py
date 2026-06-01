@@ -12,6 +12,7 @@ from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
@@ -64,7 +65,7 @@ def build_match_notification_message(
 ) -> tuple[str, str]:
     """建立 keyword match 通知標題與內容，供所有通道共用。"""
 
-    group_name = target.group_name or target.name or target.group_id
+    group_name = format_target_display_name(target)
     return build_match_notification_payload(
         MatchNotificationFields(
             group_name=group_name,
@@ -87,7 +88,7 @@ def build_runtime_failure_notification_message(
 ) -> tuple[str, str]:
     """建立 target runtime failure 通知標題與內容。"""
 
-    target_name = target.name or target.group_name or target.group_id or target.id
+    target_name = format_target_display_name(target)
     reason_label = format_failure_reason(reason)
     count = max(int(failure_count), 1)
     title = "Facebook Monitor target error"
@@ -594,7 +595,7 @@ def build_match_compact_notification_message(
 ) -> str:
     """建立桌面通知使用的短內容。"""
 
-    group_name = target.group_name or target.name or target.group_id
+    group_name = format_target_display_name(target)
     return build_compact_notification_body(
         MatchNotificationFields(
             group_name=group_name,

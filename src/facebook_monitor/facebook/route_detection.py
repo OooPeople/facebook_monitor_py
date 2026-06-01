@@ -169,7 +169,7 @@ def clean_facebook_page_title(page_title: str) -> str:
     for suffix in suffixes:
         if title.endswith(suffix):
             title = title[: -len(suffix)].strip()
-    title = re.sub(r"^(?:[（(]\d+[）)]\s*)+", "", title)
+    title = re.sub(r"^(?:[（(]\d+[+＋]?[）)]\s*)+", "", title)
     return title
 
 

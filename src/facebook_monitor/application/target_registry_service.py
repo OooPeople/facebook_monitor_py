@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from facebook_monitor.application.target_config_service import TargetConfigService
+from facebook_monitor.application.target_display import is_generated_group_comments_display_name
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
@@ -192,6 +193,7 @@ class TargetRegistryService:
         updated_target = replace(
             target,
             name=request_name,
+            group_name=clean_facebook_group_name(target.group_name),
             metadata_status=TargetMetadataStatus.RESOLVED,
             metadata_error="",
             updated_at=utc_now(),
@@ -277,10 +279,16 @@ class TargetRegistryService:
             if (
                 not request_name
                 and request_group_name
-                and is_generated_group_comments_name(
-                    existing.name,
-                    existing.group_id,
-                    existing.parent_post_id,
+                and (
+                    is_generated_group_comments_name(
+                        existing.name,
+                        existing.group_id,
+                        existing.parent_post_id,
+                    )
+                    or is_generated_group_comments_display_name(
+                        existing.name,
+                        parent_post_id=existing.parent_post_id,
+                    )
                 )
             ):
                 next_name = generated_group_comments_display_name(

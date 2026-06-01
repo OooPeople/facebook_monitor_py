@@ -12,20 +12,16 @@ from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
+from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import generated_group_comments_display_name
-from facebook_monitor.core.models import is_generated_group_comments_name
-from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import split_coded_message
-from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
 from facebook_monitor.webapp.form_models import FIXED_REFRESH_MODE
 from facebook_monitor.webapp.form_models import FLOATING_REFRESH_MODE
@@ -283,29 +279,10 @@ class TargetIdentityPresenter:
     def display_name(self) -> str:
         """回傳 UI 顯示名稱。"""
 
-        if self.target.target_kind == TargetKind.COMMENTS:
-            if self.target.name and not is_generated_group_comments_name(
-                self.target.name,
-                self.target.group_id,
-                self.target.parent_post_id,
-            ):
-                return clean_facebook_page_title(self.target.name)
-            if self.target.group_name:
-                return clean_facebook_page_title(
-                    generated_group_comments_display_name(
-                        self.target.group_name,
-                        self.target.parent_post_id,
-                    )
-                )
-            return self._metadata_fallback_display_name()
-        if self.target.name and not is_generated_group_posts_name(
-            self.target.name,
-            self.target.group_id,
-        ):
-            return clean_facebook_page_title(self.target.name)
-        if self.target.group_name:
-            return clean_facebook_page_title(self.target.group_name)
-        return self._metadata_fallback_display_name()
+        return format_target_display_name(
+            self.target,
+            generated_fallback=self._metadata_fallback_display_name(),
+        )
 
     @property
     def rename_value(self) -> str:

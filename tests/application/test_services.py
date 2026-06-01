@@ -1179,6 +1179,37 @@ def test_same_group_comments_targets_keep_independent_config(tmp_path: Path) -> 
     assert second_config.include_keywords == ("只改第二篇",)
 
 
+def test_upsert_comments_target_refreshes_generated_display_name(
+    tmp_path: Path,
+) -> None:
+    """comments target 的自動顯示名會跟著新的 group metadata 更新。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="111",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/111",
+                group_name="舊社團",
+            )
+        )
+        second = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="111",
+                canonical_url="https://www.facebook.com/groups/222518561920110/posts/111",
+                group_name="新社團",
+            )
+        )
+        loaded = app.repositories.targets.get(first.id)
+
+    assert second.name == "新社團 / post:111"
+    assert second.group_name == "新社團"
+    assert loaded is not None
+    assert loaded.name == "新社團 / post:111"
+
+
 def test_upsert_group_posts_target_replaces_generated_name_when_group_name_resolved(
     tmp_path: Path,
 ) -> None:
@@ -1216,8 +1247,8 @@ def test_group_posts_target_names_are_cleaned_before_persistence(
             UpsertGroupPostsTargetRequest(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
-                name="(2) (3) 自訂社團 | Facebook",
-                group_name="(3) 測試社團 | Facebook",
+                name="(20+) (3) 自訂社團 | Facebook",
+                group_name="（20+） 測試社團 | 臉書",
             )
         )
         loaded = app.repositories.targets.get(target.id)
@@ -1237,13 +1268,13 @@ def test_update_target_name_preserves_group_metadata(tmp_path: Path) -> None:
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 name="原本名稱",
-                group_name="測試社團",
+                group_name="(20+) 測試社團 | Facebook",
             )
         )
 
         updated = app.services.targets.update_target_name(
             target.id,
-            "(1) 新卡片名稱 | Facebook",
+            "(20+) 新卡片名稱 | Facebook",
         )
         loaded = app.repositories.targets.get(target.id)
 
@@ -1271,8 +1302,8 @@ def test_restart_target_monitoring_cleans_existing_dirty_target_name(
         app.repositories.targets.save(
             replace(
                 target,
-                name="(2) 測試社團 | Facebook",
-                group_name="(3) 測試社團 | Facebook",
+                name="(20+) 測試社團 | Facebook",
+                group_name="（20+） 測試社團 | 臉書",
             )
         )
 

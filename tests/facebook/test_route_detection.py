@@ -86,5 +86,7 @@ def test_clean_page_title() -> None:
 
     assert clean_facebook_page_title("測試社團 | Facebook") == "測試社團"
     assert clean_facebook_page_title("(3) 測試社團 | Facebook") == "測試社團"
+    assert clean_facebook_page_title("(20+) 測試社團 | Facebook") == "測試社團"
+    assert clean_facebook_page_title("(20+)(3) 測試社團 | Facebook") == "測試社團"
     assert clean_facebook_page_title("(2) (3) 測試社團 | Facebook") == "測試社團"
-    assert clean_facebook_page_title("（12） 測試社團 | 臉書") == "測試社團"
+    assert clean_facebook_page_title("（20+） 測試社團 | 臉書") == "測試社團"

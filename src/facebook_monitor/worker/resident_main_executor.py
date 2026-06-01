@@ -13,12 +13,15 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
 import logging
+import sqlite3
 from typing import Any
 from typing import Protocol
+from typing import TypeVar
 
 from playwright.async_api import Error as AsyncPlaywrightError
 from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
@@ -31,6 +34,9 @@ from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
+from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
@@ -51,11 +57,13 @@ from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_guard
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db_async
 
 
 logger = logging.getLogger(__name__)
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
+T = TypeVar("T")
+_RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS = 100
 
 
 class AsyncResidentPageLike(Protocol):
@@ -160,7 +168,7 @@ class ExecutorWorkerPool:
             cancelled_ids = await self.target_queue.cancel_pending()
             for target_id in cancelled_ids:
                 if runtime_restart:
-                    self._request_target_retry_after_runtime_restart(target_id)
+                    await self._request_target_retry_after_runtime_restart_async(target_id)
                 else:
                     mark_resident_target_idle(self.options.db_path, target_id)
         if cancel_running and runtime_restart:
@@ -255,6 +263,19 @@ class ExecutorWorkerPool:
 
         await self._runtime_restart_requested.wait()
 
+    async def _run_db_operation_with_retry(
+        self,
+        operation_name: str,
+        operation: Callable[[], T],
+    ) -> T:
+        """以 async bounded retry 包住一個可 rollback 重跑的 DB operation。"""
+
+        return await run_sqlite_operation_with_retry_async(
+            operation,
+            operation_name=operation_name,
+            logger=logger,
+        )
+
     async def _cancel_active_attempts_for_runtime_restart(self) -> None:
         """取消正在使用壞掉 browser runtime 的 target attempts 並等待寫回。"""
 
@@ -272,10 +293,84 @@ class ExecutorWorkerPool:
     def _request_target_retry_after_runtime_restart(self, target_id: str) -> None:
         """讓尚未開始的 queued target 在新 runtime 建立後立即補掃。"""
 
+        run_sqlite_operation_with_retry(
+            lambda: self._write_target_retry_after_runtime_restart(target_id),
+            operation_name="request_target_retry_after_runtime_restart",
+            logger=logger,
+        )
+
+    async def _request_target_retry_after_runtime_restart_async(self, target_id: str) -> None:
+        """async stop path 使用的 queued target retry 寫回，不阻塞 event loop。"""
+
+        await self._run_db_operation_with_retry(
+            "request_target_retry_after_runtime_restart",
+            lambda: self._write_target_retry_after_runtime_restart(target_id),
+        )
+
+    def _write_target_retry_after_runtime_restart(self, target_id: str) -> None:
+        """寫回 queued target retry state；由 sync/async retry wrapper 呼叫。"""
+
         with SqliteApplicationContext(self.options.db_path) as app:
             if app.repositories.targets.get(target_id) is None:
                 return
             state = app.services.targets.ensure_runtime_state(target_id)
+            now = utc_now()
+            app.repositories.runtime_states.save(
+                replace(
+                    state,
+                    runtime_status=TargetRuntimeStatus.IDLE,
+                    scan_requested_at=now,
+                    enqueue_reason="",
+                    active_worker_id="",
+                    active_page_id="",
+                    updated_at=now,
+                )
+            )
+
+    async def _retry_target_after_sqlite_lock(
+        self,
+        *,
+        target_id: str,
+        commit_guard: ScanCommitGuard | None,
+    ) -> None:
+        """DB contention 中止本輪時，保留 failure streak 並安排下輪補掃。"""
+
+        await self._run_db_operation_with_retry(
+            "retry_target_after_sqlite_lock",
+            lambda: self._write_target_retry_after_sqlite_lock(
+                target_id=target_id,
+                commit_guard=commit_guard,
+            ),
+        )
+
+    def _write_target_retry_after_sqlite_lock(
+        self,
+        *,
+        target_id: str,
+        commit_guard: ScanCommitGuard | None,
+    ) -> None:
+        """以 guard 確認目前 attempt 後，將 DB lock 中止的 target 放回待掃。"""
+
+        with SqliteApplicationContext(self.options.db_path) as app:
+            target = app.repositories.targets.get(target_id)
+            if target is None or not target.enabled or target.paused:
+                return
+            state = app.services.targets.ensure_runtime_state(target_id)
+            if state.desired_state != TargetDesiredState.ACTIVE:
+                return
+            if commit_guard is None:
+                if state.runtime_status not in {
+                    TargetRuntimeStatus.IDLE,
+                    TargetRuntimeStatus.QUEUED,
+                }:
+                    return
+            else:
+                if not target_matches_scan_commit_guard(
+                    app=app,
+                    target_id=target_id,
+                    commit_guard=commit_guard,
+                ):
+                    return
             now = utc_now()
             app.repositories.runtime_states.save(
                 replace(
@@ -310,19 +405,22 @@ class ExecutorWorkerPool:
                     due_target.due_at.isoformat(),
                     due_target.scan_requested,
                 )
-                self._record_guard_skip(
+                await self._record_guard_skip(
                     due_target.target_id,
                     "scan_guard_skipped: target_already_queued_or_running",
                 )
                 await self._add_counters(ExecutorCounters(skipped_count=1))
                 continue
-            with SqliteApplicationContext(self.options.db_path) as app:
-                app.services.targets.mark_target_queued(due_target.target_id, reason)
-                if due_target.scan_requested:
-                    app.services.targets.clear_target_scan_request_if_not_newer(
-                        due_target.target_id,
-                        due_target.scan_requested_at,
-                    )
+            def operation() -> None:
+                with SqliteApplicationContext(self.options.db_path) as app:
+                    app.services.targets.mark_target_queued(due_target.target_id, reason)
+                    if due_target.scan_requested:
+                        app.services.targets.clear_target_scan_request_if_not_newer(
+                            due_target.target_id,
+                            due_target.scan_requested_at,
+                        )
+
+            await self._run_db_operation_with_retry("mark_target_queued", operation)
             logger.info(
                 "resident_target_enqueued target_id=%s reason=%s due_at=%s "
                 "interval_seconds=%s scan_requested=%s scan_requested_at=%s "
@@ -416,8 +514,14 @@ class ExecutorWorkerPool:
         owner_key = ""
         commit_guard: ScanCommitGuard | None = None
         try:
-            resident_target = load_resident_target(self.options.db_path, target_id)
-            if not self._target_still_active(target_id):
+            resident_target = await self._run_db_operation_with_retry(
+                "load_resident_target",
+                lambda: load_resident_target(self.options.db_path, target_id),
+            )
+            if not await self._run_db_operation_with_retry(
+                "target_still_active",
+                lambda: self._target_still_active(target_id),
+            ):
                 logger.info(
                     "resident_target_skipped target_id=%s worker_id=%s reason=%s",
                     target_id,
@@ -428,12 +532,19 @@ class ExecutorWorkerPool:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
 
             page_id = await self.page_pool.reserve_page_id(target_id)
-            with SqliteApplicationContext(self.options.db_path) as app:
-                locked_state = app.services.targets.try_mark_target_running(
-                    target_id,
-                    worker_id,
-                    page_id=page_id,
-                )
+
+            def mark_running_operation() -> Any:
+                with SqliteApplicationContext(self.options.db_path) as app:
+                    return app.services.targets.try_mark_target_running(
+                        target_id,
+                        worker_id,
+                        page_id=page_id,
+                    )
+
+            locked_state = await self._run_db_operation_with_retry(
+                "try_mark_target_running",
+                mark_running_operation,
+            )
             if locked_state is None:
                 logger.info(
                     "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
@@ -488,25 +599,33 @@ class ExecutorWorkerPool:
                 page_id,
                 current_url=str(getattr(page, "url", "") or ""),
             )
-            with SqliteApplicationContext(self.options.db_path) as app:
-                page_reload_state = app.services.targets.mark_target_page_reloaded_if_owner(
-                    target_id,
-                    worker_id=commit_guard.worker_id,
-                    started_at=commit_guard.started_at,
-                    page_id=page_id,
-                    reloaded_at=reloaded_at,
-                )
-                if page_reload_state is None:
-                    logger.info(
-                        "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                        "reason=%s",
+
+            def mark_reloaded_operation() -> Any:
+                with SqliteApplicationContext(self.options.db_path) as app:
+                    return app.services.targets.mark_target_page_reloaded_if_owner(
                         target_id,
-                        worker_id,
-                        page_id,
-                        "page_reload_owner_changed",
+                        worker_id=commit_guard.worker_id,
+                        started_at=commit_guard.started_at,
+                        page_id=page_id,
+                        reloaded_at=reloaded_at,
                     )
-                    return AsyncTargetScanResult(target_id=target_id, skipped=True)
+
+            page_reload_state = await self._run_db_operation_with_retry(
+                "mark_target_page_reloaded_if_owner",
+                mark_reloaded_operation,
+            )
+            if page_reload_state is None:
+                logger.info(
+                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
+                    "reason=%s",
+                    target_id,
+                    worker_id,
+                    page_id,
+                    "page_reload_owner_changed",
+                )
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
             with SqliteApplicationContext(self.options.db_path) as app:
+                _set_resident_scan_db_busy_timeout(app, _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
                 selected_scan_page = self._select_scan_page(resident_target.target.target_kind)
                 await self._run_scan_with_heartbeat(
                     selected_scan_page,
@@ -554,7 +673,7 @@ class ExecutorWorkerPool:
                 reused_page=not opened,
             )
         except WorkerFailure as exc:
-            decision = record_guarded_scan_failure_for_db(
+            decision = await record_guarded_scan_failure_for_db_async(
                 db_path=self.options.db_path,
                 target_id=target_id,
                 reason=exc.reason,
@@ -607,7 +726,7 @@ class ExecutorWorkerPool:
             )
         except asyncio.CancelledError:
             if self.runtime_restart_requested():
-                decision = record_guarded_scan_failure_for_db(
+                decision = await record_guarded_scan_failure_for_db_async(
                     db_path=self.options.db_path,
                     target_id=target_id,
                     reason=SCHEDULER_RUNTIME_REASON,
@@ -647,7 +766,7 @@ class ExecutorWorkerPool:
                     decision.discard_page,
                 )
                 return AsyncTargetScanResult(target_id=target_id, failure=True)
-            record_guarded_scan_failure_for_db(
+            await record_guarded_scan_failure_for_db_async(
                 db_path=self.options.db_path,
                 target_id=target_id,
                 reason=SCHEDULER_STOPPING_REASON,
@@ -659,9 +778,46 @@ class ExecutorWorkerPool:
                 page_reused=acquired_page and not opened,
             )
             raise
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc):
+                raise
+            try:
+                await self._retry_target_after_sqlite_lock(
+                    target_id=target_id,
+                    commit_guard=commit_guard,
+                )
+            except sqlite3.OperationalError as retry_exc:
+                if not is_sqlite_lock_error(retry_exc):
+                    raise
+                logger.error(
+                    "resident_target_sqlite_lock_retry_state_update_failed "
+                    "target_id=%s worker_id=%s page_id=%s exception_class=%s",
+                    target_id,
+                    worker_id,
+                    page_id,
+                    retry_exc.__class__.__name__,
+                )
+            logger.warning(
+                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
+                "result=%s reason=%s opened_page=%s reused_page=%s exception_class=%s",
+                target_id,
+                worker_id,
+                page_id,
+                "skipped",
+                "database_locked",
+                opened,
+                acquired_page and not opened,
+                exc.__class__.__name__,
+            )
+            return AsyncTargetScanResult(
+                target_id=target_id,
+                skipped=True,
+                opened_page=opened,
+                reused_page=acquired_page and not opened,
+            )
         except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
             reason = classify_playwright_exception(exc)
-            decision = record_guarded_scan_failure_for_db(
+            decision = await record_guarded_scan_failure_for_db_async(
                 db_path=self.options.db_path,
                 target_id=target_id,
                 reason=reason,
@@ -708,7 +864,7 @@ class ExecutorWorkerPool:
             )
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         except Exception as exc:
-            decision = record_guarded_scan_failure_for_db(
+            decision = await record_guarded_scan_failure_for_db_async(
                 db_path=self.options.db_path,
                 target_id=target_id,
                 reason=UNKNOWN_REASON,
@@ -838,7 +994,11 @@ class ExecutorWorkerPool:
                 f"scan exceeded {timeout_seconds:g} seconds",
             ) from exc
         except asyncio.CancelledError:
-            if not self._target_matches_commit_guard(target_id, commit_guard):
+            guard_matches = await self._run_db_operation_with_retry(
+                "target_matches_commit_guard",
+                lambda: self._target_matches_commit_guard(target_id, commit_guard),
+            )
+            if not guard_matches:
                 raise WorkerFailure(
                     TARGET_STOPPED_REASON,
                     "target stopped during scan",
@@ -874,29 +1034,70 @@ class ExecutorWorkerPool:
             await asyncio.sleep(interval_seconds)
             if scan_task.done():
                 return
-            if not self._target_matches_commit_guard(target_id, commit_guard):
+            try:
+                heartbeat_owner_matches = await self._run_db_operation_with_retry(
+                    "record_target_heartbeat_if_owner",
+                    lambda: self._record_scan_heartbeat_if_owner(
+                        target_id=target_id,
+                        worker_id=worker_id,
+                        page_id=page_id,
+                        commit_guard=commit_guard,
+                    ),
+                )
+            except sqlite3.OperationalError as exc:
+                if not is_sqlite_lock_error(exc):
+                    raise
+                logger.warning(
+                    "resident_target_heartbeat_skipped target_id=%s worker_id=%s "
+                    "page_id=%s reason=%s exception_class=%s",
+                    target_id,
+                    worker_id,
+                    page_id,
+                    "database_locked",
+                    exc.__class__.__name__,
+                )
+                continue
+            if not heartbeat_owner_matches:
                 scan_task.cancel()
                 return
-            with SqliteApplicationContext(self.options.db_path) as app:
-                if app.repositories.targets.get(target_id) is None:
-                    return
-                heartbeat_state = app.services.targets.record_target_heartbeat_if_owner(
-                    target_id,
-                    worker_id=worker_id,
-                    started_at=commit_guard.started_at,
-                    page_id=page_id,
-                )
-                if heartbeat_state is None:
-                    scan_task.cancel()
-                    return
 
-    def _record_guard_skip(self, target_id: str, reason: str) -> None:
-        """將 queue admission guard skip 寫入 runtime state。"""
+    def _record_scan_heartbeat_if_owner(
+        self,
+        *,
+        target_id: str,
+        worker_id: str,
+        page_id: str,
+        commit_guard: ScanCommitGuard,
+    ) -> bool:
+        """在單一 DB operation 中確認 owner 並刷新 scan heartbeat。"""
 
         with SqliteApplicationContext(self.options.db_path) as app:
             if app.repositories.targets.get(target_id) is None:
-                return
-            app.services.targets.record_scan_guard_skip(target_id, reason)
+                return False
+            if not target_matches_scan_commit_guard(
+                app=app,
+                target_id=target_id,
+                commit_guard=commit_guard,
+            ):
+                return False
+            heartbeat_state = app.services.targets.record_target_heartbeat_if_owner(
+                target_id,
+                worker_id=worker_id,
+                started_at=commit_guard.started_at,
+                page_id=page_id,
+            )
+            return heartbeat_state is not None
+
+    async def _record_guard_skip(self, target_id: str, reason: str) -> None:
+        """將 queue admission guard skip 寫入 runtime state。"""
+
+        def operation() -> None:
+            with SqliteApplicationContext(self.options.db_path) as app:
+                if app.repositories.targets.get(target_id) is None:
+                    return
+                app.services.targets.record_scan_guard_skip(target_id, reason)
+
+        await self._run_db_operation_with_retry("record_scan_guard_skip", operation)
 
     def _target_still_active(self, target_id: str) -> bool:
         """確認 target 從 enqueue 到執行前仍保持 desired active。"""
@@ -930,6 +1131,18 @@ class ExecutorWorkerPool:
         if target_kind == TargetKind.COMMENTS:
             return self.scan_comments_target_page
         return self.scan_page
+
+
+def _set_resident_scan_db_busy_timeout(
+    app: ApplicationContext,
+    timeout_ms: int,
+) -> None:
+    """降低 resident scan event-loop DB connection 的 lock 等待時間。"""
+
+    bounded_timeout = max(int(timeout_ms), 0)
+    app.repositories.runtime_states.connection.execute(
+        f"PRAGMA busy_timeout = {bounded_timeout}"
+    )
 
 
 async def prepare_resident_main_page(

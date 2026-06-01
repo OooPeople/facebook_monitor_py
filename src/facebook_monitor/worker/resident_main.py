@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from collections.abc import Coroutine
+from concurrent.futures import Future
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -39,6 +42,8 @@ from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with
 from facebook_monitor.notifications.outbox_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
+from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
@@ -57,6 +62,11 @@ from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinato
 
 logger = logging.getLogger(__name__)
 _LAST_RETENTION_MAINTENANCE_BY_DB: dict[Path, datetime] = {}
+_DISPLAY_NEXT_DUE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="facebook-monitor-display-next-due",
+)
+_DISPLAY_NEXT_DUE_BUSY_TIMEOUT_MS = 100
 AsyncSleepCallable = Callable[[float], Coroutine[Any, Any, None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
@@ -279,10 +289,78 @@ def _publish_display_next_due_at(
     def publish(target_id: str, due_at: datetime | None) -> None:
         """將 planner 已決定的 next due 寫入 read model。"""
 
-        with SqliteApplicationContext(db_path) as app:
-            app.services.targets.set_target_display_next_due_at(target_id, due_at)
+        future = _DISPLAY_NEXT_DUE_EXECUTOR.submit(
+            _write_display_next_due_at_best_effort,
+            db_path,
+            target_id,
+            due_at,
+        )
+        future.add_done_callback(
+            lambda done: _log_display_next_due_update_exception(done, target_id)
+        )
 
     return publish
+
+
+def _write_display_next_due_at_best_effort(
+    db_path: Path,
+    target_id: str,
+    due_at: datetime | None,
+) -> None:
+    """以短 timeout 更新 UI-only next due read model；lock 時直接略過。"""
+
+    try:
+        with closing(sqlite3.connect(db_path, timeout=0.1)) as connection:
+            connection.execute(
+                f"PRAGMA busy_timeout = {_DISPLAY_NEXT_DUE_BUSY_TIMEOUT_MS}"
+            )
+            connection.execute(
+                """
+                UPDATE target_runtime_state
+                SET display_next_due_at = ?, updated_at = ?
+                WHERE target_id = ?
+                """,
+                (
+                    encode_datetime(due_at),
+                    encode_datetime(utc_now()),
+                    target_id,
+                ),
+            )
+            connection.commit()
+    except sqlite3.OperationalError as exc:
+        if not is_sqlite_lock_error(exc):
+            raise
+        logger.warning(
+            "display next due update skipped: database locked "
+            "target_id=%s exception_class=%s",
+            target_id,
+            exc.__class__.__name__,
+        )
+
+
+def _log_display_next_due_update_exception(
+    future: Future[None],
+    target_id: str,
+) -> None:
+    """記錄背景 display-next-due 更新的非 lock 例外。"""
+
+    exc = future.exception()
+    if exc is None:
+        return
+    if is_sqlite_lock_error(exc):
+        logger.warning(
+            "display next due update skipped: database locked "
+            "target_id=%s exception_class=%s",
+            target_id,
+            exc.__class__.__name__,
+        )
+        return
+    logger.error(
+        "display next due update failed target_id=%s exception_class=%s",
+        target_id,
+        exc.__class__.__name__,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 async def run_resident_main_scheduler_tick(
@@ -478,7 +556,7 @@ def run_bounded_retention_maintenance_if_due(options: ResidentRuntimeOptions) ->
 def _is_sqlite_database_locked(exc: sqlite3.OperationalError) -> bool:
     """判斷 SQLite OperationalError 是否為暫時性 lock contention。"""
 
-    return "locked" in str(exc).lower()
+    return is_sqlite_lock_error(exc)
 
 
 async def _sleep_or_runtime_restart(

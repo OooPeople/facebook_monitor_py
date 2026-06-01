@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+import sqlite3
 from threading import Event
 
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
@@ -237,6 +238,54 @@ def test_background_scheduler_manager_normalizes_unknown_crash_reason(
 
     assert len(calls) == 1
     assert calls[0]["reason"] == SCHEDULER_RUNTIME_REASON
+
+
+def test_background_scheduler_manager_skips_target_notifications_for_sqlite_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """resident top-level DB lock 不應批次寫成所有 active targets 的 failure。"""
+
+    calls: list[dict[str, object]] = []
+
+    def failing_resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        _stop_event: Event,
+        _on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    def fake_record_notifications(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 1
+
+    def stop_after_failure(stop_event: Event, _seconds: float) -> bool:
+        stop_event.set()
+        return True
+
+    monkeypatch.setattr(
+        scheduler_session_module,
+        "record_active_targets_runtime_failure_notifications_for_db",
+        fake_record_notifications,
+    )
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=failing_resident_main_runner,
+        wait_fn=stop_after_failure,
+    )
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    assert manager.thread is not None
+    manager.thread.join(timeout=2)
+    state = manager.state()
+
+    assert state.lifecycle_state == SchedulerLifecycleState.ERROR
+    assert "背景掃描執行錯誤" in state.last_error
+    assert calls == []
 
 
 def test_background_scheduler_cycle_recovers_lifecycle_after_crash(

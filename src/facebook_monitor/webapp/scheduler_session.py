@@ -22,6 +22,7 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.worker.scan_failure_finalize import (
     record_active_targets_runtime_failure_notifications_for_db,
 )
@@ -322,11 +323,20 @@ class BackgroundSchedulerManager:
             except Exception as exc:
                 reason = _scheduler_failure_reason(exc)
                 message = str(exc)
+                sqlite_locked = is_sqlite_lock_error(exc)
                 with self._lock:
                     self.last_error = format_failure_message(reason, message)
                     self.resident_browser_alive = False
                     self.lifecycle_state = SchedulerLifecycleState.ERROR
-                if not self.stop_event.is_set():
+                if sqlite_locked:
+                    logger.warning(
+                        "scheduler runtime failure target notifications skipped: "
+                        "database locked reason=%s exception_class=%s message=%s",
+                        reason,
+                        exc.__class__.__name__,
+                        message,
+                    )
+                elif not self.stop_event.is_set():
                     self._record_runtime_failure_notifications(
                         options=options,
                         reason=reason,

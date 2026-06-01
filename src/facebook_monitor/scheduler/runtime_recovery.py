@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
@@ -19,8 +20,12 @@ from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.notifications.outbox_service import (
     queue_runtime_failure_notifications_after_commit,
 )
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_run_message
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,12 +85,19 @@ def recover_stale_running_targets(db_path: Path, stale_after_seconds: float) -> 
 def recover_stale_queued_targets(db_path: Path, stale_after_seconds: float) -> int:
     """修復過舊的 queued runtime state，回傳修復筆數。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        return len(
-            app.services.targets.recover_stale_queued_targets(
-                stale_after_seconds=stale_after_seconds,
+    def operation() -> int:
+        with SqliteApplicationContext(db_path) as app:
+            return len(
+                app.services.targets.recover_stale_queued_targets(
+                    stale_after_seconds=stale_after_seconds,
+                )
             )
-        )
+
+    return run_sqlite_operation_with_retry(
+        operation,
+        operation_name="recover_stale_queued_targets",
+        logger=logger,
+    )
 
 
 def recover_stale_runtime_targets(db_path: Path, stale_after_seconds: float) -> int:
@@ -103,24 +115,31 @@ def recover_stale_runtime_targets_detailed(
 ) -> RuntimeRecoverySummary:
     """修復 stale runtime state，並回傳 resident process 需套用的 recovery actions。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        queued = app.services.targets.recover_stale_queued_targets(
-            stale_after_seconds=stale_after_seconds,
-        )
-        running = app.services.targets.recover_stale_running_targets(
-            stale_after_seconds=stale_after_seconds,
-        )
-        actions = tuple(
-            _record_stale_running_failure(
-                app=app,
-                recovery=recovery,
+    def operation() -> RuntimeRecoverySummary:
+        with SqliteApplicationContext(db_path) as app:
+            queued = app.services.targets.recover_stale_queued_targets(
+                stale_after_seconds=stale_after_seconds,
             )
-            for recovery in running
-        )
-        return RuntimeRecoverySummary(
-            queued_count=len(queued),
-            running_actions=tuple(action for action in actions if action is not None),
-        )
+            running = app.services.targets.recover_stale_running_targets(
+                stale_after_seconds=stale_after_seconds,
+            )
+            actions = tuple(
+                _record_stale_running_failure(
+                    app=app,
+                    recovery=recovery,
+                )
+                for recovery in running
+            )
+            return RuntimeRecoverySummary(
+                queued_count=len(queued),
+                running_actions=tuple(action for action in actions if action is not None),
+            )
+
+    return run_sqlite_operation_with_retry(
+        operation,
+        operation_name="recover_stale_runtime_targets_detailed",
+        logger=logger,
+    )
 
 
 def _record_stale_running_failure(

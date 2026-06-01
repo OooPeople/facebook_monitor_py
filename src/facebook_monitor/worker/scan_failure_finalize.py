@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,15 @@ from facebook_monitor.core.user_messages import format_failure_retry_exhausted_m
 from facebook_monitor.notifications.outbox_service import (
     queue_runtime_failure_notifications_after_commit,
 )
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_finalize import ensure_target_allows_scan_commit
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -263,22 +269,72 @@ def record_guarded_scan_failure_for_db(
 ) -> ScanFailureDecision | None:
     """用 DB path 執行 guarded failure finalize；stale attempt 回傳 None。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        return record_guarded_scan_failure(
-            app=app,
-            target_id=target_id,
-            reason=reason,
-            message=message,
-            source=source,
-            worker_path=worker_path,
-            commit_guard=commit_guard,
-            worker_mode=worker_mode,
-            exception_class=exception_class,
-            profile_lease_state=profile_lease_state,
-            page_reused=page_reused,
-            scan_request_id=scan_request_id,
-            runtime_error_message=runtime_error_message,
-        )
+    def operation() -> ScanFailureDecision | None:
+        with SqliteApplicationContext(db_path) as app:
+            return record_guarded_scan_failure(
+                app=app,
+                target_id=target_id,
+                reason=reason,
+                message=message,
+                source=source,
+                worker_path=worker_path,
+                commit_guard=commit_guard,
+                worker_mode=worker_mode,
+                exception_class=exception_class,
+                profile_lease_state=profile_lease_state,
+                page_reused=page_reused,
+                scan_request_id=scan_request_id,
+                runtime_error_message=runtime_error_message,
+            )
+
+    return run_sqlite_operation_with_retry(
+        operation,
+        operation_name="record_guarded_scan_failure",
+        logger=logger,
+    )
+
+
+async def record_guarded_scan_failure_for_db_async(
+    *,
+    db_path: Path,
+    target_id: str,
+    reason: str,
+    message: str,
+    source: ScanFailureSource,
+    worker_path: str,
+    commit_guard: ScanCommitGuard | None,
+    worker_mode: WorkerMode = WorkerMode.HEADLESS,
+    exception_class: str = "",
+    profile_lease_state: str = "",
+    page_reused: bool | None = None,
+    scan_request_id: str = "",
+    runtime_error_message: str | None = None,
+) -> ScanFailureDecision | None:
+    """async resident 用 guarded failure finalize，lock retry 不阻塞 event loop。"""
+
+    def operation() -> ScanFailureDecision | None:
+        with SqliteApplicationContext(db_path) as app:
+            return record_guarded_scan_failure(
+                app=app,
+                target_id=target_id,
+                reason=reason,
+                message=message,
+                source=source,
+                worker_path=worker_path,
+                commit_guard=commit_guard,
+                worker_mode=worker_mode,
+                exception_class=exception_class,
+                profile_lease_state=profile_lease_state,
+                page_reused=page_reused,
+                scan_request_id=scan_request_id,
+                runtime_error_message=runtime_error_message,
+            )
+
+    return await run_sqlite_operation_with_retry_async(
+        operation,
+        operation_name="record_guarded_scan_failure",
+        logger=logger,
+    )
 
 
 def record_active_targets_runtime_failure_notifications_for_db(
@@ -292,15 +348,22 @@ def record_active_targets_runtime_failure_notifications_for_db(
 ) -> int:
     """為 resident 全域錯誤通知目前 active targets，回傳新增 scan run 數。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        return record_active_targets_runtime_failure_notifications(
-            app=app,
-            reason=reason,
-            message=message,
-            worker_path=worker_path,
-            worker_mode=worker_mode,
-            exception_class=exception_class,
-        )
+    def operation() -> int:
+        with SqliteApplicationContext(db_path) as app:
+            return record_active_targets_runtime_failure_notifications(
+                app=app,
+                reason=reason,
+                message=message,
+                worker_path=worker_path,
+                worker_mode=worker_mode,
+                exception_class=exception_class,
+            )
+
+    return run_sqlite_operation_with_retry(
+        operation,
+        operation_name="record_active_targets_runtime_failure_notifications",
+        logger=logger,
+    )
 
 
 def record_active_targets_runtime_failure_notifications(

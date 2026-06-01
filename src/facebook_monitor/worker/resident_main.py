@@ -221,6 +221,17 @@ async def run_resident_main_loop(
                                     if executor.runtime_restart_requested():
                                         runtime_restart_requested = True
                                         break
+                                    if not summary.worker_health_ok:
+                                        logger.warning(
+                                            "resident_main_runtime_restart_requested "
+                                            "reason=%s cycle=%s worker_statuses=%s",
+                                            "worker_pool_unhealthy",
+                                            summary.cycle_index,
+                                            ",".join(summary.worker_statuses),
+                                        )
+                                        executor.request_runtime_restart()
+                                        runtime_restart_requested = True
+                                        break
                                     if (
                                         options.max_cycles is not None
                                         and cycle_index >= options.max_cycles
@@ -234,7 +245,12 @@ async def run_resident_main_loop(
                                         runtime_restart_requested = True
                                         break
                                 if not stop_requested() and not runtime_restart_requested:
-                                    await target_queue.join()
+                                    runtime_restart_requested = (
+                                        await _drain_queue_or_runtime_restart(
+                                            target_queue=target_queue,
+                                            executor=executor,
+                                        )
+                                    )
                             finally:
                                 await executor.stop(
                                     cancel_running=(
@@ -321,9 +337,8 @@ async def run_resident_main_scheduler_tick(
         )
         enqueued_count = await executor.enqueue_due_targets(due_targets)
     counters = await executor.take_counters()
-    worker_health_ok = (
-        executor.worker_health_ok() and not executor.runtime_restart_requested()
-    )
+    worker_health_ok = executor.worker_health_ok()
+    runtime_restart_requested = executor.runtime_restart_requested()
     queued_count, running_count, queued_ids = await target_queue.snapshot()
     summary = ResidentCycleSummary(
         cycle_index=cycle_index,
@@ -342,8 +357,9 @@ async def run_resident_main_scheduler_tick(
         queue_length=queued_count,
         queued_target_ids=queued_ids,
         worker_ids=executor.worker_ids,
+        worker_statuses=executor.worker_statuses(),
         page_pool_size=await page_pool.size(),
-        resident_browser_alive=worker_health_ok,
+        resident_browser_alive=worker_health_ok and not runtime_restart_requested,
         recovered_runtime_count=recovery_summary.recovered_count,
         metadata_refresh_count=metadata_refresh_count,
         cover_image_refresh_count=cover_image_refresh_count,
@@ -366,7 +382,8 @@ def _log_resident_scheduler_tick_summary(
     logger.info(
         "resident_scheduler_tick cycle=%s selected=%s success=%s failure=%s "
         "skipped=%s running=%s queued=%s queue_length=%s queued_target_ids=%s "
-        "max_concurrent_scans=%s worker_ids=%s opened_pages=%s reused_pages=%s "
+        "max_concurrent_scans=%s worker_ids=%s worker_statuses=%s "
+        "opened_pages=%s reused_pages=%s "
         "closed_pages=%s page_pool_size=%s recovered_runtime=%s metadata_refresh=%s "
         "cover_image_refresh=%s notification_dispatch=%s browser_alive=%s "
         "worker_health_ok=%s",
@@ -381,6 +398,7 @@ def _log_resident_scheduler_tick_summary(
         ",".join(summary.queued_target_ids),
         options.max_concurrent_scans,
         ",".join(summary.worker_ids),
+        ",".join(summary.worker_statuses),
         summary.opened_page_count,
         summary.reused_page_count,
         summary.closed_page_count,
@@ -490,6 +508,35 @@ async def _sleep_or_runtime_restart(
             if not task.done():
                 task.cancel()
         await asyncio.gather(sleep_task, restart_task, return_exceptions=True)
+
+
+async def _drain_queue_or_runtime_restart(
+    *,
+    target_queue: TargetQueue,
+    executor: ExecutorWorkerPool,
+) -> bool:
+    """等待 queue drain；若 runtime restart 先發生則交給外層重建。"""
+
+    if executor.runtime_restart_requested():
+        return True
+    join_task = asyncio.create_task(target_queue.join())
+    restart_task = asyncio.create_task(executor.wait_runtime_restart_requested())
+    try:
+        done, _pending = await asyncio.wait(
+            {join_task, restart_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if join_task in done:
+            await join_task
+        if restart_task in done:
+            await restart_task
+            return True
+        return executor.runtime_restart_requested()
+    finally:
+        for task in (join_task, restart_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(join_task, restart_task, return_exceptions=True)
 
 
 async def refresh_requested_target_metadata(
@@ -960,6 +1007,7 @@ async def run_resident_main_cycle(
         **({"scan_comments_target_page": scan_comments_target_page} if scan_comments_target_page is not None else {}),
     )
     await executor.start()
+    runtime_restart_requested = False
     try:
         summary = await run_resident_main_scheduler_tick(
             options=options,
@@ -969,10 +1017,17 @@ async def run_resident_main_cycle(
             schedule_planner=schedule_planner,
             cycle_index=cycle_index,
         )
-        await target_queue.join()
+        runtime_restart_requested = await _drain_queue_or_runtime_restart(
+            target_queue=target_queue,
+            executor=executor,
+        )
         await asyncio.sleep(0)
         counters = await executor.take_counters()
         queued_count, running_count, queued_ids = await target_queue.snapshot()
+        worker_health_ok = executor.worker_health_ok()
+        runtime_restart_requested = (
+            runtime_restart_requested or executor.runtime_restart_requested()
+        )
         return ResidentCycleSummary(
             cycle_index=cycle_index,
             selected_count=summary.selected_count,
@@ -987,16 +1042,20 @@ async def run_resident_main_cycle(
             queue_length=queued_count,
             queued_target_ids=queued_ids,
             worker_ids=executor.worker_ids,
+            worker_statuses=executor.worker_statuses(),
             page_pool_size=await page_pool.size(),
-            resident_browser_alive=executor.worker_health_ok(),
+            resident_browser_alive=worker_health_ok and not runtime_restart_requested,
             recovered_runtime_count=summary.recovered_runtime_count,
             metadata_refresh_count=summary.metadata_refresh_count,
             cover_image_refresh_count=summary.cover_image_refresh_count,
             notification_dispatch_count=summary.notification_dispatch_count,
-            worker_health_ok=executor.worker_health_ok(),
+            worker_health_ok=worker_health_ok,
         )
     finally:
-        await executor.stop()
+        await executor.stop(
+            cancel_running=runtime_restart_requested,
+            runtime_restart=runtime_restart_requested,
+        )
 
 
 def run_resident_main_loop_sync(

@@ -126,14 +126,18 @@ class ExecutorWorkerPool:
         self._active_attempt_lock = asyncio.Lock()
         self._active_attempt_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
         self._runtime_restart_requested = asyncio.Event()
+        self._stopping = False
 
     async def start(self) -> None:
         """啟動固定數量的 executor worker slots。"""
 
+        self._stopping = False
         self.worker_tasks = [
             asyncio.create_task(self._worker_loop(worker_id), name=worker_id)
             for worker_id in self.worker_ids
         ]
+        for task in self.worker_tasks:
+            task.add_done_callback(self._handle_worker_task_done)
         logger.info(
             "resident_executor_start max_concurrent_scans=%s worker_ids=%s",
             self.options.max_concurrent_scans,
@@ -148,6 +152,7 @@ class ExecutorWorkerPool:
     ) -> None:
         """停止 worker slots；必要時取消尚未完成的長掃描。"""
 
+        self._stopping = True
         if runtime_restart:
             self.request_runtime_restart()
         cancelled_ids: tuple[str, ...] = ()
@@ -178,10 +183,62 @@ class ExecutorWorkerPool:
         if self.worker_tasks:
             await asyncio.gather(*self.worker_tasks, return_exceptions=True)
 
+    def _handle_worker_task_done(self, task: asyncio.Task[None]) -> None:
+        """記錄非預期結束的 executor worker，並要求外層重建 runtime。"""
+
+        if self._stopping:
+            return
+        worker_id = task.get_name()
+        if task.cancelled():
+            logger.warning(
+                "resident_executor_worker_stopped worker_id=%s reason=%s",
+                worker_id,
+                "cancelled_unexpectedly",
+            )
+            self.request_runtime_restart()
+            return
+        exc = task.exception()
+        if exc is None:
+            logger.error(
+                "resident_executor_worker_stopped worker_id=%s reason=%s",
+                worker_id,
+                "returned_unexpectedly",
+            )
+        else:
+            logger.error(
+                "resident_executor_worker_stopped worker_id=%s reason=%s "
+                "exception_class=%s",
+                worker_id,
+                "exception",
+                exc.__class__.__name__,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        self.request_runtime_restart()
+
     def worker_health_ok(self) -> bool:
         """回傳 worker tasks 是否仍健康存活。"""
 
-        return all(not task.done() or task.cancelled() for task in self.worker_tasks)
+        return bool(self.worker_tasks) and all(
+            not task.done() for task in self.worker_tasks
+        )
+
+    def worker_statuses(self) -> tuple[str, ...]:
+        """回傳每個 worker task 的診斷狀態，供 scheduler log 判讀。"""
+
+        statuses: list[str] = []
+        for task in self.worker_tasks:
+            worker_id = task.get_name()
+            if task.cancelled():
+                statuses.append(f"{worker_id}:cancelled")
+            elif not task.done():
+                statuses.append(f"{worker_id}:running")
+            else:
+                exc = task.exception()
+                if exc is None:
+                    statuses.append(f"{worker_id}:returned")
+                else:
+                    statuses.append(f"{worker_id}:failed:{exc.__class__.__name__}")
+        return tuple(statuses)
 
     def runtime_restart_requested(self) -> bool:
         """回傳目前 browser runtime 是否需要關閉並重建。"""

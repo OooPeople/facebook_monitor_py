@@ -12,7 +12,7 @@ from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
-from tests.persistence.test_sqlite import create_raw_v10_fixture_schema
+from tests.persistence.sqlite_test_helpers import create_raw_v10_fixture_schema
 
 
 EXPECTED_ENUM_CONTRACT_KEYS = {

@@ -9,31 +9,21 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from collections.abc import Coroutine
-from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
 import logging
 import sqlite3
 from typing import Any
-from typing import Protocol
 from typing import TypeVar
 
-from playwright.async_api import Error as AsyncPlaywrightError
-from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
-
-from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
-from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
-from facebook_monitor.core.scan_failures import UNKNOWN_REASON
-from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
@@ -43,65 +33,23 @@ from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
 from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.resident_shared import ResidentTarget
+from facebook_monitor.worker.resident_main_executor_attempt import run_queue_item
+from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
+from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
+from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle
-from facebook_monitor.worker.resident_shared import should_reload_resident_page
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
-from facebook_monitor.worker.errors import classify_playwright_exception
-from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_guard
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db_async
 
 
 logger = logging.getLogger(__name__)
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
 T = TypeVar("T")
-_RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS = 100
-
-
-class AsyncResidentPageLike(Protocol):
-    """resident executor page preparation 需要的 async Playwright page 能力。"""
-
-    url: str
-
-    async def reload(self, *, wait_until: str, timeout: float) -> object:
-        """重新載入目前 page。"""
-
-    async def goto(self, url: str, *, wait_until: str, timeout: float) -> object:
-        """前往指定 URL。"""
-
-    async def wait_for_timeout(self, timeout: int) -> None:
-        """等待指定毫秒。"""
-
-
-@dataclass(frozen=True)
-class AsyncTargetScanResult:
-    """保存單一 target async scan 執行結果，供 diagnostics 彙整。"""
-
-    target_id: str
-    success: bool = False
-    failure: bool = False
-    skipped: bool = False
-    opened_page: bool = False
-    reused_page: bool = False
-
-
-@dataclass(frozen=True)
-class ExecutorCounters:
-    """保存 worker pool 自上次讀取後累積的執行結果。"""
-
-    success_count: int = 0
-    failure_count: int = 0
-    skipped_count: int = 0
-    opened_page_count: int = 0
-    reused_page_count: int = 0
+__all__ = ("ExecutorWorkerPool", "prepare_resident_main_page")
 
 
 class ExecutorWorkerPool:
@@ -214,8 +162,7 @@ class ExecutorWorkerPool:
             )
         else:
             logger.error(
-                "resident_executor_worker_stopped worker_id=%s reason=%s "
-                "exception_class=%s",
+                "resident_executor_worker_stopped worker_id=%s reason=%s exception_class=%s",
                 worker_id,
                 "exception",
                 exc.__class__.__name__,
@@ -226,9 +173,7 @@ class ExecutorWorkerPool:
     def worker_health_ok(self) -> bool:
         """回傳 worker tasks 是否仍健康存活。"""
 
-        return bool(self.worker_tasks) and all(
-            not task.done() for task in self.worker_tasks
-        )
+        return bool(self.worker_tasks) and all(not task.done() for task in self.worker_tasks)
 
     def worker_statuses(self) -> tuple[str, ...]:
         """回傳每個 worker task 的診斷狀態，供 scheduler log 判讀。"""
@@ -281,9 +226,7 @@ class ExecutorWorkerPool:
 
         async with self._active_attempt_lock:
             attempt_tasks = tuple(
-                task
-                for _owner_key, task in self._active_attempt_tasks.values()
-                if not task.done()
+                task for _owner_key, task in self._active_attempt_tasks.values() if not task.done()
             )
         for task in attempt_tasks:
             task.cancel()
@@ -411,6 +354,7 @@ class ExecutorWorkerPool:
                 )
                 await self._add_counters(ExecutorCounters(skipped_count=1))
                 continue
+
             def operation() -> None:
                 with SqliteApplicationContext(self.options.db_path) as app:
                     app.services.targets.mark_target_queued(due_target.target_id, reason)
@@ -507,417 +451,7 @@ class ExecutorWorkerPool:
     async def _run_queue_item(self, worker_id: str, item: QueueItem) -> AsyncTargetScanResult:
         """執行 queue 中的單一 target，並維護 runtime / page ownership。"""
 
-        target_id = item.due_target.target_id
-        opened = False
-        page_id = ""
-        acquired_page = False
-        owner_key = ""
-        commit_guard: ScanCommitGuard | None = None
-        try:
-            resident_target = await self._run_db_operation_with_retry(
-                "load_resident_target",
-                lambda: load_resident_target(self.options.db_path, target_id),
-            )
-            if not await self._run_db_operation_with_retry(
-                "target_still_active",
-                lambda: self._target_still_active(target_id),
-            ):
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s reason=%s",
-                    target_id,
-                    worker_id,
-                    "target_not_active_before_running",
-                )
-                mark_resident_target_idle(self.options.db_path, target_id)
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-
-            page_id = await self.page_pool.reserve_page_id(target_id)
-
-            def mark_running_operation() -> Any:
-                with SqliteApplicationContext(self.options.db_path) as app:
-                    return app.services.targets.try_mark_target_running(
-                        target_id,
-                        worker_id,
-                        page_id=page_id,
-                    )
-
-            locked_state = await self._run_db_operation_with_retry(
-                "try_mark_target_running",
-                mark_running_operation,
-            )
-            if locked_state is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "running_claim_rejected",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            commit_guard = scan_commit_guard_from_runtime_state(locked_state)
-            owner_key = build_recovery_owner_key(
-                worker_id=commit_guard.worker_id,
-                started_at=commit_guard.started_at,
-                page_id=commit_guard.page_id,
-            )
-            await self.target_queue.bind_running_owner(target_id, owner_key)
-            await self._register_active_attempt(target_id, owner_key)
-            self.schedule_planner.mark_dispatched(item.due_target)
-            logger.info(
-                "resident_target_running target_id=%s worker_id=%s page_id=%s "
-                "owner_key=%s enqueue_reason=%s enqueued_at=%s due_at=%s "
-                "scan_requested=%s",
-                target_id,
-                worker_id,
-                page_id,
-                owner_key,
-                item.enqueue_reason,
-                item.enqueued_at.isoformat(),
-                item.due_target.due_at.isoformat(),
-                item.due_target.scan_requested,
-            )
-
-            page, acquired_page_id, opened = await self.page_pool.acquire(
-                resident_target,
-                worker_id,
-                page_id=page_id,
-            )
-            acquired_page = True
-            page_id = acquired_page_id
-            await prepare_resident_main_page(
-                page=page,
-                target=resident_target,
-                timeout_ms=max(
-                    self.options.scan_timeout_seconds,
-                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                )
-                * 1000,
-            )
-            reloaded_at = await self.page_pool.mark_reloaded_if_page_id(
-                target_id,
-                page_id,
-                current_url=str(getattr(page, "url", "") or ""),
-            )
-
-            def mark_reloaded_operation() -> Any:
-                with SqliteApplicationContext(self.options.db_path) as app:
-                    return app.services.targets.mark_target_page_reloaded_if_owner(
-                        target_id,
-                        worker_id=commit_guard.worker_id,
-                        started_at=commit_guard.started_at,
-                        page_id=page_id,
-                        reloaded_at=reloaded_at,
-                    )
-
-            page_reload_state = await self._run_db_operation_with_retry(
-                "mark_target_page_reloaded_if_owner",
-                mark_reloaded_operation,
-            )
-            if page_reload_state is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "page_reload_owner_changed",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            with SqliteApplicationContext(self.options.db_path) as app:
-                _set_resident_scan_db_busy_timeout(app, _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
-                selected_scan_page = self._select_scan_page(resident_target.target.target_kind)
-                await self._run_scan_with_heartbeat(
-                    selected_scan_page,
-                    page=page,
-                    app=app,
-                    target=resident_target.target,
-                    config=resident_target.config,
-                    scroll_rounds=self.options.scroll_rounds,
-                    scroll_wait_ms=self.options.scroll_wait_ms,
-                    worker_id=worker_id,
-                    page_id=page_id,
-                    commit_guard=commit_guard,
-                )
-                committed_current_attempt = False
-                if mark_target_idle_for_scan_commit(
-                    app=app,
-                    target_id=target_id,
-                    commit_guard=commit_guard,
-                ):
-                    committed_current_attempt = True
-            if not committed_current_attempt:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "scan_commit_guard_mismatch",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            logger.info(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s opened_page=%s reused_page=%s",
-                target_id,
-                worker_id,
-                page_id,
-                "success",
-                opened,
-                not opened,
-            )
-            return AsyncTargetScanResult(
-                target_id=target_id,
-                success=True,
-                opened_page=opened,
-                reused_page=not opened,
-            )
-        except WorkerFailure as exc:
-            decision = await record_guarded_scan_failure_for_db_async(
-                db_path=self.options.db_path,
-                target_id=target_id,
-                reason=exc.reason,
-                message=str(exc),
-                source="worker_failure",
-                worker_path="resident_main",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-                page_reused=acquired_page and not opened,
-            )
-            if decision is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "worker_failure_owner_changed",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            if decision.discard_page:
-                await self.page_pool.discard(target_id)
-            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-                self.request_runtime_restart()
-            logger.warning(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s reason=%s runtime_action=%s recovery_action=%s "
-                "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-                "opened_page=%s reused_page=%s exception_class=%s",
-                target_id,
-                worker_id,
-                page_id,
-                "failure",
-                exc.reason,
-                decision.target_action,
-                decision.recovery_action,
-                decision.retryable,
-                decision.retry_streak,
-                decision.retry_limit,
-                decision.discard_page,
-                opened,
-                acquired_page and not opened,
-                exc.__class__.__name__,
-            )
-            return AsyncTargetScanResult(
-                target_id=target_id,
-                failure=True,
-                opened_page=opened,
-                reused_page=acquired_page and not opened,
-            )
-        except asyncio.CancelledError:
-            if self.runtime_restart_requested():
-                decision = await record_guarded_scan_failure_for_db_async(
-                    db_path=self.options.db_path,
-                    target_id=target_id,
-                    reason=SCHEDULER_RUNTIME_REASON,
-                    message="browser runtime restart requested",
-                    source="unknown_exception",
-                    worker_path="resident_main",
-                    commit_guard=commit_guard,
-                    exception_class="CancelledError",
-                    page_reused=acquired_page and not opened,
-                )
-                if decision is None:
-                    logger.info(
-                        "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                        "reason=%s",
-                        target_id,
-                        worker_id,
-                        page_id,
-                        "runtime_restart_cancel_owner_changed",
-                    )
-                    return AsyncTargetScanResult(target_id=target_id, skipped=True)
-                if decision.discard_page:
-                    await self.page_pool.discard(target_id)
-                logger.warning(
-                    "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                    "result=%s reason=%s runtime_action=%s recovery_action=%s "
-                    "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "failure",
-                    SCHEDULER_RUNTIME_REASON,
-                    decision.target_action,
-                    decision.recovery_action,
-                    decision.retryable,
-                    decision.retry_streak,
-                    decision.retry_limit,
-                    decision.discard_page,
-                )
-                return AsyncTargetScanResult(target_id=target_id, failure=True)
-            await record_guarded_scan_failure_for_db_async(
-                db_path=self.options.db_path,
-                target_id=target_id,
-                reason=SCHEDULER_STOPPING_REASON,
-                message="resident scheduler is stopping",
-                source="scheduler_cancel",
-                worker_path="resident_main",
-                commit_guard=commit_guard,
-                exception_class="CancelledError",
-                page_reused=acquired_page and not opened,
-            )
-            raise
-        except sqlite3.OperationalError as exc:
-            if not is_sqlite_lock_error(exc):
-                raise
-            try:
-                await self._retry_target_after_sqlite_lock(
-                    target_id=target_id,
-                    commit_guard=commit_guard,
-                )
-            except sqlite3.OperationalError as retry_exc:
-                if not is_sqlite_lock_error(retry_exc):
-                    raise
-                logger.error(
-                    "resident_target_sqlite_lock_retry_state_update_failed "
-                    "target_id=%s worker_id=%s page_id=%s exception_class=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    retry_exc.__class__.__name__,
-                )
-            logger.warning(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s reason=%s opened_page=%s reused_page=%s exception_class=%s",
-                target_id,
-                worker_id,
-                page_id,
-                "skipped",
-                "database_locked",
-                opened,
-                acquired_page and not opened,
-                exc.__class__.__name__,
-            )
-            return AsyncTargetScanResult(
-                target_id=target_id,
-                skipped=True,
-                opened_page=opened,
-                reused_page=acquired_page and not opened,
-            )
-        except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
-            reason = classify_playwright_exception(exc)
-            decision = await record_guarded_scan_failure_for_db_async(
-                db_path=self.options.db_path,
-                target_id=target_id,
-                reason=reason,
-                message=str(exc),
-                source="playwright",
-                worker_path="resident_main",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-                page_reused=acquired_page and not opened,
-            )
-            if decision is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "playwright_failure_owner_changed",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            if decision.discard_page:
-                await self.page_pool.discard(target_id)
-            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-                self.request_runtime_restart()
-            logger.warning(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s reason=%s runtime_action=%s recovery_action=%s "
-                "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-                "opened_page=%s reused_page=%s exception_class=%s",
-                target_id,
-                worker_id,
-                page_id,
-                "failure",
-                reason,
-                decision.target_action,
-                decision.recovery_action,
-                decision.retryable,
-                decision.retry_streak,
-                decision.retry_limit,
-                decision.discard_page,
-                opened,
-                acquired_page and not opened,
-                exc.__class__.__name__,
-            )
-            return AsyncTargetScanResult(target_id=target_id, failure=True)
-        except Exception as exc:
-            decision = await record_guarded_scan_failure_for_db_async(
-                db_path=self.options.db_path,
-                target_id=target_id,
-                reason=UNKNOWN_REASON,
-                message=str(exc),
-                source="unknown_exception",
-                worker_path="resident_main",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-                page_reused=acquired_page and not opened,
-            )
-            if decision is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-                    "reason=%s",
-                    target_id,
-                    worker_id,
-                    page_id,
-                    "unknown_failure_owner_changed",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            if decision.discard_page:
-                await self.page_pool.discard(target_id)
-            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-                self.request_runtime_restart()
-            logger.warning(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s reason=%s runtime_action=%s recovery_action=%s "
-                "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-                "opened_page=%s reused_page=%s exception_class=%s",
-                target_id,
-                worker_id,
-                page_id,
-                "failure",
-                UNKNOWN_REASON,
-                decision.target_action,
-                decision.recovery_action,
-                decision.retryable,
-                decision.retry_streak,
-                decision.retry_limit,
-                decision.discard_page,
-                opened,
-                acquired_page and not opened,
-                exc.__class__.__name__,
-            )
-            return AsyncTargetScanResult(target_id=target_id, failure=True)
-        finally:
-            await self._unregister_active_attempt(target_id, owner_key)
-            if page_id:
-                await self.page_pool.release_if_page_id(target_id, page_id)
-            else:
-                await self.page_pool.release(target_id)
-            await self.target_queue.complete(target_id, owner_key=owner_key)
-            self.schedule_planner.mark_finished(target_id)
+        return await run_queue_item(self, worker_id, item)
 
     async def _register_active_attempt(self, target_id: str, owner_key: str) -> None:
         """記錄整個 target attempt task，讓 recovery 可取消 prepare/goto 階段。"""
@@ -1131,31 +665,3 @@ class ExecutorWorkerPool:
         if target_kind == TargetKind.COMMENTS:
             return self.scan_comments_target_page
         return self.scan_page
-
-
-def _set_resident_scan_db_busy_timeout(
-    app: ApplicationContext,
-    timeout_ms: int,
-) -> None:
-    """降低 resident scan event-loop DB connection 的 lock 等待時間。"""
-
-    bounded_timeout = max(int(timeout_ms), 0)
-    app.repositories.runtime_states.connection.execute(
-        f"PRAGMA busy_timeout = {bounded_timeout}"
-    )
-
-
-async def prepare_resident_main_page(
-    *,
-    page: AsyncResidentPageLike,
-    target: ResidentTarget,
-    timeout_ms: float,
-) -> None:
-    """讓 async page 停在 target route；同一 route 只 reload。"""
-
-    current_url = str(getattr(page, "url", "") or "")
-    if should_reload_resident_page(current_url, target.target.canonical_url):
-        await page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
-    else:
-        await page.goto(target.target.canonical_url, wait_until="domcontentloaded", timeout=timeout_ms)
-    await page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)

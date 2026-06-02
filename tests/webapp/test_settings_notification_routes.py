@@ -367,11 +367,15 @@ def test_settings_clear_failed_outbox_reports_zero_when_no_failed_rows(
 
 
 def test_settings_support_bundle_excludes_private_runtime_files(tmp_path: Path) -> None:
-    """Support bundle 只包含 redacted 摘要，不打包 DB/profile/logs/secrets。"""
+    """Support bundle 只包含 redacted 摘要，不打包 DB/profile/完整 logs/secrets。"""
 
     paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
     paths.ensure_writable_dirs()
     (paths.logs_dir / "private.log").write_text("secret-token", encoding="utf-8")
+    (paths.logs_dir / "app.log").write_text(
+        "failed https://discord.com/api/webhooks/123456/private-token",
+        encoding="utf-8",
+    )
     (paths.profile_dir / "Cookies").write_text("cookie-secret", encoding="utf-8")
     with SqliteApplicationContext(paths.db_path) as app_context:
         app_context.services.targets.upsert_group_posts_target(
@@ -397,9 +401,12 @@ def test_settings_support_bundle_excludes_private_runtime_files(tmp_path: Path) 
         "runtime_diagnostics.txt",
         "runtime_paths.json",
         "database_summary.json",
+        "bundle_manifest.json",
+        "log_tail.json",
     }.issubset(names)
     assert all(not name.endswith((".db", "Cookies", ".log", "secrets.key")) for name in names)
     assert "secret-token" not in combined_text
+    assert "private-token" not in combined_text
     assert "cookie-secret" not in combined_text
 
 

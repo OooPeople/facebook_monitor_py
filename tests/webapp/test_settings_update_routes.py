@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.version import APP_VERSION
@@ -123,6 +124,36 @@ def test_settings_update_check_uses_github_release_presenter(
     assert "SHA256" not in response.text
     assert "開啟 Release" not in response.text
     assert "下載更新" not in response.text
+
+
+def test_settings_update_check_skips_github_when_operation_locked(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """已有更新流程時，手動檢查更新不應再進入 GitHub release check。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    checked = False
+
+    async def fake_check_github_release_updates(**kwargs) -> UpdateCheckResult:
+        nonlocal checked
+        checked = True
+        raise AssertionError("check should not run while operation lock is busy")
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    with acquire_update_operation_lock(paths.runtime_dir, "external"):
+        response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert "尚未檢查更新" in response.text
+    assert checked is False
 
 
 def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
@@ -428,6 +459,38 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
     ]
 
 
+def test_settings_download_update_returns_busy_when_operation_locked(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """下載更新 route 在 operation lock busy 時不應查 release 或下載。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    checked = False
+
+    async def fake_check_github_release_updates(**kwargs) -> UpdateCheckResult:
+        nonlocal checked
+        checked = True
+        raise AssertionError("check should not run while operation lock is busy")
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    with acquire_update_operation_lock(paths.runtime_dir, "external"):
+        response = client.post("/settings/updates/download", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert checked is False
+
+
 def test_settings_macos_download_update_does_not_create_pending_update(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -605,6 +668,42 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
     assert (paths.runtime_dir / "pending_update.json").is_file()
     assert launched_paths == [paths.runtime_dir]
     assert shutdown_requested == [True]
+
+
+def test_settings_download_and_apply_update_returns_busy_when_operation_locked(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """更新流程已在執行時，modal route 應回既有錯誤 JSON 且不下載。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    checked = False
+
+    async def fake_check_github_release_updates(**kwargs) -> UpdateCheckResult:
+        nonlocal checked
+        checked = True
+        raise AssertionError("check should not run while operation lock is busy")
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    with acquire_update_operation_lock(paths.runtime_dir, "external"):
+        response = client.post("/settings/updates/download-and-apply")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "stage": "operation_lock",
+        "error": "更新流程正在執行中，請稍後再試。",
+    }
+    assert checked is False
 
 
 def test_settings_macos_download_and_apply_update_creates_handoff(
@@ -853,6 +952,38 @@ def test_settings_apply_update_launches_updater_and_requests_shutdown(
     assert "message=" in response.headers["location"]
     assert launched_paths == [paths.runtime_dir]
     assert shutdown_requested == [True]
+
+
+def test_settings_apply_update_returns_busy_when_operation_locked(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """套用更新 route 在 operation lock busy 時不應啟動 updater。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    launched = False
+
+    def fake_launch_temp_updater(*, paths, wait_seconds=300):
+        nonlocal launched
+        launched = True
+        raise AssertionError("launch should not run while operation lock is busy")
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.launch_temp_updater",
+        fake_launch_temp_updater,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    with acquire_update_operation_lock(paths.runtime_dir, "external"):
+        response = client.post("/settings/updates/apply", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert launched is False
 
 
 def test_settings_apply_update_rejects_source_mode(tmp_path: Path) -> None:

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 import zipfile
 
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
+from facebook_monitor.diagnostics.support_bundle import prune_old_support_bundles
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.schema import initialize_schema
@@ -150,3 +155,108 @@ def test_support_bundle_redacts_runtime_diagnostics_secrets(tmp_path: Path) -> N
     assert "private-token" not in runtime_text
     assert "token=secret" not in runtime_text
     assert r"C:\Users\alice" not in runtime_text
+
+
+def test_support_bundle_create_runs_retention_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """建立支援包後應觸發 retention cleanup，但不影響本次 bundle。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    calls: list[dict[str, object]] = []
+
+    def fake_prune_old_support_bundles(bundle_dir: Path, **kwargs) -> int:
+        calls.append({"bundle_dir": bundle_dir, **kwargs})
+        return 0
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle.prune_old_support_bundles",
+        fake_prune_old_support_bundles,
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    assert result.path.is_file()
+    assert calls
+    assert calls[0]["bundle_dir"] == paths.exports_dir / "support-bundles"
+    assert calls[0]["preserve"] == (result.path,)
+
+
+def test_prune_old_support_bundles_limits_age_and_file_count(tmp_path: Path) -> None:
+    """support bundle retention 只清 allowlisted 舊 bundle 檔案。"""
+
+    bundle_dir = tmp_path / "support-bundles"
+    bundle_dir.mkdir()
+    now = datetime(2026, 6, 3, tzinfo=timezone.utc)
+    created_paths: list[Path] = []
+    for index in range(12):
+        path = bundle_dir / f"facebook-monitor-support-20260603T0000{index:02d}Z.zip"
+        path.write_bytes(b"zip")
+        mtime = (now - timedelta(minutes=index)).timestamp()
+        os.utime(path, (mtime, mtime))
+        created_paths.append(path)
+    old_path = bundle_dir / "facebook-monitor-support-20260501T000000Z.zip"
+    old_path.write_bytes(b"old zip")
+    old_mtime = (now - timedelta(days=40)).timestamp()
+    os.utime(old_path, (old_mtime, old_mtime))
+    unrelated_zip = bundle_dir / "other.zip"
+    unrelated_zip.write_bytes(b"keep")
+    matched_directory = bundle_dir / "facebook-monitor-support-directory.zip"
+    matched_directory.mkdir()
+
+    deleted_count = prune_old_support_bundles(
+        bundle_dir,
+        max_age_days=14,
+        max_files=10,
+        now=now,
+    )
+
+    remaining_bundle_names = {
+        path.name
+        for path in bundle_dir.glob("facebook-monitor-support-*.zip")
+        if path.is_file()
+    }
+    expected_remaining = {path.name for path in created_paths[:10]}
+    assert deleted_count == 3
+    assert remaining_bundle_names == expected_remaining
+    assert unrelated_zip.is_file()
+    assert matched_directory.is_dir()
+
+
+def test_prune_old_support_bundles_ignores_delete_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """清理舊支援包失敗時不應影響呼叫端建立本次 bundle。"""
+
+    bundle_dir = tmp_path / "support-bundles"
+    bundle_dir.mkdir()
+    now = datetime(2026, 6, 3, tzinfo=timezone.utc)
+    old_path = bundle_dir / "facebook-monitor-support-20260501T000000Z.zip"
+    old_path.write_bytes(b"old zip")
+    old_mtime = (now - timedelta(days=40)).timestamp()
+    os.utime(old_path, (old_mtime, old_mtime))
+    real_unlink = Path.unlink
+
+    def fake_unlink(path: Path) -> None:
+        if path == old_path:
+            raise OSError("locked")
+        real_unlink(path)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+    deleted_count = prune_old_support_bundles(
+        bundle_dir,
+        max_age_days=14,
+        max_files=10,
+        now=now,
+    )
+
+    assert deleted_count == 0
+    assert old_path.is_file()

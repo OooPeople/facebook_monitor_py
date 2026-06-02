@@ -102,7 +102,9 @@ def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> No
     card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
         encoding="utf-8"
     )
-    routes = Path("src/facebook_monitor/webapp/routes/dashboard.py").read_text(encoding="utf-8")
+    dashboard_payloads = Path("src/facebook_monitor/webapp/dashboard_payloads.py").read_text(
+        encoding="utf-8"
+    )
     assets = Path("src/facebook_monitor/webapp/assets.py").read_text(encoding="utf-8")
     dashboard_models = Path("src/facebook_monitor/webapp/dashboard_models.py").read_text(
         encoding="utf-8"
@@ -119,7 +121,7 @@ def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> No
 
     assert "data-next-refresh-seconds" in card_template
     assert "row.next_refresh_seconds" in card_template
-    assert '"next_refresh_seconds": row.next_refresh_seconds' in routes
+    assert '"next_refresh_seconds": row.next_refresh_seconds' in dashboard_payloads
     assert "class NextRefreshDisplay" in dashboard_models
     assert "@cached_property\n    def next_refresh_display" in dashboard_models
     assert "self.runtime_state.display_next_due_at" in dashboard_models

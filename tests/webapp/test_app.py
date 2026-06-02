@@ -9,6 +9,7 @@ from urllib.parse import parse_qs
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 from starlette.requests import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -123,6 +124,31 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
         "packaging_mode": "source",
     }
     assert payload["python_version"]
+
+
+def test_web_ui_read_path_runs_bounded_retention_maintenance(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Web UI read path 也會低頻觸發 bounded retention。"""
+
+    calls: list[Path] = []
+
+    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
+        calls.append(db_path)
+        return 0
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
+        fake_run_bounded_retention_maintenance_for_db,
+    )
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert calls == [db_path]
 
 
 def test_mutating_routes_require_csrf_token_for_loopback_host(tmp_path: Path) -> None:

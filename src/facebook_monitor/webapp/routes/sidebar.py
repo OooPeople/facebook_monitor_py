@@ -16,9 +16,11 @@ from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.dependencies import run_web_db_operation
-from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
+from facebook_monitor.webapp.sidebar_api import grouped_target_ids
+from facebook_monitor.webapp.sidebar_api import sidebar_error_detail
+from facebook_monitor.webapp.sidebar_api import string_list
 
 
 def register_sidebar_routes(app: FastAPI) -> None:
@@ -29,7 +31,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """保存平面 target order，供排序第一階段與 fallback 使用。"""
 
         payload = await json_object_payload(request)
-        target_ids = _string_list(payload.get("target_ids"))
+        target_ids = string_list(payload.get("target_ids"))
         try:
             updated_count = await run_web_app_context_operation(
                 request,
@@ -159,7 +161,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """保存 sidebar group order。"""
 
         payload = await json_object_payload(request)
-        group_ids = _string_list(payload.get("group_ids"))
+        group_ids = string_list(payload.get("group_ids"))
         try:
             await run_web_app_context_operation(
                 request,
@@ -177,14 +179,14 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """以單一 transaction 保存 sidebar group order 與 target placements。"""
 
         payload = await json_object_payload(request)
-        group_ids = _string_list(payload.get("group_ids"))
-        grouped_target_ids = _grouped_target_ids(payload.get("groups"))
+        group_ids = string_list(payload.get("group_ids"))
+        parsed_groups = grouped_target_ids(payload.get("groups"))
         try:
             updated_count = await run_web_app_context_operation(
                 request,
                 lambda app_context: app_context.services.sidebar_layout.save_layout(
                     group_ids=group_ids,
-                    grouped_target_ids=grouped_target_ids,
+                    grouped_target_ids=parsed_groups,
                 ),
                 operation_name="sidebar.save_layout",
             )
@@ -197,12 +199,12 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """保存 sidebar group + target placements。"""
 
         payload = await json_object_payload(request)
-        grouped_target_ids = _grouped_target_ids(payload.get("groups"))
+        parsed_groups = grouped_target_ids(payload.get("groups"))
         try:
             updated_count = await run_web_app_context_operation(
                 request,
                 lambda app_context: app_context.services.sidebar_layout.save_placements(
-                    grouped_target_ids
+                    parsed_groups
                 ),
                 operation_name="sidebar.save_placements",
             )
@@ -248,7 +250,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         sections = cast(
             list[SidebarTemplateSection],
-            _string_list(payload.get("sections") or ["all"]),
+            string_list(payload.get("sections") or ["all"]),
         )
         try:
             updated_count = await run_web_app_context_operation(
@@ -267,65 +269,4 @@ def register_sidebar_routes(app: FastAPI) -> None:
 def _sidebar_bad_request(exc: ValueError) -> HTTPException:
     """將 sidebar application 錯誤轉成安全、可顯示的繁中 API 訊息。"""
 
-    return HTTPException(status_code=400, detail=_sidebar_error_detail(exc))
-
-
-def _sidebar_error_detail(exc: ValueError) -> str:
-    """回傳不含內部路徑、SQL 或 secret 的 sidebar API 錯誤訊息。"""
-
-    message = str(exc)
-    notification_error = format_notification_form_error(exc)
-    if notification_error != message:
-        return notification_error
-    if "不可超過" in message or "最多" in message:
-        return message
-    if "群組名稱不可空白" in message:
-        return "群組名稱不可空白"
-    if "找不到指定的 sidebar 群組" in message or "sidebar group not found" in message:
-        return "找不到指定的 sidebar 群組"
-    if "群組內仍有 target" in message:
-        return "群組內仍有 target，請先移出後再刪除"
-    if "重複群組區塊" in message:
-        return "排序資料不可包含重複群組區塊"
-    if "重複群組" in message:
-        return "群組排序不可包含重複群組"
-    if "grouped placement" in message:
-        return "已有群組排序狀態，請使用調整順序後的確認保存"
-    if "sidebar group" in message.lower():
-        return "群組排序資料與目前群組不一致，請重新整理後再試"
-    if "重複 target" in message:
-        return "排序資料不可包含重複 target"
-    if "所有 target" in message or "剛好包含所有 target" in message:
-        return "排序資料與目前 target 清單不一致，請重新整理後再試"
-    if "id 不可空白" in message:
-        return "排序資料包含空白 id，請重新整理後再試"
-    if "至少需要選擇" in message:
-        return "至少需要選擇一個套用區段"
-    if "未知的群組模板套用區段" in message:
-        return "未知的群組模板套用區段"
-    return "sidebar 資料無法儲存，請重新整理後再試"
-
-
-def _string_list(value: object) -> list[str]:
-    """將 payload 欄位轉為字串清單。"""
-
-    if not isinstance(value, list):
-        raise HTTPException(status_code=400, detail="欄位必須是清單")
-    return [str(item) for item in value]
-
-
-def _grouped_target_ids(value: object) -> list[tuple[str | None, list[str]]]:
-    """解析 grouped placements payload。"""
-
-    if not isinstance(value, list):
-        raise HTTPException(status_code=400, detail="groups 必須是清單")
-    groups: list[tuple[str | None, list[str]]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise HTTPException(status_code=400, detail="group placement 必須是物件")
-        raw_group_id = item.get("group_id")
-        group_id = str(raw_group_id).strip() if raw_group_id is not None else None
-        if group_id == "":
-            group_id = None
-        groups.append((group_id, _string_list(item.get("target_ids"))))
-    return groups
+    return HTTPException(status_code=400, detail=sidebar_error_detail(exc))

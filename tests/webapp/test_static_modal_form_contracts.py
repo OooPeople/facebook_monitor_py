@@ -383,7 +383,7 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     partial_updates_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
     ).read_text(encoding="utf-8")
-    dashboard_routes = Path("src/facebook_monitor/webapp/routes/dashboard.py").read_text(
+    dashboard_payloads = Path("src/facebook_monitor/webapp/dashboard_payloads.py").read_text(
         encoding="utf-8"
     )
 
@@ -394,14 +394,14 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     assert "data-latest-error-indicator" in card_template
     assert "data-latest-error-kind" in card_template
     assert "data-latest-error-separator" in card_template
-    assert "monitoring_action" in dashboard_routes
-    assert "monitoring_button_label" in dashboard_routes
-    assert "runtime_error" in dashboard_routes
-    assert "runtime_skip_reason" in dashboard_routes
-    assert "has_latest_failed_scan" in dashboard_routes
-    assert "latest_error_indicator_label" in dashboard_routes
-    assert "latest_error_indicator_title" in dashboard_routes
-    assert "latest_error_indicator_kind" in dashboard_routes
+    assert "monitoring_action" in dashboard_payloads
+    assert "monitoring_button_label" in dashboard_payloads
+    assert "runtime_error" in dashboard_payloads
+    assert "runtime_skip_reason" in dashboard_payloads
+    assert "has_latest_failed_scan" in dashboard_payloads
+    assert "latest_error_indicator_label" in dashboard_payloads
+    assert "latest_error_indicator_title" in dashboard_payloads
+    assert "latest_error_indicator_kind" in dashboard_payloads
     assert "const updateMonitoringAction" in partial_updates_js
     assert "payload.monitoring_action" in partial_updates_js
     assert "payload.monitoring_button_label" in partial_updates_js

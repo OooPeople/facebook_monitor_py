@@ -25,8 +25,7 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
+from facebook_monitor.application.maintenance import run_bounded_retention_maintenance_for_db
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
@@ -63,7 +62,6 @@ from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinato
 
 
 logger = logging.getLogger(__name__)
-_LAST_RETENTION_MAINTENANCE_BY_DB: dict[Path, datetime] = {}
 _DISPLAY_NEXT_DUE_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="facebook-monitor-display-next-due",
@@ -503,28 +501,7 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
 def run_bounded_retention_maintenance_if_due(options: ResidentRuntimeOptions) -> int:
     """週期性清理 bounded retention horizon 外的內部資料。"""
 
-    now = utc_now()
-    last_run = _LAST_RETENTION_MAINTENANCE_BY_DB.get(options.db_path)
-    if (
-        last_run is not None
-        and (now - last_run).total_seconds()
-        < PYTHON_PERSISTENCE_RETENTION_DEFAULTS.maintenance_interval_seconds
-    ):
-        return 0
-    try:
-        with SqliteApplicationContext(options.db_path) as app:
-            result = app.repositories.maintenance.prune_bounded_retention(now=now)
-        _LAST_RETENTION_MAINTENANCE_BY_DB[options.db_path] = now
-        return result.total_deleted
-    except sqlite3.OperationalError as exc:
-        if _is_sqlite_database_locked(exc):
-            logger.warning("bounded retention maintenance skipped: database locked")
-            return 0
-        logger.exception("bounded retention maintenance failed")
-        return 0
-    except Exception:
-        logger.exception("bounded retention maintenance failed")
-        return 0
+    return run_bounded_retention_maintenance_for_db(options.db_path)
 
 
 def _is_sqlite_database_locked(exc: sqlite3.OperationalError) -> bool:

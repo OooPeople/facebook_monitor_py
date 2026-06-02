@@ -23,6 +23,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.maintenance import run_bounded_retention_maintenance_for_db
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core import input_limits
@@ -155,6 +156,7 @@ def create_app(
 
         with SqliteApplicationContext(app_instance.state.db_path) as app_context:
             app_context.repositories.match_history.prune_global_limit()
+        run_bounded_retention_maintenance_for_db(app_instance.state.db_path)
         if app_instance.state.reset_runtime_data_on_startup:
             with SqliteApplicationContext(app_instance.state.db_path) as app_context:
                 app_context.repositories.maintenance.clear_runtime_data()
@@ -182,6 +184,18 @@ def create_app(
                 app_instance.state.scheduler_manager.stop()
 
     app = FastAPI(title="Facebook Monitor Local UI", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def bounded_retention_maintenance_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """在低頻 read path 嘗試 housekeeping，避免完全依賴 scheduler tick。"""
+
+        if request.method == "GET" and request.url.path in {"/", "/settings", "/health"}:
+            run_bounded_retention_maintenance_for_db(request.app.state.db_path)
+        return await call_next(request)
+
     app.state.db_path = db_path
     app.state.profile_dir = profile_dir
     app.state.templates_dir = templates_dir

@@ -122,6 +122,176 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(target_id)
 
+    def mark_queued_if_not_running(
+        self,
+        target_id: str,
+        *,
+        reason: str,
+        enqueued_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """只在 target 未 running 時標記 queued，避免覆蓋已被 worker claim 的狀態。"""
+
+        enqueued_at_text = encode_datetime(enqueued_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                runtime_status = ?,
+                last_enqueued_at = ?,
+                last_error = '',
+                last_skip_reason = '',
+                enqueue_reason = ?,
+                active_worker_id = '',
+                active_page_id = '',
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status != ?
+            """,
+            (
+                TargetRuntimeStatus.QUEUED.value,
+                enqueued_at_text,
+                reason,
+                enqueued_at_text,
+                target_id,
+                TargetRuntimeStatus.RUNNING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def record_scan_guard_skip(
+        self,
+        target_id: str,
+        *,
+        reason: str,
+        skipped_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """Patch 記錄 queue/executor guard skip reason，不覆蓋 ownership 欄位。"""
+
+        skipped_at_text = encode_datetime(skipped_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                last_skip_reason = ?,
+                scan_guard_count = scan_guard_count + 1,
+                updated_at = ?
+            WHERE target_id = ?
+            """,
+            (reason, skipped_at_text, target_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def record_heartbeat_if_running(
+        self,
+        target_id: str,
+        *,
+        heartbeat_at: datetime,
+        page_id: str = "",
+        worker_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """Patch running heartbeat；指定 worker 時需 owner 相符。"""
+
+        heartbeat_at_text = encode_datetime(heartbeat_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                active_page_id = CASE WHEN ? = '' THEN active_page_id ELSE ? END,
+                last_heartbeat_at = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND (? = '' OR active_worker_id = ?)
+            """,
+            (
+                page_id,
+                page_id,
+                heartbeat_at_text,
+                heartbeat_at_text,
+                target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                worker_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def set_display_next_due_at(
+        self,
+        target_id: str,
+        *,
+        due_at: datetime | None,
+        updated_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """Patch UI-only display next due 欄位，不覆蓋 runtime ownership。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                display_next_due_at = ?,
+                updated_at = ?
+            WHERE target_id = ?
+            """,
+            (encode_datetime(due_at), encode_datetime(updated_at), target_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def set_scan_requested_at(
+        self,
+        target_id: str,
+        *,
+        requested_at: datetime | None,
+        updated_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """Patch scan request 欄位，不覆蓋 runtime ownership。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                scan_requested_at = ?,
+                updated_at = ?
+            WHERE target_id = ?
+            """,
+            (encode_datetime(requested_at), encode_datetime(updated_at), target_id),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def clear_scan_request_if_not_newer(
+        self,
+        target_id: str,
+        *,
+        consumed_at: datetime,
+        updated_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """只清除未晚於 consumed_at 的 scan request。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                scan_requested_at = '',
+                updated_at = ?
+            WHERE target_id = ?
+              AND (scan_requested_at = '' OR scan_requested_at <= ?)
+            """,
+            (encode_datetime(updated_at), target_id, encode_datetime(consumed_at)),
+        )
+        if cursor.rowcount != 1:
+            return self.get(target_id)
+        return self.get(target_id)
+
     def save_if_running_owner(
         self,
         state: TargetRuntimeState,

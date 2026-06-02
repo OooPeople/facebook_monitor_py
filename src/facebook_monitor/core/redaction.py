@@ -17,8 +17,15 @@ _DISCORD_WEBHOOK_RE = re.compile(
 _URL_RE = re.compile(r"\bhttps?://[^\s\"'<>]+", re.IGNORECASE)
 _WINDOWS_USER_PATH_RE = re.compile(r"\b[A-Za-z]:\\Users\\[^\\\r\n]+")
 _POSIX_HOME_PATH_RE = re.compile(r"(?<!\w)/(?:Users|home)/[^/\r\n]+")
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(authorization)(\s*[:=]\s*)(bearer|basic)\s+([^\s,;&]+)"
+)
+_AUTH_VALUE_RE = re.compile(
+    r"(?i)\b(authorization)(\s*[:=]\s*)(?!(?:bearer|basic)\b)([^\s,;&]+)"
+)
+_COOKIE_HEADER_RE = re.compile(r"(?im)\b(set-cookie|cookie)\s*:\s*([^\r\n]+)")
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(token|secret|password|authorization|api[_-]?key)\s*[:=]\s*([^\s,;]+)"
+    r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*([^\s,;&]+)"
 )
 _SECRET_QUERY_KEYS = {
     "access_token",
@@ -43,10 +50,19 @@ def redact_sensitive_text(value: str) -> str:
     if not text:
         return ""
     text = _DISCORD_WEBHOOK_RE.sub(_redact_discord_webhook_match, text)
+    text = _AUTH_SCHEME_RE.sub(_redact_auth_scheme_match, text)
+    text = _AUTH_VALUE_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", text)
+    text = _COOKIE_HEADER_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", text)
     text = _URL_RE.sub(lambda match: _redact_url(match.group(0)), text)
     text = _WINDOWS_USER_PATH_RE.sub(r"%USERPROFILE%", text)
     text = _POSIX_HOME_PATH_RE.sub(r"~", text)
     return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}={REDACTED}", text)
+
+
+def _redact_auth_scheme_match(match: re.Match[str]) -> str:
+    """保留 Authorization scheme，遮掉實際 credential。"""
+
+    return f"{match.group(1)}{match.group(2)}{match.group(3)} {REDACTED}"
 
 
 def _redact_discord_webhook_match(match: re.Match[str]) -> str:

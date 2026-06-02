@@ -548,6 +548,69 @@ def test_owner_guarded_heartbeat_and_page_reload_ignore_late_worker(
     assert loaded.last_page_reloaded_at == reloaded_at
 
 
+def test_runtime_skip_reason_patch_does_not_overwrite_running_owner(
+    tmp_path: Path,
+) -> None:
+    """skip reason 診斷 patch 不可覆蓋較新的 running ownership。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="skip-owner",
+                canonical_url="https://www.facebook.com/groups/skip-owner",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        skipped = app.services.targets.record_scan_guard_skip(target.id, "manual_skip")
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert running is not None
+    assert skipped.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+    assert loaded.last_skip_reason == "manual_skip"
+
+
+def test_display_next_due_patch_does_not_overwrite_running_owner(
+    tmp_path: Path,
+) -> None:
+    """display-only patch 不可覆蓋較新的 running ownership。"""
+
+    db_path = tmp_path / "app.db"
+    due_at = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="display-owner",
+                canonical_url="https://www.facebook.com/groups/display-owner",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        displayed = app.services.targets.set_target_display_next_due_at(target.id, due_at)
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert running is not None
+    assert displayed is not None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+    assert loaded.display_next_due_at == due_at
+
+
 def test_clear_consumed_scan_request_preserves_newer_request(
     tmp_path: Path,
 ) -> None:

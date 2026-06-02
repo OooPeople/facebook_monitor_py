@@ -86,19 +86,14 @@ class TargetRuntimeService:
         """標記單一 target 已進入 executor queue，等待 worker slot。"""
 
         self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        state = replace(
-            existing_state,
-            runtime_status=TargetRuntimeStatus.QUEUED,
-            last_enqueued_at=utc_now(),
-            last_error="",
-            last_skip_reason="",
-            enqueue_reason=reason,
-            active_worker_id="",
-            active_page_id="",
-            updated_at=utc_now(),
+        self.ensure_runtime_state(target_id)
+        state = self.runtime_states.mark_queued_if_not_running(
+            target_id,
+            reason=reason,
+            enqueued_at=utc_now(),
         )
-        self.runtime_states.save(state)
+        if state is None:
+            return self.ensure_runtime_state(target_id)
         return state
 
     def mark_target_running(
@@ -148,36 +143,30 @@ class TargetRuntimeService:
             return claimed_state
         existing_state = self.ensure_runtime_state(target_id)
         if existing_state.runtime_status == TargetRuntimeStatus.RUNNING:
-            skipped_state = replace(
-                existing_state,
-                last_skip_reason=(
+            self.runtime_states.record_scan_guard_skip(
+                target_id,
+                reason=(
                     "scan_guard_skipped: target_already_running "
                     f"active_worker_id={existing_state.active_worker_id}"
                 ),
-                scan_guard_count=existing_state.scan_guard_count + 1,
-                updated_at=utc_now(),
+                skipped_at=now,
             )
-            self.runtime_states.save(skipped_state)
             return None
         if existing_state.desired_state != TargetDesiredState.ACTIVE:
-            skipped_state = replace(
-                existing_state,
-                last_skip_reason=(
+            self.runtime_states.record_scan_guard_skip(
+                target_id,
+                reason=(
                     "scan_guard_skipped: target_not_active "
                     f"desired_state={existing_state.desired_state.value}"
                 ),
-                scan_guard_count=existing_state.scan_guard_count + 1,
-                updated_at=utc_now(),
+                skipped_at=now,
             )
-            self.runtime_states.save(skipped_state)
             return None
-        skipped_state = replace(
-            existing_state,
-            last_skip_reason="scan_guard_skipped: target_claim_conflict",
-            scan_guard_count=existing_state.scan_guard_count + 1,
-            updated_at=utc_now(),
+        self.runtime_states.record_scan_guard_skip(
+            target_id,
+            reason="scan_guard_skipped: target_claim_conflict",
+            skipped_at=now,
         )
-        self.runtime_states.save(skipped_state)
         return None
 
     def mark_target_page_reloaded(
@@ -237,17 +226,13 @@ class TargetRuntimeService:
         existing_state = self.ensure_runtime_state(target_id)
         if existing_state.runtime_status != TargetRuntimeStatus.RUNNING:
             return existing_state
-        if worker_id and existing_state.active_worker_id != worker_id:
-            return existing_state
-        now = utc_now()
-        state = replace(
-            existing_state,
-            active_page_id=page_id or existing_state.active_page_id,
-            last_heartbeat_at=now,
-            updated_at=now,
+        state = self.runtime_states.record_heartbeat_if_running(
+            target_id,
+            worker_id=worker_id,
+            page_id=page_id,
+            heartbeat_at=utc_now(),
         )
-        self.runtime_states.save(state)
-        return state
+        return state or self.ensure_runtime_state(target_id)
 
     def record_target_heartbeat_if_owner(
         self,
@@ -272,15 +257,13 @@ class TargetRuntimeService:
         """記錄 target 被 queue/executor guard 擋下的原因。"""
 
         self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        state = replace(
-            existing_state,
-            last_skip_reason=reason,
-            scan_guard_count=existing_state.scan_guard_count + 1,
-            updated_at=utc_now(),
+        self.ensure_runtime_state(target_id)
+        state = self.runtime_states.record_scan_guard_skip(
+            target_id,
+            reason=reason,
+            skipped_at=utc_now(),
         )
-        self.runtime_states.save(state)
-        return state
+        return state or self.ensure_runtime_state(target_id)
 
     def set_target_display_next_due_at(
         self,
@@ -294,12 +277,11 @@ class TargetRuntimeService:
         existing_state = self.ensure_runtime_state(target_id)
         if existing_state.display_next_due_at == due_at:
             return existing_state
-        state = replace(
-            existing_state,
-            display_next_due_at=due_at,
+        state = self.runtime_states.set_display_next_due_at(
+            target_id,
+            due_at=due_at,
             updated_at=utc_now(),
         )
-        self.runtime_states.save(state)
         return state
 
     def reset_target_desired_state(
@@ -824,26 +806,28 @@ class TargetRuntimeService:
         """要求 scheduler 下一輪立即掃描 target，不修改 seen 狀態。"""
 
         self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        state = replace(
-            existing_state,
-            scan_requested_at=utc_now(),
+        self.ensure_runtime_state(target_id)
+        state = self.runtime_states.set_scan_requested_at(
+            target_id,
+            requested_at=utc_now(),
             updated_at=utc_now(),
         )
-        self.runtime_states.save(state)
+        if state is None:
+            return self.ensure_runtime_state(target_id)
         return state
 
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""
 
         self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        state = replace(
-            existing_state,
-            scan_requested_at=None,
+        self.ensure_runtime_state(target_id)
+        state = self.runtime_states.set_scan_requested_at(
+            target_id,
+            requested_at=None,
             updated_at=utc_now(),
         )
-        self.runtime_states.save(state)
+        if state is None:
+            return self.ensure_runtime_state(target_id)
         return state
 
     def clear_target_scan_request_if_not_newer(
@@ -856,18 +840,14 @@ class TargetRuntimeService:
         if consumed_at is None:
             return self.clear_target_scan_request(target_id)
         self._require_target(target_id)
-        existing_state = self.ensure_runtime_state(target_id)
-        if (
-            existing_state.scan_requested_at is not None
-            and existing_state.scan_requested_at > consumed_at
-        ):
-            return existing_state
-        state = replace(
-            existing_state,
-            scan_requested_at=None,
+        self.ensure_runtime_state(target_id)
+        state = self.runtime_states.clear_scan_request_if_not_newer(
+            target_id,
+            consumed_at=consumed_at,
             updated_at=utc_now(),
         )
-        self.runtime_states.save(state)
+        if state is None:
+            return self.ensure_runtime_state(target_id)
         return state
 
     def _require_target(self, target_id: str) -> None:

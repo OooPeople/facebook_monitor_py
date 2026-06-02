@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
@@ -28,11 +29,37 @@ def classify_playwright_exception(error: Exception) -> str:
         return PROFILE_LOCKED_REASON
     if _is_playwright_runtime_closed_message(message):
         return SCHEDULER_RUNTIME_REASON
-    if "timeout" in message:
+    if "timeout" in message and _is_body_locator_message(message):
         return PAGE_LOAD_TIMEOUT_REASON
     if "net::" in message or "navigation" in message:
         return PAGE_LOAD_TIMEOUT_REASON
+    if _is_extractor_runtime_message(message):
+        return EXTRACTOR_RUNTIME_REASON
+    if "timeout" in message:
+        return PAGE_LOAD_TIMEOUT_REASON
     return UNKNOWN_REASON
+
+
+def _is_extractor_runtime_message(message: str) -> bool:
+    """判斷 Playwright evaluate / selector 類錯誤是否來自 DOM extractor。"""
+
+    tokens = (
+        "page.evaluate",
+        "locator",
+        "selector",
+        "queryselector",
+        "query selector",
+        "evaluation failed",
+        "execution context was destroyed",
+    )
+    return any(token in message for token in tokens)
+
+
+def _is_body_locator_message(message: str) -> bool:
+    """判斷錯誤是否來自登入/session guard 的 body locator probe。"""
+
+    tokens = ('locator("body")', "locator('body')")
+    return any(token in message for token in tokens)
 
 
 def _is_playwright_runtime_closed_message(message: str) -> bool:

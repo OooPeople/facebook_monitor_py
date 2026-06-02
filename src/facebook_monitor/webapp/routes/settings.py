@@ -17,7 +17,6 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.notification_admin import clear_failed_notifications
 from facebook_monitor.application.notification_admin import load_notification_outbox_health
 from facebook_monitor.application.update_flow import download_and_launch_verified_update
@@ -45,17 +44,20 @@ from facebook_monitor.updates.capability import UpdateCapability
 from facebook_monitor.updates.launcher import launch_temp_updater
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_runtime_paths
-from facebook_monitor.webapp.dependencies import get_target_keyword_defaults
+from facebook_monitor.webapp.dependencies import load_app_theme
+from facebook_monitor.webapp.dependencies import load_target_keyword_defaults
 from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import open_profile_options
 from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
+from facebook_monitor.webapp.dependencies import run_web_app_context_operation
+from facebook_monitor.webapp.dependencies import run_web_db_operation
+from facebook_monitor.webapp.dependencies import run_web_read_operation
 from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
 
@@ -90,7 +92,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return templates.TemplateResponse(
             request,
             "settings.html",
-            _settings_template_context(
+            await _settings_template_context(
                 request,
                 update_context,
                 update_check,
@@ -108,7 +110,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         theme = str(payload.get("theme", "")).strip()
         if theme not in {"light", "dark"}:
             raise HTTPException(status_code=400, detail="invalid theme")
-        return {"theme": _save_app_theme(request, theme)}
+        return {"theme": await _save_app_theme(request, theme)}
 
     @app.post("/settings/target-keywords")
     async def update_target_keyword_defaults(
@@ -125,7 +127,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             )
         except ValueError as exc:
             return redirect_settings_with_error(str(exc))
-        _save_target_keyword_defaults(request, settings)
+        await _save_target_keyword_defaults(request, settings)
         return redirect_settings_with_message(
             "關鍵字預設值已保存",
             feedback="target_keyword_defaults_saved",
@@ -295,7 +297,7 @@ async def _load_settings_update_check(
     )
 
 
-def _settings_template_context(
+async def _settings_template_context(
     request: Request,
     update_context: _SettingsUpdateContext,
     update_check: UpdateCheckResult,
@@ -306,15 +308,20 @@ def _settings_template_context(
 ) -> dict[str, object]:
     """組出 settings template 既有 context，集中頁面 read model 來源。"""
 
+    db_path = get_db_path(request)
+    target_keyword_defaults = await load_target_keyword_defaults(request)
+    notification_outbox_health = await run_web_read_operation(
+        lambda: load_notification_outbox_health(db_path),
+        operation_name="settings.notification_outbox_health",
+    )
+    initial_theme = await load_app_theme(request)
     return {
         "message": message,
         "feedback": feedback,
         "error": error,
         "profile_dir": str(get_profile_dir(request)),
-        "target_keyword_defaults": get_target_keyword_defaults(request),
-        "notification_outbox_health": load_notification_outbox_health(
-            get_db_path(request)
-        ),
+        "target_keyword_defaults": target_keyword_defaults,
+        "notification_outbox_health": notification_outbox_health,
         "update_check": update_check,
         "update_download_supported": update_context.update_capability.download_supported,
         "update_apply_supported": update_context.update_capability.apply_supported,
@@ -322,15 +329,18 @@ def _settings_template_context(
         "pending_update_available": pending_update_path(
             update_context.paths.runtime_dir
         ).is_file(),
-        "initial_theme": get_app_theme(request),
+        "initial_theme": initial_theme,
     }
 
 
-def _save_app_theme(request: Request, theme: str) -> str:
+async def _save_app_theme(request: Request, theme: str) -> str:
     """保存 settings 頁 theme preference 並回傳實際寫入值。"""
 
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
-        return app_context.repositories.app_settings.save_theme(theme)
+    return await run_web_app_context_operation(
+        request,
+        lambda app_context: app_context.repositories.app_settings.save_theme(theme),
+        operation_name="settings.save_theme",
+    )
 
 
 def _parse_target_keyword_defaults(
@@ -351,22 +361,28 @@ def _parse_target_keyword_defaults(
     )
 
 
-def _save_target_keyword_defaults(
+async def _save_target_keyword_defaults(
     request: Request,
     settings: TargetKeywordDefaultSettings,
 ) -> None:
     """保存 settings 頁 target keyword defaults。"""
 
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
-        app_context.repositories.app_settings.save_target_keyword_defaults(settings)
+    await run_web_app_context_operation(
+        request,
+        lambda app_context: app_context.repositories.app_settings.save_target_keyword_defaults(
+            settings
+        ),
+        operation_name="settings.save_target_keyword_defaults",
+    )
 
 
 async def _clear_failed_notifications_for_settings(request: Request) -> int:
     """清除 settings 頁允許的 failed notification outbox rows。"""
 
-    return await run_in_threadpool(
-        clear_failed_notifications,
-        db_path=get_db_path(request),
+    db_path = get_db_path(request)
+    return await run_web_db_operation(
+        lambda: clear_failed_notifications(db_path=db_path),
+        operation_name="settings.clear_failed_notifications",
     )
 
 

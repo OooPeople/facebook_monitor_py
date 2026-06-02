@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request
 
-from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.application.sidebar_layout_service import SidebarTemplateSection
 from facebook_monitor.application.target_actions import pause_sidebar_group_monitoring_action
 from facebook_monitor.application.target_actions import restart_sidebar_group_monitoring_action
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
+from facebook_monitor.webapp.dependencies import run_web_app_context_operation
+from facebook_monitor.webapp.dependencies import run_web_db_operation
 from facebook_monitor.webapp.form_models import format_notification_form_error
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
@@ -26,8 +31,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         target_ids = _string_list(payload.get("target_ids"))
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                updated_count = app_context.services.sidebar_layout.save_target_order(target_ids)
+            updated_count = await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.save_target_order(
+                    target_ids
+                ),
+                operation_name="sidebar.save_target_order",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "updated_count": updated_count}
@@ -38,8 +48,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
 
         payload = await json_object_payload(request)
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                group = app_context.services.sidebar_layout.create_group(str(payload.get("name", "")))
+            group = await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.create_group(
+                    str(payload.get("name", ""))
+                ),
+                operation_name="sidebar.create_group",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "group_id": group.id, "name": group.name}
@@ -50,7 +65,9 @@ def register_sidebar_routes(app: FastAPI) -> None:
 
         payload = await json_object_payload(request)
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
+            def update(app_context: ApplicationContext):
+                """更新 sidebar group name/collapsed，維持單一 DB operation。"""
+
                 group = app_context.repositories.sidebar_layout.get_group(group_id)
                 if group is None:
                     raise HTTPException(status_code=404, detail="找不到指定的 sidebar 群組")
@@ -64,6 +81,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
                         group_id,
                         bool(payload.get("collapsed")),
                     )
+                return group
+
+            group = await run_web_app_context_operation(
+                request,
+                update,
+                operation_name="sidebar.update_group",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "group_id": group.id, "name": group.name, "collapsed": group.collapsed}
@@ -73,8 +97,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """刪除空 sidebar group。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.sidebar_layout.delete_empty_group(group_id)
+            await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.delete_empty_group(
+                    group_id
+                ),
+                operation_name="sidebar.delete_group",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True}
@@ -87,7 +116,11 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """開始 sidebar group 內 targets，route 只負責喚醒 scheduler 一次。"""
 
         try:
-            outcome = restart_sidebar_group_monitoring_action(get_db_path(request), group_id)
+            db_path = get_db_path(request)
+            outcome = await run_web_db_operation(
+                lambda: restart_sidebar_group_monitoring_action(db_path, group_id),
+                operation_name="sidebar.start_group_monitoring",
+            )
             if outcome.wake_scheduler:
                 get_scheduler_manager(request).wake()
         except ValueError as exc:
@@ -106,7 +139,11 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """停止 sidebar group 內 targets，保留 target-scoped seen/history。"""
 
         try:
-            outcome = pause_sidebar_group_monitoring_action(get_db_path(request), group_id)
+            db_path = get_db_path(request)
+            outcome = await run_web_db_operation(
+                lambda: pause_sidebar_group_monitoring_action(db_path, group_id),
+                operation_name="sidebar.stop_group_monitoring",
+            )
             if outcome.wake_scheduler:
                 get_scheduler_manager(request).wake()
         except ValueError as exc:
@@ -124,8 +161,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         group_ids = _string_list(payload.get("group_ids"))
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                app_context.services.sidebar_layout.save_group_order(group_ids)
+            await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.save_group_order(
+                    group_ids
+                ),
+                operation_name="sidebar.save_group_order",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "updated_count": len(group_ids)}
@@ -138,11 +180,14 @@ def register_sidebar_routes(app: FastAPI) -> None:
         group_ids = _string_list(payload.get("group_ids"))
         grouped_target_ids = _grouped_target_ids(payload.get("groups"))
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                updated_count = app_context.services.sidebar_layout.save_layout(
+            updated_count = await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.save_layout(
                     group_ids=group_ids,
                     grouped_target_ids=grouped_target_ids,
-                )
+                ),
+                operation_name="sidebar.save_layout",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "updated_count": updated_count}
@@ -154,10 +199,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         grouped_target_ids = _grouped_target_ids(payload.get("groups"))
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                updated_count = app_context.services.sidebar_layout.save_placements(
+            updated_count = await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.save_placements(
                     grouped_target_ids
-                )
+                ),
+                operation_name="sidebar.save_placements",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "updated_count": updated_count}
@@ -169,7 +217,9 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         form = TargetConfigForm.from_sidebar_template_payload(payload)
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
+            def save_template(app_context: ApplicationContext):
+                """保存 sidebar group template，保留既有 secret 清除/沿用語義。"""
+
                 current_template = app_context.services.sidebar_layout.get_template_or_default(
                     group_id,
                 )
@@ -180,6 +230,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
                         existing_discord_webhook=current_template.discord_webhook,
                     )
                 )
+                return template
+
+            template = await run_web_app_context_operation(
+                request,
+                save_template,
+                operation_name="sidebar.save_group_template",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "group_id": template.sidebar_group_id}
@@ -189,13 +246,19 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """將 sidebar group template 明確套用到該 group 內 target configs。"""
 
         payload = await json_object_payload(request)
-        sections = _string_list(payload.get("sections") or ["all"])
+        sections = cast(
+            list[SidebarTemplateSection],
+            _string_list(payload.get("sections") or ["all"]),
+        )
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
-                updated_count = app_context.services.sidebar_layout.apply_template(
+            updated_count = await run_web_app_context_operation(
+                request,
+                lambda app_context: app_context.services.sidebar_layout.apply_template(
                     group_id,
-                    sections,  # type: ignore[arg-type]
-                )
+                    sections,
+                ),
+                operation_name="sidebar.apply_group_template",
+            )
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
         return {"ok": True, "updated_count": updated_count}

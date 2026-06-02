@@ -3542,6 +3542,9 @@ def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
         assert original_running_state is not None
         assert original_errored_state is not None
 
+    async def unused_scan_page(**_kwargs: Any) -> None:
+        """本測試只呼叫 retry-after helper，不會執行 scan。"""
+
     executor = ExecutorWorkerPool(
         options=ResidentRuntimeOptions(
             db_path=db_path,
@@ -3550,7 +3553,7 @@ def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=lambda **_kwargs: None,
+        scan_page=unused_scan_page,
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=running.id,

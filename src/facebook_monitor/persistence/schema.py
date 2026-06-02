@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import sqlite3
 
 from facebook_monitor.persistence.current_schema import create_current_schema
@@ -11,12 +12,42 @@ from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
 SCHEMA_VERSION = 34
 MIN_SUPPORTED_SCHEMA_VERSION = 10
+REQUIRED_CURRENT_SCHEMA_TABLES = frozenset(
+    {
+        "schema_metadata",
+        "targets",
+        "target_configs",
+        "seen_items",
+        "target_dedupe_state",
+        "logical_items",
+        "logical_item_aliases",
+        "scan_scope_state",
+        "match_history",
+        "match_history_matches",
+        "latest_scan_items",
+        "latest_scan_item_matches",
+        "scan_runs",
+        "notification_events",
+        "notification_dedupe",
+        "notification_outbox",
+        "target_runtime_state",
+        "target_cover_image_refresh_state",
+        "global_notification_settings",
+        "app_settings",
+        "sidebar_groups",
+        "sidebar_target_placements",
+        "sidebar_group_config_templates",
+        "dashboard_revision",
+    }
+)
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
     """建立目前 SQLite schema。"""
 
     existing_version = read_supported_schema_version(connection)
+    if existing_version == SCHEMA_VERSION:
+        validate_current_schema_shape(connection)
     create_current_schema(connection)
 
     migrate_or_mark_current_schema(connection, existing_version=existing_version)
@@ -64,6 +95,63 @@ def migrate_or_mark_current_schema(
         )
     elif existing_version < SCHEMA_VERSION:
         write_schema_version(connection, SCHEMA_VERSION)
+
+
+def validate_current_schema_shape(connection: sqlite3.Connection) -> None:
+    """current-version DB 缺正式表或欄位時 fail fast，避免 bootstrap 靜默修補。"""
+
+    existing_tables = {
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            """
+        ).fetchall()
+    }
+    missing_tables = sorted(REQUIRED_CURRENT_SCHEMA_TABLES - existing_tables)
+    if missing_tables:
+        raise RuntimeError(
+            f"SQLite schema version {SCHEMA_VERSION} is missing required table(s): "
+            + ", ".join(missing_tables)
+        )
+    expected_columns = _expected_current_schema_columns()
+    missing_columns: list[str] = []
+    for table_name in sorted(REQUIRED_CURRENT_SCHEMA_TABLES):
+        existing_columns = _table_columns(connection, table_name)
+        for column_name in sorted(expected_columns.get(table_name, frozenset())):
+            if column_name not in existing_columns:
+                missing_columns.append(f"{table_name}.{column_name}")
+    if missing_columns:
+        raise RuntimeError(
+            f"SQLite schema version {SCHEMA_VERSION} is missing required column(s): "
+            + ", ".join(missing_columns)
+        )
+
+
+@lru_cache(maxsize=1)
+def _expected_current_schema_columns() -> dict[str, frozenset[str]]:
+    """從正式 current schema 建立欄位基準，避免手寫清單與 SQL 漂移。"""
+
+    expected = sqlite3.connect(":memory:")
+    try:
+        create_current_schema(expected)
+        return {
+            table_name: _table_columns(expected, table_name)
+            for table_name in REQUIRED_CURRENT_SCHEMA_TABLES
+        }
+    finally:
+        expected.close()
+
+
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> frozenset[str]:
+    """讀取指定 table 目前欄位名稱集合。"""
+
+    return frozenset(
+        str(row[1])
+        for row in connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+    )
 
 
 def ensure_post_migration_schema_guards(connection: sqlite3.Connection) -> None:

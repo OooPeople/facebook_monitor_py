@@ -2367,6 +2367,53 @@ def test_initialize_schema_rejects_future_schema_version(tmp_path: Path) -> None
         raise AssertionError("future schema version should fail fast")
 
 
+def test_initialize_schema_rejects_current_version_db_missing_required_tables(
+    tmp_path: Path,
+) -> None:
+    """已標成 current version 的 DB 缺正式表時不得被 bootstrap 靜默補完。"""
+
+    db_path = tmp_path / "app.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES ('version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
+        connection.commit()
+
+    with SqliteConnection(db_path) as sqlite:
+        try:
+            initialize_schema(sqlite.require_connection())
+        except RuntimeError as exc:
+            assert f"SQLite schema version {SCHEMA_VERSION} is missing" in str(exc)
+            assert "targets" in str(exc)
+        else:
+            raise AssertionError("current schema missing required tables should fail fast")
+
+
+def test_initialize_schema_rejects_current_version_db_missing_required_columns(
+    tmp_path: Path,
+) -> None:
+    """已標成 current version 的 DB 缺正式欄位時不得留到 repository 才爆錯。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP TABLE target_configs")
+        connection.execute("CREATE TABLE target_configs (target_id TEXT PRIMARY KEY)")
+        connection.commit()
+
+    with SqliteConnection(db_path) as sqlite:
+        try:
+            initialize_schema(sqlite.require_connection())
+        except RuntimeError as exc:
+            assert f"SQLite schema version {SCHEMA_VERSION} is missing" in str(exc)
+            assert "target_configs.include_keywords" in str(exc)
+        else:
+            raise AssertionError("current schema missing required columns should fail fast")
+
+
 def test_initialize_schema_accepts_plain_sqlite_connection_for_current_db(
     tmp_path: Path,
 ) -> None:

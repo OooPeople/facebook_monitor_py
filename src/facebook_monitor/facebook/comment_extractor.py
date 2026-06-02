@@ -751,9 +751,9 @@ def collect_comment_items_with_load_more_guard_held(
     round_stats: list[CommentExtractRoundStats] = []
     stagnant_windows = 0
     snapshot_captured = False
-    capture_comment_scroll_snapshot(page)
-    snapshot_captured = True
     try:
+        capture_comment_scroll_snapshot(page)
+        snapshot_captured = True
         for round_index in range(max(scroll_rounds, 0) + 1):
             settle = wait_for_comment_dom_settle(page, max_items=max_items)
             items, meta = extract_visible_comment_items(
@@ -792,9 +792,11 @@ def collect_comment_items_with_load_more_guard_held(
                 break
             page.wait_for_timeout(max(scroll_wait_ms, 0))
     finally:
-        if snapshot_captured:
-            restore_comment_scroll_snapshot(page)
-        end_comment_load_more_guard(page)
+        try:
+            if snapshot_captured:
+                restore_comment_scroll_snapshot(page)
+        finally:
+            end_comment_load_more_guard(page)
 
     items = [item for _aliases, item in collected[:max(max_items, 1)]]
     stop_reason = infer_comment_stop_reason(
@@ -829,9 +831,9 @@ async def collect_comment_items_with_load_more_guard_held_async(
     round_stats: list[CommentExtractRoundStats] = []
     stagnant_windows = 0
     snapshot_captured = False
-    await capture_comment_scroll_snapshot_async(page)
-    snapshot_captured = True
     try:
+        await capture_comment_scroll_snapshot_async(page)
+        snapshot_captured = True
         for round_index in range(max(scroll_rounds, 0) + 1):
             settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
             items, meta = await extract_visible_comment_items_async(
@@ -870,9 +872,11 @@ async def collect_comment_items_with_load_more_guard_held_async(
                 break
             await page.wait_for_timeout(max(scroll_wait_ms, 0))
     finally:
-        if snapshot_captured:
-            await restore_comment_scroll_snapshot_async(page)
-        await end_comment_load_more_guard_async(page)
+        try:
+            if snapshot_captured:
+                await restore_comment_scroll_snapshot_async(page)
+        finally:
+            await end_comment_load_more_guard_async(page)
 
     items = [item for _aliases, item in collected[:max(max_items, 1)]]
     stop_reason = infer_comment_stop_reason(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+import logging
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlencode
@@ -16,6 +17,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
@@ -27,6 +29,7 @@ from facebook_monitor.notifications.channel_dispatch import DesktopSender
 from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.runtime.paths import default_runtime_paths
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
@@ -41,6 +44,8 @@ DEFAULT_DB_PATH = DEFAULT_RUNTIME_PATHS.db_path
 DEFAULT_PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir
 TEMPLATES_DIR = DEFAULT_RUNTIME_PATHS.templates_dir
 STATIC_DIR = DEFAULT_RUNTIME_PATHS.static_dir
+logger = logging.getLogger(__name__)
+DbOperationResult = TypeVar("DbOperationResult")
 ProfileActionResult = TypeVar("ProfileActionResult")
 GroupMetadataResolver = Callable[[Path, str], str | GroupMetadata]
 
@@ -153,14 +158,30 @@ def pause_scheduler_for_profile_use(request: Request) -> None:
 def resume_scheduler_after_profile_use(request: Request) -> None:
     """在 profile 使用結束後恢復內部 scheduler。"""
 
-    if not getattr(request.app.state, "scheduler_paused_for_profile", False):
+    _resume_scheduler_after_profile_use_state(
+        app_state=request.app.state,
+        profile_manager=get_profile_manager(request),
+        scheduler=get_scheduler_manager(request),
+        fallback_options=build_scheduler_options(request),
+    )
+
+
+def _resume_scheduler_after_profile_use_state(
+    *,
+    app_state: object,
+    profile_manager: ProfileManagerLike,
+    scheduler: SchedulerManagerLike,
+    fallback_options: SchedulerSessionOptions,
+) -> None:
+    """用 request-free state 恢復 scheduler，供 profile worker thread callback 使用。"""
+
+    if not getattr(app_state, "scheduler_paused_for_profile", False):
         return
-    if get_profile_manager(request).is_active():
+    if profile_manager.is_active():
         return
-    options = getattr(request.app.state, "scheduler_resume_options", None)
+    options = getattr(app_state, "scheduler_resume_options", None)
     if options is None:
-        options = build_scheduler_options(request)
-    scheduler = get_scheduler_manager(request)
+        options = fallback_options
     if scheduler.state().lifecycle_state == SchedulerLifecycleState.STOPPING:
         return
     try:
@@ -169,8 +190,8 @@ def resume_scheduler_after_profile_use(request: Request) -> None:
         if "stopping" in str(exc).lower():
             return
         raise
-    request.app.state.scheduler_paused_for_profile = False
-    request.app.state.scheduler_resume_options = None
+    setattr(app_state, "scheduler_paused_for_profile", False)
+    setattr(app_state, "scheduler_resume_options", None)
 
 
 async def run_with_temporary_profile_access(
@@ -189,6 +210,50 @@ async def run_with_temporary_profile_access(
             resume_scheduler_after_profile_use(request)
 
 
+async def run_web_db_operation(
+    operation: Callable[[], DbOperationResult],
+    *,
+    operation_name: str,
+) -> DbOperationResult:
+    """在背景 thread 執行 Web route DB operation 並套用 SQLite lock retry。"""
+
+    return await run_sqlite_operation_with_retry_async(
+        operation,
+        operation_name=f"web.{operation_name}",
+        logger=logger,
+    )
+
+
+async def run_web_read_operation(
+    operation: Callable[[], DbOperationResult],
+    *,
+    operation_name: str,
+) -> DbOperationResult:
+    """在背景 thread 執行 Web read-side operation，不改變既有 read 失敗語義。"""
+
+    logger.debug("run web read operation off event loop", extra={"operation": operation_name})
+    return await run_in_threadpool(operation)
+
+
+async def run_web_app_context_operation(
+    request: Request,
+    operation: Callable[[ApplicationContext], DbOperationResult],
+    *,
+    operation_name: str,
+) -> DbOperationResult:
+    """以 Web route 共用 retry/thread 邊界執行 ApplicationContext operation。"""
+
+    db_path = get_db_path(request)
+
+    def run() -> DbOperationResult:
+        """建立 thread-local SQLite context 後執行 route operation。"""
+
+        with SqliteApplicationContext(db_path) as app_context:
+            return operation(app_context)
+
+    return await run_web_db_operation(run, operation_name=operation_name)
+
+
 def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupMetadata:
     """使用 automation profile 自動解析 Facebook group metadata。"""
 
@@ -201,14 +266,46 @@ def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupM
 def get_app_theme(request: Request) -> str:
     """讀取 Web UI DB-backed theme preference。"""
 
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
+    return _get_app_theme_from_db(get_db_path(request))
+
+
+async def load_app_theme(request: Request) -> str:
+    """在 async route 中 off-thread 讀取 Web UI theme preference。"""
+
+    db_path = get_db_path(request)
+    return await run_web_read_operation(
+        lambda: _get_app_theme_from_db(db_path),
+        operation_name="settings.get_app_theme",
+    )
+
+
+def _get_app_theme_from_db(db_path: Path) -> str:
+    """以指定 DB path 讀取 theme preference。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
         return app_context.repositories.app_settings.get_theme()
 
 
 def get_target_keyword_defaults(request: Request) -> TargetKeywordDefaultSettings:
     """讀取新增 target 使用的關鍵字預設值。"""
 
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
+    return _get_target_keyword_defaults_from_db(get_db_path(request))
+
+
+async def load_target_keyword_defaults(request: Request) -> TargetKeywordDefaultSettings:
+    """在 async route 中 off-thread 讀取新增 target 使用的關鍵字預設值。"""
+
+    db_path = get_db_path(request)
+    return await run_web_read_operation(
+        lambda: _get_target_keyword_defaults_from_db(db_path),
+        operation_name="settings.get_target_keyword_defaults",
+    )
+
+
+def _get_target_keyword_defaults_from_db(db_path: Path) -> TargetKeywordDefaultSettings:
+    """以指定 DB path 讀取 target keyword defaults。"""
+
+    with SqliteApplicationContext(db_path) as app_context:
         return app_context.repositories.app_settings.get_target_keyword_defaults()
 
 
@@ -294,9 +391,19 @@ def build_feedback_query(message: str, feedback: str = "") -> dict[str, str]:
 def open_profile_options(request: Request) -> ProfileSessionOptions:
     """建立 profile session open options。"""
 
+    profile_dir = get_profile_dir(request)
+    profile_manager = get_profile_manager(request)
+    scheduler = get_scheduler_manager(request)
+    fallback_options = build_scheduler_options(request)
+    app_state = request.app.state
     return ProfileSessionOptions(
-        profile_dir=get_profile_dir(request),
-        on_close=lambda: resume_scheduler_after_profile_use(request),
+        profile_dir=profile_dir,
+        on_close=lambda: _resume_scheduler_after_profile_use_state(
+            app_state=app_state,
+            profile_manager=profile_manager,
+            scheduler=scheduler,
+            fallback_options=fallback_options,
+        ),
     )
 
 

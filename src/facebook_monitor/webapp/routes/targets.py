@@ -18,7 +18,6 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_actions import delete_target_action
 from facebook_monitor.application.target_actions import pause_target_monitoring_action
 from facebook_monitor.application.target_actions import request_target_scan_once_action
@@ -33,6 +32,7 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.input_limits import normalize_display_name
 from facebook_monitor.core.input_limits import normalize_target_url
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
+from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
@@ -46,19 +46,21 @@ from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_desktop_sender
 from facebook_monitor.webapp.dependencies import get_discord_sender
 from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import get_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
-from facebook_monitor.webapp.dependencies import get_target_keyword_defaults
+from facebook_monitor.webapp.dependencies import load_app_theme
+from facebook_monitor.webapp.dependencies import load_target_keyword_defaults
 from facebook_monitor.webapp.dependencies import redirect_new_target_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
+from facebook_monitor.webapp.dependencies import run_web_app_context_operation
+from facebook_monitor.webapp.dependencies import run_web_db_operation
 from facebook_monitor.webapp.dependencies import start_resident_scheduler_if_needed
 from facebook_monitor.webapp.form_models import CreateTargetConfigFormFields
 from facebook_monitor.webapp.form_models import format_notification_form_error
@@ -107,19 +109,18 @@ async def _resolve_group_metadata_if_needed(
             scheduler_state.lifecycle_state,
         )
         return GroupMetadata()
+    profile_dir = get_profile_dir(request)
+    resolver = get_group_name_resolver(request)
     resolved = await run_with_temporary_profile_access(
         request,
-        lambda: get_group_name_resolver(request)(
-            get_profile_dir(request),
-            canonical_url,
-        ),
+        lambda: resolver(profile_dir, canonical_url),
     )
     if isinstance(resolved, GroupMetadata):
         return resolved
     return GroupMetadata(group_name=str(resolved or ""))
 
 
-def _build_create_target_context(
+async def _build_create_target_context(
     request: Request,
     *,
     group_url: str,
@@ -128,7 +129,7 @@ def _build_create_target_context(
 ) -> _CreateTargetRouteContext:
     """解析新增 target 表單，保留 route handler 外的純表單轉換。"""
 
-    keyword_defaults = get_target_keyword_defaults(request)
+    keyword_defaults = await load_target_keyword_defaults(request)
     config_form = config_fields.to_target_config_form(
         default_exclude_keywords=keyword_defaults.exclude_keywords_text,
         default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
@@ -166,7 +167,10 @@ async def _upsert_comments_target_from_route_context(
         custom_name=context.custom_name,
         canonical_url=route.group_canonical_url,
     )
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
+
+    def upsert(app_context: ApplicationContext) -> TargetDescriptor:
+        """在 Web DB retry/thread 邊界內建立 comments target。"""
+
         target = app_context.services.targets.upsert_comments_target(
             context.config_form.to_comments_upsert_request(
                 group_id=route.group_id,
@@ -183,6 +187,12 @@ async def _upsert_comments_target_from_route_context(
             context=context,
         )
 
+    return await run_web_app_context_operation(
+        request,
+        upsert,
+        operation_name="upsert_comments_target",
+    )
+
 
 async def _upsert_group_posts_target_from_route_context(
     request: Request,
@@ -198,7 +208,10 @@ async def _upsert_group_posts_target_from_route_context(
         custom_name=context.custom_name,
         canonical_url=route.canonical_url,
     )
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
+
+    def upsert(app_context: ApplicationContext) -> TargetDescriptor:
+        """在 Web DB retry/thread 邊界內建立 group posts target。"""
+
         target = app_context.services.targets.upsert_group_posts_target(
             context.config_form.to_group_posts_upsert_request(
                 group_id=route.group_id,
@@ -213,6 +226,12 @@ async def _upsert_group_posts_target_from_route_context(
             target=target,
             context=context,
         )
+
+    return await run_web_app_context_operation(
+        request,
+        upsert,
+        operation_name="upsert_group_posts_target",
+    )
 
 
 def _mark_metadata_refresh_pending_if_needed(
@@ -249,7 +268,7 @@ async def _create_or_update_target_from_form(
 ) -> TargetDescriptor:
     """從新增 target 表單完成 URL detection、upsert 與 metadata refresh 排程。"""
 
-    context = _build_create_target_context(
+    context = await _build_create_target_context(
         request,
         group_url=group_url,
         config_fields=config_fields,
@@ -268,11 +287,22 @@ async def _send_target_test_notifications(
 ) -> list[str]:
     """依表單欄位送出 target 測試通知，並回傳已在 UI 顯示前本地化的結果。"""
 
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
+    def load_config(
+        app_context: ApplicationContext,
+    ) -> tuple[TargetDescriptor, TargetConfig]:
+        """讀取測試通知需要的 target 與既有通知 secret。"""
+
         target = app_context.repositories.targets.get(target_id)
         if target is None:
             raise _TargetNotificationTestNotFound
         existing_config = app_context.services.targets.get_config_for_target(target)
+        return target, existing_config
+
+    target, existing_config = await run_web_app_context_operation(
+        request,
+        load_config,
+        operation_name="load_target_notification_test_config",
+    )
     config = notification_form.to_target_config(
         target_id=target.id,
         existing_ntfy_topic=existing_config.ntfy_topic,
@@ -319,7 +349,7 @@ def _target_notification_test_success_response(
     return redirect_with_message(message, return_to=return_to)
 
 
-def _run_target_action_redirect(
+async def _run_target_action_redirect(
     request: Request,
     *,
     target_id: str,
@@ -331,7 +361,11 @@ def _run_target_action_redirect(
     """執行 target action 並集中 redirect / scheduler side effect 語義。"""
 
     try:
-        outcome = action(get_db_path(request), target_id)
+        db_path = get_db_path(request)
+        outcome = await run_web_db_operation(
+            lambda: action(db_path, target_id),
+            operation_name=f"target_action.{action.__name__}",
+        )
         if not outcome.ok:
             return redirect_with_error(outcome.message, return_to=return_to)
         if outcome.wake_scheduler:
@@ -361,6 +395,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
         message = request.query_params.get("message", "")
         error = request.query_params.get("error", "")
+        target_keyword_defaults = await load_target_keyword_defaults(request)
+        initial_theme = await load_app_theme(request)
         return templates.TemplateResponse(
             request,
             "new_target.html",
@@ -371,8 +407,8 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "min_refresh_seconds": MIN_REFRESH_SECONDS,
                 "min_target_posts": MIN_TARGET_POSTS,
                 "max_target_posts": MAX_TARGET_POSTS,
-                "target_keyword_defaults": get_target_keyword_defaults(request),
-                "initial_theme": get_app_theme(request),
+                "target_keyword_defaults": target_keyword_defaults,
+                "initial_theme": initial_theme,
             },
         )
 
@@ -424,10 +460,18 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """更新單一 target 設定。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
+            def update(app_context: ApplicationContext) -> None:
+                """在 Web DB retry/thread 邊界內更新 target config。"""
+
                 app_context.services.targets.update_target_config(
                     config_form.to_update_request(target_id=target_id)
                 )
+
+            await run_web_app_context_operation(
+                request,
+                update,
+                operation_name="update_target_config",
+            )
         except ValueError as exc:
             return redirect_with_error(
                 "設定更新失敗：" + format_notification_form_error(exc),
@@ -454,11 +498,19 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """更新 target card 顯示名稱。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
+            def update(app_context: ApplicationContext) -> None:
+                """在 Web DB retry/thread 邊界內更新 target 顯示名稱。"""
+
                 app_context.services.targets.update_target_name(
                     target_id,
                     normalize_display_name(display_name),
                 )
+
+            await run_web_app_context_operation(
+                request,
+                update,
+                operation_name="update_target_name",
+            )
         except Exception as exc:
             return redirect_with_error(
                 "名稱更新失敗：" + format_failure_message_text(str(exc)),
@@ -479,11 +531,22 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """手動要求 resident worker 重新抓取 target 名稱與封面。"""
 
         try:
-            with SqliteApplicationContext(get_db_path(request)) as app_context:
+            def mark_pending(app_context: ApplicationContext) -> TargetDescriptor | None:
+                """標記 metadata refresh pending 並回傳 target 是否存在。"""
+
                 target = app_context.repositories.targets.get(target_id)
                 if target is None:
-                    return redirect_with_error("重新抓取失敗: target 不存在", return_to=return_to)
+                    return None
                 app_context.services.targets.mark_target_metadata_refresh_pending(target_id)
+                return target
+
+            target = await run_web_app_context_operation(
+                request,
+                mark_pending,
+                operation_name="request_target_metadata_refresh",
+            )
+            if target is None:
+                return redirect_with_error("重新抓取失敗: target 不存在", return_to=return_to)
             get_scheduler_manager(request).request_metadata_refresh(target_id)
             start_resident_scheduler_if_needed(request)
         except Exception as exc:
@@ -508,12 +571,15 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         min_interval_seconds = (
             PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
         )
-        with SqliteApplicationContext(get_db_path(request)) as app_context:
-            result = app_context.services.targets.request_target_cover_image_refresh(
+        result = await run_web_app_context_operation(
+            request,
+            lambda app_context: app_context.services.targets.request_target_cover_image_refresh(
                 target_id,
                 reported_url=reported_url,
                 min_interval_seconds=min_interval_seconds,
-            )
+            ),
+            operation_name="request_target_cover_image_refresh",
+        )
         if result.status in {
             CoverImageRefreshRequestStatus.QUEUED,
             CoverImageRefreshRequestStatus.PENDING,
@@ -590,7 +656,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """開始單一 target，保留 seen/outbox 並要求立即掃描。"""
 
-        return _run_target_action_redirect(
+        return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to=return_to,
@@ -606,7 +672,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """重置單一 target 的通知與 seen 去重狀態。"""
 
-        return _run_target_action_redirect(
+        return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to=return_to,
@@ -622,7 +688,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """暫停單一 target，保留 seen scope 與歷史紀錄。"""
 
-        return _run_target_action_redirect(
+        return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to=return_to,
@@ -638,7 +704,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     ) -> RedirectResponse:
         """刪除單一 target。"""
 
-        return _run_target_action_redirect(
+        return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to=return_to,
@@ -650,7 +716,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def scan_once(request: Request, target_id: str) -> RedirectResponse:
         """要求 resident scheduler 對單一 target 執行一次掃描。"""
 
-        return _run_target_action_redirect(
+        return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to="",

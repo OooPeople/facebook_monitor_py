@@ -245,7 +245,7 @@ def test_resident_main_fallback_retries_extractor_empty_until_third_failure(
         assert runtime_state is not None
         assert latest_scan is not None
         assert latest_scan.status == ScanStatus.FAILED
-        assert latest_scan.metadata["worker"] == "resident_main"
+        assert latest_scan.metadata["worker"] == "sync_resident_fallback"
         assert latest_scan.metadata["reason"] == "extractor_empty"
         assert latest_scan.metadata["retry_streak"] == attempt
         assert latest_scan.metadata["retry_limit"] == 3

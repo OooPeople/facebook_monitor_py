@@ -19,9 +19,10 @@ from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
 from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
+from facebook_monitor.webapp.dependencies import load_app_theme
+from facebook_monitor.webapp.dependencies import run_web_read_operation
 from facebook_monitor.webapp.query_service import ProfileSessionWarning
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
@@ -162,6 +163,7 @@ async def _dashboard_revision_event_stream(
 ) -> AsyncIterator[str]:
     """短生命週期輸出 dashboard revision SSE event，避免 shutdown 被長連線拖住。"""
 
+    db_path = get_db_path(request)
     last_revision = ""
     keepalive_elapsed = 0.0
     connection_elapsed = 0.0
@@ -172,7 +174,10 @@ async def _dashboard_revision_event_stream(
             break
 
         try:
-            revision = get_dashboard_revision(get_db_path(request))
+            revision = await run_web_read_operation(
+                lambda: get_dashboard_revision(db_path),
+                operation_name="dashboard.revision_stream",
+            )
         except DashboardRevisionUnavailable:
             await asyncio.sleep(poll_interval_seconds)
             keepalive_elapsed += poll_interval_seconds
@@ -206,18 +211,27 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         message = request.query_params.get("message", "")
         feedback = request.query_params.get("feedback", "")
         error = request.query_params.get("error", "")
+        db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            dashboard = get_dashboard_view(
-                get_db_path(request),
-                session_started_at=get_session_started_at(request),
+            dashboard = await run_web_read_operation(
+                lambda: get_dashboard_view(
+                    db_path,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="dashboard.view",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         scheduler_state = get_scheduler_manager(request).state()
         try:
-            dashboard_revision = get_dashboard_revision(get_db_path(request))
+            dashboard_revision = await run_web_read_operation(
+                lambda: get_dashboard_revision(db_path),
+                operation_name="dashboard.revision_initial",
+            )
         except DashboardRevisionUnavailable:
             dashboard_revision = DashboardRevision(revision="0", last_changed_at="")
+        initial_theme = await load_app_theme(request)
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -234,7 +248,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "min_refresh_seconds": MIN_REFRESH_SECONDS,
                 "min_target_posts": MIN_TARGET_POSTS,
                 "max_target_posts": MAX_TARGET_POSTS,
-                "initial_theme": get_app_theme(request),
+                "initial_theme": initial_theme,
             },
         )
 
@@ -242,8 +256,12 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def dashboard_revision(request: Request) -> dict[str, str]:
         """提供首頁變更偵測用 revision，讓前端避免固定整頁刷新。"""
 
+        db_path = get_db_path(request)
         try:
-            revision = get_dashboard_revision(get_db_path(request))
+            revision = await run_web_read_operation(
+                lambda: get_dashboard_revision(db_path),
+                operation_name="dashboard.revision",
+            )
         except DashboardRevisionUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard revision unavailable") from exc
         return {
@@ -268,10 +286,15 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def dashboard_sidebar(request: Request) -> dict[str, object]:
         """提供 Phase 10 partial update 使用的 sidebar read model。"""
 
+        db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            items = list_sidebar_items(
-                get_db_path(request),
-                session_started_at=get_session_started_at(request),
+            items = await run_web_read_operation(
+                lambda: list_sidebar_items(
+                    db_path,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="dashboard.sidebar",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
@@ -281,10 +304,15 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def dashboard_cards(request: Request) -> dict[str, object]:
         """提供 dashboard partial update 使用的 sidebar + card batch payload。"""
 
+        db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            dashboard = get_dashboard_view(
-                get_db_path(request),
-                session_started_at=get_session_started_at(request),
+            dashboard = await run_web_read_operation(
+                lambda: get_dashboard_view(
+                    db_path,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="dashboard.cards",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
@@ -300,11 +328,16 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def target_card(request: Request, target_id: str) -> dict[str, object]:
         """提供 Phase 10 target-level partial update 的單卡 read model。"""
 
+        db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            row = get_target_card(
-                get_db_path(request),
-                target_id,
-                session_started_at=get_session_started_at(request),
+            row = await run_web_read_operation(
+                lambda: get_target_card(
+                    db_path,
+                    target_id,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="dashboard.target_card",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc

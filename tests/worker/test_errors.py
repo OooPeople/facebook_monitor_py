@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from playwright.async_api import Error as AsyncPlaywrightError
 
+from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.worker.errors import classify_playwright_exception
@@ -40,3 +41,46 @@ def test_classify_playwright_navigation_error_as_page_load_timeout() -> None:
     )
 
     assert reason == PAGE_LOAD_TIMEOUT_REASON
+
+
+def test_classify_playwright_evaluate_error_as_extractor_runtime() -> None:
+    """DOM script / selector regression 應比 unknown 更可診斷。"""
+
+    reason = classify_playwright_exception(
+        AsyncPlaywrightError("Page.evaluate: TypeError: Cannot read properties of null")
+    )
+
+    assert reason == EXTRACTOR_RUNTIME_REASON
+
+
+def test_classify_playwright_evaluate_timeout_as_extractor_runtime() -> None:
+    """evaluate timeout 應保留 DOM extractor 診斷，而不是誤報 page load。"""
+
+    reason = classify_playwright_exception(
+        AsyncPlaywrightError("Page.evaluate: Timeout 30000ms exceeded")
+    )
+
+    assert reason == EXTRACTOR_RUNTIME_REASON
+
+
+def test_classify_playwright_body_locator_timeout_as_page_load_timeout() -> None:
+    """body locator timeout 來自登入/session guard，仍應歸 page load 類。"""
+
+    reason = classify_playwright_exception(
+        AsyncPlaywrightError(
+            'Locator.inner_text: Timeout 10000ms exceeded\n'
+            'Call log:\n  - waiting for locator("body")'
+        )
+    )
+
+    assert reason == PAGE_LOAD_TIMEOUT_REASON
+
+
+def test_classify_playwright_selector_error_as_extractor_runtime() -> None:
+    """selector / locator 類 Playwright 錯誤保留 extractor runtime reason。"""
+
+    reason = classify_playwright_exception(
+        AsyncPlaywrightError("Locator.click: Error: strict mode violation")
+    )
+
+    assert reason == EXTRACTOR_RUNTIME_REASON

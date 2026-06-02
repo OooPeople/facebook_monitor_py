@@ -126,3 +126,27 @@ def test_support_bundle_readme_marks_redaction_as_best_effort(tmp_path: Path) ->
         readme = archive.read("README.txt").decode("utf-8")
     assert "best-effort" in readme
     assert "review the extracted files before sharing" in readme
+
+
+def test_support_bundle_redacts_runtime_diagnostics_secrets(tmp_path: Path) -> None:
+    """runtime diagnostics 內的 webhook、token 與使用者路徑不可原樣進支援包。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    diagnostics = (
+        "notification failed https://discord.com/api/webhooks/123456/private-token "
+        "callback=https://example.test/hook?token=secret "
+        r"C:\Users\alice\facebook_monitor_data\logs\error.log"
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text=diagnostics,
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        runtime_text = archive.read("runtime_diagnostics.txt").decode("utf-8")
+    assert "private-token" not in runtime_text
+    assert "token=secret" not in runtime_text
+    assert r"C:\Users\alice" not in runtime_text

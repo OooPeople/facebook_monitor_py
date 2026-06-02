@@ -284,7 +284,7 @@ def run_sync_resident_fallback_cycle(
                 reason=exc.reason,
                 message=str(exc),
                 source="worker_failure",
-                worker_path="resident_main",
+                worker_path="sync_resident_fallback",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
             )
@@ -302,7 +302,7 @@ def run_sync_resident_fallback_cycle(
                 reason=reason,
                 message=str(exc),
                 source="playwright",
-                worker_path="resident_main",
+                worker_path="sync_resident_fallback",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
             )
@@ -319,7 +319,7 @@ def run_sync_resident_fallback_cycle(
                 reason=UNKNOWN_REASON,
                 message=str(exc),
                 source="unknown_exception",
-                worker_path="resident_main",
+                worker_path="sync_resident_fallback",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
             )

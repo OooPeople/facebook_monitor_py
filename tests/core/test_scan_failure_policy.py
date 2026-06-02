@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
 from facebook_monitor.core.scan_failure_policy import decide_scan_failure
 from facebook_monitor.core.scan_failure_policy import is_runtime_failure_notification_terminal
 
@@ -133,6 +134,20 @@ def test_extractor_empty_retries_instead_of_silent_idle() -> None:
     assert decision.counts_toward_streak is True
     assert decision.retry_streak == 1
     assert decision.discard_page is True
+
+
+def test_extractor_runtime_retries_and_discards_page() -> None:
+    """DOM extractor runtime 錯誤應重啟 page 並依 recoverable policy 重試。"""
+
+    decision = decide_scan_failure(EXTRACTOR_RUNTIME_REASON, source="playwright")
+
+    assert decision.retryable is True
+    assert decision.target_action == "idle"
+    assert decision.runtime_action == "will_retry"
+    assert decision.counts_toward_streak is True
+    assert decision.retry_streak == 1
+    assert decision.discard_page is True
+    assert decision.auto_restart is True
 
 
 def test_sort_adjust_unconfirmed_is_recoverable_page_restart() -> None:

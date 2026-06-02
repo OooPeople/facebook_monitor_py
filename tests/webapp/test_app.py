@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import zipfile
 from io import BytesIO
 from dataclasses import replace
@@ -54,9 +55,11 @@ from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import RequestBodyTooLarge
 from facebook_monitor.webapp.app import _read_request_body_with_limit
 from facebook_monitor.webapp.app import parse_keywords_text
+from facebook_monitor.webapp import dependencies as web_dependencies
 from facebook_monitor.webapp import query_service
 from facebook_monitor.webapp.query_service import get_dashboard_view
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
+from facebook_monitor.webapp.routes import targets as target_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
@@ -1867,7 +1870,8 @@ def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> No
                     item_kind=ItemKind.POST,
                     item_key="latest-unsafe",
                     item_index=0,
-                    text="unsafe latest permalink",
+                    author="<b>unsafe author</b>",
+                    text='<img src=x onerror="alert(1)"> unsafe latest permalink',
                     permalink="https://www.facebook.com/l.php?u=https%3A%2F%2Fevil.example",
                     matched_keyword="",
                 ),
@@ -1892,7 +1896,8 @@ def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> No
                 group_name="第一個社團",
                 item_kind=ItemKind.POST,
                 item_key="hit-unsafe",
-                text="unsafe hit permalink",
+                author="<script>badAuthor()</script>",
+                text='<svg onload="alert(1)"></svg> unsafe hit permalink',
                 permalink="javascript:alert(1)",
                 include_rule="unsafe",
                 notified_at=app.state.session_started_at + timedelta(seconds=1),
@@ -1910,6 +1915,12 @@ def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> No
     assert "javascript:alert" not in card_payload["hit_record_preview_html"]
     assert "l.php" not in card_payload["latest_scan_preview_html"]
     assert "https://evil.example" not in card_payload["latest_scan_preview_html"]
+    assert "<img" not in card_payload["latest_scan_preview_html"]
+    assert "&lt;img" in card_payload["latest_scan_preview_html"]
+    assert "<script>" not in card_payload["hit_record_preview_html"]
+    assert "&lt;script&gt;" in card_payload["hit_record_preview_html"]
+    assert "<svg" not in card_payload["hit_record_preview_html"]
+    assert "&lt;svg" in card_payload["hit_record_preview_html"]
     assert "https://www.facebook.com/groups/111/posts/2222222222" in card_payload[
         "latest_scan_preview_html"
     ]
@@ -3571,6 +3582,60 @@ def test_create_target_route_adds_comments_target_and_resolves_group_name(
     assert "comments D3 已建立 sort/load-more" not in index_response.text
 
 
+def test_create_target_metadata_resolver_captures_request_state_before_thread(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """metadata resolver thread action 不應在背景 thread 內讀取 Request state。"""
+
+    db_path = tmp_path / "app.db"
+    resolver_calls: list[tuple[Path, str]] = []
+
+    def fake_resolver(profile_dir: Path, url: str) -> str:
+        resolver_calls.append((profile_dir, url))
+        return "背景解析社團"
+
+    threadpool_call_count = 0
+
+    async def guarded_threadpool(action, *args, **kwargs):
+        nonlocal threadpool_call_count
+        threadpool_call_count += 1
+        def fail_getter(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("request-bound dependency was read inside thread action")
+
+        if threadpool_call_count >= 2:
+            monkeypatch.setattr(target_routes, "get_profile_dir", fail_getter)
+            monkeypatch.setattr(target_routes, "get_group_name_resolver", fail_getter)
+        return action(*args, **kwargs)
+
+    monkeypatch.setattr(web_dependencies, "run_in_threadpool", guarded_threadpool)
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=fake_resolver,
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert resolver_calls == [
+        (
+            tmp_path / "profile",
+            "https://www.facebook.com/groups/222518561920110",
+        )
+    ]
+
+
 def test_create_target_route_ignores_target_kind_form_field_and_detects_url(
     tmp_path: Path,
 ) -> None:
@@ -4060,6 +4125,11 @@ def test_manual_scan_does_not_restart_scheduler_while_profile_window_is_active(
     profile_manager.active = False
     assert profile_manager.options is not None
     assert profile_manager.options.on_close is not None
+    closure_values = tuple(
+        cell.cell_contents
+        for cell in (profile_manager.options.on_close.__closure__ or ())
+    )
+    assert not any(isinstance(value, Request) for value in closure_values)
     profile_manager.options.on_close()
 
     assert scheduler_manager.started_count == 1
@@ -4956,6 +5026,33 @@ def test_scan_once_requires_started_target(tmp_path: Path) -> None:
         )
     )
     response = client.post(f"/targets/{target.id}/scan-once", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.woken_count == 0
+
+
+def test_target_action_db_failure_does_not_trigger_scheduler_side_effect(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """target action DB operation 失敗時不得喚醒或啟動 scheduler。"""
+
+    async def raise_locked(*args: object, **kwargs: object) -> object:
+        raise sqlite3.OperationalError("database is locked")
+
+    scheduler_manager = FakeSchedulerManager()
+    monkeypatch.setattr(target_routes, "run_web_db_operation", raise_locked)
+    client = TestClient(
+        create_app(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+
+    response = client.post("/targets/target-a/start", follow_redirects=False)
 
     assert response.status_code == 303
     assert "error=" in response.headers["location"]

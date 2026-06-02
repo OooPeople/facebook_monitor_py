@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
+from scripts.admin import check_static_js_syntax
 from scripts.admin import release_validation
 
 
@@ -56,6 +58,87 @@ def test_validation_steps_use_project_mypy_config() -> None:
 
     mypy_step = next(step for step in steps if step.label == "mypy")
     assert mypy_step.command == ["uv", "run", "mypy"]
+
+
+def test_node_version_reports_static_js_runtime(monkeypatch) -> None:
+    """release validation 環境資訊需列出 static JS syntax check 使用的 Node。"""
+
+    def fake_check_output(command, **_kwargs):
+        assert command == ["node", "--version"]
+        return "v24.14.1\n"
+
+    monkeypatch.setattr(release_validation.subprocess, "check_output", fake_check_output)
+
+    assert release_validation.node_version() == "v24.14.1"
+
+
+def test_validation_steps_use_ci_coverage_gate() -> None:
+    """release validation 的 pytest 指令需覆蓋 CI 文件化的 coverage gate。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=True,
+    )
+
+    pytest_step = next(step for step in steps if step.label == "pytest")
+    assert pytest_step.command == [
+        "uv",
+        "run",
+        "pytest",
+        "-q",
+        "--cov=facebook_monitor",
+        "--cov-report=term-missing",
+        "--cov-fail-under=80",
+    ]
+
+
+def test_validation_steps_include_static_js_syntax_check() -> None:
+    """release validation 必須覆蓋 Web static JS 語法檢查。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=True,
+    )
+
+    js_step = next(step for step in steps if step.label == "static js syntax")
+    assert js_step.command == [
+        "uv",
+        "run",
+        "python",
+        "scripts/admin/check_static_js_syntax.py",
+    ]
+
+
+def test_static_js_syntax_check_reports_missing_node(monkeypatch, capsys) -> None:
+    """缺 node 時 JS syntax checker 應以清楚錯誤 fail。"""
+
+    monkeypatch.setattr(check_static_js_syntax.shutil, "which", lambda _name: None)
+
+    assert check_static_js_syntax.main() == 1
+    assert "node executable not found" in capsys.readouterr().err
+
+
+def test_static_js_syntax_check_returns_first_node_failure(monkeypatch, tmp_path) -> None:
+    """JS syntax checker 應回傳 node --check 的第一個失敗狀態。"""
+
+    first = tmp_path / "first.js"
+    second = tmp_path / "second.js"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(list(command))
+        return SimpleNamespace(returncode=7)
+
+    monkeypatch.setattr(check_static_js_syntax.shutil, "which", lambda _name: "node")
+    monkeypatch.setattr(
+        check_static_js_syntax,
+        "iter_static_js_files",
+        lambda: [first, second],
+    )
+    monkeypatch.setattr(check_static_js_syntax.subprocess, "run", fake_run)
+
+    assert check_static_js_syntax.main() == 7
+    assert calls == [["node", "--check", str(first)]]
 
 
 def test_validation_steps_include_artifact_validation_when_requested() -> None:

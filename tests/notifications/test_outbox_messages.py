@@ -98,11 +98,15 @@ def test_discord_match_notification_uses_channel_specific_markdown() -> None:
     )
 
     assert "內容: 售6/3內野118區票券" in remote_message
-    assert "__**6/3**__" not in remote_message
-    assert "__**118**__" not in remote_message
-    assert "**內容:** 售__**6/3**__內野__**118**__區票券" in discord_message
-    assert "關鍵字: 6/3;118" in discord_message
-    assert "**關鍵字:**" not in discord_message
+    assert "**6/3**" not in remote_message
+    assert "**118**" not in remote_message
+    assert "**命中:** 6/3 · 118" in discord_message
+    assert "**內容:**\n售**6/3**內野**118**區票券" in discord_message
+    assert "[開啟連結](https://www.facebook.com/groups/222518561920110/posts/1)" in (
+        discord_message
+    )
+    assert "關鍵字:" not in discord_message
+    assert "連結:" not in discord_message
 
 
 def test_runtime_failure_notification_uses_clean_target_display_name() -> None:

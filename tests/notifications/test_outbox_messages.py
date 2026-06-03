@@ -7,6 +7,7 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.notifications.outbox_service import (
     build_match_compact_notification_message,
 )
+from facebook_monitor.notifications.outbox_service import build_match_discord_notification_message
 from facebook_monitor.notifications.outbox_service import build_match_notification_message
 from facebook_monitor.notifications.outbox_service import (
     build_runtime_failure_notification_message,
@@ -70,6 +71,38 @@ def test_comment_match_notification_preserves_comment_target_display_scope() -> 
 
     assert "社團: 測試社團 / post:2187454285426518" in message
     assert "(20+)" not in message
+
+
+def test_discord_match_notification_uses_channel_specific_markdown() -> None:
+    """Discord match message 有專用 Markdown，不污染共用 remote payload。"""
+
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+        name="測試社團",
+    )
+
+    _remote_title, remote_message = build_match_notification_message(
+        target=target,
+        author="王小明",
+        item_text="售6/3內野118區票券",
+        permalink="https://www.facebook.com/groups/222518561920110/posts/1",
+        matched_keyword="6/3;118",
+    )
+    _discord_title, discord_message = build_match_discord_notification_message(
+        target=target,
+        author="王小明",
+        item_text="售6/3內野118區票券",
+        permalink="https://www.facebook.com/groups/222518561920110/posts/1",
+        matched_keyword="6/3;118",
+    )
+
+    assert "內容: 售6/3內野118區票券" in remote_message
+    assert "__**6/3**__" not in remote_message
+    assert "__**118**__" not in remote_message
+    assert "**內容:** 售__**6/3**__內野__**118**__區票券" in discord_message
+    assert "關鍵字: 6/3;118" in discord_message
+    assert "**關鍵字:**" not in discord_message
 
 
 def test_runtime_failure_notification_uses_clean_target_display_name() -> None:

@@ -9,6 +9,7 @@ import httpx
 from facebook_monitor.notifications.desktop import build_desktop_notification_command
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import DiscordConfig
+from facebook_monitor.notifications.discord import build_discord_components_webhook_url
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.discord import truncate_discord_content
 from facebook_monitor.notifications.discord_url import validate_discord_webhook_url
@@ -157,7 +158,7 @@ def test_send_discord_notification_matches_webhook_payload(
     def fake_post(
         url: str,
         *,
-        json: dict[str, str],
+        json: dict[str, Any],
         headers: dict[str, str],
         timeout: int,
     ) -> httpx.Response:
@@ -183,9 +184,26 @@ def test_send_discord_notification_matches_webhook_payload(
     assert result.ok
     assert result.status_code == 204
     assert result.message == "discord_sent"
-    assert calls[0]["url"] == "https://discord.com/api/webhooks/1234567890/token_value"
-    assert calls[0]["json"]["username"] == "facebook_monitor_py"
-    assert calls[0]["json"]["content"] == "Facebook group match\n社團: 測試社團"
+    assert calls[0]["url"] == (
+        "https://discord.com/api/webhooks/1234567890/token_value?with_components=true"
+    )
+    payload = calls[0]["json"]
+    assert payload["username"] == "facebook_monitor_py"
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert payload["flags"] == 32772
+    assert "content" not in payload
+    assert "embeds" not in payload
+    assert payload["components"] == [
+        {
+            "type": 10,
+            "content": "## Facebook group match\n社團: 測試社團",
+        },
+        {
+            "type": 14,
+            "divider": True,
+            "spacing": 2,
+        },
+    ]
     assert calls[0]["headers"]["Accept"] == "*/*"
 
 
@@ -200,7 +218,7 @@ def test_send_discord_notification_retries_short_rate_limit(
     def fake_post(
         url: str,
         *,
-        json: dict[str, str],
+        json: dict[str, Any],
         headers: dict[str, str],
         timeout: int,
     ) -> httpx.Response:
@@ -238,7 +256,7 @@ def test_send_discord_notification_reports_rate_limit_details(
     def fake_post(
         url: str,
         *,
-        json: dict[str, str],
+        json: dict[str, Any],
         headers: dict[str, str],
         timeout: int,
     ) -> httpx.Response:
@@ -278,7 +296,7 @@ def test_send_discord_notification_sanitizes_http_exception_message(
     def fake_post(
         url: str,
         *,
-        json: dict[str, str],
+        json: dict[str, Any],
         headers: dict[str, str],
         timeout: int,
     ) -> httpx.Response:
@@ -305,6 +323,18 @@ def test_truncate_discord_content_uses_conservative_limit() -> None:
     content = truncate_discord_content("x" * 2000, limit=20)
 
     assert content == "x" * 17 + "..."
+
+
+def test_build_discord_components_webhook_url_merges_query() -> None:
+    """Discord Components V2 query flag 會與既有 query 合併。"""
+
+    url = build_discord_components_webhook_url(
+        "https://discord.com/api/webhooks/1234567890/token_value?wait=true"
+    )
+
+    assert url == (
+        "https://discord.com/api/webhooks/1234567890/token_value?wait=true&with_components=true"
+    )
 
 
 def test_validate_discord_webhook_url_rejects_non_discord_hosts() -> None:

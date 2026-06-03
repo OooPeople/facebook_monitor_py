@@ -39,6 +39,7 @@ from facebook_monitor.notifications.channel_plan import get_channel_endpoint
 from facebook_monitor.notifications.channel_plan import is_channel_enabled_by_config
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
+from facebook_monitor.notifications.discord_format import build_discord_match_notification_payload
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import build_compact_notification_body
@@ -67,6 +68,30 @@ def build_match_notification_message(
 
     group_name = format_target_display_name(target)
     return build_match_notification_payload(
+        MatchNotificationFields(
+            group_name=group_name,
+            item_kind=item_kind.value,
+            author=author,
+            include_rule=matched_keyword,
+            text=item_text,
+            permalink=permalink,
+        )
+    )
+
+
+def build_match_discord_notification_message(
+    *,
+    target: TargetDescriptor,
+    author: str,
+    item_text: str,
+    permalink: str,
+    matched_keyword: str,
+    item_kind: ItemKind = ItemKind.POST,
+) -> tuple[str, str]:
+    """建立 Discord 專用 keyword match 通知標題與內容。"""
+
+    group_name = format_target_display_name(target)
+    return build_discord_match_notification_payload(
         MatchNotificationFields(
             group_name=group_name,
             item_kind=item_kind.value,
@@ -234,6 +259,14 @@ def enqueue_match_notifications(
         permalink=permalink,
         matched_keyword=matched_keyword,
     )
+    discord_title, discord_message = build_match_discord_notification_message(
+        target=target,
+        item_kind=item_kind,
+        author=author,
+        item_text=item_text,
+        permalink=permalink,
+        matched_keyword=matched_keyword,
+    )
     for plan in build_enabled_channel_plans(config):
         dedupe_id: int | None = None
         if logical_item_id is not None:
@@ -247,7 +280,11 @@ def enqueue_match_notifications(
             if not reservation.created:
                 continue
             dedupe_id = reservation.dedupe_id
-        message_for_channel = compact_message if plan.use_compact_message else message
+        title_for_channel = discord_title if plan.channel == NotificationChannel.DISCORD else title
+        if plan.channel == NotificationChannel.DISCORD:
+            message_for_channel = discord_message
+        else:
+            message_for_channel = compact_message if plan.use_compact_message else message
         entries.append(
             app.repositories.notification_outbox.enqueue(
                 NotificationOutboxEntry(
@@ -261,7 +298,7 @@ def enqueue_match_notifications(
                     item_key=item_key,
                     item_kind=item_kind,
                     channel=plan.channel,
-                    title=title,
+                    title=title_for_channel,
                     message=message_for_channel,
                     endpoint=plan.endpoint,
                     permalink=permalink,

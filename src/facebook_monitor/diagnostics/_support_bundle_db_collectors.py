@@ -12,6 +12,7 @@ from datetime import timezone
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.schema import MIN_SUPPORTED_SCHEMA_VERSION
@@ -72,11 +73,12 @@ def _database_summary_payload(db_path: Path) -> dict[str, object]:
             if "notification_outbox" in table_names
             else None
         )
+        violations: tuple[DatabaseInvariantViolation, ...]
         try:
             violations = validate_database_invariants(connection)
             invariant_error = ""
         except Exception as exc:
-            violations = []
+            violations = ()
             invariant_error = _safe_exception_summary(exc)
     return {
         "available": True,
@@ -889,7 +891,7 @@ def _include_keyword_group_summary(value: str) -> dict[str, int]:
     }
 
 
-def _empty_outbox_summary() -> dict[str, int]:
+def _empty_outbox_summary() -> dict[str, object]:
     """回傳空 DB 時的 notification outbox 摘要。"""
 
     return {
@@ -921,6 +923,7 @@ _SUPPORT_COUNT_TABLES = (
     "notification_outbox",
     "target_runtime_state",
     "target_cover_image_refresh_state",
+    "global_notification_settings",
     "app_settings",
     "sidebar_groups",
     "sidebar_target_placements",

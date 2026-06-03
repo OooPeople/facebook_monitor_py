@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 import zipfile
@@ -216,7 +217,7 @@ def prune_old_support_bundles(
     *,
     max_age_days: int,
     max_files: int,
-    now: object | None = None,
+    now: datetime | None = None,
     preserve: tuple[Path, ...] = (),
 ) -> int:
     """刪除過期或超出數量上限的 support bundle。"""

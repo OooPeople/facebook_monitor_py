@@ -24,6 +24,7 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
 from facebook_monitor.diagnostics.support_bundle import prune_old_support_bundles
+from facebook_monitor.diagnostics._support_bundle_db_collectors import _SUPPORT_COUNT_TABLES
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
@@ -32,11 +33,18 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.schema import REQUIRED_CURRENT_SCHEMA_TABLES
 from facebook_monitor.persistence.schema import initialize_schema
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SECRET_REENCRYPTION_MARKER_KEY
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+
+
+def test_support_bundle_table_counts_cover_required_schema_tables() -> None:
+    """支援包 table counts 需跟上正式 schema table，避免新增 table 後漏診斷。"""
+
+    assert set(_SUPPORT_COUNT_TABLES) == REQUIRED_CURRENT_SCHEMA_TABLES
 
 
 def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:

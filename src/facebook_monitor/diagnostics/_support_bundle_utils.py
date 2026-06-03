@@ -114,9 +114,20 @@ def _optional_int(value: object) -> int | None:
 
     if value is None:
         return None
-    try:
+    if isinstance(value, bool):
         return int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
         return None
 
 
@@ -131,9 +142,18 @@ def _optional_bool(value: object) -> bool | None:
 def _number_or_zero(value: object) -> float:
     """轉成數值；失敗時回 0。"""
 
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return 0.0
+    text = value.strip()
+    if not text:
+        return 0.0
     try:
-        return float(value if value is not None else 0)
-    except (TypeError, ValueError):
+        return float(text)
+    except ValueError:
         return 0.0
 
 

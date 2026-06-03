@@ -43,7 +43,7 @@
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
 - keyword、include keyword groups、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
 - seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
-- 使用者按下「開始」只恢復監看並要求立即掃描；seen、logical item aliases、notification dedupe/outbox 狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows 與同一 scan scope 的 `seen_items`，並推進 target-scoped dedupe epoch，但保留 `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
+- 使用者按下「開始」只恢復監看並要求立即掃描；seen、logical item aliases、notification dedupe/outbox 狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows、同一 scan scope 的 legacy `seen_items` 與目前 epoch 的 logical item aliases，推進 target-scoped dedupe epoch，並保留或建立 initialized `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
@@ -67,6 +67,7 @@
 - Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
+- Discord webhook 使用傳統 `content` payload、`flags=4` suppress embeds 與 `allowed_mentions.parse=[]`；內容區可用 Discord Markdown 標示命中關鍵字。Components V2 曾是較理想的頻道內排版選項，但手機通知 preview 無法穩定顯示必要摘要，因此正式路徑不使用 Components V2。
 - ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
 - SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存；application、worker 與 Web UI 的 domain model 維持明文。
 - 目前加密欄位是 `target_configs.ntfy_topic`、`target_configs.discord_webhook`、`sidebar_group_config_templates.ntfy_topic`、`sidebar_group_config_templates.discord_webhook`、`global_notification_settings.ntfy_topic`、`global_notification_settings.discord_webhook` 與 `notification_outbox.endpoint`；`global_notification_settings` 只保留給既有 DB / secret storage 相容性，不再作為 Web UI 全域通知預設入口。
@@ -110,7 +111,7 @@
 - Web UI 不註冊全域 scheduler start/stop 日常 route。
 - 「開始」會保留 seen scope、logical item aliases、notification dedupe 與 notification outbox rows，只要求立即掃描並喚醒 scheduler。
 - 「停止」只暫停排程，保留 seen/history。
-- 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的投遞狀態）與同一 scan scope 的 legacy seen items，並推進 target-scoped dedupe epoch。它不清 `scan_scope_state`、match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
+- 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的投遞狀態）、同一 scan scope 的 legacy seen items 與目前 epoch 的 logical item aliases，並推進 target-scoped dedupe epoch。它會保留或建立 initialized `scan_scope_state`，但不清 match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
 - 社團縮圖載入失敗時，UI 會立即退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次。這個上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。

@@ -73,8 +73,8 @@ def test_comment_match_notification_preserves_comment_target_display_scope() -> 
     assert "(20+)" not in message
 
 
-def test_discord_match_notification_uses_channel_specific_markdown() -> None:
-    """Discord match message 有專用 Markdown，不污染共用 remote payload。"""
+def test_discord_match_notification_uses_channel_specific_content_format() -> None:
+    """Discord match message 有專用 content 格式，不污染共用 remote payload。"""
 
     target = TargetDescriptor.for_group_posts(
         group_id="222518561920110",
@@ -100,13 +100,44 @@ def test_discord_match_notification_uses_channel_specific_markdown() -> None:
     assert "內容: 售6/3內野118區票券" in remote_message
     assert "**6/3**" not in remote_message
     assert "**118**" not in remote_message
-    assert "**命中:** 6/3 · 118" in discord_message
-    assert "**內容:**\n售**6/3**內野**118**區票券" in discord_message
+    assert "命中: 6/3 · 118" in discord_message
+    assert "售**6/3**內野**118**區票券" in discord_message
     assert "[開啟連結](https://www.facebook.com/groups/222518561920110/posts/1)" in (
         discord_message
     )
+    assert "----------------------------------------" in discord_message
+    assert "內容:" not in discord_message
     assert "關鍵字:" not in discord_message
     assert "連結:" not in discord_message
+
+
+def test_match_notification_message_preserves_remote_content_newlines() -> None:
+    """共用遠端 match message 使用掃描提供的多行顯示文字。"""
+
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+        name="測試社團",
+    )
+
+    _title, message = build_match_notification_message(
+        target=target,
+        author="王小明",
+        item_text="第一行票券\n第二行座位",
+        permalink="https://www.facebook.com/groups/222518561920110/posts/1",
+        matched_keyword="票券",
+    )
+    compact = build_match_compact_notification_message(
+        target=target,
+        author="王小明",
+        item_text="第一行票券\n第二行座位",
+        permalink="https://www.facebook.com/groups/222518561920110/posts/1",
+        matched_keyword="票券",
+    )
+
+    assert "內容:\n第一行票券\n第二行座位" in message
+    assert "\n" not in compact
+    assert "內容: 第一行票券 第二行座位" in compact
 
 
 def test_runtime_failure_notification_uses_clean_target_display_name() -> None:

@@ -15,6 +15,7 @@ TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT = r"""
                         included: false,
                         reason: "empty_after_clean",
                         text,
+                        replacedContainedSnippetValues: [],
                         isContainedByPreviousSnippet: false,
                         containsPreviousSnippet: false,
                         replacedContainedSnippetCount: 0,
@@ -25,6 +26,7 @@ TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT = r"""
                         included: false,
                         reason: "duplicate_snippet",
                         text,
+                        replacedContainedSnippetValues: [],
                         isContainedByPreviousSnippet: false,
                         containsPreviousSnippet: false,
                         replacedContainedSnippetCount: 0,
@@ -38,6 +40,7 @@ TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT = r"""
                         included: false,
                         reason: "contained_by_existing_snippet",
                         text,
+                        replacedContainedSnippetValues: [],
                         isContainedByPreviousSnippet: true,
                         containsPreviousSnippet: false,
                         replacedContainedSnippetCount: 0,
@@ -45,11 +48,13 @@ TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT = r"""
                 }
 
                 let replacedContainedSnippetCount = 0;
+                const replacedContainedSnippetValues = [];
                 for (let index = snippets.length - 1; index >= 0; index -= 1) {
                     const snippet = snippets[index];
                     if (snippet !== text && text.includes(snippet)) {
                         snippets.splice(index, 1);
                         seenSnippets.delete(snippet);
+                        replacedContainedSnippetValues.push(snippet);
                         replacedContainedSnippetCount += 1;
                     }
                 }
@@ -61,6 +66,7 @@ TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT = r"""
                         ? "included_replacing_contained_snippets"
                         : "included",
                     text,
+                    replacedContainedSnippetValues,
                     isContainedByPreviousSnippet: false,
                     containsPreviousSnippet: replacedContainedSnippetCount > 0,
                     replacedContainedSnippetCount,

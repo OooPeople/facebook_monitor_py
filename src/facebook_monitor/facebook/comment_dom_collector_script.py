@@ -36,8 +36,15 @@ COMMENT_DOM_COLLECTOR_SCRIPT = r'''  const items = [];
 
       const parentPostId = routePostId || scanTarget.parentPostId;
       const permalink = buildCanonicalGroupCommentUrl(scanTarget.groupId, parentPostId, commentId) || href;
-      const textDetails = extractCommentTextDetails(container);
+      const author = extractCommentAuthor(container, anchor);
+      const textDetails = extractCommentTextDetails(container, author);
       const text = textDetails.text;
+      const displayText = cleanSharedFacebookMultilineText(
+        textDetails.displayText || text
+      ) || text;
+      const rawDisplayText = normalizeMultilineText(
+        textDetails.rawDisplayText || displayText
+      );
       if (!text) {
         filteredEmptyTextCount += 1;
         continue;
@@ -61,10 +68,13 @@ COMMENT_DOM_COLLECTOR_SCRIPT = r'''  const items = [];
         permalink,
         permalinkSource: permalink ? "comment_anchor" : "unavailable",
         canonicalPermalinkCandidateCount: permalink ? 1 : 0,
-        author: extractCommentAuthor(container, anchor),
+        author,
         text,
+        displayText,
         textLength: text.length,
+        displayTextLength: displayText.length,
         rawTextLength: textDetails.rawText.length,
+        rawDisplayTextLength: rawDisplayText.length,
         textSource: textDetails.source,
         textDiagnostics: textDetails.textDiagnostics,
         commentAnchorHref: buildDiagnosticCommentHref(href),

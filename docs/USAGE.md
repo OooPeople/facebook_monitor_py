@@ -86,7 +86,7 @@ Web UI 目前只允許綁定本機 loopback host。`--host` 若指定非 loopbac
 - **停止**：暫停排程，但保留 seen/history。
 - **設定**：編輯 target-scoped keywords、刷新策略、掃描上限、排序/載入更多與通知設定。
 - **命中紀錄**：查看該 target 保存的 match history。
-- **重置通知狀態**：位於右上角「更多操作」，清除該 target 的 notification outbox rows 與已看狀態；下次掃描若同一貼文或留言仍符合關鍵字，可能會再次通知。此操作不會清除命中紀錄、target 設定或 baseline 初始化狀態。
+- **重置通知狀態**：位於右上角「更多操作」，清除該 target 的 notification outbox rows 與已看狀態，並推進去重 epoch；下次掃描若同一貼文或留言仍符合關鍵字，可能會再次通知。此操作不會清除命中紀錄或 target 設定，且會保留或建立 initialized baseline state，避免下一輪被 baseline suppression 擋住。
 
 target 卡片 header 會顯示模式、最近掃描與下次刷新；右側 panel 會顯示最近一輪掃描結果摘要。最近通知摘要不放在 target header，避免和掃描排程資訊混在一起。
 
@@ -132,6 +132,8 @@ target 可啟用：
 日常通知由 scan commit 後的 notification outbox 發送；Web UI 不提供 direct dispatch 作為一般操作入口。
 
 desktop notification 目前偏 Windows 使用情境。在不支援的平台上，sender 會回傳結構化失敗結果，而不是讓 scan crash。
+
+Discord 通知會以傳統 content 多行訊息送出，保留內容換行，並在內容區以 Discord Markdown 標示命中關鍵字，同時抑制 Facebook 連結預覽。這個格式刻意不用 Components V2，因為 Components V2 雖能提供較好的頻道內分隔排版，但手機通知 preview 可能無法顯示訊息摘要。
 
 ntfy topic 與 Discord webhook 都視為敏感 endpoint。SQLite 內會加密保存；錯誤訊息與診斷摘要會遮罩 token / URL credential。啟用 ntfy 或 Discord 時，通知標題、摘要與連結會送到對應第三方服務，若 target 內容不適合外送，請只使用 desktop notification 或停用外部通知。
 

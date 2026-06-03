@@ -38,12 +38,21 @@ class ResetTargetNotificationStateResult:
 
     notification_outbox_rows: int = 0
     seen_items: int = 0
+    logical_seen_aliases: int = 0
+    dedupe_epoch_before: int = 0
+    dedupe_epoch_after: int = 0
+    scan_scope_initialized_before: bool = False
+    scan_scope_initialized_after: bool = False
 
     @property
     def total_rows(self) -> int:
         """回傳本次清除的總筆數，供 UI 顯示摘要。"""
 
-        return self.notification_outbox_rows + self.seen_items
+        return (
+            self.notification_outbox_rows
+            + self.seen_items
+            + self.logical_seen_aliases
+        )
 
 
 class TargetMonitoringCommands:
@@ -129,14 +138,28 @@ class TargetMonitoringCommands:
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
-        self.logical_items.clear_target_scope_current_epoch(
+        scan_scope_initialized_before = self.scan_scope_state.is_initialized(
+            target.scope_id
+        )
+        dedupe_epoch_before = self.dedupe_state.current_epoch(target.id)
+        logical_seen_aliases = self.logical_items.clear_target_scope_current_epoch(
             target_id=target.id,
             scope_id=target.scope_id,
         )
-        self.dedupe_state.advance_epoch(target.id)
+        dedupe_epoch_after = self.dedupe_state.advance_epoch(target.id)
+        self.scan_scope_state.mark_initialized(target.scope_id)
+        notification_outbox_rows = self.notification_outbox.clear_by_target(target.id)
+        seen_items = self.seen_items.clear_scope(target.scope_id)
         return ResetTargetNotificationStateResult(
-            notification_outbox_rows=self.notification_outbox.clear_by_target(target.id),
-            seen_items=self.seen_items.clear_scope(target.scope_id),
+            notification_outbox_rows=notification_outbox_rows,
+            seen_items=seen_items,
+            logical_seen_aliases=logical_seen_aliases,
+            dedupe_epoch_before=dedupe_epoch_before,
+            dedupe_epoch_after=dedupe_epoch_after,
+            scan_scope_initialized_before=scan_scope_initialized_before,
+            scan_scope_initialized_after=self.scan_scope_state.is_initialized(
+                target.scope_id
+            ),
         )
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:

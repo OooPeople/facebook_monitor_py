@@ -16,6 +16,17 @@ COMMENT_DOM_TEXT_CLEANUP_SCRIPT = r'''
     return cleanSharedFacebookText(text);
   }
 
+  function cleanCommentExtractedDisplayText(value) {
+    let text = String(value || "");
+    for (const pattern of commentActionTrail) {
+      text = text.replace(pattern, "\n");
+    }
+    for (const label of nonBodyLabels) {
+      text = text.replaceAll(label, "\n");
+    }
+    return cleanSharedFacebookMultilineText(text);
+  }
+
 '''
 
 __all__ = ["COMMENT_DOM_TEXT_CLEANUP_SCRIPT"]

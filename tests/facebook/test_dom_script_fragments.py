@@ -139,10 +139,12 @@ def test_comment_dom_fragments_keep_responsibility_markers() -> None:
 
     assert "const scanTarget" in COMMENT_DOM_BOOTSTRAP_SCRIPT
     assert "stripFacebookExpandCollapseLabels" in TEXT_CLEANUP_HELPERS_SCRIPT
+    assert "cleanSharedFacebookMultilineText" in TEXT_CLEANUP_HELPERS_SCRIPT
     assert "顯示較少" in TEXT_CLEANUP_HELPERS_SCRIPT
     assert "顯示更少" in TEXT_CLEANUP_HELPERS_SCRIPT
     assert "See less" in TEXT_CLEANUP_HELPERS_SCRIPT
     assert "cleanCommentExtractedText" in COMMENT_DOM_TEXT_CLEANUP_SCRIPT
+    assert "cleanCommentExtractedDisplayText" in COMMENT_DOM_TEXT_CLEANUP_SCRIPT
     assert "collapseRepeatedAdjacentText" not in COMMENT_DOM_TEXT_CLEANUP_SCRIPT
     assert "buildCanonicalGroupCommentUrl" in PERMALINK_DOM_HELPERS_SCRIPT
     assert "extractCommentIdFromValue" in PERMALINK_DOM_HELPERS_SCRIPT
@@ -206,6 +208,7 @@ def test_feed_dom_fragments_keep_responsibility_markers() -> None:
 
     assert "const feedRoots" in FEED_DOM_BOOTSTRAP_SCRIPT
     assert "cleanSharedFacebookText" in TEXT_CLEANUP_HELPERS_SCRIPT
+    assert "cleanSharedFacebookMultilineText" in TEXT_CLEANUP_HELPERS_SCRIPT
     assert "extractPostTextDetails" in FEED_DOM_TEXT_SCRIPT
     assert "expandCollapsedPostText" in FEED_DOM_TEXT_SCRIPT
     assert "collapseRepeatedAdjacentText" not in FEED_DOM_TEXT_SCRIPT

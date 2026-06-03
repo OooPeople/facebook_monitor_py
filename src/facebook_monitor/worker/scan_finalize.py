@@ -59,6 +59,7 @@ class NormalizedScanItem:
     comment_id: str = ""
     author: str = ""
     text: str = ""
+    display_text: str = ""
     permalink: str = ""
     timestamp_text: str = ""
     raw_target_kind: str = ""
@@ -254,6 +255,7 @@ def normalize_extracted_scan_items(
                 comment_id=item.comment_id if item_kind == ItemKind.COMMENT else "",
                 author=item.author,
                 text=item.text,
+                display_text=item.display_text,
                 permalink=item.permalink,
                 raw_target_kind=target.target_kind.value,
                 metadata=item.debug_metadata or {},
@@ -361,7 +363,7 @@ def finalize_scan_items(
             logical_item_id=logical_seen.logical_item_id,
             item_kind=item.item_kind,
             author=item.author,
-            text=item.text,
+            text=item.display_text or item.text,
             permalink=item.permalink,
             matched_keyword=result.matched_keyword,
         )

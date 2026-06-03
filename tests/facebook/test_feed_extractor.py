@@ -247,7 +247,9 @@ def test_normalize_feed_extraction_payload_preserves_meta_and_item_shape() -> No
             "items": [
                 {
                     "text": "測試貼文",
+                    "displayText": "測試貼文\n第二行",
                     "textLength": 4,
+                    "displayTextLength": 8,
                     "permalink": "https://www.facebook.com/groups/1/posts/2",
                     "linkCount": 3,
                     "author": "作者",
@@ -267,12 +269,14 @@ def test_normalize_feed_extraction_payload_preserves_meta_and_item_shape() -> No
     assert meta == {"candidateCount": 2, "parsedCount": 1}
     assert len(items) == 1
     assert items[0].text == "測試貼文"
+    assert items[0].display_text == "測試貼文\n第二行"
     assert items[0].text_length == 4
     assert items[0].permalink == "https://www.facebook.com/groups/1/posts/2"
     assert items[0].link_count == 3
     assert items[0].author == "作者"
     assert items[0].debug_metadata == {
         "textLength": 4,
+        "displayTextLength": 8,
         "permalinkSource": "groups_post_anchor",
         "postId": "2",
         "linkCount": 3,

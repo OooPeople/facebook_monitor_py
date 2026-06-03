@@ -30,6 +30,7 @@ from facebook_monitor.facebook.scroll_controls import restore_comment_scroll_sna
 from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_comment_load_more_async
 from facebook_monitor.facebook.text_cleanup import clean_facebook_text
+from facebook_monitor.facebook.text_cleanup import clean_facebook_multiline_text
 
 COMMENT_DOM_SETTLE_INITIAL_WAIT_MS = 700
 COMMENT_DOM_SETTLE_POLL_INTERVAL_MS = 500
@@ -545,11 +546,15 @@ def normalize_comment_extraction_payload(
         if not isinstance(raw_item, Mapping):
             continue
         cleaned_text = clean_facebook_text(raw_item.get("text") or "")
+        display_text = clean_facebook_multiline_text(
+            raw_item.get("displayText") or cleaned_text
+        ) or cleaned_text
         item = ExtractedItem(
             text=cleaned_text,
             text_length=len(cleaned_text),
             permalink=str(raw_item.get("permalink") or ""),
             link_count=int(raw_item.get("linkCount") or 0),
+            display_text=display_text,
             author=str(raw_item.get("author") or ""),
             debug_metadata=normalize_comment_debug_metadata(raw_item),
             item_kind="comment",
@@ -904,7 +909,9 @@ def normalize_comment_debug_metadata(item: Mapping[str, Any]) -> dict[str, Any]:
         "textSource",
         "textDiagnostics",
         "textLength",
+        "displayTextLength",
         "rawTextLength",
+        "rawDisplayTextLength",
         "permalinkSource",
         "canonicalPermalinkCandidateCount",
         "parentPostId",

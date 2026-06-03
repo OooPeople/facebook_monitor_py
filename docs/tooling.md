@@ -37,6 +37,7 @@
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
 | One-shot Scan | `scripts/debug/one_shot_scan.py` | Debug | 對已保存 target 執行一次 one-shot 掃描 | 否 |
 | Worker Probe | `scripts/debug/worker_probe.py` | Debug | 使用專用 profile 執行背景掃描可行性 probe | 否 |
+| Text Newline Probe | `scripts/debug/text_newline_probe.py` | Debug | 檢查可見 Facebook DOM 文字是否仍能取得換行資訊；不跑正式 scan pipeline | 否 |
 | Extractors Probe Helper | `scripts/debug/extractors_probe.py` | Debug helper | 重新匯出 extractor probe 需要的正式 package API | 否 |
 | Notifications Probe Helper | `scripts/debug/notifications_probe.py` | Debug helper | 重新匯出 ntfy probe 需要的正式通知 API | 否 |
 | One-shot Scheduler | `scripts/internal/one_shot_scheduler.py` | Internal | 直接啟動 one-shot debug/fallback scheduler loop，不作正式主路徑保證 | 否 |
@@ -69,6 +70,7 @@
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
 .\scripts\uv.ps1 run python .\scripts\debug\one_shot_scan.py --group-id "<group_id>" --scroll-rounds 3
+.\scripts\uv.ps1 run python .\scripts\debug\text_newline_probe.py "<facebook_url>" --mode auto
 .\scripts\uv.ps1 run python .\scripts\internal\resident_main.py --max-cycles 2 --interval-seconds 1
 .\scripts\uv.ps1 run python .\scripts\admin\console.py --data-dir "D:\fb_monitor_data"
 ```

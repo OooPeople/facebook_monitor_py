@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from facebook_monitor.facebook.text_cleanup import clean_facebook_text
+from facebook_monitor.facebook.text_cleanup import clean_facebook_multiline_text
 
 MISSING_KEYWORD_LABEL = "(未指定)"
 
@@ -40,15 +41,24 @@ def item_kind_label(item_kind: object) -> str:
     return "留言" if str(item_kind or "").lower() == "comment" else "貼文"
 
 
-def normalize_notification_fields(fields: MatchNotificationFields) -> MatchNotificationFields:
+def normalize_notification_fields(
+    fields: MatchNotificationFields,
+    *,
+    preserve_newlines: bool = False,
+) -> MatchNotificationFields:
     """套用通知欄位的 fallback 與長度限制。"""
 
+    cleaned_text = (
+        clean_facebook_multiline_text(fields.text)
+        if preserve_newlines
+        else clean_facebook_text(fields.text)
+    )
     return MatchNotificationFields(
         group_name=fields.group_name or "(未知)",
         item_kind=str(fields.item_kind or "post"),
         author=fields.author or "(作者未知)",
         include_rule=fields.include_rule or MISSING_KEYWORD_LABEL,
-        text=truncate_text(clean_facebook_text(fields.text), 220) or "(空白)",
+        text=truncate_text(cleaned_text, 220) or "(空白)",
         permalink=fields.permalink,
     )
 
@@ -56,14 +66,18 @@ def normalize_notification_fields(fields: MatchNotificationFields) -> MatchNotif
 def build_remote_notification_lines(fields: MatchNotificationFields) -> list[str]:
     """建立遠端通知使用的多行內容。"""
 
-    normalized = normalize_notification_fields(fields)
+    normalized = normalize_notification_fields(fields, preserve_newlines=True)
     lines = [
         f"社團: {normalized.group_name}",
         f"類型: {item_kind_label(normalized.item_kind)}",
         f"作者: {normalized.author}",
         f"關鍵字: {normalized.include_rule}",
-        f"內容: {normalized.text}",
     ]
+    if "\n" in normalized.text:
+        lines.append("內容:")
+        lines.extend(normalized.text.split("\n"))
+    else:
+        lines.append(f"內容: {normalized.text}")
     if normalized.permalink:
         lines.append(f"連結: {normalized.permalink}")
     return lines
@@ -72,7 +86,7 @@ def build_remote_notification_lines(fields: MatchNotificationFields) -> list[str
 def build_compact_notification_segments(fields: MatchNotificationFields) -> list[str]:
     """建立桌面通知使用的短格式片段。"""
 
-    normalized = normalize_notification_fields(fields)
+    normalized = normalize_notification_fields(fields, preserve_newlines=False)
     return [
         f"社團: {normalized.group_name}",
         f"作者: {normalized.author}",
@@ -90,7 +104,7 @@ def build_compact_notification_body(fields: MatchNotificationFields) -> str:
 def build_match_notification_payload(fields: MatchNotificationFields) -> tuple[str, str]:
     """建立 keyword match 通知標題與多行內容。"""
 
-    normalized = normalize_notification_fields(fields)
+    normalized = normalize_notification_fields(fields, preserve_newlines=True)
     title = (
         "Facebook group comment match"
         if normalized.item_kind.lower() == "comment"

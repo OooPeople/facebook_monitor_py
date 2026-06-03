@@ -19,11 +19,11 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
     return anchor.closest("div");
   }
 
-  function isLikelyCommentTextNode(text, node) {
-    return !getCommentTextNodeRejectionReason(text, node);
+  function isLikelyCommentTextNode(text, node, author = "") {
+    return !getCommentTextNodeRejectionReason(text, node, author);
   }
 
-  function getCommentTextNodeRejectionReason(text, node) {
+  function getCommentTextNodeRejectionReason(text, node, author = "") {
     if (!(node instanceof HTMLElement)) return "non_element";
     const normalized = normalizeText(text);
     if (!normalized) return "empty_after_clean";
@@ -31,7 +31,44 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
     if (nonBodyLabels.has(normalized)) return "non_body_label";
     if (isFacebookExpandCollapseLabelText(normalized)) return "non_body_label";
     if (node.closest("a[href]")) return "inside_anchor";
+    if (author && normalized === normalizeText(author)) return "author_label";
+    if (author && containsAuthorLinkWithNestedBodyCandidate(node, author)) {
+      return "contains_author_link";
+    }
     return "";
+  }
+
+  function isAuthorAnchorForText(anchor, author) {
+    if (!(anchor instanceof HTMLAnchorElement)) return false;
+    const text = normalizeText(anchor.innerText || anchor.textContent || "");
+    if (!author || text !== normalizeText(author)) return false;
+    return isLikelyCommentAuthorHref(anchor.href || anchor.getAttribute("href") || "");
+  }
+
+  function containsAuthorLinkWithNestedBodyCandidate(node, author) {
+    if (!(node instanceof HTMLElement)) return false;
+    const authorAnchors = Array.from(node.querySelectorAll('a[role="link"], a[href]'))
+      .filter((anchor) => isAuthorAnchorForText(anchor, author));
+    if (!authorAnchors.length) return false;
+    for (const candidate of node.querySelectorAll(commentTextCandidates)) {
+      if (!(candidate instanceof HTMLElement)) continue;
+      if (candidate === node) continue;
+      if (authorAnchors.some((anchor) => anchor.contains(candidate))) continue;
+      if (candidate.closest("a[href]")) continue;
+      const candidateText = cleanCommentExtractedText(
+        normalizeText(candidate.innerText || candidate.textContent || "")
+      );
+      if (
+        candidateText &&
+        candidateText.length >= 2 &&
+        candidateText !== normalizeText(author) &&
+        !nonBodyLabels.has(candidateText) &&
+        !isFacebookExpandCollapseLabelText(candidateText)
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function pushCommentTextDiagnosticSample(diagnostics, sample, limit = 8) {
@@ -58,9 +95,11 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
     });
   }
 
-  function extractCommentTextDetails(container) {
+  function extractCommentTextDetails(container, author = "") {
     const snippets = [];
     const seen = new Set();
+    const displayTextBySnippet = new Map();
+    const authorText = normalizeText(author);
     const diagnostics = {
       candidateCount: 0,
       includedCount: 0,
@@ -68,10 +107,12 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
       samples: [],
     };
     for (const node of container.querySelectorAll(commentTextCandidates)) {
-      const rawNodeText = normalizeText(node.innerText || node.textContent || "");
+      const rawNodeValue = node.innerText || node.textContent || "";
+      const rawNodeText = normalizeText(rawNodeValue);
       const text = cleanCommentExtractedText(rawNodeText);
+      const displayText = cleanCommentExtractedDisplayText(rawNodeValue);
       diagnostics.candidateCount += 1;
-      const rejectionReason = getCommentTextNodeRejectionReason(text, node);
+      const rejectionReason = getCommentTextNodeRejectionReason(text, node, authorText);
       if (rejectionReason) {
         pushCommentTextDiagnosticSample(diagnostics, {
           reason: rejectionReason,
@@ -83,6 +124,9 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
         continue;
       }
       const addResult = addTextSnippetWithOverlap(snippets, seen, text);
+      for (const replacedText of addResult.replacedContainedSnippetValues || []) {
+        displayTextBySnippet.delete(replacedText);
+      }
       pushCommentTextDiagnosticSample(diagnostics, {
         reason: addResult.reason,
         included: addResult.included,
@@ -94,20 +138,38 @@ COMMENT_DOM_TEXT_EXTRACTION_SCRIPT = r'''  function findCommentContainerFromPerm
         replacedContainedSnippetCount: addResult.replacedContainedSnippetCount,
       });
       if (!addResult.included) continue;
+      displayTextBySnippet.set(text, displayText || text);
       if (snippets.length >= 6) break;
     }
     if (snippets.length) {
       const rawText = normalizeText(snippets.join(" "));
+      const rawDisplayText = normalizeMultilineText(
+        snippets.map((snippet) => displayTextBySnippet.get(snippet) || snippet).join("\n")
+      );
       const text = cleanCommentExtractedText(rawText);
+      const displayText = cleanCommentExtractedDisplayText(rawDisplayText) || text;
       diagnostics.finalTextLength = text.length;
       diagnostics.rawTextLength = rawText.length;
-      return { text, rawText, source: "comment", textDiagnostics: diagnostics };
+      diagnostics.displayTextLineCount = displayText ? displayText.split("\n").length : 0;
+      diagnostics.rawDisplayTextLength = rawDisplayText.length;
+      return {
+        text,
+        rawText,
+        displayText,
+        rawDisplayText,
+        source: "comment",
+        textDiagnostics: diagnostics,
+      };
     }
     const rawText = normalizeText(container.innerText || container.textContent || "");
+    const rawDisplayText = normalizeMultilineText(container.innerText || container.textContent || "");
     const text = cleanCommentExtractedText(rawText);
+    const displayText = cleanCommentExtractedDisplayText(rawDisplayText) || text;
     diagnostics.finalTextLength = text.length;
     diagnostics.rawTextLength = rawText.length;
-    return { text, rawText, source: "container", textDiagnostics: diagnostics };
+    diagnostics.displayTextLineCount = displayText ? displayText.split("\n").length : 0;
+    diagnostics.rawDisplayTextLength = rawDisplayText.length;
+    return { text, rawText, displayText, rawDisplayText, source: "container", textDiagnostics: diagnostics };
   }
 
 '''

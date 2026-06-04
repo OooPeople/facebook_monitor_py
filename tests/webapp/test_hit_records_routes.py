@@ -408,6 +408,7 @@ def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path)
                 item_kind=ItemKind.POST,
             )
         )
+        app_context.repositories.scan_scope_state.mark_initialized(target.scope_id)
         app_context.repositories.notification_outbox.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:persisted-1:ntfy",
@@ -434,7 +435,8 @@ def test_webui_startup_keeps_full_history_but_resets_hit_preview(tmp_path: Path)
     with SqliteApplicationContext(db_path) as app_context:
         assert app_context.repositories.match_history.count_by_target(target.id) == 1
         assert not app_context.repositories.latest_scan_items.list_by_target(target.id)
-        assert not app_context.repositories.seen_items.has_seen(target.scope_id, "persisted-1")
+        assert app_context.repositories.seen_items.has_seen(target.scope_id, "persisted-1")
+        assert app_context.repositories.scan_scope_state.is_initialized(target.scope_id)
         assert (
             app_context.repositories.notification_outbox.get_by_idempotency_key(
                 f"{target.id}:persisted-1:ntfy"

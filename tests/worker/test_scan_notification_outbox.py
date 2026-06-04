@@ -22,6 +22,8 @@ from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.notifications.discord import DiscordConfig
+from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
@@ -467,6 +469,142 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
     assert entry is not None
     assert entry.status.value == "sent"
     assert entry.attempts == 2
+
+
+def test_failed_outbox_retry_resends_persisted_multiline_message(
+    tmp_path: Path,
+) -> None:
+    """failed retry 重送 outbox 保存的多行訊息，不重新組裝內容。"""
+
+    fail_first = True
+    sent_messages: list[str] = []
+
+    def sometimes_failing_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """第一輪失敗，retry 時記錄保存的 outbox message。"""
+
+        if fail_first:
+            raise RuntimeError("first_down")
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="retry_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:retry-multiline",
+                    alias_keys=("post:retry-multiline",),
+                    group_id="123",
+                    text="第一行票券 第二行座位",
+                    display_text="第一行票券\n第二行座位",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=sometimes_failing_sender,
+        )
+
+    fail_first = False
+    with SqliteApplicationContext(db_path) as app:
+        stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert stored_target is not None
+        entry_before_retry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=stored_target.id,
+                item_key="post:retry-multiline",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+        assert entry_before_retry is not None
+        stored_message = entry_before_retry.message
+
+        retry_failed_notification_outbox(app=app, ntfy_sender=sometimes_failing_sender)
+
+    assert sent_messages == [stored_message]
+    assert "內容:\n第一行票券\n第二行座位" in stored_message
+
+
+def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
+    """Discord outbox message 使用 display text 的換行格式。"""
+
+    sent_discord: list[tuple[DiscordConfig, str, str]] = []
+
+    def fake_discord_sender(
+        config: DiscordConfig,
+        title: str,
+        message: str,
+    ) -> DiscordResult:
+        """記錄 Discord payload，避免測試送出真實 webhook。"""
+
+        sent_discord.append((config, title, message))
+        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/1234567890/token",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:discord-multiline",
+                    alias_keys=("post:discord-multiline",),
+                    group_id="123",
+                    text="第一行票券 第二行座位",
+                    display_text="第一行票券\n第二行座位",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            discord_notification_sender=fake_discord_sender,
+        )
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:discord-multiline",
+                channel=NotificationChannel.DISCORD,
+            )
+        )
+        assert entry is not None
+        assert "第一行**票券**\n第二行座位" in entry.message
+        assert "內容:" not in entry.message
+
+    assert len(sent_discord) == 1
+    assert "第一行**票券**\n第二行座位" in sent_discord[0][2]
+    assert "內容:" not in sent_discord[0][2]
 
 
 def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(

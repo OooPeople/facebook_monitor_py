@@ -49,6 +49,39 @@ def test_append_sort_block_hides_empty_menu_candidate_texts() -> None:
     assert not any(line.startswith("menu_candidate_texts=") for line in lines)
 
 
+def test_append_sort_block_shows_native_and_fallback_diagnostics() -> None:
+    """sort block 顯示 native/fallback 階段診斷，方便排查排序失敗。"""
+
+    lines: list[str] = []
+    _append_sort_block(
+        lines,
+        "comment_sort",
+        {
+            "attempted": True,
+            "changed": False,
+            "preferred_label": "由新到舊",
+            "before_label": "最相關",
+            "after_label": "最相關",
+            "reason": "preferred_sort_option_not_found",
+            "method": "js_fallback",
+            "fallback_used": True,
+            "native_failure_stage": "click_control",
+            "native_exception_class": "TimeoutError",
+            "menu_opened": False,
+            "preferred_option_count": 0,
+            "clicked_option_text": "",
+        },
+    )
+
+    assert "method=js_fallback" in lines
+    assert "fallback_used=True" in lines
+    assert "native_failure_stage=click_control" in lines
+    assert "native_exception_class=TimeoutError" in lines
+    assert "menu_opened=False" in lines
+    assert "preferred_option_count=0" in lines
+    assert not any(line.startswith("clicked_option_text=") for line in lines)
+
+
 def test_sort_unconfirmed_skip_reason_is_user_readable() -> None:
     """排序未確認的保護性跳過會顯示在本輪結果位置。"""
 

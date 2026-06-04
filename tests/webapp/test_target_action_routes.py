@@ -122,6 +122,34 @@ def test_webui_startup_can_clear_runtime_debug_data(tmp_path: Path) -> None:
                 item_kind=ItemKind.POST,
             )
         )
+        app_context.repositories.scan_scope_state.mark_initialized(target.scope_id)
+        logical = app_context.repositories.logical_items.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="seen-before-startup",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("seen-before-startup",),
+        )
+        app_context.repositories.notification_dedupe.reserve_match(
+            target_id=target.id,
+            logical_item_id=logical.logical_item_id,
+            item_key="seen-before-startup",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:seen-before-startup:ntfy",
+                target_id=target.id,
+                item_key="seen-before-startup",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
         scan_run_id = app_context.services.scans.record_scan(
             RecordScanRequest(
                 target_id=target.id,
@@ -172,13 +200,31 @@ def test_webui_startup_can_clear_runtime_debug_data(tmp_path: Path) -> None:
             target.scope_id,
             "seen-before-startup",
         )
+        scope_initialized = app_context.repositories.scan_scope_state.is_initialized(
+            target.scope_id
+        )
+        logical_alias_count = app_context.repositories.seen_items.connection.execute(
+            "SELECT COUNT(*) FROM logical_item_aliases WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+        dedupe_count = app_context.repositories.seen_items.connection.execute(
+            "SELECT COUNT(*) FROM notification_dedupe WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+        outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:seen-before-startup:ntfy"
+        )
 
     assert loaded is not None
     assert config is not None
     assert latest_scan is None
     assert latest_items == []
     assert notifications == []
-    assert not has_seen
+    assert has_seen
+    assert scope_initialized
+    assert logical_alias_count == 1
+    assert dedupe_count == 1
+    assert outbox is not None
 
 
 def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:

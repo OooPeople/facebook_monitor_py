@@ -46,6 +46,19 @@ FEED_DOM_TEXT_SCRIPT = '''
                 }
                 return cleanSharedFacebookText(text);
             };
+            const cleanExtractedDisplayText = (value) => {
+                let text = String(value || "");
+                for (const pattern of commentActionTrail) {
+                    text = text.replace(pattern, "\\n");
+                }
+                for (const fragment of noisyTextFragments) {
+                    text = text.replaceAll(fragment, "\\n");
+                }
+                for (const pattern of cleanedTextNoise) {
+                    text = text.replace(pattern, "\\n");
+                }
+                return cleanSharedFacebookMultilineText(text);
+            };
             const isFeedSortControlText = (value) =>
                 normalizeText(value).includes("社團動態消息排序方式");
             const getElementText = (element) => normalizeText(
@@ -63,6 +76,7 @@ FEED_DOM_TEXT_SCRIPT = '''
             const collectUniqueTextSnippets = (container, selectors, minLength, maxItems, upperOnly) => {
                 const snippets = [];
                 const seen = new Set();
+                const displayTextBySnippet = new Map();
                 const containerRect = container.getBoundingClientRect();
                 for (const selector of selectors) {
                     for (const node of Array.from(container.querySelectorAll(selector))) {
@@ -73,14 +87,28 @@ FEED_DOM_TEXT_SCRIPT = '''
                             const upperLimit = Math.max(210, containerRect.height * 0.46);
                             if (relativeTop > upperLimit) continue;
                         }
-                        const text = cleanExtractedText(node.innerText || node.textContent || "");
+                        const rawNodeText = node.innerText || node.textContent || "";
+                        const text = cleanExtractedText(rawNodeText);
                         if (text.length < minLength) continue;
+                        const displayText = cleanExtractedDisplayText(rawNodeText);
                         const addResult = addTextSnippetWithOverlap(snippets, seen, text);
                         if (!addResult.included) continue;
-                        if (snippets.length >= maxItems) return snippets;
+                        for (const replacedText of addResult.replacedContainedSnippetValues || []) {
+                            displayTextBySnippet.delete(replacedText);
+                        }
+                        displayTextBySnippet.set(text, displayText || text);
+                        if (snippets.length >= maxItems) {
+                            return snippets.map((snippet) => ({
+                                text: snippet,
+                                displayText: displayTextBySnippet.get(snippet) || snippet,
+                            }));
+                        }
                     }
                 }
-                return snippets;
+                return snippets.map((snippet) => ({
+                    text: snippet,
+                    displayText: displayTextBySnippet.get(snippet) || snippet,
+                }));
             };
             const extractPostTextDetails = (container) => {
                 const primarySnippets = collectUniqueTextSnippets(
@@ -91,8 +119,13 @@ FEED_DOM_TEXT_SCRIPT = '''
                     false
                 );
                 if (primarySnippets.length) {
-                    const rawText = normalizeText(primarySnippets.join(" "));
-                    return { text: cleanExtractedText(rawText), rawText, source: "primary" };
+                    const rawText = normalizeText(primarySnippets.map((snippet) => snippet.text).join(" "));
+                    const rawDisplayText = normalizeMultilineText(
+                        primarySnippets.map((snippet) => snippet.displayText || snippet.text).join("\\n")
+                    );
+                    const text = cleanExtractedText(rawText);
+                    const displayText = cleanExtractedDisplayText(rawDisplayText) || text;
+                    return { text, rawText, displayText, rawDisplayText, source: "primary" };
                 }
 
                 const fallbackSnippets = collectUniqueTextSnippets(
@@ -103,12 +136,20 @@ FEED_DOM_TEXT_SCRIPT = '''
                     true
                 );
                 if (fallbackSnippets.length) {
-                    const rawText = normalizeText(fallbackSnippets.join(" "));
-                    return { text: cleanExtractedText(rawText), rawText, source: "fallback" };
+                    const rawText = normalizeText(fallbackSnippets.map((snippet) => snippet.text).join(" "));
+                    const rawDisplayText = normalizeMultilineText(
+                        fallbackSnippets.map((snippet) => snippet.displayText || snippet.text).join("\\n")
+                    );
+                    const text = cleanExtractedText(rawText);
+                    const displayText = cleanExtractedDisplayText(rawDisplayText) || text;
+                    return { text, rawText, displayText, rawDisplayText, source: "fallback" };
                 }
 
                 const rawText = normalizeText(container.innerText || "");
-                return { text: cleanExtractedText(rawText), rawText, source: "container" };
+                const rawDisplayText = normalizeMultilineText(container.innerText || container.textContent || "");
+                const text = cleanExtractedText(rawText);
+                const displayText = cleanExtractedDisplayText(rawDisplayText) || text;
+                return { text, rawText, displayText, rawDisplayText, source: "container" };
             };
             const extractAuthor = (node) => {
                 for (const selector of authorSelectors) {

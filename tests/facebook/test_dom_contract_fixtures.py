@@ -143,6 +143,36 @@ def test_feed_dom_fixture_runs_actual_extractor_script() -> None:
     )
 
 
+def test_feed_dom_extractor_preserves_story_message_newlines() -> None:
+    """posts DOM extractor 應在 displayText 保留貼文內容換行。"""
+
+    html = """
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main role="feed">
+    <div role="article">
+      <h2>賣家</h2>
+      <div data-ad-preview="message">
+        <div dir="auto">第一行票券<br>第二行座位</div>
+      </div>
+      <a href="https://www.facebook.com/groups/222518561920110/posts/1111111111111111/">時間</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}",
+        html=html,
+        script=POST_LIKE_ITEMS_SCRIPT,
+        arg=5,
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+
+
 def test_comments_dom_fixture_runs_actual_extractor_script() -> None:
     """comments fixture 應可被實際 comments DOM extractor 解析成 snapshot payload。"""
 
@@ -187,6 +217,179 @@ def test_comments_dom_fixture_runs_actual_extractor_script() -> None:
     assert actual == _load_expected_snapshot(
         "comments_dom/post_comments_minimal.extractor.expected.json"
     )
+
+
+def test_comments_dom_extractor_preserves_comment_newlines() -> None:
+    """comments DOM extractor 應在 displayText 保留留言內容換行。"""
+
+    html = f"""
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main>
+    <div role="article">
+      <span>留言者</span>
+      <div dir="auto">第一行票券<br>第二行座位</div>
+      <a href="https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444">回覆</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+
+
+def test_comments_dom_extractor_excludes_author_link_span_from_text() -> None:
+    """comments DOM extractor 不應把 author link span 併入留言正文。"""
+
+    html = f"""
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main>
+    <div role="article">
+      <a role="link" href="https://www.facebook.com/profile.php?id=1">
+        <span dir="auto">留言者</span>
+      </a>
+      <div dir="auto">第一行票券<br>第二行座位</div>
+      <a href="https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444">回覆</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+    assert "留言者" not in payload["items"][0]["displayText"]
+
+
+def test_comments_dom_extractor_excludes_author_link_when_body_is_span() -> None:
+    """留言正文是 span[dir=auto] 時，author link 仍不可被併入正文。"""
+
+    html = f"""
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main>
+    <div role="article">
+      <a role="link" href="https://www.facebook.com/profile.php?id=1">
+        <span dir="auto">留言者</span>
+      </a>
+      <span dir="auto">第一行票券</span>
+      <span dir="auto">第二行座位</span>
+      <a href="https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444">回覆</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+    assert "留言者" not in payload["items"][0]["displayText"]
+
+
+def test_comments_dom_extractor_keeps_first_body_span_without_author() -> None:
+    """無明確作者節點時，不可把第一個正文 span 誤判成作者。"""
+
+    html = f"""
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main>
+    <div role="article">
+      <span dir="auto">第一行票券</span>
+      <span dir="auto">第二行座位</span>
+      <a href="https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444">回覆</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+
+
+def test_comments_dom_extractor_excludes_wrapped_author_link_from_text() -> None:
+    """author link 與正文同包在外層 div[dir=auto] 時，外層不可污染正文。"""
+
+    html = f"""
+<!doctype html>
+<html lang="zh-Hant">
+<body>
+  <main>
+    <div role="article">
+      <div dir="auto">
+        <a role="link" href="https://www.facebook.com/profile.php?id=1">
+          <span dir="auto">留言者</span>
+        </a>
+        <span dir="auto">第一行票券</span>
+        <span dir="auto">第二行座位</span>
+      </div>
+      <a href="https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444">回覆</a>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+
+    assert payload["items"][0]["text"] == "第一行票券 第二行座位"
+    assert payload["items"][0]["displayText"] == "第一行票券\n第二行座位"
+    assert "留言者" not in payload["items"][0]["displayText"]
 
 
 def _parse_fixture(relative_path: str) -> FacebookContractParser:

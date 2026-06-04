@@ -54,6 +54,7 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
                     "canonicalPermalinkCandidateCount": 1,
                     "author": "留言作者",
                     "text": "這是一則留言",
+                    "displayText": "這是一則留言\n第二行票券",
                     "commentAnchorHref": (
                         "https://www.facebook.com/groups/222518561920110/posts/"
                         "2187454285426518/?comment_id=9876543210987654"
@@ -67,7 +68,9 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
                     "currentRoutePostId": "2187454285426518",
                     "currentRouteMatchesTarget": True,
                     "textLength": 6,
+                    "displayTextLength": 12,
                     "rawTextLength": 6,
+                    "rawDisplayTextLength": 12,
                     "textSource": "comment",
                     "textDiagnostics": {
                         "candidateCount": 2,
@@ -124,6 +127,8 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
     assert items[0].comment_id == "9876543210987654"
     assert items[0].parent_post_id == "2187454285426518"
     assert items[0].author == "留言作者"
+    assert items[0].text == "這是一則留言"
+    assert items[0].display_text == "這是一則留言\n第二行票券"
     assert items[0].debug_metadata == {
         "source": "comment_permalink_anchor",
         "containerRole": "comment_container",
@@ -141,7 +146,9 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
             ],
         },
         "textLength": 6,
+        "displayTextLength": 12,
         "rawTextLength": 6,
+        "rawDisplayTextLength": 12,
         "permalinkSource": "comment_anchor",
         "canonicalPermalinkCandidateCount": 1,
         "parentPostId": "2187454285426518",

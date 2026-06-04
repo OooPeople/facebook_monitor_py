@@ -30,6 +30,7 @@ from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_s
 from facebook_monitor.facebook.scroll_controls import restore_load_more_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_controls import scroll_load_more
 from facebook_monitor.facebook.scroll_controls import scroll_load_more_async
+from facebook_monitor.facebook.text_cleanup import clean_facebook_multiline_text
 
 FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD = 4
 
@@ -204,11 +205,16 @@ def normalize_feed_extraction_payload(
 def normalize_feed_extraction_item(item: Mapping[str, Any]) -> ExtractedItem:
     """將單一 feed DOM item 轉成 extractor 共用模型。"""
 
+    text = str(item.get("text") or "")
+    display_text = clean_facebook_multiline_text(
+        item.get("displayText") or text
+    ) or text
     return ExtractedItem(
-        text=str(item.get("text") or ""),
+        text=text,
         text_length=int(item.get("textLength") or 0),
         permalink=str(item.get("permalink") or ""),
         link_count=int(item.get("linkCount") or 0),
+        display_text=display_text,
         author=str(item.get("author") or ""),
         debug_metadata=normalize_debug_metadata(item),
     )
@@ -314,7 +320,9 @@ def normalize_debug_metadata(item: Any) -> dict[str, Any]:
         "domPosition",
         "textSource",
         "textLength",
+        "displayTextLength",
         "rawTextLength",
+        "rawDisplayTextLength",
         "permalinkSource",
         "canonicalPermalinkCandidateCount",
         "postId",

@@ -64,6 +64,24 @@ _LATEST_SCAN_ITEM_DEBUG_KEYS = (
     "expandCount",
     "classification",
 )
+_SORT_DIAGNOSTIC_KEYS = (
+    "method",
+    "target_kind",
+    "fallback_used",
+    "failure_stage",
+    "native_attempted",
+    "native_failure_stage",
+    "native_exception_class",
+    "native_after_label",
+    "control_candidate_count",
+    "control_locator",
+    "menu_opened",
+    "menu_role",
+    "preferred_option_count",
+    "option_locator",
+    "clicked_option_text",
+    "confirm_timeout_ms",
+)
 
 
 @dataclass(frozen=True)
@@ -302,6 +320,12 @@ def _format_debug_value(value: object) -> str:
     return str(value)
 
 
+def _is_empty_diagnostic_value(value: object) -> bool:
+    """判斷 sort diagnostics 欄位是否應從日常輸出省略。"""
+
+    return value is None or value == "" or value == [] or value == {}
+
+
 def _append_sort_block(lines: list[str], label: str, value: object) -> None:
     """附加 feed/comment sort diagnostics。"""
 
@@ -324,6 +348,12 @@ def _append_sort_block(lines: list[str], label: str, value: object) -> None:
     menu_candidate_texts = value.get("menu_candidate_texts")
     if menu_candidate_texts:
         lines.append(f"menu_candidate_texts={_format_debug_value(menu_candidate_texts)}")
+    for key in _SORT_DIAGNOSTIC_KEYS:
+        if key not in value:
+            continue
+        if _is_empty_diagnostic_value(value[key]):
+            continue
+        lines.append(f"{key}={_format_debug_value(value[key])}")
 
 
 def _append_comments_meta(lines: list[str], value: object) -> None:

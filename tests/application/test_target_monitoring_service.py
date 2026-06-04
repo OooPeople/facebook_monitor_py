@@ -151,6 +151,15 @@ def test_reset_target_notification_state_clears_target_outbox_and_seen(
         app.repositories.seen_items.mark_seen(
             SeenItem(scope_id=first.scope_id, item_key="first-item", item_kind=ItemKind.POST)
         )
+        app.repositories.logical_items.mark_seen_aliases(
+            target_id=first.id,
+            item=SeenItem(
+                scope_id=first.scope_id,
+                item_key="first-item",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("first-item", "first-item-alias"),
+        )
         app.repositories.seen_items.mark_seen(
             SeenItem(scope_id=second.scope_id, item_key="second-item", item_kind=ItemKind.POST)
         )
@@ -191,7 +200,12 @@ def test_reset_target_notification_state_clears_target_outbox_and_seen(
 
         assert result.notification_outbox_rows == 1
         assert result.seen_items == 1
-        assert result.total_rows == 2
+        assert result.logical_seen_aliases == 2
+        assert result.dedupe_epoch_before == 0
+        assert result.dedupe_epoch_after == 1
+        assert result.scan_scope_initialized_before is True
+        assert result.scan_scope_initialized_after is True
+        assert result.total_rows == 4
         assert not app.repositories.seen_items.has_seen(first.scope_id, "first-item")
         assert app.repositories.seen_items.has_seen(second.scope_id, "second-item")
         assert app.repositories.scan_scope_state.is_initialized(first.scope_id)
@@ -208,6 +222,35 @@ def test_reset_target_notification_state_clears_target_outbox_and_seen(
             )
             is not None
         )
+
+
+def test_reset_target_notification_state_releases_baseline_suppression(
+    tmp_path: Path,
+) -> None:
+    """重置通知狀態是使用者明確重播意圖，需讓下一輪不再 baseline suppress。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.repositories.scan_scope_state.clear_scope(target.scope_id)
+
+        assert not app.repositories.scan_scope_state.is_initialized(target.scope_id)
+
+        result = app.services.targets.reset_target_notification_state(target.id)
+
+        assert result.notification_outbox_rows == 0
+        assert result.seen_items == 0
+        assert result.logical_seen_aliases == 0
+        assert result.dedupe_epoch_before == 0
+        assert result.dedupe_epoch_after == 1
+        assert result.scan_scope_initialized_before is False
+        assert result.scan_scope_initialized_after is True
+        assert app.repositories.scan_scope_state.is_initialized(target.scope_id)
 
 
 def test_restart_monitoring_preserves_uninitialized_scan_scope(tmp_path: Path) -> None:

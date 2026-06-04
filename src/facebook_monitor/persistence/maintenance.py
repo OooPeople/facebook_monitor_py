@@ -70,7 +70,7 @@ class RuntimeDataMaintenanceRepository:
         self.connection = connection
 
     def clear_runtime_data(self, *, include_seen_items: bool = True) -> RuntimeDataCleanupResult:
-        """清除可重建資料，保留 target、config、profile、outbox 與持久查看紀錄。"""
+        """清除 runtime/debug 資料；預設同步清 legacy seen 與 baseline state。"""
 
         latest_scan_items = self._delete_all("latest_scan_items")
         notification_events = self._delete_all("notification_events")
@@ -86,6 +86,11 @@ class RuntimeDataMaintenanceRepository:
             seen_items=seen_items,
             scan_scope_state=scan_scope_state,
         )
+
+    def clear_startup_runtime_data(self) -> RuntimeDataCleanupResult:
+        """清除啟動時可重建的 scan/debug snapshot，保留通知去重狀態。"""
+
+        return self.clear_runtime_data(include_seen_items=False)
 
     def _delete_all(self, table_name: str) -> int:
         """刪除指定 runtime table 的全部資料並回傳刪除筆數。"""

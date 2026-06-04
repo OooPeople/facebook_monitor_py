@@ -124,8 +124,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Keep previous scan/debug runtime data. By default Web UI startup clears "
-            "scan_runs, latest_scan_items, notification_events and seen_items. "
-            "Notification outbox and match history are retained."
+            "scan_runs, latest_scan_items and notification_events. Notification outbox, "
+            "match history, seen state and baseline state are retained."
         ),
     )
     parser.add_argument(

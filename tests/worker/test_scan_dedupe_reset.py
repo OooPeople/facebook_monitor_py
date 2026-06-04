@@ -310,6 +310,11 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
 
         assert clear_result.notification_outbox_rows == 1
         assert clear_result.seen_items == 1
+        assert clear_result.logical_seen_aliases == 1
+        assert clear_result.dedupe_epoch_before == 0
+        assert clear_result.dedupe_epoch_after == 1
+        assert clear_result.scan_scope_initialized_before is True
+        assert clear_result.scan_scope_initialized_after is True
         assert second_result.new_count == 1
         assert not second_result.baseline_mode
         assert (
@@ -330,6 +335,235 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
         }
         assert dedupe_epochs == {0, 1}
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
+
+    assert sent_ntfy == ["phase0test", "phase0test"]
+
+
+def test_startup_runtime_cleanup_preserves_notification_state(
+    tmp_path: Path,
+) -> None:
+    """啟動清理不應重置 baseline 或 seen，避免新命中被第一輪吃掉。"""
+
+    sent_ntfy: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_ntfy.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        first_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+        target_id = target.id
+
+        assert first_result.new_count == 1
+        assert not first_result.baseline_mode
+
+    assert sent_ntfy == ["phase0test"]
+
+    with SqliteApplicationContext(db_path) as app:
+        reloaded_target = app.repositories.targets.get(target_id)
+        assert reloaded_target is not None
+        cleanup_result = app.repositories.maintenance.clear_startup_runtime_data()
+
+        assert cleanup_result.seen_items == 0
+        assert cleanup_result.scan_scope_state == 0
+        assert app.repositories.scan_scope_state.is_initialized(
+            reloaded_target.scope_id
+        )
+        config = app.services.targets.get_config_for_target(reloaded_target)
+        new_match_result = finalize_scan_items(
+            app=app,
+            target=reloaded_target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:new-after-startup",
+                    alias_keys=("post:new-after-startup",),
+                    group_id="123",
+                    text="新出現的票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+        repeat_result = finalize_scan_items(
+            app=app,
+            target=reloaded_target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert new_match_result.new_count == 1
+        assert not new_match_result.baseline_mode
+        assert (
+            new_match_result.latest_items[0].debug_metadata["classification"][
+                "eligible_for_notify"
+            ]
+            is True
+        )
+        assert len(new_match_result.notification_payloads) == 1
+        assert repeat_result.new_count == 0
+        assert not repeat_result.baseline_mode
+        assert (
+            repeat_result.latest_items[0].debug_metadata["classification"][
+                "eligible_for_notify"
+            ]
+            is False
+        )
+        assert repeat_result.notification_payloads == ()
+
+    assert sent_ntfy == ["phase0test", "phase0test"]
+
+
+def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_match(
+    tmp_path: Path,
+) -> None:
+    """啟動清理保留狀態；使用者明確 reset 後，同一命中才可重新通知。"""
+
+    sent_ntfy: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_ntfy.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        first_result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+        target_id = target.id
+
+        assert first_result.new_count == 1
+        assert not first_result.baseline_mode
+
+    assert sent_ntfy == ["phase0test"]
+
+    with SqliteApplicationContext(db_path) as app:
+        reloaded_target = app.repositories.targets.get(target_id)
+        assert reloaded_target is not None
+        app.repositories.maintenance.clear_startup_runtime_data()
+
+        assert app.repositories.scan_scope_state.is_initialized(
+            reloaded_target.scope_id
+        )
+
+        clear_result = app.services.targets.reset_target_notification_state(
+            reloaded_target.id
+        )
+        config = app.services.targets.get_config_for_target(reloaded_target)
+        second_result = finalize_scan_items(
+            app=app,
+            target=reloaded_target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:repeat",
+                    alias_keys=("post:repeat",),
+                    group_id="123",
+                    text="票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        assert clear_result.notification_outbox_rows == 1
+        assert clear_result.seen_items == 1
+        assert clear_result.logical_seen_aliases == 1
+        assert clear_result.dedupe_epoch_before == 0
+        assert clear_result.dedupe_epoch_after == 1
+        assert clear_result.scan_scope_initialized_before is True
+        assert clear_result.scan_scope_initialized_after is True
+        assert app.repositories.scan_scope_state.is_initialized(
+            reloaded_target.scope_id
+        )
+        assert second_result.new_count == 1
+        assert not second_result.baseline_mode
+        assert (
+            second_result.latest_items[0].debug_metadata["classification"][
+                "eligible_for_notify"
+            ]
+            is True
+        )
+        assert len(second_result.notification_payloads) == 1
 
     assert sent_ntfy == ["phase0test", "phase0test"]
 

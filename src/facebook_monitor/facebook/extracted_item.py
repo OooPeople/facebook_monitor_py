@@ -22,6 +22,7 @@ class ExtractedItem:
     text_length: int
     permalink: str
     link_count: int
+    display_text: str = ""
     author: str = ""
     debug_metadata: dict[str, Any] | None = None
     item_kind: str = "post"

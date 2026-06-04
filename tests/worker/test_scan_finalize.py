@@ -14,7 +14,9 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.keyword_groups import keyword_group_slots
+from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
@@ -22,6 +24,7 @@ from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
+from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure
 from facebook_monitor.worker.errors import WorkerFailure
@@ -30,6 +33,32 @@ from tests.worker.scan_finalize_test_helpers import finalize_scan_items
 from tests.worker.scan_finalize_test_helpers import record_skipped_scan
 from tests.worker.scan_finalize_test_helpers import _activate_target
 from tests.worker.scan_finalize_test_helpers import _create_running_target_with_guard
+
+
+def test_normalize_extracted_scan_items_preserves_display_text() -> None:
+    """extractor 顯示文字需傳到 shared finalize 中間模型。"""
+
+    target = TargetDescriptor.for_group_posts(
+        group_id="123",
+        canonical_url="https://www.facebook.com/groups/123",
+    )
+    items = normalize_extracted_scan_items(
+        items=[
+            ExtractedItem(
+                text="第一行票券 第二行座位",
+                text_length=11,
+                permalink="https://www.facebook.com/groups/123/posts/1",
+                link_count=1,
+                display_text="第一行票券\n第二行座位",
+            )
+        ],
+        item_kind=ItemKind.POST,
+        target=target,
+    )
+
+    assert len(items) == 1
+    assert items[0].text == "第一行票券 第二行座位"
+    assert items[0].display_text == "第一行票券\n第二行座位"
 
 
 def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) -> None:
@@ -173,6 +202,106 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         }
         assert all(event.status == NotificationStatus.SENT for event in events)
         assert app.repositories.notification_outbox.list_pending() == []
+
+
+def test_finalize_scan_items_uses_display_text_only_for_notifications(
+    tmp_path: Path,
+) -> None:
+    """通知使用多行 display text，但 keyword/history/latest 維持單行 text 語義。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄 ntfy payload，避免測試送出真實通知。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:display-text",
+                    alias_keys=("post:display-text",),
+                    group_id="123",
+                    author="作者",
+                    text="第一行票券 第二行座位",
+                    display_text="第一行票券\n第二行座位",
+                    permalink="https://www.facebook.com/groups/123/posts/1",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            notification_sender=fake_ntfy_sender,
+        )
+
+        history = app.repositories.match_history.list_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+
+    assert result.notification_payloads[0].text == "第一行票券\n第二行座位"
+    assert result.history_entries[0].text == "第一行票券 第二行座位"
+    assert history[0].text == "第一行票券 第二行座位"
+    assert latest_items[0].text == "第一行票券 第二行座位"
+    assert sent_ntfy
+    assert "內容:\n第一行票券\n第二行座位" in sent_ntfy[0][2]
+
+
+def test_finalize_scan_items_keyword_ignores_display_only_text(tmp_path: Path) -> None:
+    """display text 不可擴大 keyword 比對範圍，避免通知語義漂移。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(include_keywords=("只在顯示文字",)),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:display-only",
+                    alias_keys=("post:display-only",),
+                    group_id="123",
+                    text="沒有命中",
+                    display_text="只在顯示文字\n沒有命中",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+        )
+
+    assert result.matched_count == 0
+    assert result.notification_payloads == ()
 
 
 def test_finalize_scan_items_uses_renamed_target_display_name_for_notifications(

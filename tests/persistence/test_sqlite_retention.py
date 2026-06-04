@@ -128,7 +128,9 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
             )
         )
 
-        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data()
+        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data(
+            include_seen_items=True,
+        )
 
         assert result.scan_runs == 1
         assert result.latest_scan_items == 1
@@ -170,10 +172,25 @@ def test_runtime_data_maintenance_keeps_outbox_when_seen_items_are_kept(
             canonical_url="https://www.facebook.com/groups/222518561920110",
         )
         TargetRepository(connection).save(target)
-        SeenItemRepository(connection).mark_seen(
-            SeenItem(scope_id=target.scope_id, item_key="seen-key", item_kind=ItemKind.POST)
+        seen_item = SeenItem(
+            scope_id=target.scope_id,
+            item_key="seen-key",
+            item_kind=ItemKind.POST,
         )
+        SeenItemRepository(connection).mark_seen(seen_item)
         ScanScopeStateRepository(connection).mark_initialized(target.scope_id)
+        logical = LogicalItemRepository(connection).mark_seen_aliases(
+            target_id=target.id,
+            item=seen_item,
+            item_keys=("seen-key", "seen-key-alias"),
+        )
+        NotificationDedupeRepository(connection).reserve_match(
+            target_id=target.id,
+            logical_item_id=logical.logical_item_id,
+            item_key="seen-key",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
         notification_outbox_repository(connection).enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:seen-key:ntfy",
@@ -194,7 +211,90 @@ def test_runtime_data_maintenance_keeps_outbox_when_seen_items_are_kept(
         assert result.scan_scope_state == 0
         assert result.notification_outbox == 0
         assert table_count(connection, "seen_items") == 1
+        assert table_count(connection, "logical_items") == 1
+        assert table_count(connection, "logical_item_aliases") == 2
+        assert table_count(connection, "notification_dedupe") == 1
         assert table_count(connection, "notification_outbox") == 1
+        assert ScanScopeStateRepository(connection).is_initialized(target.scope_id)
+
+
+def test_startup_runtime_data_maintenance_preserves_notification_state(
+    tmp_path: Path,
+) -> None:
+    """Web UI 啟動清理只刪 scan/debug snapshot，不碰通知去重狀態。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        seen_item = SeenItem(
+            scope_id=target.scope_id,
+            item_key="seen-key",
+            item_kind=ItemKind.POST,
+        )
+        SeenItemRepository(connection).mark_seen(seen_item)
+        ScanScopeStateRepository(connection).mark_initialized(target.scope_id)
+        logical = LogicalItemRepository(connection).mark_seen_aliases(
+            target_id=target.id,
+            item=seen_item,
+            item_keys=("seen-key",),
+        )
+        NotificationDedupeRepository(connection).reserve_match(
+            target_id=target.id,
+            logical_item_id=logical.logical_item_id,
+            item_key="seen-key",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        scan_id = ScanRunRepository(connection).add(
+            ScanRun(
+                target_id=target.id,
+                status=ScanStatus.SUCCESS,
+                started_at=utc_now(),
+                finished_at=utc_now(),
+            )
+        )
+        LatestScanItemRepository(connection).replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=scan_id,
+                    item_kind=ItemKind.POST,
+                    item_key="seen-key",
+                    item_index=0,
+                )
+            ],
+        )
+        NotificationEventRepository(connection).add(
+            NotificationEvent(
+                target_id=target.id,
+                item_key="seen-key",
+                channel=NotificationChannel.NTFY,
+                status=NotificationStatus.SENT,
+            )
+        )
+
+        result = RuntimeDataMaintenanceRepository(connection).clear_startup_runtime_data()
+
+        assert result.scan_runs == 1
+        assert result.latest_scan_items == 1
+        assert result.notification_events == 1
+        assert result.seen_items == 0
+        assert result.scan_scope_state == 0
+        assert table_count(connection, "scan_runs") == 0
+        assert table_count(connection, "latest_scan_items") == 0
+        assert table_count(connection, "notification_events") == 0
+        assert table_count(connection, "seen_items") == 1
+        assert table_count(connection, "logical_items") == 1
+        assert table_count(connection, "logical_item_aliases") == 1
+        assert table_count(connection, "notification_dedupe") == 1
         assert ScanScopeStateRepository(connection).is_initialized(target.scope_id)
 
 
@@ -219,7 +319,9 @@ def test_runtime_data_maintenance_resets_missing_scope_state_rows(
 
         assert ScanScopeStateRepository(connection).is_initialized(target.scope_id)
 
-        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data()
+        result = RuntimeDataMaintenanceRepository(connection).clear_runtime_data(
+            include_seen_items=True,
+        )
 
         assert result.seen_items == 1
         assert result.scan_scope_state == 1

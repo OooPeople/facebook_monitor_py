@@ -159,7 +159,7 @@ def create_app(
         run_bounded_retention_maintenance_for_db(app_instance.state.db_path)
         if app_instance.state.reset_runtime_data_on_startup:
             with SqliteApplicationContext(app_instance.state.db_path) as app_context:
-                app_context.repositories.maintenance.clear_runtime_data()
+                app_context.repositories.maintenance.clear_startup_runtime_data()
         if app_instance.state.reset_targets_on_startup:
             with SqliteApplicationContext(app_instance.state.db_path) as app_context:
                 app_context.services.targets.pause_all_targets_for_webui_startup(

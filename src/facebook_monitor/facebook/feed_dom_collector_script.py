@@ -52,6 +52,12 @@ FEED_DOM_COLLECTOR_SCRIPT = r'''            const roots = [];
                 const textDetails = extractPostTextDetails(node);
                 const text = normalizeText(textDetails.text);
                 const rawText = normalizeText(textDetails.rawText || text);
+                const displayText = cleanSharedFacebookMultilineText(
+                    textDetails.displayText || text
+                ) || text;
+                const rawDisplayText = normalizeMultilineText(
+                    textDetails.rawDisplayText || displayText
+                );
                 let permalinkDetails = extractPermalinkDetails(node);
                 let warmupState = buildPermalinkWarmupState({
                     warmupResolved: Boolean(permalinkDetails.permalink),
@@ -109,7 +115,9 @@ FEED_DOM_COLLECTOR_SCRIPT = r'''            const roots = [];
                 }
                 results.push({
                     text,
+                    displayText,
                     textLength: text.length,
+                    displayTextLength: displayText.length,
                     permalink,
                     linkCount: links.length,
                     author: extractAuthor(node),
@@ -123,6 +131,7 @@ FEED_DOM_COLLECTOR_SCRIPT = r'''            const roots = [];
                     },
                     textSource: textDetails.source,
                     rawTextLength: rawText.length,
+                    rawDisplayTextLength: rawDisplayText.length,
                     permalinkSource: permalinkDetails.source || "unavailable",
                     canonicalPermalinkCandidateCount: Number(permalinkDetails.canonicalCandidateCount) || 0,
                     postId,

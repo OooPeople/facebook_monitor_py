@@ -22,6 +22,10 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.application.scheduler_preflight import (
+    run_scheduler_start_preflight,
+)
+from facebook_monitor.application.scheduler_preflight import SchedulerStartPreflightResult
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.worker.scan_failure_finalize import (
     record_active_targets_runtime_failure_notifications_for_db,
@@ -73,6 +77,12 @@ class SchedulerSessionOptions:
     stale_running_after_seconds: float = (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds
     )
+
+
+SchedulerStartPreflightCheck = Callable[
+    [SchedulerSessionOptions],
+    SchedulerStartPreflightResult,
+]
 
 
 @dataclass(frozen=True)
@@ -140,9 +150,11 @@ class BackgroundSchedulerManager:
         *,
         resident_main_runner: ResidentMainRunner | None = None,
         wait_fn: Callable[[Event, float], bool] | None = None,
+        preflight_check: SchedulerStartPreflightCheck | None = None,
     ) -> None:
         self.resident_main_runner = resident_main_runner or _run_resident_main
         self.wait_fn = wait_fn or _wait_for_stop
+        self.preflight_check = preflight_check or _run_scheduler_start_preflight
         self.thread: Thread | None = None
         self.stop_event = Event()
         self.wake_event = Event()
@@ -165,6 +177,7 @@ class BackgroundSchedulerManager:
         self.worker_health_ok = True
         self.metadata_refresh_target_ids: set[str] = set()
         self.metadata_refresh_order: list[str] = []
+        self._start_generation = 0
         self._lock = RLock()
 
     def is_running(self) -> bool:
@@ -209,6 +222,10 @@ class BackgroundSchedulerManager:
         with self._lock:
             if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
                 raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
+            if self.lifecycle_state == SchedulerLifecycleState.STARTING:
+                if self.options == options:
+                    return
+                raise RuntimeError("Scheduler is starting; wait for it to finish before starting.")
             if self._is_thread_alive_locked():
                 if self.options == options:
                     return
@@ -219,10 +236,29 @@ class BackgroundSchedulerManager:
         with self._lock:
             if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
                 raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
+            self._start_generation += 1
+            start_generation = self._start_generation
             self.options = options
             self.stop_event = Event()
             self.wake_event = Event()
             self.resident_browser_alive = False
+            self.last_error = ""
+            self.lifecycle_state = SchedulerLifecycleState.STARTING
+
+        preflight_result = self.preflight_check(options)
+        if not preflight_result.ok:
+            self._block_start_for_preflight_failure(
+                options,
+                preflight_result,
+                start_generation=start_generation,
+            )
+            return
+
+        with self._lock:
+            if self._start_generation != start_generation or self.stop_event.is_set():
+                return
+            if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
+                raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
             self.lifecycle_state = SchedulerLifecycleState.STARTING
             self.thread = Thread(
                 target=self._run_loop,
@@ -231,11 +267,38 @@ class BackgroundSchedulerManager:
             )
             self.thread.start()
 
+    def _block_start_for_preflight_failure(
+        self,
+        options: SchedulerSessionOptions,
+        preflight_result: SchedulerStartPreflightResult,
+        *,
+        start_generation: int,
+    ) -> None:
+        """preflight 擋下 scheduler start 時只記錄狀態，不啟動 thread 或通知。"""
+
+        message = preflight_result.message or "背景掃描啟動前資料檢查失敗"
+        with self._lock:
+            if self._start_generation != start_generation or self.stop_event.is_set():
+                return
+            if self.lifecycle_state == SchedulerLifecycleState.STOPPING:
+                raise RuntimeError("Scheduler is stopping; wait for it to finish before starting.")
+            if self._is_thread_alive_locked():
+                return
+            self.resident_browser_alive = False
+            self.lifecycle_state = SchedulerLifecycleState.ERROR
+            self.last_error = message
+        logger.error(
+            "scheduler_start_blocked_by_preflight db_path=%s message=%s",
+            options.db_path,
+            message,
+        )
+
     def stop(self, timeout_seconds: float = 5) -> None:
         """停止背景自動掃描，不影響 target 設定與 seen/history。"""
 
         with self._lock:
             thread = self.thread
+            self._start_generation += 1
             self.lifecycle_state = SchedulerLifecycleState.STOPPING
             self.stop_event.set()
             self.wake_event.set()
@@ -434,6 +497,17 @@ def _scheduler_failure_reason(exc: Exception) -> str:
     if not reason or reason == UNKNOWN_REASON:
         return SCHEDULER_RUNTIME_REASON
     return reason
+
+
+def _run_scheduler_start_preflight(
+    options: SchedulerSessionOptions,
+) -> SchedulerStartPreflightResult:
+    """將 Web scheduler options 轉成 application preflight 呼叫。"""
+
+    return run_scheduler_start_preflight(
+        options.db_path,
+        default_interval_seconds=options.interval_seconds,
+    )
 
 
 def _wait_for_stop(stop_event: Event, seconds: float) -> bool:

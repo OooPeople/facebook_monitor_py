@@ -367,7 +367,42 @@ async def _create_support_bundle_for_settings(request: Request) -> SupportBundle
             "packaging_mode": metadata.packaging_mode,
             "python_version": metadata.python_version,
         },
+        scheduler_state=_support_bundle_scheduler_state(request.app.state),
     )
+
+
+def _support_bundle_scheduler_state(app_state: object) -> dict[str, object]:
+    """整理 support bundle 使用的 scheduler state，不觸發任何啟停動作。"""
+
+    scheduler_manager = getattr(app_state, "scheduler_manager", None)
+    if scheduler_manager is None:
+        return {}
+    try:
+        state = scheduler_manager.state()
+    except Exception:
+        return {}
+    lifecycle_state = getattr(state, "lifecycle_state", "")
+    return {
+        "running": bool(getattr(state, "running", False)),
+        "interval_seconds": getattr(state, "interval_seconds", 0),
+        "lifecycle_state": getattr(lifecycle_state, "value", str(lifecycle_state)),
+        "last_cycle_at": getattr(state, "last_cycle_at", ""),
+        "last_error": getattr(state, "last_error", ""),
+        "max_concurrent_scans": getattr(state, "max_concurrent_scans", 0),
+        "current_running_count": getattr(state, "current_running_count", 0),
+        "current_queued_count": getattr(state, "current_queued_count", 0),
+        "queue_length": getattr(state, "queue_length", 0),
+        "queued_target_ids": tuple(getattr(state, "queued_target_ids", ())),
+        "worker_ids": tuple(getattr(state, "worker_ids", ())),
+        "page_pool_size": getattr(state, "page_pool_size", 0),
+        "last_opened_page_count": getattr(state, "last_opened_page_count", 0),
+        "last_reused_page_count": getattr(state, "last_reused_page_count", 0),
+        "last_closed_page_count": getattr(state, "last_closed_page_count", 0),
+        "resident_browser_alive": bool(getattr(state, "resident_browser_alive", False)),
+        "recovered_runtime_count": getattr(state, "recovered_runtime_count", 0),
+        "notification_dispatch_count": getattr(state, "notification_dispatch_count", 0),
+        "worker_health_ok": bool(getattr(state, "worker_health_ok", True)),
+    }
 
 
 async def _open_facebook_profile_for_settings(request: Request) -> None:

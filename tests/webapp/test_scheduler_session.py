@@ -6,10 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 import sqlite3
 from threading import Event
+from threading import Thread
 
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.webapp import scheduler_session as scheduler_session_module
+from facebook_monitor.application.scheduler_preflight import SchedulerStartPreflightResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
@@ -286,6 +288,107 @@ def test_background_scheduler_manager_skips_target_notifications_for_sqlite_lock
     assert state.lifecycle_state == SchedulerLifecycleState.ERROR
     assert "背景掃描執行錯誤" in state.last_error
     assert calls == []
+
+
+def test_background_scheduler_manager_blocks_start_on_preflight_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """preflight 擋下 start 時不啟動 resident runner，也不寫 runtime failure 通知。"""
+
+    runner_called = False
+    notification_calls: list[dict[str, object]] = []
+
+    def resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        _stop_event: Event,
+        _on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        nonlocal runner_called
+        runner_called = True
+        return object()
+
+    def fake_record_notifications(**kwargs: object) -> int:
+        notification_calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(
+        scheduler_session_module,
+        "record_active_targets_runtime_failure_notifications_for_db",
+        fake_record_notifications,
+    )
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=resident_main_runner,
+        preflight_check=lambda _options: SchedulerStartPreflightResult.blocked(
+            "背景掃描啟動前資料檢查失敗：schema missing"
+        ),
+    )
+
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    state = manager.state()
+
+    assert manager.thread is None
+    assert not runner_called
+    assert notification_calls == []
+    assert state.lifecycle_state == SchedulerLifecycleState.ERROR
+    assert not state.running
+    assert "啟動前資料檢查失敗" in state.last_error
+
+
+def test_background_scheduler_stop_cancels_start_during_preflight(
+    tmp_path: Path,
+) -> None:
+    """preflight 執行期間收到 stop，不得在 preflight 結束後仍啟動 thread。"""
+
+    preflight_entered = Event()
+    release_preflight = Event()
+    runner_called = False
+
+    def resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        _stop_event: Event,
+        _on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        nonlocal runner_called
+        runner_called = True
+        return object()
+
+    def blocking_preflight(
+        _options: SchedulerSessionOptions,
+    ) -> SchedulerStartPreflightResult:
+        preflight_entered.set()
+        release_preflight.wait(timeout=2)
+        return SchedulerStartPreflightResult.passed()
+
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=resident_main_runner,
+        preflight_check=blocking_preflight,
+    )
+    options = SchedulerSessionOptions(
+        db_path=tmp_path / "app.db",
+        profile_dir=tmp_path / "profile",
+    )
+    start_thread = Thread(target=lambda: manager.start(options))
+    start_thread.start()
+    assert preflight_entered.wait(timeout=2)
+
+    manager.stop(timeout_seconds=0.01)
+    release_preflight.set()
+    start_thread.join(timeout=2)
+    state = manager.state()
+
+    assert not start_thread.is_alive()
+    assert not runner_called
+    assert manager.thread is None
+    assert not state.running
+    assert state.lifecycle_state == SchedulerLifecycleState.STOPPED
 
 
 def test_background_scheduler_cycle_recovers_lifecycle_after_crash(

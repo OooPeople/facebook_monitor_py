@@ -12,6 +12,7 @@ from facebook_monitor.notifications.channel_plan import build_enabled_channel_pl
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import send_discord_notification
+from facebook_monitor.notifications.discord_format import build_discord_match_notification_payload
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.payload import MatchNotificationFields
@@ -37,6 +38,7 @@ def send_manual_test_notification(
         permalink="",
     )
     title, message = build_match_notification_payload(fields)
+    discord_title, discord_message = build_discord_match_notification_payload(fields)
     compact_message = build_compact_notification_body(fields)
     results: list[str] = []
     for plan in build_enabled_channel_plans(config):
@@ -53,8 +55,8 @@ def send_manual_test_notification(
             if plan.endpoint.strip():
                 discord_result = discord_sender(
                     DiscordConfig(webhook_url=plan.endpoint),
-                    title,
-                    message,
+                    discord_title,
+                    discord_message,
                 )
                 results.append(discord_result.message)
             else:

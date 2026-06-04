@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from facebook_monitor.facebook.feed_extractor import build_extract_round_stats
 from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_extractor import normalize_feed_extraction_payload
 from facebook_monitor.facebook.feed_extractor import normalize_debug_metadata
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
@@ -235,6 +237,104 @@ def test_normalize_debug_metadata_preserves_link_diagnostics() -> None:
     assert metadata["roundItemIndex"] == 1
     assert metadata["collectionIndex"] == 3
     assert metadata["domPosition"]["documentTop"] == 120
+
+
+def test_normalize_feed_extraction_payload_preserves_meta_and_item_shape() -> None:
+    """feed payload normalizer 保留 DOM meta 與 item diagnostics shape。"""
+
+    items, meta = normalize_feed_extraction_payload(
+        {
+            "items": [
+                {
+                    "text": "測試貼文",
+                    "textLength": 4,
+                    "permalink": "https://www.facebook.com/groups/1/posts/2",
+                    "linkCount": 3,
+                    "author": "作者",
+                    "postId": "2",
+                    "permalinkSource": "groups_post_anchor",
+                    "ignored": "不應保存",
+                },
+                "unexpected",
+            ],
+            "meta": {
+                "candidateCount": 2,
+                "parsedCount": 1,
+            },
+        }
+    )
+
+    assert meta == {"candidateCount": 2, "parsedCount": 1}
+    assert len(items) == 1
+    assert items[0].text == "測試貼文"
+    assert items[0].text_length == 4
+    assert items[0].permalink == "https://www.facebook.com/groups/1/posts/2"
+    assert items[0].link_count == 3
+    assert items[0].author == "作者"
+    assert items[0].debug_metadata == {
+        "textLength": 4,
+        "permalinkSource": "groups_post_anchor",
+        "postId": "2",
+        "linkCount": 3,
+        "author": "作者",
+    }
+
+
+def test_build_extract_round_stats_preserves_scroll_and_filter_diagnostics() -> None:
+    """feed round diagnostics builder 保留 scroll action 與 DOM filter counters。"""
+
+    items, _meta = normalize_feed_extraction_payload(
+        [{"text": "貼文", "textLength": 2}]
+    )
+
+    stats = build_extract_round_stats(
+        round_index=2,
+        round_items=items,
+        round_meta={
+            "candidateCount": 4,
+            "parsedCount": 3,
+            "filteredEmptyTextCount": 1,
+            "filteredFeedSortControlCount": 2,
+            "postsWithPostIdCount": 1,
+        },
+        unique_item_count=5,
+        scroll_metrics={
+            "scrollY": 100,
+            "scrollHeight": 500,
+            "scrollTargetLabel": "window",
+            "scrollTargetTop": 20,
+        },
+        scroll_action={
+            "moved": True,
+            "beforeTop": 20,
+            "afterTop": 120,
+            "movedDistance": 100,
+            "scrollStep": 240,
+            "loadMoreMode": "scroll",
+        },
+        scroll_rounds=3,
+        added_count=1,
+        stagnant_windows=0,
+    )
+
+    assert stats.round_index == 2
+    assert stats.raw_item_count == 1
+    assert stats.unique_item_count == 5
+    assert stats.scroll_y == 100
+    assert stats.scroll_height == 500
+    assert stats.scroll_target_label == "window"
+    assert stats.scroll_target_top == 20
+    assert stats.scroll_moved is True
+    assert stats.scroll_before_top == 20
+    assert stats.scroll_after_top == 120
+    assert stats.scroll_moved_distance == 100
+    assert stats.scroll_step == 240
+    assert stats.load_more_mode == "scroll"
+    assert stats.candidate_count == 4
+    assert stats.parsed_count == 3
+    assert stats.filtered_empty_text_count == 1
+    assert stats.filtered_feed_sort_control_count == 2
+    assert stats.posts_with_post_id_count == 1
 
 
 def test_feed_dom_script_filters_empty_permalink_only_candidates() -> None:

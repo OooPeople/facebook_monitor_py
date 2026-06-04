@@ -42,10 +42,11 @@ class NotificationOutboxRepository:
             """
             INSERT OR IGNORE INTO notification_outbox (
                 idempotency_key, target_id, item_key, item_kind, channel, status,
-                title, message, endpoint, permalink, attempts, last_error,
-                notification_event_id, created_at, updated_at
+                title, message, endpoint, permalink, event_kind, source_scan_run_id,
+                failure_reason, failure_count, attempts, last_error, notification_event_id,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.idempotency_key,
@@ -58,6 +59,10 @@ class NotificationOutboxRepository:
                 entry.message,
                 self.secret_codec.encrypt(entry.endpoint),
                 entry.permalink,
+                entry.event_kind.value,
+                entry.source_scan_run_id,
+                entry.failure_reason,
+                entry.failure_count,
                 entry.attempts,
                 entry.last_error,
                 entry.notification_event_id,

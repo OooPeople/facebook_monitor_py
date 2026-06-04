@@ -408,7 +408,17 @@ def mark_target_idle_for_scan_commit(
         commit_guard=commit_guard,
     ):
         return False
-    app.services.targets.mark_target_idle(target_id)
+    if commit_guard is None:
+        app.services.targets.mark_target_idle(target_id)
+        return True
+    updated_state = app.services.targets.mark_target_idle_if_owner(
+        target_id,
+        worker_id=commit_guard.worker_id,
+        started_at=commit_guard.started_at,
+        page_id=commit_guard.page_id,
+    )
+    if updated_state is None:
+        return False
     return True
 
 

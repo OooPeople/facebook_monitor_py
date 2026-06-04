@@ -46,7 +46,11 @@ def sanitize_facebook_image_url(value: object) -> ExternalUrlValidationResult:
         return ExternalUrlValidationResult(ok=False, reason="host_not_allowed")
     if parsed.username or parsed.password:
         return ExternalUrlValidationResult(ok=False, reason="userinfo_not_allowed")
-    if parsed.port not in (None, 443):
+    try:
+        port = parsed.port
+    except ValueError:
+        return ExternalUrlValidationResult(ok=False, reason="port_parse_error")
+    if port not in (None, 443):
         return ExternalUrlValidationResult(ok=False, reason="port_not_allowed")
     return ExternalUrlValidationResult(
         ok=True,

@@ -57,6 +57,35 @@ class UpdateDownloadResult:
     manifest_key_id: str = ""
 
 
+@dataclass(frozen=True)
+class UpdateDownloadPlan:
+    """保存單次更新下載的正式與 staging 路徑。"""
+
+    asset_name: str
+    sha256_name: str
+    manifest_name: str
+    manifest_signature_name: str
+    updates_root: Path
+    destination_dir: Path
+    file_path: Path
+    sha256_path: Path | None
+    manifest_path: Path
+    manifest_signature_path: Path
+    staged_file_path: Path
+    staged_sha256_path: Path | None
+    staged_manifest_path: Path
+    staged_manifest_signature_path: Path
+
+
+@dataclass(frozen=True)
+class StagedAssetVerification:
+    """保存 staged zip 與 signed manifest 驗證結果。"""
+
+    manifest: VerifiedReleaseManifest
+    expected_sha256: str
+    actual_sha256: str
+
+
 async def download_and_verify_update(
     *,
     update_check: UpdateCheckResult,
@@ -69,246 +98,58 @@ async def download_and_verify_update(
 ) -> UpdateDownloadResult:
     """下載更新 zip 與 signed manifest，驗證通過後保留於 updates dir。"""
 
-    if not update_check.update_available or not update_check.asset_name:
-        return _failure("update_not_available")
-    if not update_check.asset_download_url:
-        return _failure("asset_download_url_missing")
-    if not update_check.manifest_asset_name:
-        return _failure("manifest_file_missing")
-    if not update_check.manifest_asset_download_url:
-        return _failure("manifest_asset_url_missing")
-    if not update_check.manifest_signature_asset_name:
-        return _failure("manifest_signature_asset_missing")
-    if not update_check.manifest_signature_asset_download_url:
-        return _failure("manifest_signature_asset_url_missing")
+    missing_reason = _missing_update_download_reason(update_check)
+    if missing_reason:
+        return _failure(missing_reason)
     try:
-        asset_name = sanitize_release_asset_name(update_check.asset_name)
-        sha256_name = (
-            sanitize_release_asset_name(update_check.sha256_asset_name)
-            if update_check.sha256_asset_name
-            else ""
-        )
-        manifest_name = sanitize_release_asset_name(update_check.manifest_asset_name)
-        manifest_signature_name = sanitize_release_asset_name(
-            update_check.manifest_signature_asset_name
-        )
-        version_dir_name = sanitize_release_asset_name(update_check.latest_version)
-        updates_root = Path(updates_dir).expanduser().absolute()
-        destination_dir = updates_root / version_dir_name
-        file_path = destination_dir / asset_name
-        sha256_path = destination_dir / sha256_name if sha256_name else None
-        manifest_path = destination_dir / manifest_name
-        manifest_signature_path = destination_dir / manifest_signature_name
-        staged_file_path = _staging_destination(file_path)
-        staged_sha256_path = _staging_destination(sha256_path) if sha256_path else None
-        staged_manifest_path = _staging_destination(manifest_path)
-        staged_manifest_signature_path = _staging_destination(manifest_signature_path)
-        validate_initial_release_download_url(
-            update_check.asset_download_url,
-            expected_asset_name=asset_name,
-            repository=update_check.repository,
-        )
-        validate_initial_release_download_url(
-            update_check.manifest_asset_download_url,
-            expected_asset_name=manifest_name,
-            repository=update_check.repository,
-        )
-        validate_initial_release_download_url(
-            update_check.manifest_signature_asset_download_url,
-            expected_asset_name=manifest_signature_name,
-            repository=update_check.repository,
-        )
-        if sha256_name:
-            if not update_check.sha256_asset_download_url:
-                return _failure("sha256_asset_url_missing")
-            validate_initial_release_download_url(
-                update_check.sha256_asset_download_url,
-                expected_asset_name=sha256_name,
-                repository=update_check.repository,
-            )
-        ensure_child_path(updates_root, destination_dir)
-        ensure_safe_download_path(destination_dir, updates_root=updates_root)
+        plan = _build_download_plan(update_check=update_check, updates_dir=updates_dir)
     except ValueError as exc:
         return _failure(str(exc))
     try:
-        _prepare_destination_dir(destination_dir, updates_root=updates_root)
-        destinations = [
-            file_path,
-            staged_file_path,
-            manifest_path,
-            manifest_signature_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-        ]
-        if sha256_path is not None and staged_sha256_path is not None:
-            destinations.extend([sha256_path, staged_sha256_path])
-        _prepare_download_destinations(
-            *destinations,
-            updates_root=updates_root,
-        )
+        _prepare_download_plan(plan)
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
             transport=transport,
             follow_redirects=True,
         ) as client:
-            await _download_file(
+            manifest = await _download_staged_release_files(
                 client=client,
-                url=update_check.manifest_asset_download_url,
-                destination=staged_manifest_path,
-                updates_root=updates_root,
-                max_bytes=MAX_MANIFEST_DOWNLOAD_BYTES,
-                expected_asset_name=manifest_name,
-            )
-            await _download_file(
-                client=client,
-                url=update_check.manifest_signature_asset_download_url,
-                destination=staged_manifest_signature_path,
-                updates_root=updates_root,
-                max_bytes=MAX_MANIFEST_SIGNATURE_DOWNLOAD_BYTES,
-                expected_asset_name=manifest_signature_name,
-            )
-            manifest = _verify_staged_manifest(
                 update_check=update_check,
-                manifest_path=staged_manifest_path,
-                signature_path=staged_manifest_signature_path,
-                asset_name=asset_name,
+                plan=plan,
+                max_sha256_bytes=max_sha256_bytes,
+                max_asset_bytes=max_asset_bytes,
                 trusted_public_keys=trusted_public_keys,
             )
-            if sha256_path is not None and staged_sha256_path is not None:
-                await _download_file(
-                    client=client,
-                    url=update_check.sha256_asset_download_url,
-                    destination=staged_sha256_path,
-                    updates_root=updates_root,
-                    max_bytes=max_sha256_bytes,
-                    expected_asset_name=sha256_name,
-                )
-                sidecar_sha256 = read_expected_sha256(
-                    staged_sha256_path,
-                    expected_filename=asset_name,
-                )
-                if sidecar_sha256 != manifest.asset.sha256:
-                    raise ValueError("sha256_sidecar_manifest_mismatch")
-            await _download_file(
-                client=client,
-                url=update_check.asset_download_url,
-                destination=staged_file_path,
-                updates_root=updates_root,
-                max_bytes=max_asset_bytes,
-                expected_asset_name=asset_name,
-            )
-        expected_sha256 = manifest.asset.sha256
-        actual_size = staged_file_path.stat().st_size
-        if actual_size != manifest.asset.size:
-            raise ValueError("manifest_asset_size_mismatch")
-        actual_sha256 = calculate_sha256(staged_file_path)
-        if expected_sha256 != actual_sha256:
-            _cleanup_download_artifacts(
-                staged_file_path,
-                staged_manifest_path,
-                staged_manifest_signature_path,
-                *_optional_paths(staged_sha256_path),
-                updates_root=updates_root,
-            )
-            return UpdateDownloadResult(
-                status="sha256_mismatch",
-                downloaded=True,
-                verified=False,
-                file_path=file_path,
-                sha256_path=sha256_path,
-                expected_sha256=expected_sha256,
-                actual_sha256=actual_sha256,
-                failure_reason="sha256_mismatch",
-                manifest_path=manifest_path,
-                manifest_signature_path=manifest_signature_path,
-                manifest_sha256=manifest.manifest_sha256,
-                manifest_key_id=manifest.key_id,
-            )
-        _publish_verified_download(
-            staged_file_path=staged_file_path,
-            file_path=file_path,
-            staged_sha256_path=staged_sha256_path,
-            sha256_path=sha256_path,
-            staged_manifest_path=staged_manifest_path,
-            manifest_path=manifest_path,
-            staged_manifest_signature_path=staged_manifest_signature_path,
-            manifest_signature_path=manifest_signature_path,
-            updates_root=updates_root,
-        )
+        verification = _verify_staged_asset(plan=plan, manifest=manifest)
+        if verification.expected_sha256 != verification.actual_sha256:
+            _cleanup_staged_download(plan)
+            return _sha256_mismatch_result(plan, verification)
+        _publish_verified_download_plan(plan)
     except httpx.HTTPStatusError as exc:
-        _cleanup_download_artifacts(
-            staged_file_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-            *_optional_paths(staged_sha256_path),
-            updates_root=updates_root,
-        )
-        return _failure(
+        _cleanup_staged_download(plan)
+        return _failure_for_plan(
             f"download_http_{exc.response.status_code}",
-            file_path=file_path,
-            sha256_path=sha256_path,
-            manifest_path=manifest_path,
-            manifest_signature_path=manifest_signature_path,
+            plan=plan,
         )
     except httpx.HTTPError as exc:
-        _cleanup_download_artifacts(
-            staged_file_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-            *_optional_paths(staged_sha256_path),
-            updates_root=updates_root,
-        )
-        return _failure(
+        _cleanup_staged_download(plan)
+        return _failure_for_plan(
             f"download_error:{exc.__class__.__name__}",
-            file_path=file_path,
-            sha256_path=sha256_path,
-            manifest_path=manifest_path,
-            manifest_signature_path=manifest_signature_path,
+            plan=plan,
         )
     except ValueError as exc:
-        _cleanup_download_artifacts(
-            staged_file_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-            *_optional_paths(staged_sha256_path),
-            updates_root=updates_root,
-        )
-        return _failure(
+        _cleanup_staged_download(plan)
+        return _failure_for_plan(
             str(exc),
-            file_path=file_path,
-            sha256_path=sha256_path,
-            manifest_path=manifest_path,
-            manifest_signature_path=manifest_signature_path,
+            plan=plan,
         )
     except OSError as exc:
-        _cleanup_download_artifacts(
-            staged_file_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-            *_optional_paths(staged_sha256_path),
-            updates_root=updates_root,
-        )
-        return _failure(
+        _cleanup_staged_download(plan)
+        return _failure_for_plan(
             f"download_io_error:{exc.__class__.__name__}",
-            file_path=file_path,
-            sha256_path=sha256_path,
-            manifest_path=manifest_path,
-            manifest_signature_path=manifest_signature_path,
+            plan=plan,
         )
-    return UpdateDownloadResult(
-        status="verified",
-        downloaded=True,
-        verified=True,
-        file_path=file_path,
-        sha256_path=sha256_path,
-        expected_sha256=expected_sha256,
-        actual_sha256=actual_sha256,
-        failure_reason="",
-        manifest_path=manifest_path,
-        manifest_signature_path=manifest_signature_path,
-        manifest_sha256=manifest.manifest_sha256,
-        manifest_key_id=manifest.key_id,
-    )
+    return _verified_result(plan, verification)
 
 
 def ensure_child_path(parent: Path, child: Path) -> None:
@@ -341,6 +182,274 @@ def calculate_sha256(path: Path) -> str:
     """計算檔案 SHA256。"""
 
     return _calculate_sha256(path)
+
+
+def _missing_update_download_reason(update_check: UpdateCheckResult) -> str:
+    """回傳 update check 缺少必要下載資訊的原因。"""
+
+    if not update_check.update_available or not update_check.asset_name:
+        return "update_not_available"
+    if not update_check.asset_download_url:
+        return "asset_download_url_missing"
+    if not update_check.manifest_asset_name:
+        return "manifest_file_missing"
+    if not update_check.manifest_asset_download_url:
+        return "manifest_asset_url_missing"
+    if not update_check.manifest_signature_asset_name:
+        return "manifest_signature_asset_missing"
+    if not update_check.manifest_signature_asset_download_url:
+        return "manifest_signature_asset_url_missing"
+    return ""
+
+
+def _build_download_plan(
+    *,
+    update_check: UpdateCheckResult,
+    updates_dir: Path,
+) -> UpdateDownloadPlan:
+    """驗證 release metadata 並建立下載路徑 plan；尚不建立檔案。"""
+
+    asset_name = sanitize_release_asset_name(update_check.asset_name)
+    sha256_name = (
+        sanitize_release_asset_name(update_check.sha256_asset_name)
+        if update_check.sha256_asset_name
+        else ""
+    )
+    manifest_name = sanitize_release_asset_name(update_check.manifest_asset_name)
+    manifest_signature_name = sanitize_release_asset_name(
+        update_check.manifest_signature_asset_name
+    )
+    version_dir_name = sanitize_release_asset_name(update_check.latest_version)
+    updates_root = Path(updates_dir).expanduser().absolute()
+    destination_dir = updates_root / version_dir_name
+    file_path = destination_dir / asset_name
+    sha256_path = destination_dir / sha256_name if sha256_name else None
+    manifest_path = destination_dir / manifest_name
+    manifest_signature_path = destination_dir / manifest_signature_name
+    validate_initial_release_download_url(
+        update_check.asset_download_url,
+        expected_asset_name=asset_name,
+        repository=update_check.repository,
+    )
+    validate_initial_release_download_url(
+        update_check.manifest_asset_download_url,
+        expected_asset_name=manifest_name,
+        repository=update_check.repository,
+    )
+    validate_initial_release_download_url(
+        update_check.manifest_signature_asset_download_url,
+        expected_asset_name=manifest_signature_name,
+        repository=update_check.repository,
+    )
+    if sha256_name:
+        if not update_check.sha256_asset_download_url:
+            raise ValueError("sha256_asset_url_missing")
+        validate_initial_release_download_url(
+            update_check.sha256_asset_download_url,
+            expected_asset_name=sha256_name,
+            repository=update_check.repository,
+        )
+    ensure_child_path(updates_root, destination_dir)
+    ensure_safe_download_path(destination_dir, updates_root=updates_root)
+    return UpdateDownloadPlan(
+        asset_name=asset_name,
+        sha256_name=sha256_name,
+        manifest_name=manifest_name,
+        manifest_signature_name=manifest_signature_name,
+        updates_root=updates_root,
+        destination_dir=destination_dir,
+        file_path=file_path,
+        sha256_path=sha256_path,
+        manifest_path=manifest_path,
+        manifest_signature_path=manifest_signature_path,
+        staged_file_path=_staging_destination(file_path),
+        staged_sha256_path=_staging_destination(sha256_path) if sha256_path else None,
+        staged_manifest_path=_staging_destination(manifest_path),
+        staged_manifest_signature_path=_staging_destination(manifest_signature_path),
+    )
+
+
+def _prepare_download_plan(plan: UpdateDownloadPlan) -> None:
+    """建立下載目錄並檢查正式 / staging 目的地安全性。"""
+
+    _prepare_destination_dir(plan.destination_dir, updates_root=plan.updates_root)
+    destinations = [
+        plan.file_path,
+        plan.staged_file_path,
+        plan.manifest_path,
+        plan.manifest_signature_path,
+        plan.staged_manifest_path,
+        plan.staged_manifest_signature_path,
+    ]
+    if plan.sha256_path is not None and plan.staged_sha256_path is not None:
+        destinations.extend([plan.sha256_path, plan.staged_sha256_path])
+    _prepare_download_destinations(
+        *destinations,
+        updates_root=plan.updates_root,
+    )
+
+
+async def _download_staged_release_files(
+    *,
+    client: httpx.AsyncClient,
+    update_check: UpdateCheckResult,
+    plan: UpdateDownloadPlan,
+    max_sha256_bytes: int,
+    max_asset_bytes: int,
+    trusted_public_keys: Mapping[str, str] | None,
+) -> VerifiedReleaseManifest:
+    """依序下載並驗證 manifest、sidecar 與 update asset 到 staging path。"""
+
+    await _download_file(
+        client=client,
+        url=update_check.manifest_asset_download_url,
+        destination=plan.staged_manifest_path,
+        updates_root=plan.updates_root,
+        max_bytes=MAX_MANIFEST_DOWNLOAD_BYTES,
+        expected_asset_name=plan.manifest_name,
+    )
+    await _download_file(
+        client=client,
+        url=update_check.manifest_signature_asset_download_url,
+        destination=plan.staged_manifest_signature_path,
+        updates_root=plan.updates_root,
+        max_bytes=MAX_MANIFEST_SIGNATURE_DOWNLOAD_BYTES,
+        expected_asset_name=plan.manifest_signature_name,
+    )
+    manifest = _verify_staged_manifest(
+        update_check=update_check,
+        manifest_path=plan.staged_manifest_path,
+        signature_path=plan.staged_manifest_signature_path,
+        asset_name=plan.asset_name,
+        trusted_public_keys=trusted_public_keys,
+    )
+    if plan.sha256_path is not None and plan.staged_sha256_path is not None:
+        await _download_file(
+            client=client,
+            url=update_check.sha256_asset_download_url,
+            destination=plan.staged_sha256_path,
+            updates_root=plan.updates_root,
+            max_bytes=max_sha256_bytes,
+            expected_asset_name=plan.sha256_name,
+        )
+        sidecar_sha256 = read_expected_sha256(
+            plan.staged_sha256_path,
+            expected_filename=plan.asset_name,
+        )
+        if sidecar_sha256 != manifest.asset.sha256:
+            raise ValueError("sha256_sidecar_manifest_mismatch")
+    await _download_file(
+        client=client,
+        url=update_check.asset_download_url,
+        destination=plan.staged_file_path,
+        updates_root=plan.updates_root,
+        max_bytes=max_asset_bytes,
+        expected_asset_name=plan.asset_name,
+    )
+    return manifest
+
+
+def _verify_staged_asset(
+    *,
+    plan: UpdateDownloadPlan,
+    manifest: VerifiedReleaseManifest,
+) -> StagedAssetVerification:
+    """比對 staged zip 的 size 與 SHA256。"""
+
+    expected_sha256 = manifest.asset.sha256
+    actual_size = plan.staged_file_path.stat().st_size
+    if actual_size != manifest.asset.size:
+        raise ValueError("manifest_asset_size_mismatch")
+    actual_sha256 = calculate_sha256(plan.staged_file_path)
+    return StagedAssetVerification(
+        manifest=manifest,
+        expected_sha256=expected_sha256,
+        actual_sha256=actual_sha256,
+    )
+
+
+def _cleanup_staged_download(plan: UpdateDownloadPlan) -> None:
+    """清除 staged manifest、signature、sidecar 與 zip。"""
+
+    _cleanup_download_artifacts(
+        plan.staged_file_path,
+        plan.staged_manifest_path,
+        plan.staged_manifest_signature_path,
+        *_optional_paths(plan.staged_sha256_path),
+        updates_root=plan.updates_root,
+    )
+
+
+def _publish_verified_download_plan(plan: UpdateDownloadPlan) -> None:
+    """將驗證通過的 staging 檔發布到正式檔名。"""
+
+    _publish_verified_download(
+        staged_file_path=plan.staged_file_path,
+        file_path=plan.file_path,
+        staged_sha256_path=plan.staged_sha256_path,
+        sha256_path=plan.sha256_path,
+        staged_manifest_path=plan.staged_manifest_path,
+        manifest_path=plan.manifest_path,
+        staged_manifest_signature_path=plan.staged_manifest_signature_path,
+        manifest_signature_path=plan.manifest_signature_path,
+        updates_root=plan.updates_root,
+    )
+
+
+def _sha256_mismatch_result(
+    plan: UpdateDownloadPlan,
+    verification: StagedAssetVerification,
+) -> UpdateDownloadResult:
+    """建立 zip hash mismatch 的特殊結果，保留 downloaded=True 語義。"""
+
+    return UpdateDownloadResult(
+        status="sha256_mismatch",
+        downloaded=True,
+        verified=False,
+        file_path=plan.file_path,
+        sha256_path=plan.sha256_path,
+        expected_sha256=verification.expected_sha256,
+        actual_sha256=verification.actual_sha256,
+        failure_reason="sha256_mismatch",
+        manifest_path=plan.manifest_path,
+        manifest_signature_path=plan.manifest_signature_path,
+        manifest_sha256=verification.manifest.manifest_sha256,
+        manifest_key_id=verification.manifest.key_id,
+    )
+
+
+def _verified_result(
+    plan: UpdateDownloadPlan,
+    verification: StagedAssetVerification,
+) -> UpdateDownloadResult:
+    """建立 verified download result。"""
+
+    return UpdateDownloadResult(
+        status="verified",
+        downloaded=True,
+        verified=True,
+        file_path=plan.file_path,
+        sha256_path=plan.sha256_path,
+        expected_sha256=verification.expected_sha256,
+        actual_sha256=verification.actual_sha256,
+        failure_reason="",
+        manifest_path=plan.manifest_path,
+        manifest_signature_path=plan.manifest_signature_path,
+        manifest_sha256=verification.manifest.manifest_sha256,
+        manifest_key_id=verification.manifest.key_id,
+    )
+
+
+def _failure_for_plan(reason: str, *, plan: UpdateDownloadPlan) -> UpdateDownloadResult:
+    """建立帶下載路徑資訊的 failure result。"""
+
+    return _failure(
+        reason,
+        file_path=plan.file_path,
+        sha256_path=plan.sha256_path,
+        manifest_path=plan.manifest_path,
+        manifest_signature_path=plan.manifest_signature_path,
+    )
 
 
 async def _download_file(

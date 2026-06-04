@@ -348,53 +348,23 @@ def collect_comment_items_with_diagnostics(
     rounds = max(int(scroll_rounds), 0) if auto_load_more else 0
     wait_ms = max(int(scroll_wait_ms), 0)
     if rounds <= 0:
-        settle = wait_for_comment_dom_settle(page, max_items=max_items)
-        items, meta = extract_visible_comment_items(
+        return collect_visible_comment_window_with_diagnostics(
             page,
             group_id=group_id,
             parent_post_id=parent_post_id,
             max_items=max_items,
-        )
-        round_stats = [
-            build_comment_round_stats(
-                round_index=0,
-                items=items,
-                meta=meta,
-                accumulated_count=len(items),
-                dom_settle=settle,
-            )
-        ]
-        return items, round_stats, build_comment_collection_meta(
-            target_count=max_items,
-            round_stats=round_stats,
-            accumulated_count=len(items),
             stop_reason="visible_window_completed",
             auto_load_more=False,
         )
 
     guard = begin_comment_load_more_guard(page)
     if not guard.get("acquired"):
-        settle = wait_for_comment_dom_settle(page, max_items=max_items)
-        items, meta = extract_visible_comment_items(
+        reason = str(guard.get("reason") or "comment_load_more_guard_active")
+        return collect_visible_comment_window_with_diagnostics(
             page,
             group_id=group_id,
             parent_post_id=parent_post_id,
             max_items=max_items,
-        )
-        round_stats = [
-            build_comment_round_stats(
-                round_index=0,
-                items=items,
-                meta=meta,
-                accumulated_count=len(items),
-                dom_settle=settle,
-            )
-        ]
-        reason = str(guard.get("reason") or "comment_load_more_guard_active")
-        return items, round_stats, build_comment_collection_meta(
-            target_count=max_items,
-            round_stats=round_stats,
-            accumulated_count=len(items),
             stop_reason=reason,
             auto_load_more=True,
             guard_reason=reason,
@@ -446,53 +416,23 @@ async def collect_comment_items_with_diagnostics_async(
     rounds = max(int(scroll_rounds), 0) if auto_load_more else 0
     wait_ms = max(int(scroll_wait_ms), 0)
     if rounds <= 0:
-        settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
-        items, meta = await extract_visible_comment_items_async(
+        return await collect_visible_comment_window_with_diagnostics_async(
             page,
             group_id=group_id,
             parent_post_id=parent_post_id,
             max_items=max_items,
-        )
-        round_stats = [
-            build_comment_round_stats(
-                round_index=0,
-                items=items,
-                meta=meta,
-                accumulated_count=len(items),
-                dom_settle=settle,
-            )
-        ]
-        return items, round_stats, build_comment_collection_meta(
-            target_count=max_items,
-            round_stats=round_stats,
-            accumulated_count=len(items),
             stop_reason="visible_window_completed",
             auto_load_more=False,
         )
 
     guard = await begin_comment_load_more_guard_async(page)
     if not guard.get("acquired"):
-        settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
-        items, meta = await extract_visible_comment_items_async(
+        reason = str(guard.get("reason") or "comment_load_more_guard_active")
+        return await collect_visible_comment_window_with_diagnostics_async(
             page,
             group_id=group_id,
             parent_post_id=parent_post_id,
             max_items=max_items,
-        )
-        round_stats = [
-            build_comment_round_stats(
-                round_index=0,
-                items=items,
-                meta=meta,
-                accumulated_count=len(items),
-                dom_settle=settle,
-            )
-        ]
-        reason = str(guard.get("reason") or "comment_load_more_guard_active")
-        return items, round_stats, build_comment_collection_meta(
-            target_count=max_items,
-            round_stats=round_stats,
-            accumulated_count=len(items),
             stop_reason=reason,
             auto_load_more=True,
             guard_reason=reason,
@@ -506,6 +446,82 @@ async def collect_comment_items_with_diagnostics_async(
         scroll_rounds=rounds,
         scroll_wait_ms=wait_ms,
         auto_load_more=True,
+    )
+
+
+def collect_visible_comment_window_with_diagnostics(
+    page: Any,
+    *,
+    group_id: str,
+    parent_post_id: str,
+    max_items: int,
+    stop_reason: str,
+    auto_load_more: bool,
+    guard_reason: str = "",
+) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
+    """收集單一 comments visible window，供 fallback 與 non-load-more 共用。"""
+
+    settle = wait_for_comment_dom_settle(page, max_items=max_items)
+    items, meta = extract_visible_comment_items(
+        page,
+        group_id=group_id,
+        parent_post_id=parent_post_id,
+        max_items=max_items,
+    )
+    round_stats = [
+        build_comment_round_stats(
+            round_index=0,
+            items=items,
+            meta=meta,
+            accumulated_count=len(items),
+            dom_settle=settle,
+        )
+    ]
+    return items, round_stats, build_comment_collection_meta(
+        target_count=max_items,
+        round_stats=round_stats,
+        accumulated_count=len(items),
+        stop_reason=stop_reason,
+        auto_load_more=auto_load_more,
+        guard_reason=guard_reason,
+    )
+
+
+async def collect_visible_comment_window_with_diagnostics_async(
+    page: Any,
+    *,
+    group_id: str,
+    parent_post_id: str,
+    max_items: int,
+    stop_reason: str,
+    auto_load_more: bool,
+    guard_reason: str = "",
+) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
+    """async 版本：收集單一 comments visible window。"""
+
+    settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
+    items, meta = await extract_visible_comment_items_async(
+        page,
+        group_id=group_id,
+        parent_post_id=parent_post_id,
+        max_items=max_items,
+    )
+    round_stats = [
+        build_comment_round_stats(
+            round_index=0,
+            items=items,
+            meta=meta,
+            accumulated_count=len(items),
+            dom_settle=settle,
+        )
+    ]
+    return items, round_stats, build_comment_collection_meta(
+        target_count=max_items,
+        round_stats=round_stats,
+        accumulated_count=len(items),
+        stop_reason=stop_reason,
+        auto_load_more=auto_load_more,
+        guard_reason=guard_reason,
     )
 
 

@@ -358,6 +358,111 @@ def test_runtime_transition_invariants_for_running_finish_and_stop(
     assert stopped_claim is None
 
 
+def test_owner_guarded_idle_transition_ignores_late_worker(
+    tmp_path: Path,
+) -> None:
+    """舊 worker completion 不可覆蓋後續新 worker 的 running ownership。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="owner",
+                canonical_url="https://www.facebook.com/groups/owner",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        stale_running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-old",
+            page_id="page-old",
+        )
+        assert stale_running is not None
+        assert stale_running.last_started_at is not None
+        app.services.targets.restart_target_monitoring(target.id)
+        current_running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        stale_update = app.services.targets.mark_target_idle_if_owner(
+            target.id,
+            worker_id="worker-old",
+            started_at=stale_running.last_started_at,
+            page_id="page-old",
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert current_running is not None
+    assert stale_update is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+
+
+def test_owner_guarded_heartbeat_and_page_reload_ignore_late_worker(
+    tmp_path: Path,
+) -> None:
+    """舊 worker heartbeat/page reload 不可覆蓋新 worker ownership。"""
+
+    db_path = tmp_path / "app.db"
+    reloaded_at = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="owner-heartbeat",
+                canonical_url="https://www.facebook.com/groups/owner-heartbeat",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        old_running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-old",
+            page_id="page-old",
+        )
+        assert old_running is not None
+        assert old_running.last_started_at is not None
+        app.services.targets.restart_target_monitoring(target.id)
+        new_running = app.services.targets.try_mark_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        assert new_running is not None
+        assert new_running.last_started_at is not None
+        stale_heartbeat = app.services.targets.record_target_heartbeat_if_owner(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_page_reload = app.services.targets.mark_target_page_reloaded_if_owner(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+            reloaded_at=reloaded_at,
+        )
+        current_page_reload = app.services.targets.mark_target_page_reloaded_if_owner(
+            target.id,
+            worker_id="worker-new",
+            started_at=new_running.last_started_at,
+            page_id="page-new",
+            reloaded_at=reloaded_at,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert stale_heartbeat is None
+    assert stale_page_reload is None
+    assert current_page_reload is not None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+    assert loaded.last_page_reloaded_at == reloaded_at
+
+
 def test_clear_consumed_scan_request_preserves_newer_request(
     tmp_path: Path,
 ) -> None:
@@ -1494,8 +1599,8 @@ def test_update_target_status_request(tmp_path: Path) -> None:
         assert updated.paused
 
 
-def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Path) -> None:
-    """application service 會修復過舊 running state，避免 target 永久卡住。"""
+def test_recover_stale_running_targets_restarts_old_heartbeat(tmp_path: Path) -> None:
+    """application service 會重啟過舊 running state，避免 target 永久卡住。"""
 
     db_path = tmp_path / "app.db"
     now = utc_now()
@@ -1539,10 +1644,66 @@ def test_recover_stale_running_targets_marks_old_heartbeat_as_error(tmp_path: Pa
     assert len(recovered) == 1
     assert loaded_stale is not None
     assert loaded_fresh is not None
-    assert loaded_stale.runtime_status == TargetRuntimeStatus.ERROR
+    assert loaded_stale.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded_stale.scan_requested_at == now
     assert loaded_stale.active_worker_id == ""
-    assert "掃描狀態逾時" in loaded_stale.last_error
+    assert loaded_stale.last_error == ""
+    assert loaded_stale.last_skip_reason == "target_page_restart: retry 1/3"
+    assert loaded_stale.consecutive_failure_reason == "stale_running"
+    assert loaded_stale.consecutive_failure_count == 1
+    assert recovered[0].previous_worker_id == "old-worker"
+    assert recovered[0].decision.auto_restart
     assert loaded_fresh.runtime_status == TargetRuntimeStatus.RUNNING
+
+
+def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
+    tmp_path: Path,
+) -> None:
+    """stale recovery 的條件更新不可覆蓋已刷新 heartbeat 的同一 worker。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-race",
+                canonical_url="https://www.facebook.com/groups/stale-race",
+            )
+        )
+        running = app.services.targets.mark_target_running(target.id, "worker")
+        assert running.last_started_at is not None
+        stale_snapshot = replace(
+            running,
+            last_heartbeat_at=now - timedelta(seconds=240),
+            updated_at=now - timedelta(seconds=240),
+        )
+        app.repositories.runtime_states.save(stale_snapshot)
+        refreshed = app.services.targets.record_target_heartbeat_if_owner(
+            target.id,
+            worker_id="worker",
+            started_at=running.last_started_at,
+        )
+        stale_error = replace(
+            stale_snapshot,
+            runtime_status=TargetRuntimeStatus.ERROR,
+            last_error="stale",
+            active_worker_id="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_running_error_if_unchanged(
+            stale_error,
+            worker_id="worker",
+            started_at=running.last_started_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert refreshed is not None
+    assert committed is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker"
+    assert loaded.last_error == ""
 
 
 def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) -> None:

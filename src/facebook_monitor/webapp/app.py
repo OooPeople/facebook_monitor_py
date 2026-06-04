@@ -37,7 +37,6 @@ from facebook_monitor.runtime.build_metadata import collect_build_metadata
 from facebook_monitor.version import APP_NAME
 from facebook_monitor.version import APP_VERSION
 from facebook_monitor.webapp.assets import ASSET_VERSION
-from facebook_monitor.webapp.assets import build_dashboard_module_imports
 from facebook_monitor.webapp.dependencies import DEFAULT_DB_PATH
 from facebook_monitor.webapp.dependencies import DEFAULT_PROFILE_DIR
 from facebook_monitor.webapp.dependencies import STATIC_DIR
@@ -79,7 +78,6 @@ from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 
 templates = _default_templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _default_templates.env.globals["asset_version"] = ASSET_VERSION
-_default_templates.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
 _default_templates.env.globals["csrf_token"] = ""
 _default_templates.env.globals["input_limits"] = input_limits
 
@@ -87,6 +85,26 @@ _default_templates.env.globals["input_limits"] = input_limits
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 CSRF_FORM_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
+LOCAL_UI_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self' data: https://fbcdn.net https://*.fbcdn.net "
+        "https://fbsbx.com https://*.fbsbx.com https://facebook.com https://*.facebook.com",
+        "connect-src 'self'",
+        "font-src 'self'",
+        "form-action 'self'",
+        "frame-src 'none'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+        "object-src 'none'",
+    )
+)
+
+
+class RequestBodyTooLarge(Exception):
+    """HTTP request body 超過本機管理 UI 可接受上限。"""
 
 
 class LocalStaticFiles(StaticFiles):
@@ -124,6 +142,7 @@ def create_app(
     discord_sender: DiscordSender = send_discord_notification,
     csrf_token: str | None = None,
     enforce_csrf: bool = True,
+    max_request_body_bytes: int = input_limits.MAX_REQUEST_BODY_BYTES,
 ) -> FastAPI:
     """建立 FastAPI app，供 uvicorn 或測試使用。"""
 
@@ -185,6 +204,7 @@ def create_app(
     app.state.discord_sender = discord_sender
     app.state.csrf_token = csrf_token_value
     app.state.enforce_csrf = enforce_csrf
+    app.state.max_request_body_bytes = max(1, int(max_request_body_bytes))
     app.mount("/static", LocalStaticFiles(directory=str(static_dir)), name="static")
 
     @app.middleware("http")
@@ -194,20 +214,30 @@ def create_app(
     ) -> Response:
         """保護本機管理 UI 的 mutating routes，避免跨站表單直接操作 localhost。"""
 
-        request_body: bytes | None = None
-        if _should_validate_csrf(request):
-            submitted_token = request.headers.get(CSRF_HEADER, "").strip()
-            if not submitted_token:
-                request_body = await request.body()
-                submitted_token = _submitted_csrf_token_from_body(request, request_body)
-            expected_token = str(getattr(request.app.state, "csrf_token", ""))
-            if not submitted_token or not compare_digest(submitted_token, expected_token):
-                return _with_security_headers(
-                    Response("CSRF validation failed", status_code=403)
-                )
-        if request_body is not None:
-            request = _replay_request_body(request, request_body)
-        response = await call_next(request)
+        try:
+            request_body = await _read_request_body_with_limit(
+                request,
+                max_bytes=int(getattr(request.app.state, "max_request_body_bytes")),
+            )
+            if request_body is not None:
+                request = _replay_request_body(request, request_body)
+            if _should_validate_csrf(request):
+                submitted_token = request.headers.get(CSRF_HEADER, "").strip()
+                if not submitted_token:
+                    submitted_token = _submitted_csrf_token_from_body(
+                        request,
+                        request_body or b"",
+                    )
+                expected_token = str(getattr(request.app.state, "csrf_token", ""))
+                if not submitted_token or not compare_digest(submitted_token, expected_token):
+                    return _with_security_headers(
+                        Response("CSRF validation failed", status_code=403)
+                    )
+            response = await call_next(request)
+        except RequestBodyTooLarge:
+            return _with_security_headers(
+                Response("Request body too large", status_code=413)
+            )
         return _with_security_headers(response)
 
     @app.get("/health")
@@ -237,7 +267,6 @@ def _build_templates(templates_dir: Path, *, csrf_token: str = "") -> Jinja2Temp
 
     template_environment = Jinja2Templates(directory=str(templates_dir))
     template_environment.env.globals["asset_version"] = ASSET_VERSION
-    template_environment.env.globals["dashboard_module_imports"] = build_dashboard_module_imports()
     template_environment.env.globals["csrf_token"] = csrf_token
     template_environment.env.globals["input_limits"] = input_limits
     return template_environment
@@ -261,7 +290,7 @@ def _with_security_headers(response: Response) -> Response:
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+        LOCAL_UI_CONTENT_SECURITY_POLICY,
     )
     return response
 
@@ -275,6 +304,52 @@ def _submitted_csrf_token_from_body(request: Request, body: bytes) -> str:
         values = parse_qs(decoded_body).get(CSRF_FORM_FIELD, [])
         return str(values[0]).strip() if values else ""
     return ""
+
+
+async def _read_request_body_with_limit(
+    request: Request,
+    *,
+    max_bytes: int,
+) -> bytes | None:
+    """在進入 route 前讀取並限制 request body；無 body 時回傳 None。"""
+
+    limit = max(1, int(max_bytes))
+    content_length = request.headers.get("content-length", "").strip()
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            declared_size = 0
+        if declared_size > limit:
+            raise RequestBodyTooLarge
+    if not _request_may_have_body(request, content_length=content_length):
+        return None
+    chunks: list[bytes] = []
+    received_bytes = 0
+    while True:
+        message = await request.receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            if isinstance(body, bytes):
+                chunks.append(body)
+                received_bytes += len(body)
+            if received_bytes > limit:
+                raise RequestBodyTooLarge
+            if not bool(message.get("more_body", False)):
+                break
+        elif message.get("type") == "http.disconnect":
+            break
+    body = b"".join(chunks)
+    setattr(request, "_body", body)
+    return body
+
+
+def _request_may_have_body(request: Request, *, content_length: str) -> bool:
+    """判斷是否需要預先讀 body 才能套用大小限制與 replay。"""
+
+    if content_length and content_length != "0":
+        return True
+    return request.method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
 
 
 def _replay_request_body(request: Request, body: bytes) -> Request:

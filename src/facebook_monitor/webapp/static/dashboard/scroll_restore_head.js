@@ -1,0 +1,24 @@
+(() => {
+  const scrollKey = "facebookMonitor.dashboard.scrollY";
+  const savedAtKey = "facebookMonitor.dashboard.scrollSavedAt";
+  if ("scrollRestoration" in window.history) {
+    window.history.scrollRestoration = "manual";
+  }
+  try {
+    const savedScrollY = Number(sessionStorage.getItem(scrollKey) || "");
+    const savedAt = Number(sessionStorage.getItem(savedAtKey) || "0");
+    if (
+      Number.isFinite(savedScrollY)
+      && savedScrollY > 0
+      && savedAt
+      && Date.now() - savedAt < 10000
+    ) {
+      document.documentElement.dataset.dashboardRestoringScroll = "1";
+      window.setTimeout(() => {
+        delete document.documentElement.dataset.dashboardRestoringScroll;
+      }, 1200);
+    }
+  } catch (_error) {
+    delete document.documentElement.dataset.dashboardRestoringScroll;
+  }
+})();

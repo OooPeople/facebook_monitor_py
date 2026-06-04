@@ -16,8 +16,10 @@ from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
+from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
@@ -37,6 +39,7 @@ _FAILURE_REASON_LABELS = {
     SESSION_INVALID_REASON: "Facebook 工作階段失效",
     PROFILE_LOCKED_REASON: "瀏覽器設定檔使用中",
     PROFILE_MISSING_REASON: "瀏覽器設定檔不存在",
+    SCHEDULER_RUNTIME_REASON: "背景掃描執行錯誤",
     EXTRACTOR_EMPTY_REASON: "未抽取到可用項目",
     SCAN_TIMEOUT_REASON: "掃描逾時",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入逾時",
@@ -47,7 +50,7 @@ _FAILURE_REASON_LABELS = {
     TARGET_KIND_UNSUPPORTED_REASON: "監視項目類型不支援",
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數衝突",
     UNKNOWN_REASON: "未分類錯誤",
-    "stale_running": "掃描狀態逾時",
+    STALE_RUNNING_REASON: "掃描狀態逾時",
     "stale_queued_recovered": "排隊狀態已回復",
 }
 
@@ -58,6 +61,7 @@ _FAILURE_REASON_DETAILS = {
     SESSION_INVALID_REASON: "Facebook 工作階段已失效，請重新登入後再掃描。",
     PROFILE_LOCKED_REASON: "瀏覽器設定檔目前被其他視窗或程序使用中，請關閉其他自動化瀏覽器或登入視窗後再試。",
     PROFILE_MISSING_REASON: "找不到自動化瀏覽器設定檔，請先到設定頁開啟 Facebook 登入視窗。",
+    SCHEDULER_RUNTIME_REASON: "背景掃描程序或瀏覽器 context 發生錯誤，本輪監視無法繼續。",
     EXTRACTOR_EMPTY_REASON: "頁面載入完成但沒有抽取到可辨識的貼文或留言，請稍後重試或檢查頁面權限。",
     SCAN_TIMEOUT_REASON: "本輪掃描超過設定時間，已中止並等待下一次排程。",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入、重新導向或重新整理時中斷，掃描中的頁面內容已失效；請稍後重試。",
@@ -68,7 +72,7 @@ _FAILURE_REASON_DETAILS = {
     TARGET_KIND_UNSUPPORTED_REASON: "目前背景掃描不支援這個監視項目類型。",
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數互相衝突，請只指定一種監視項目。",
     UNKNOWN_REASON: "發生未分類錯誤，請查看 log 或稍後重試。",
-    "stale_running": "背景掃描心跳已逾時，系統已將本輪掃描標記為錯誤。",
+    STALE_RUNNING_REASON: "背景掃描心跳已逾時，系統已將本輪掃描標記為錯誤。",
     "stale_queued_recovered": "監視項目排隊等待過久，系統已將它回復為可再次排程。",
 }
 

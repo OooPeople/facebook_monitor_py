@@ -14,12 +14,20 @@ from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failures import PROFILE_SESSION_FAILURE_REASONS
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.notifications.outbox_service import (
+    enqueue_runtime_failure_notifications,
+    queue_runtime_failure_notifications_after_commit,
+)
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
@@ -164,7 +172,7 @@ def record_guarded_scan_failure(
         reason,
         source=source,
     )
-    record_scan_failure(
+    scan_run_id = record_scan_failure(
         app=app,
         target=target,
         reason=reason,
@@ -181,11 +189,44 @@ def record_guarded_scan_failure(
         retry_limit=decision.retry_limit,
         force_record=decision.counts_toward_streak,
     )
-    app.services.targets.apply_scan_failure_decision(
-        target_id,
-        decision,
-        runtime_error_message or format_scan_failure_message(decision.reason, message),
+    runtime_message = runtime_error_message or format_scan_failure_message(
+        decision.reason,
+        message,
     )
+    if commit_guard is None:
+        updated_state = app.services.targets.apply_scan_failure_decision(
+            target_id,
+            decision,
+            runtime_message,
+        )
+    else:
+        guarded_state = app.services.targets.apply_scan_failure_decision_if_owner(
+            target_id,
+            decision,
+            runtime_message,
+            worker_id=commit_guard.worker_id,
+            started_at=commit_guard.started_at,
+            page_id=commit_guard.page_id,
+        )
+        if guarded_state is None:
+            return None
+        updated_state = guarded_state
+    if decision.terminal and scan_run_id > 0:
+        config = app.services.targets.get_config_for_target(target)
+        failure_count = (
+            decision.retry_streak
+            if decision.counts_toward_streak
+            else max(decision.retry_streak, 1)
+        )
+        queue_runtime_failure_notifications_after_commit(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=scan_run_id,
+            reason=decision.reason,
+            failure_count=failure_count,
+            error_message=updated_state.last_error or runtime_message,
+        )
     return decision
 
 
@@ -223,6 +264,81 @@ def record_guarded_scan_failure_for_db(
             scan_request_id=scan_request_id,
             runtime_error_message=runtime_error_message,
         )
+
+
+def record_active_targets_runtime_failure_notifications_for_db(
+    *,
+    db_path: Path,
+    reason: str,
+    message: str,
+    worker_path: str,
+    worker_mode: WorkerMode = WorkerMode.HEADLESS,
+    exception_class: str = "",
+) -> int:
+    """為 resident 全域錯誤通知目前 active targets，回傳新增 scan run 數。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        return record_active_targets_runtime_failure_notifications(
+            app=app,
+            reason=reason,
+            message=message,
+            worker_path=worker_path,
+            worker_mode=worker_mode,
+            exception_class=exception_class,
+        )
+
+
+def record_active_targets_runtime_failure_notifications(
+    *,
+    app: ApplicationContext,
+    reason: str,
+    message: str,
+    worker_path: str,
+    worker_mode: WorkerMode = WorkerMode.HEADLESS,
+    exception_class: str = "",
+) -> int:
+    """將全域 resident failure 轉成每個 active target 的 scan run 與通知。"""
+
+    normalized_reason = str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
+    scan_run_count = 0
+    for target in app.repositories.targets.list_enabled():
+        if target.target_kind not in {TargetKind.POSTS, TargetKind.COMMENTS}:
+            continue
+        runtime_state = app.services.targets.ensure_runtime_state(target.id)
+        if runtime_state.desired_state != TargetDesiredState.ACTIVE:
+            continue
+        if runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
+            continue
+        app.services.targets.request_target_retry_after_runtime_failure(
+            target.id,
+            normalized_reason,
+        )
+        scan_run_id = record_scan_failure(
+            app=app,
+            target=target,
+            reason=normalized_reason,
+            message=message,
+            worker_path=worker_path,
+            worker_mode=worker_mode,
+            exception_class=exception_class,
+            retryable=False,
+            runtime_action="error",
+        )
+        if scan_run_id <= 0:
+            continue
+        scan_run_count += 1
+        config = app.services.targets.get_config_for_target(target)
+        enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=scan_run_id,
+            reason=normalized_reason,
+            failure_count=1,
+            error_message=format_scan_failure_message(normalized_reason, message),
+            target_stopped=False,
+        )
+    return scan_run_count
 
 
 def format_scan_failure_message(reason: str, message: str) -> str:

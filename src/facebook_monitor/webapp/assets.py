@@ -26,6 +26,8 @@ DASHBOARD_MODULE_FILENAMES = (
     "notification_test.js",
     "partial_updates.js",
     "revision_client.js",
+    "scroll_restore_body.js",
+    "scroll_restore_head.js",
     "settings.js",
     "sidebar.js",
     "sidebar_dom.js",
@@ -35,6 +37,7 @@ DASHBOARD_MODULE_FILENAMES = (
     "state.js",
     "tabs.js",
     "theme.js",
+    "theme_bootstrap.js",
     "utils.js",
 )
 

@@ -1,0 +1,27 @@
+(() => {
+  const scrollKey = "facebookMonitor.dashboard.scrollY";
+  const savedAtKey = "facebookMonitor.dashboard.scrollSavedAt";
+  const finish = () => {
+    delete document.documentElement.dataset.dashboardRestoringScroll;
+  };
+  try {
+    const savedScrollY = Number(sessionStorage.getItem(scrollKey) || "");
+    const savedAt = Number(sessionStorage.getItem(savedAtKey) || "0");
+    if (!Number.isFinite(savedScrollY) || !savedAt || Date.now() - savedAt >= 10000) {
+      finish();
+      return;
+    }
+    const restore = () => {
+      if (Math.abs(window.scrollY - savedScrollY) > 1) {
+        window.scrollTo(0, savedScrollY);
+      }
+    };
+    restore();
+    window.requestAnimationFrame(() => {
+      restore();
+      finish();
+    });
+  } catch (_error) {
+    finish();
+  }
+})();

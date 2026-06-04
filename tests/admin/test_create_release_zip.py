@@ -49,6 +49,7 @@ def test_create_release_zip_builds_windows_zip_and_sha(tmp_path: Path) -> None:
         names = set(archive.namelist())
     assert "facebook-monitor/facebook-monitor.exe" in names
     assert "facebook-monitor/_internal/browser/chrome.exe" in names
+    assert "facebook-monitor/README.md" not in names
 
 
 def test_create_release_zip_rejects_existing_output_without_force(
@@ -138,6 +139,7 @@ def test_create_release_zip_preserves_macos_executable_metadata(
 
     assert result.zip_path == dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
     with zipfile.ZipFile(result.zip_path) as archive:
+        readme = archive.read("facebook-monitor/README.md").decode("utf-8")
         assert_zip_member_executable(archive, "facebook-monitor/facebook-monitor")
         assert_zip_member_executable(archive, "facebook-monitor/facebook-monitor-updater")
         assert_zip_member_executable(
@@ -151,6 +153,8 @@ def test_create_release_zip_preserves_macos_executable_metadata(
                 "facebook-monitor-launcher"
             ),
         )
+    assert "xattr -dr com.apple.quarantine" in readme
+    assert "Facebook Monitor.app" in readme
 
 
 def test_create_release_zip_rejects_macos_non_arm64_executable(

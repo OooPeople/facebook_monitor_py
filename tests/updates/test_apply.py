@@ -29,6 +29,7 @@ from facebook_monitor.updates.apply import safe_extract_zip
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.platforms import detect_layout_policy
+from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 from tests.helpers.macos_bundle import assert_zip_member_executable
@@ -54,6 +55,7 @@ def trust_test_release_key(monkeypatch: pytest.MonkeyPatch) -> None:
         "TRUSTED_RELEASE_PUBLIC_KEYS",
         trusted_public_keys(),
     )
+    monkeypatch.setattr(updater_apply, "APP_VERSION", "0.0.0")
 
 
 def trusted_public_keys() -> Mapping[str, str]:
@@ -615,6 +617,46 @@ def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> N
     assert result.status == "app_running"
     assert not result.applied
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_pending_update_rejects_pending_version_not_newer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """apply 階段不可套用已經不高於目前版本的 pending update。"""
+
+    monkeypatch.setattr(updater_apply, "APP_VERSION", TEST_VERSION)
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert not result.applied
+    assert result.message == "pending_update_not_newer"
+
+
+def test_apply_pending_update_rejects_asset_policy_mismatched_to_app_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pending asset platform 必須與目前 app layout policy 一致。"""
+
+    monkeypatch.setattr(
+        updater_apply,
+        "detect_layout_policy",
+        lambda app_base_dir: MACOS_ARM64_LAYOUT_POLICY,
+    )
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = make_update_zip(zip_path, exe_text="new")
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert not result.applied
+    assert result.message == "pending_update_artifact_platform_mismatch"
 
 
 def test_apply_pending_update_refuses_symlinked_staging_dir(tmp_path: Path) -> None:

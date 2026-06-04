@@ -26,6 +26,7 @@ def test_sanitize_facebook_image_url_rejects_unsafe_urls() -> None:
         "https://fbcdn.net.evil.test/cover.jpg",
         "https://user:pass@scontent.xx.fbcdn.net/cover.jpg",
         "https://scontent.xx.fbcdn.net:8443/cover.jpg",
+        "https://scontent.xx.fbcdn.net:bad/cover.jpg",
         "https://127.0.0.1/cover.jpg",
         "javascript:alert(1)",
     ):

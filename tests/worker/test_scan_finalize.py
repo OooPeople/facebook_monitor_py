@@ -19,13 +19,17 @@ from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.keyword_groups import keyword_group_slots
+from facebook_monitor.notifications.outbox_service import enqueue_runtime_failure_notifications
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
@@ -605,6 +609,151 @@ def test_record_guarded_scan_failure_starts_write_transaction_before_failure_wri
 
     assert decision is not None
     assert saw_write_transaction == [True]
+
+
+def test_active_targets_runtime_failure_uses_runtime_outbox(
+    tmp_path: Path,
+) -> None:
+    """resident 全域錯誤會走 runtime_failure outbox，而不是另寫通知函式。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active",
+                canonical_url="https://www.facebook.com/groups/active",
+                group_name="Active target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        stopped = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stopped",
+                canonical_url="https://www.facebook.com/groups/stopped",
+                group_name="Stopped target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        paused = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="paused",
+                canonical_url="https://www.facebook.com/groups/paused",
+                group_name="Paused target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        errored = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="errored",
+                canonical_url="https://www.facebook.com/groups/errored",
+                group_name="Errored target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(active.id)
+        app.services.targets.restart_target_monitoring(paused.id)
+        app.services.targets.pause_target_monitoring(paused.id)
+        app.services.targets.restart_target_monitoring(errored.id)
+        app.services.targets.mark_target_error(errored.id, "existing terminal error")
+        count = scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
+            app=app,
+            reason=SCHEDULER_RUNTIME_REASON,
+            message="Target page, context or browser has been closed",
+            worker_path="resident_scheduler",
+            exception_class="RuntimeError",
+        )
+        active_run = app.repositories.scan_runs.latest_by_target(active.id)
+        stopped_run = app.repositories.scan_runs.latest_by_target(stopped.id)
+        paused_run = app.repositories.scan_runs.latest_by_target(paused.id)
+        errored_run = app.repositories.scan_runs.latest_by_target(errored.id)
+        active_state = app.repositories.runtime_states.get(active.id)
+        errored_state = app.repositories.runtime_states.get(errored.id)
+        entries = app.repositories.notification_outbox.list_pending()
+
+    assert count == 1
+    assert active_run is not None
+    assert active_run.metadata["worker"] == "resident_scheduler"
+    assert active_run.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert stopped_run is None
+    assert paused_run is None
+    assert errored_run is None
+    assert active_state is not None
+    assert active_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert active_state.scan_requested_at is not None
+    assert errored_state is not None
+    assert errored_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.target_id == active.id
+    assert entry.event_kind == NotificationEventKind.RUNTIME_FAILURE
+    assert entry.source_scan_run_id is not None
+    assert entry.failure_reason == SCHEDULER_RUNTIME_REASON
+    assert entry.failure_count == 1
+    assert entry.item_key.startswith("runtime-failure:")
+    assert "背景掃描執行錯誤" in entry.message
+    assert "系統已記錄背景掃描錯誤" in entry.message
+    assert "系統已停止此監視項目" not in entry.message
+
+
+def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) -> None:
+    """runtime_failure outbox 送出後，notification_events 也要保留 failure 語義。"""
+
+    sent_messages: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-event",
+                canonical_url="https://www.facebook.com/groups/runtime-event",
+                group_name="Runtime target",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        config = app.services.targets.get_config_for_target(target)
+        entries = enqueue_runtime_failure_notifications(
+            app=app,
+            target=target,
+            config=config,
+            scan_run_id=123,
+            reason=SCHEDULER_RUNTIME_REASON,
+            failure_count=2,
+            error_message="背景掃描執行錯誤",
+        )
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        event = app.repositories.notification_events.latest_by_target(target.id)
+
+    assert len(entries) == 1
+    assert sent_count == 1
+    assert sent_messages
+    assert event is not None
+    assert event.event_kind == NotificationEventKind.RUNTIME_FAILURE
+    assert event.source_scan_run_id == 123
+    assert event.failure_reason == SCHEDULER_RUNTIME_REASON
+    assert event.failure_count == 2
 
 
 def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(

@@ -26,6 +26,8 @@ from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
+from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_shared import ResidentTarget
@@ -111,6 +113,10 @@ class ExecutorWorkerPool:
         self.worker_tasks: list[asyncio.Task[None]] = []
         self._counter_lock = asyncio.Lock()
         self._counters = ExecutorCounters()
+        self._active_scan_lock = asyncio.Lock()
+        self._active_scan_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
+        self._active_attempt_lock = asyncio.Lock()
+        self._active_attempt_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
 
     async def start(self) -> None:
         """啟動固定數量的 executor worker slots。"""
@@ -178,6 +184,30 @@ class ExecutorWorkerPool:
             self._counters = ExecutorCounters()
             return counters
 
+    async def cancel_active_attempt_if_owner(
+        self,
+        action: RunningRecoveryAction,
+    ) -> bool:
+        """取消同一 owner 的 active attempt，涵蓋 prepare/goto 與 scan 階段。"""
+
+        async with self._active_attempt_lock:
+            active_attempt = self._active_attempt_tasks.get(action.target_id)
+            if active_attempt is not None:
+                owner_key, task = active_attempt
+                if owner_key == action.owner_key:
+                    task.cancel()
+                    return True
+
+        async with self._active_scan_lock:
+            active = self._active_scan_tasks.get(action.target_id)
+            if active is None:
+                return False
+            owner_key, task = active
+            if owner_key != action.owner_key:
+                return False
+            task.cancel()
+            return True
+
     async def _worker_loop(self, worker_id: str) -> None:
         """單一 executor worker slot：持續從 queue 取 target 執行 scan。"""
 
@@ -185,7 +215,21 @@ class ExecutorWorkerPool:
             item = await self.target_queue.get()
             if item is None:
                 return
-            result = await self._run_queue_item(worker_id, item)
+            attempt_task: asyncio.Task[AsyncTargetScanResult] = asyncio.create_task(
+                self._run_queue_item(worker_id, item),
+                name=f"{worker_id}:{item.due_target.target_id}",
+            )
+            try:
+                result = await attempt_task
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    attempt_task.cancel()
+                    raise
+                result = AsyncTargetScanResult(
+                    target_id=item.due_target.target_id,
+                    skipped=True,
+                )
             await self._add_counters(
                 ExecutorCounters(
                     success_count=int(result.success),
@@ -202,6 +246,8 @@ class ExecutorWorkerPool:
         target_id = item.due_target.target_id
         opened = False
         page_id = ""
+        acquired_page = False
+        owner_key = ""
         commit_guard: ScanCommitGuard | None = None
         try:
             resident_target = load_resident_target(self.options.db_path, target_id)
@@ -209,7 +255,7 @@ class ExecutorWorkerPool:
                 mark_resident_target_idle(self.options.db_path, target_id)
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
 
-            page, page_id, opened = await self.page_pool.acquire(resident_target, worker_id)
+            page_id = await self.page_pool.reserve_page_id(target_id)
             with SqliteApplicationContext(self.options.db_path) as app:
                 locked_state = app.services.targets.try_mark_target_running(
                     target_id,
@@ -219,23 +265,42 @@ class ExecutorWorkerPool:
             if locked_state is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
             commit_guard = scan_commit_guard_from_runtime_state(locked_state)
+            owner_key = build_recovery_owner_key(
+                worker_id=commit_guard.worker_id,
+                started_at=commit_guard.started_at,
+                page_id=commit_guard.page_id,
+            )
+            await self.target_queue.bind_running_owner(target_id, owner_key)
+            await self._register_active_attempt(target_id, owner_key)
             self.schedule_planner.mark_dispatched(item.due_target)
 
+            page, acquired_page_id, opened = await self.page_pool.acquire(
+                resident_target,
+                worker_id,
+                page_id=page_id,
+            )
+            acquired_page = True
+            page_id = acquired_page_id
             await prepare_resident_main_page(
                 page=page,
                 target=resident_target,
                 timeout_ms=max(self.options.scan_timeout_seconds, 10) * 1000,
             )
-            reloaded_at = await self.page_pool.mark_reloaded(
+            reloaded_at = await self.page_pool.mark_reloaded_if_page_id(
                 target_id,
+                page_id,
                 current_url=str(getattr(page, "url", "") or ""),
             )
             with SqliteApplicationContext(self.options.db_path) as app:
-                app.services.targets.mark_target_page_reloaded(
+                page_reload_state = app.services.targets.mark_target_page_reloaded_if_owner(
                     target_id,
+                    worker_id=commit_guard.worker_id,
+                    started_at=commit_guard.started_at,
                     page_id=page_id,
                     reloaded_at=reloaded_at,
                 )
+                if page_reload_state is None:
+                    return AsyncTargetScanResult(target_id=target_id, skipped=True)
             with SqliteApplicationContext(self.options.db_path) as app:
                 selected_scan_page = self._select_scan_page(resident_target.target.target_kind)
                 await self._run_scan_with_heartbeat(
@@ -275,7 +340,7 @@ class ExecutorWorkerPool:
                 worker_path="resident_main",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                page_reused=not opened and bool(page_id),
+                page_reused=acquired_page and not opened,
             )
             if decision is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
@@ -297,7 +362,7 @@ class ExecutorWorkerPool:
                 worker_path="resident_main",
                 commit_guard=commit_guard,
                 exception_class="CancelledError",
-                page_reused=not opened and bool(page_id),
+                page_reused=acquired_page and not opened,
             )
             raise
         except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
@@ -311,7 +376,7 @@ class ExecutorWorkerPool:
                 worker_path="resident_main",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                page_reused=not opened and bool(page_id),
+                page_reused=acquired_page and not opened,
             )
             if decision is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
@@ -328,7 +393,7 @@ class ExecutorWorkerPool:
                 worker_path="resident_main",
                 commit_guard=commit_guard,
                 exception_class=exc.__class__.__name__,
-                page_reused=not opened and bool(page_id),
+                page_reused=acquired_page and not opened,
             )
             if decision is None:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
@@ -336,9 +401,32 @@ class ExecutorWorkerPool:
                 await self.page_pool.discard(target_id)
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         finally:
-            await self.page_pool.release(target_id)
-            await self.target_queue.complete(target_id)
+            await self._unregister_active_attempt(target_id, owner_key)
+            if page_id:
+                await self.page_pool.release_if_page_id(target_id, page_id)
+            else:
+                await self.page_pool.release(target_id)
+            await self.target_queue.complete(target_id, owner_key=owner_key)
             self.schedule_planner.mark_finished(target_id)
+
+    async def _register_active_attempt(self, target_id: str, owner_key: str) -> None:
+        """記錄整個 target attempt task，讓 recovery 可取消 prepare/goto 階段。"""
+
+        task = asyncio.current_task()
+        if task is None or not owner_key:
+            return
+        async with self._active_attempt_lock:
+            self._active_attempt_tasks[target_id] = (owner_key, task)
+
+    async def _unregister_active_attempt(self, target_id: str, owner_key: str) -> None:
+        """移除同 owner 的 active attempt task 紀錄。"""
+
+        if not owner_key:
+            return
+        async with self._active_attempt_lock:
+            active = self._active_attempt_tasks.get(target_id)
+            if active is not None and active[0] == owner_key:
+                self._active_attempt_tasks.pop(target_id, None)
 
     async def _add_counters(self, counters: ExecutorCounters) -> None:
         """累加 worker pool diagnostics counters。"""
@@ -365,6 +453,13 @@ class ExecutorWorkerPool:
         page_id = str(kwargs.pop("page_id"))
         commit_guard = kwargs["commit_guard"]
         scan_task: asyncio.Task[Any] = asyncio.create_task(scan_page(**kwargs))
+        owner_key = build_recovery_owner_key(
+            worker_id=worker_id,
+            started_at=commit_guard.started_at,
+            page_id=page_id,
+        )
+        async with self._active_scan_lock:
+            self._active_scan_tasks[target_id] = (owner_key, scan_task)
         heartbeat_task = asyncio.create_task(
             self._scan_heartbeat_loop(
                 target_id=target_id,
@@ -396,6 +491,10 @@ class ExecutorWorkerPool:
                 ) from None
             raise
         finally:
+            async with self._active_scan_lock:
+                active = self._active_scan_tasks.get(target_id)
+                if active is not None and active[0] == owner_key:
+                    self._active_scan_tasks.pop(target_id, None)
             heartbeat_task.cancel()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
@@ -427,11 +526,15 @@ class ExecutorWorkerPool:
             with SqliteApplicationContext(self.options.db_path) as app:
                 if app.repositories.targets.get(target_id) is None:
                     return
-                app.services.targets.record_target_heartbeat(
+                heartbeat_state = app.services.targets.record_target_heartbeat_if_owner(
                     target_id,
                     worker_id=worker_id,
+                    started_at=commit_guard.started_at,
                     page_id=page_id,
                 )
+                if heartbeat_state is None:
+                    scan_task.cancel()
+                    return
 
     def _record_guard_skip(self, target_id: str, reason: str) -> None:
         """將 queue admission guard skip 寫入 runtime state。"""

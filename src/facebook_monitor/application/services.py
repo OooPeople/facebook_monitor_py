@@ -26,6 +26,7 @@ from facebook_monitor.application.target_requests import UpsertCommentsTargetReq
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
+from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
@@ -366,6 +367,25 @@ class TargetApplicationService:
             reloaded_at=reloaded_at,
         )
 
+    def mark_target_page_reloaded_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+        reloaded_at: datetime | None = None,
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄 resident page reload/goto。"""
+
+        return self.runtime_service.mark_target_page_reloaded_if_owner(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+            reloaded_at=reloaded_at,
+        )
+
     def record_target_heartbeat(
         self,
         target_id: str,
@@ -378,6 +398,23 @@ class TargetApplicationService:
         return self.runtime_service.record_target_heartbeat(
             target_id,
             worker_id=worker_id,
+            page_id=page_id,
+        )
+
+    def record_target_heartbeat_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才刷新 heartbeat。"""
+
+        return self.runtime_service.record_target_heartbeat_if_owner(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
             page_id=page_id,
         )
 
@@ -400,6 +437,23 @@ class TargetApplicationService:
 
         return self.runtime_service.mark_target_idle(target_id)
 
+    def mark_target_idle_if_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才將 target 標回 idle。"""
+
+        return self.runtime_service.mark_target_idle_if_owner(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
     def mark_target_error(
         self,
         target_id: str,
@@ -413,6 +467,29 @@ class TargetApplicationService:
         return self.runtime_service.mark_target_error(
             target_id,
             error,
+            failure_reason=failure_reason,
+            failure_count=failure_count,
+        )
+
+    def mark_target_error_if_owner(
+        self,
+        target_id: str,
+        error: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+        failure_reason: str = "",
+        failure_count: int = 0,
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才將 target 標記為 error。"""
+
+        return self.runtime_service.mark_target_error_if_owner(
+            target_id,
+            error,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
             failure_reason=failure_reason,
             failure_count=failure_count,
         )
@@ -438,13 +515,34 @@ class TargetApplicationService:
 
         return self.runtime_service.apply_scan_failure_decision(target_id, decision, error)
 
+    def apply_scan_failure_decision_if_owner(
+        self,
+        target_id: str,
+        decision: ScanFailureDecision,
+        error: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才套用 failure decision。"""
+
+        return self.runtime_service.apply_scan_failure_decision_if_owner(
+            target_id,
+            decision,
+            error,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
     def recover_stale_running_targets(
         self,
         *,
         stale_after_seconds: float,
         now: datetime | None = None,
-    ) -> tuple[TargetRuntimeState, ...]:
-        """將 heartbeat 過舊的 running target 標成 error。"""
+    ) -> tuple[StaleRunningRecovery, ...]:
+        """修復 heartbeat 過舊的 running target。"""
 
         return self.runtime_service.recover_stale_running_targets(
             stale_after_seconds=stale_after_seconds,
@@ -468,6 +566,18 @@ class TargetApplicationService:
         """要求 scheduler 下一輪立即掃描 target，不修改 seen 狀態。"""
 
         return self.runtime_service.request_target_scan(target_id)
+
+    def request_target_retry_after_runtime_failure(
+        self,
+        target_id: str,
+        reason: str,
+    ) -> TargetRuntimeState:
+        """背景 runtime 整體失敗後要求 target 下一輪立即重掃。"""
+
+        return self.runtime_service.request_target_retry_after_runtime_failure(
+            target_id,
+            reason,
+        )
 
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""

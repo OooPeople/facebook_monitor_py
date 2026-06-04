@@ -55,6 +55,7 @@ class SchedulerRuntimeDefaults:
     cover_image_refresh_target_limit_per_tick: int = 1
     cover_image_load_failure_min_interval_seconds: int = 21600
     page_load_timeout_failure_limit: int = 3
+    stale_running_failure_limit: int = 3
 
 
 @dataclass(frozen=True)

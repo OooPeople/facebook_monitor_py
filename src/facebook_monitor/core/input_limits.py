@@ -16,6 +16,7 @@ MAX_KEYWORDS_PER_FIELD = 100
 MAX_KEYWORD_LENGTH = 120
 MAX_NTFY_TOPIC_LENGTH = 128
 MAX_NOTIFICATION_ENDPOINT_LENGTH = 2048
+MAX_REQUEST_BODY_BYTES = 256 * 1024
 
 
 def ensure_text_length(value: str, *, field_label: str, max_length: int) -> str:

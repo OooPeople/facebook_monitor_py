@@ -52,7 +52,8 @@ def create_support_bundle(
                 [
                     "Facebook Monitor support bundle",
                     "This bundle intentionally excludes the SQLite DB, browser profile, cookies, secrets, logs, and full post/comment text.",
-                    "Paths and secret-like values are redacted before writing.",
+                    "Paths and secret-like values are redacted before writing on a best-effort basis.",
+                    "Please review the extracted files before sharing this bundle.",
                     "",
                 ]
             ),

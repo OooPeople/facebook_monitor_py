@@ -30,6 +30,15 @@ class MigrationColumn:
     definition: str
 
 
+@dataclass(frozen=True)
+class CheckedTableRebuild:
+    """描述需要重建以導入 SQLite CHECK constraints 的資料表。"""
+
+    table_name: str
+    create_sql_template: str
+    columns: tuple[str, ...]
+
+
 V10_TARGET_CONFIG_NOTIFICATION_COLUMNS = (
     MigrationColumn(
         "target_configs",
@@ -649,6 +658,416 @@ def migrate_28_to_29(connection: sqlite3.Connection) -> None:
     _backfill_include_keyword_groups(connection, "sidebar_group_config_templates")
 
 
+def migrate_29_to_30(connection: sqlite3.Connection) -> None:
+    """分批導入低風險 child tables 的 SQLite CHECK constraints。"""
+
+    for spec in V29_TO_V30_CHECKED_TABLES:
+        rebuild_table_with_check_constraints(connection, spec)
+    ensure_v30_rebuilt_table_indexes(connection)
+
+
+def migrate_30_to_31(connection: sqlite3.Connection) -> None:
+    """為 notification outbox/events 補 runtime failure 事件語義欄位。"""
+
+    for column in (
+        MigrationColumn(
+            "notification_events",
+            "event_kind",
+            "TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure'))",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "source_scan_run_id",
+            "INTEGER",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "failure_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "notification_events",
+            "failure_count",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0)",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "event_kind",
+            "TEXT NOT NULL DEFAULT 'match' CHECK (event_kind IN ('match', 'runtime_failure'))",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "source_scan_run_id",
+            "INTEGER",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "failure_reason",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "notification_outbox",
+            "failure_count",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0)",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+
+
+V29_TO_V30_CHECKED_TABLES: tuple[CheckedTableRebuild, ...] = (
+    CheckedTableRebuild(
+        "target_configs",
+        """
+        CREATE TABLE {table_name} (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            include_keywords TEXT NOT NULL,
+            include_keyword_groups TEXT NOT NULL DEFAULT '[]',
+            exclude_keywords TEXT NOT NULL,
+            exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+            min_refresh_sec INTEGER NOT NULL CHECK (min_refresh_sec >= 5),
+            max_refresh_sec INTEGER NOT NULL CHECK (
+                max_refresh_sec >= 5 AND max_refresh_sec >= min_refresh_sec
+            ),
+            jitter_enabled INTEGER NOT NULL CHECK (jitter_enabled IN (0, 1)),
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL CHECK (max_items_per_scan > 0),
+            auto_load_more INTEGER NOT NULL CHECK (auto_load_more IN (0, 1)),
+            auto_adjust_sort INTEGER NOT NULL CHECK (auto_adjust_sort IN (0, 1)),
+            enable_desktop_notification INTEGER NOT NULL CHECK (
+                enable_desktop_notification IN (0, 1)
+            ),
+            enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
+            ntfy_topic TEXT NOT NULL,
+            enable_discord_notification INTEGER NOT NULL CHECK (
+                enable_discord_notification IN (0, 1)
+            ),
+            discord_webhook TEXT NOT NULL
+        )
+        """,
+        (
+            "target_id",
+            "include_keywords",
+            "include_keyword_groups",
+            "exclude_keywords",
+            "exclude_ignore_phrases",
+            "min_refresh_sec",
+            "max_refresh_sec",
+            "jitter_enabled",
+            "fixed_refresh_sec",
+            "max_items_per_scan",
+            "auto_load_more",
+            "auto_adjust_sort",
+            "enable_desktop_notification",
+            "enable_ntfy",
+            "ntfy_topic",
+            "enable_discord_notification",
+            "discord_webhook",
+        ),
+    ),
+    CheckedTableRebuild(
+        "seen_items",
+        """
+        CREATE TABLE {table_name} (
+            scope_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+            parent_post_id TEXT NOT NULL,
+            comment_id TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (scope_id, item_key)
+        )
+        """,
+        (
+            "scope_id",
+            "item_key",
+            "item_kind",
+            "parent_post_id",
+            "comment_id",
+            "first_seen_at",
+            "last_seen_at",
+        ),
+    ),
+    CheckedTableRebuild(
+        "scan_scope_state",
+        """
+        CREATE TABLE {table_name} (
+            scope_id TEXT PRIMARY KEY,
+            initialized INTEGER NOT NULL CHECK (initialized IN (0, 1)),
+            updated_at TEXT NOT NULL
+        )
+        """,
+        ("scope_id", "initialized", "updated_at"),
+    ),
+    CheckedTableRebuild(
+        "scan_runs",
+        """
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+            item_count INTEGER NOT NULL CHECK (item_count >= 0),
+            matched_count INTEGER NOT NULL CHECK (matched_count >= 0),
+            error_message TEXT NOT NULL,
+            worker_mode TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        )
+        """,
+        (
+            "id",
+            "target_id",
+            "started_at",
+            "finished_at",
+            "status",
+            "item_count",
+            "matched_count",
+            "error_message",
+            "worker_mode",
+            "metadata",
+        ),
+    ),
+    CheckedTableRebuild(
+        "notification_events",
+        """
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL,
+            channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+            status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+        ("id", "target_id", "item_key", "channel", "status", "message", "created_at"),
+    ),
+    CheckedTableRebuild(
+        "notification_outbox",
+        """
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            item_key TEXT NOT NULL,
+            item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+            channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'pending',
+                    'processing_pending',
+                    'sent',
+                    'failed',
+                    'processing_failed',
+                    'skipped'
+                )
+            ),
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            endpoint TEXT NOT NULL DEFAULT '',
+            permalink TEXT NOT NULL,
+            attempts INTEGER NOT NULL CHECK (attempts >= 0),
+            last_error TEXT NOT NULL,
+            notification_event_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        (
+            "id",
+            "idempotency_key",
+            "target_id",
+            "item_key",
+            "item_kind",
+            "channel",
+            "status",
+            "title",
+            "message",
+            "endpoint",
+            "permalink",
+            "attempts",
+            "last_error",
+            "notification_event_id",
+            "created_at",
+            "updated_at",
+        ),
+    ),
+    CheckedTableRebuild(
+        "target_runtime_state",
+        """
+        CREATE TABLE {table_name} (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            desired_state TEXT NOT NULL CHECK (desired_state IN ('active', 'stopped')),
+            runtime_status TEXT NOT NULL CHECK (
+                runtime_status IN ('idle', 'queued', 'running', 'error')
+            ),
+            scan_requested_at TEXT NOT NULL DEFAULT '',
+            last_enqueued_at TEXT NOT NULL DEFAULT '',
+            last_started_at TEXT NOT NULL DEFAULT '',
+            last_finished_at TEXT NOT NULL DEFAULT '',
+            last_heartbeat_at TEXT NOT NULL,
+            last_error TEXT NOT NULL,
+            last_skip_reason TEXT NOT NULL DEFAULT '',
+            enqueue_reason TEXT NOT NULL DEFAULT '',
+            active_worker_id TEXT NOT NULL,
+            active_page_id TEXT NOT NULL DEFAULT '',
+            last_page_reloaded_at TEXT NOT NULL DEFAULT '',
+            scan_guard_count INTEGER NOT NULL DEFAULT 0 CHECK (scan_guard_count >= 0),
+            display_next_due_at TEXT NOT NULL DEFAULT '',
+            consecutive_failure_reason TEXT NOT NULL DEFAULT '',
+            consecutive_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                consecutive_failure_count >= 0
+            ),
+            updated_at TEXT NOT NULL
+        )
+        """,
+        (
+            "target_id",
+            "desired_state",
+            "runtime_status",
+            "scan_requested_at",
+            "last_enqueued_at",
+            "last_started_at",
+            "last_finished_at",
+            "last_heartbeat_at",
+            "last_error",
+            "last_skip_reason",
+            "enqueue_reason",
+            "active_worker_id",
+            "active_page_id",
+            "last_page_reloaded_at",
+            "scan_guard_count",
+            "display_next_due_at",
+            "consecutive_failure_reason",
+            "consecutive_failure_count",
+            "updated_at",
+        ),
+    ),
+    CheckedTableRebuild(
+        "target_cover_image_refresh_state",
+        """
+        CREATE TABLE {table_name} (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (status IN ('idle', 'pending', 'failed')),
+            requested_at TEXT NOT NULL DEFAULT '',
+            last_attempted_at TEXT NOT NULL DEFAULT '',
+            last_succeeded_at TEXT NOT NULL DEFAULT '',
+            last_failed_at TEXT NOT NULL DEFAULT '',
+            last_reported_url TEXT NOT NULL DEFAULT '',
+            last_resolved_url TEXT NOT NULL DEFAULT '',
+            last_result TEXT NOT NULL DEFAULT '' CHECK (
+                last_result IN (
+                    '',
+                    'queued',
+                    'attempted',
+                    'succeeded_changed',
+                    'succeeded_unchanged',
+                    'stale_skipped',
+                    'failed'
+                )
+            ),
+            changed INTEGER NOT NULL DEFAULT 0 CHECK (changed IN (0, 1)),
+            error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """,
+        (
+            "target_id",
+            "status",
+            "requested_at",
+            "last_attempted_at",
+            "last_succeeded_at",
+            "last_failed_at",
+            "last_reported_url",
+            "last_resolved_url",
+            "last_result",
+            "changed",
+            "error",
+            "updated_at",
+        ),
+    ),
+    CheckedTableRebuild(
+        "global_notification_settings",
+        """
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enable_desktop_notification INTEGER NOT NULL CHECK (
+                enable_desktop_notification IN (0, 1)
+            ),
+            enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
+            ntfy_topic TEXT NOT NULL,
+            enable_discord_notification INTEGER NOT NULL CHECK (
+                enable_discord_notification IN (0, 1)
+            ),
+            discord_webhook TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        (
+            "id",
+            "enable_desktop_notification",
+            "enable_ntfy",
+            "ntfy_topic",
+            "enable_discord_notification",
+            "discord_webhook",
+            "updated_at",
+        ),
+    ),
+    CheckedTableRebuild(
+        "sidebar_group_config_templates",
+        """
+        CREATE TABLE {table_name} (
+            sidebar_group_id TEXT PRIMARY KEY REFERENCES sidebar_groups(id) ON DELETE CASCADE,
+            include_keywords TEXT NOT NULL DEFAULT '[]',
+            include_keyword_groups TEXT NOT NULL DEFAULT '[]',
+            exclude_keywords TEXT NOT NULL DEFAULT '[]',
+            exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+            min_refresh_sec INTEGER NOT NULL CHECK (min_refresh_sec >= 5),
+            max_refresh_sec INTEGER NOT NULL CHECK (
+                max_refresh_sec >= 5 AND max_refresh_sec >= min_refresh_sec
+            ),
+            jitter_enabled INTEGER NOT NULL CHECK (jitter_enabled IN (0, 1)),
+            fixed_refresh_sec INTEGER,
+            max_items_per_scan INTEGER NOT NULL CHECK (max_items_per_scan > 0),
+            auto_load_more INTEGER NOT NULL CHECK (auto_load_more IN (0, 1)),
+            auto_adjust_sort INTEGER NOT NULL CHECK (auto_adjust_sort IN (0, 1)),
+            enable_desktop_notification INTEGER NOT NULL CHECK (
+                enable_desktop_notification IN (0, 1)
+            ),
+            enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
+            ntfy_topic TEXT NOT NULL,
+            enable_discord_notification INTEGER NOT NULL CHECK (
+                enable_discord_notification IN (0, 1)
+            ),
+            discord_webhook TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        (
+            "sidebar_group_id",
+            "include_keywords",
+            "include_keyword_groups",
+            "exclude_keywords",
+            "exclude_ignore_phrases",
+            "min_refresh_sec",
+            "max_refresh_sec",
+            "jitter_enabled",
+            "fixed_refresh_sec",
+            "max_items_per_scan",
+            "auto_load_more",
+            "auto_adjust_sort",
+            "enable_desktop_notification",
+            "enable_ntfy",
+            "ntfy_topic",
+            "enable_discord_notification",
+            "discord_webhook",
+            "updated_at",
+        ),
+    ),
+)
+
+
 MIGRATIONS: dict[int, Migration] = {
     10: migrate_10_to_11,
     11: migrate_11_to_12,
@@ -669,6 +1088,8 @@ MIGRATIONS: dict[int, Migration] = {
     26: migrate_26_to_27,
     27: migrate_27_to_28,
     28: migrate_28_to_29,
+    29: migrate_29_to_30,
+    30: migrate_30_to_31,
 }
 
 
@@ -689,6 +1110,58 @@ def run_known_migrations(connection: sqlite3.Connection, *, from_version: int, t
             """,
             (str(current_version),),
         )
+
+
+def rebuild_table_with_check_constraints(
+    connection: sqlite3.Connection,
+    spec: CheckedTableRebuild,
+) -> None:
+    """以 create-copy-drop-rename 將 CHECK constraints 套到既有 child table。"""
+
+    if not table_exists(connection, spec.table_name):
+        return
+    temp_table = f"__{spec.table_name}_v30_checked"
+    connection.execute(f"DROP TABLE IF EXISTS {temp_table}")
+    connection.execute(spec.create_sql_template.format(table_name=temp_table))
+    columns_sql = ", ".join(spec.columns)
+    connection.execute(
+        f"""
+        INSERT INTO {temp_table} ({columns_sql})
+        SELECT {columns_sql}
+        FROM {spec.table_name}
+        """
+    )
+    connection.execute(f"DROP TABLE {spec.table_name}")
+    connection.execute(f"ALTER TABLE {temp_table} RENAME TO {spec.table_name}")
+
+
+def ensure_v30_rebuilt_table_indexes(connection: sqlite3.Connection) -> None:
+    """重建 v30 table rebuild 會移除的查詢索引。"""
+
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_created
+            ON scan_runs(target_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_id_desc
+            ON scan_runs(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target_status_id_desc
+            ON scan_runs(target_id, status, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_created
+            ON notification_events(target_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_id_desc
+            ON notification_events(target_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_notification_events_target_channel_id_desc
+            ON notification_events(target_id, channel, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_runtime_state_status_updated
+            ON target_runtime_state(runtime_status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_runtime_state_desired_updated
+            ON target_runtime_state(desired_state, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_updated
+            ON notification_outbox(status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_cover_image_refresh_status_requested
+            ON target_cover_image_refresh_state(status, requested_at);
+        """
+    )
 
 
 def add_column_if_missing(
@@ -774,11 +1247,14 @@ def ensure_legacy_group_configs_table(connection: sqlite3.Connection) -> None:
 
 
 __all__ = [
+    "CheckedTableRebuild",
     "MIGRATIONS",
     "Migration",
     "MigrationColumn",
     "V12_TO_13_COLUMNS",
+    "V29_TO_V30_CHECKED_TABLES",
     "add_column_if_missing",
+    "ensure_v30_rebuilt_table_indexes",
     "migrate_10_to_11",
     "migrate_11_to_12",
     "migrate_12_to_13",
@@ -798,5 +1274,7 @@ __all__ = [
     "migrate_26_to_27",
     "migrate_27_to_28",
     "migrate_28_to_29",
+    "migrate_29_to_30",
+    "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

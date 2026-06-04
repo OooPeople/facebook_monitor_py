@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -19,6 +21,7 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
+from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -178,6 +181,23 @@ class FakeLoggedOutMetadataBrowserContext:
         page = FakeLoggedOutMetadataPage()
         self.pages.append(page)
         return page
+
+
+class FakeShutdownMetadataBrowserContext:
+    """模擬 scheduler 停止時 Playwright driver 已關閉的 browser context。"""
+
+    def __init__(self, on_new_page: Any) -> None:
+        self.on_new_page = on_new_page
+        self.new_page_count = 0
+
+    async def new_page(self) -> FakeMetadataPage:
+        """在開頁時切換 stop 狀態並丟出 Playwright shutdown 例外。"""
+
+        self.new_page_count += 1
+        self.on_new_page()
+        raise Exception(
+            "BrowserContext.new_page: Connection closed while reading from the driver"
+        )
 
 
 class RecordingSchedulePlanner(TargetSchedulePlanner):
@@ -754,6 +774,91 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
     assert "Facebook 尚未登入" in state.error
 
 
+def test_resident_scheduler_tick_keeps_cover_refresh_pending_on_shutdown(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    """scheduler 停止造成的 Playwright 關閉不應被記成 cover refresh 失敗。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("shutdown should stop before enqueueing scans")
+
+    async def run_test() -> None:
+        stop_requested = False
+
+        def request_stop() -> None:
+            nonlocal stop_requested
+            stop_requested = True
+
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            shutdown_context = FakeShutdownMetadataBrowserContext(request_stop)
+            with caplog.at_level(
+                logging.INFO,
+                logger="facebook_monitor.worker.resident_main",
+            ):
+                summary = await run_resident_main_scheduler_tick(
+                    options=executor.options,
+                    browser_context=shutdown_context,
+                    page_pool=page_pool,
+                    target_queue=target_queue,
+                    executor=executor,
+                    schedule_planner=planner,
+                    cycle_index=1,
+                    should_stop=lambda: stop_requested,
+                )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.metadata_refresh_count == 0
+        assert summary.cover_image_refresh_count == 0
+        assert shutdown_context.new_page_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_result == TargetCoverImageRefreshResult.ATTEMPTED
+    assert state.error == ""
+    assert "cover image refresh skipped because scheduler is stopping" in caplog.text
+    assert "cover image refresh failed" not in caplog.text
+
+
 def test_resident_scheduler_tick_marks_pending_metadata_failed(tmp_path: Path) -> None:
     """resident metadata refresh 失敗會寫回 failed，避免 UI 永久顯示等待。"""
 
@@ -844,6 +949,49 @@ def test_target_queue_snapshot_keeps_enqueue_order() -> None:
     asyncio.run(run_test())
 
 
+def test_target_queue_old_owner_complete_does_not_clear_new_attempt() -> None:
+    """舊 attempt complete 不可移除新 attempt 尚未 bind 的 running guard。"""
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        first_item = QueueItem(
+            due_target=DueTarget(
+                target_id="target-a",
+                interval_seconds=60,
+                due_at=utc_now(),
+            ),
+            enqueue_reason="due",
+            enqueued_at=utc_now(),
+        )
+        assert await target_queue.enqueue(first_item)
+        assert await target_queue.get() is not None
+        await target_queue.bind_running_owner("target-a", "old-owner")
+        assert await target_queue.release_running_if_owner("target-a", "old-owner")
+
+        second_item = QueueItem(
+            due_target=DueTarget(
+                target_id="target-a",
+                interval_seconds=60,
+                due_at=utc_now(),
+            ),
+            enqueue_reason="retry",
+            enqueued_at=utc_now(),
+        )
+        assert await target_queue.enqueue(second_item)
+        assert await target_queue.get() is not None
+
+        await target_queue.complete("target-a", owner_key="old-owner")
+        _queued_count, running_count, _queued_ids = await target_queue.snapshot()
+        assert running_count == 1
+
+        await target_queue.bind_running_owner("target-a", "new-owner")
+        await target_queue.complete("target-a", owner_key="new-owner")
+        _queued_count, running_count, _queued_ids = await target_queue.snapshot()
+        assert running_count == 0
+
+    asyncio.run(run_test())
+
+
 def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -> None:
     """async resident 進 queue 時不推進 next_due_at，取得 running lock 後才推進。"""
 
@@ -900,6 +1048,228 @@ def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
         assert result.success
         assert planner.dispatched_target_ids == [target.id]
+
+    asyncio.run(run_test())
+
+
+def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) -> None:
+    """target restart recovery 應取消卡在 goto/reload 的整個 attempt。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    goto_started = asyncio.Event()
+    goto_cancelled = asyncio.Event()
+
+    class BlockingPreparePage(FakeAsyncPage):
+        """第一個 page 會卡在 goto，直到 attempt 被 recovery 取消。"""
+
+        async def goto(self, url: str, wait_until: str, timeout: float) -> None:
+            self.url = url.rstrip("/")
+            self.goto_count += 1
+            goto_started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                goto_cancelled.set()
+                raise
+
+    class FirstPageBlocksContext(FakeAsyncBrowserContext):
+        """第一個 page 卡住，後續 page 正常完成。"""
+
+        async def new_page(self) -> FakeAsyncPage:
+            page: FakeAsyncPage
+            if not self.pages:
+                page = BlockingPreparePage()
+            else:
+                page = FakeAsyncPage()
+            self.pages.append(page)
+            return page
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FirstPageBlocksContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+                stale_running_after_seconds=180,
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=fake_scan_page,
+        )
+        await executor.start()
+        try:
+            await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+            await asyncio.wait_for(goto_started.wait(), timeout=1)
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                assert state is not None
+                app.repositories.runtime_states.save(
+                    replace(
+                        state,
+                        last_heartbeat_at=now - timedelta(seconds=240),
+                        updated_at=now - timedelta(seconds=240),
+                    )
+                )
+
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=2,
+            )
+            await asyncio.wait_for(goto_cancelled.wait(), timeout=1)
+            await asyncio.wait_for(target_queue.join(), timeout=1)
+        finally:
+            await executor.stop()
+
+        assert summary.recovered_runtime_count == 1
+        with SqliteApplicationContext(db_path) as app:
+            recovered_state = app.repositories.runtime_states.get(target.id)
+        assert recovered_state is not None
+        assert recovered_state.runtime_status == TargetRuntimeStatus.IDLE
+
+    asyncio.run(run_test())
+
+
+def test_stale_recovery_cancels_attempt_stuck_in_new_page(tmp_path: Path) -> None:
+    """page 建立階段卡住時，也要能靠 running owner recovery 取消。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    new_page_started = asyncio.Event()
+    new_page_cancelled = asyncio.Event()
+
+    class FirstNewPageBlocksContext(FakeAsyncBrowserContext):
+        """第一次建立 page 卡住，後續 page 正常。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.blocked_once = False
+
+        async def new_page(self) -> FakeAsyncPage:
+            if not self.blocked_once:
+                self.blocked_once = True
+                new_page_started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    new_page_cancelled.set()
+                    raise
+            return await super().new_page()
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FirstNewPageBlocksContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+                stale_running_after_seconds=180,
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=fake_scan_page,
+        )
+        await executor.start()
+        try:
+            await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+            await asyncio.wait_for(new_page_started.wait(), timeout=1)
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                assert state is not None
+                assert state.runtime_status == TargetRuntimeStatus.RUNNING
+                app.repositories.runtime_states.save(
+                    replace(
+                        state,
+                        last_heartbeat_at=now - timedelta(seconds=240),
+                        updated_at=now - timedelta(seconds=240),
+                    )
+                )
+
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=2,
+            )
+            await asyncio.wait_for(new_page_cancelled.wait(), timeout=1)
+            await asyncio.wait_for(target_queue.join(), timeout=1)
+        finally:
+            await executor.stop()
+
+        assert summary.recovered_runtime_count == 1
+        with SqliteApplicationContext(db_path) as app:
+            recovered_state = app.repositories.runtime_states.get(target.id)
+        assert recovered_state is not None
+        assert recovered_state.runtime_status == TargetRuntimeStatus.IDLE
 
     asyncio.run(run_test())
 

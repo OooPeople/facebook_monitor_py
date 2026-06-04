@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import zipfile
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 
 from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from facebook_monitor.application import context as application_context
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -49,6 +51,8 @@ from facebook_monitor.persistence.repositories.app_settings import ProfileSessio
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.webapp.app import create_app as create_production_app
+from facebook_monitor.webapp.app import RequestBodyTooLarge
+from facebook_monitor.webapp.app import _read_request_body_with_limit
 from facebook_monitor.webapp.app import parse_keywords_text
 from facebook_monitor.webapp import query_service
 from facebook_monitor.webapp.query_service import get_dashboard_view
@@ -80,7 +84,7 @@ def page_feedback(response_text: str) -> dict[str, object]:
     """讀取頁面 toast feedback JSON。"""
 
     match = re.search(
-        r'<script id="page-feedback" type="application/json">(.+?)</script>',
+        r'<template id="page-feedback">(.+?)</template>',
         response_text,
         re.DOTALL,
     )
@@ -180,9 +184,19 @@ def test_web_ui_responses_include_basic_security_headers(tmp_path: Path) -> None
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["x-frame-options"] == "DENY"
-    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
-    assert "base-uri 'none'" in response.headers["content-security-policy"]
-    assert "object-src 'none'" in response.headers["content-security-policy"]
+    csp = response.headers["content-security-policy"]
+    assert "default-src 'self'" in csp
+    assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "unsafe-inline" not in csp
+    assert "img-src 'self' data: https://fbcdn.net https://*.fbcdn.net" in csp
+    assert "connect-src 'self'" in csp
+    assert "form-action 'self'" in csp
+    assert "frame-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "unsafe-eval" not in csp
 
 
 def test_redirect_error_redacts_sensitive_values() -> None:
@@ -289,6 +303,65 @@ def test_mutating_routes_require_csrf_token_for_testserver_host(tmp_path: Path) 
     )
 
     assert response.status_code == 403
+
+
+def test_request_body_limit_rejects_large_form_before_route(tmp_path: Path) -> None:
+    """本機 Web UI 會在 route 解析 form 前拒絕過大的 body。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_production_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+            max_request_body_bytes=32,
+        )
+    )
+    with SqliteApplicationContext(db_path) as app_context:
+        original_defaults = app_context.repositories.app_settings.get_target_keyword_defaults()
+
+    response = client.post(
+        "/settings/target-keywords",
+        data={"csrf_token": "known-token", "exclude_keywords": "x" * 64},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 413
+    with SqliteApplicationContext(db_path) as app_context:
+        defaults = app_context.repositories.app_settings.get_target_keyword_defaults()
+    assert defaults.exclude_keywords_text == original_defaults.exclude_keywords_text
+
+
+def test_request_body_limit_counts_streamed_bytes_without_content_length() -> None:
+    """即使沒有 Content-Length，實際讀取 body 也會被限制。"""
+
+    messages = [
+        {"type": "http.request", "body": b"1234", "more_body": True},
+        {"type": "http.request", "body": b"5678", "more_body": False},
+    ]
+
+    async def receive() -> dict[str, object]:
+        return messages.pop(0)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+        },
+        receive,
+    )
+
+    async def read_body() -> None:
+        await _read_request_body_with_limit(request, max_bytes=6)
+
+    try:
+        asyncio.run(read_body())
+    except RequestBodyTooLarge:
+        pass
+    else:
+        raise AssertionError("request body limit should reject streamed bytes")
 
 
 def test_pages_render_csrf_token_for_forms_and_fetch_headers(tmp_path: Path) -> None:
@@ -1317,12 +1390,12 @@ def test_theme_preference_is_stored_in_database_for_all_pages(tmp_path: Path) ->
     new_target_response = client.get("/targets/new")
 
     assert initial_response.status_code == 200
-    assert 'let theme = "dark";' in initial_response.text
+    assert '<meta name="app-theme" content="dark">' in initial_response.text
     assert save_response.status_code == 200
     assert save_response.json() == {"theme": "dark"}
-    assert 'let theme = "dark";' in index_response.text
-    assert 'let theme = "dark";' in settings_response.text
-    assert 'let theme = "dark";' in new_target_response.text
+    assert '<meta name="app-theme" content="dark">' in index_response.text
+    assert '<meta name="app-theme" content="dark">' in settings_response.text
+    assert '<meta name="app-theme" content="dark">' in new_target_response.text
     with SqliteApplicationContext(db_path) as app_context:
         assert app_context.repositories.app_settings.get_theme() == "dark"
 
@@ -1389,8 +1462,8 @@ def test_index_and_partial_payload_show_profile_needs_login_warning(
     assert "重新開啟程式" in warning["message"]
 
 
-def test_dashboard_import_map_versions_sidebar_module(tmp_path: Path) -> None:
-    """Dashboard module graph 也要版本化，避免 Chrome 沿用舊 sidebar.js。"""
+def test_dashboard_uses_external_versioned_scripts_without_importmap(tmp_path: Path) -> None:
+    """Dashboard HTML 不再需要 inline importmap，入口 script 仍保留版本 key。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -1405,9 +1478,9 @@ def test_dashboard_import_map_versions_sidebar_module(tmp_path: Path) -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert '<script type="importmap">' in response.text
-    assert '"/static/dashboard/sidebar.js"' in response.text
-    assert f'"/static/dashboard/sidebar.js?v={ASSET_VERSION}"' in response.text
+    assert '<script type="importmap">' not in response.text
+    assert f'/static/dashboard/main.js?v={ASSET_VERSION}' in response.text
+    assert '<script id="page-feedback" type="application/json">' not in response.text
 
 
 def test_target_card_panels_share_preview_height_contract() -> None:

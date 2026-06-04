@@ -25,6 +25,7 @@ import zipfile
 from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import AppInstanceLock
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
+from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
@@ -58,6 +59,8 @@ from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
+from facebook_monitor.version import APP_VERSION
+from facebook_monitor.versioning import parse_version
 
 
 STAGING_DIR_NAME = "update_staging"
@@ -153,6 +156,8 @@ def apply_pending_update(
 
     try:
         validate_pending_update_paths(pending)
+        _validate_pending_version_is_newer(pending)
+        _validate_pending_artifact_policy_matches_install(pending)
         _validate_pending_manifest_trust(pending)
         _validate_pending_hash(pending)
         with _wait_for_app_lock(
@@ -642,9 +647,7 @@ def _validate_pending_manifest_trust(pending: PendingUpdate) -> None:
     manifest_actual = calculate_sha256(pending.manifest_path)
     if manifest_actual != pending.manifest_sha256:
         raise ValueError("pending_manifest_sha256_mismatch")
-    artifact_policy = release_artifact_policy_for_asset_name(pending.asset_name)
-    if artifact_policy is None:
-        raise ValueError("pending_manifest_asset_platform_unknown")
+    artifact_policy = _pending_artifact_policy(pending)
     verified = verify_release_manifest(
         manifest_bytes=pending.manifest_path.read_bytes(),
         signature_bytes=pending.manifest_signature_path.read_bytes(),
@@ -662,6 +665,36 @@ def _validate_pending_manifest_trust(pending: PendingUpdate) -> None:
         raise ValueError("pending_manifest_asset_sha256_mismatch")
     if pending.zip_path.stat().st_size != verified.asset.size:
         raise ValueError("pending_manifest_asset_size_mismatch")
+
+
+def _validate_pending_version_is_newer(pending: PendingUpdate) -> None:
+    """避免過期 handoff 在目前 app 已升級後套回舊版或同版。"""
+
+    try:
+        pending_version = parse_version(pending.version)
+        current_version = parse_version(APP_VERSION)
+    except ValueError as exc:
+        raise ValueError("pending_update_version_invalid") from exc
+    if pending_version.sort_key() <= current_version.sort_key():
+        raise ValueError("pending_update_not_newer")
+
+
+def _validate_pending_artifact_policy_matches_install(pending: PendingUpdate) -> None:
+    """確認 pending asset 平台與目前 app layout 一致。"""
+
+    artifact_policy = _pending_artifact_policy(pending)
+    layout_policy = detect_layout_policy(pending.app_base_dir)
+    if artifact_policy.platform_key != layout_policy.platform_key:
+        raise ValueError("pending_update_artifact_platform_mismatch")
+
+
+def _pending_artifact_policy(pending: PendingUpdate) -> UpdateArtifactPolicy:
+    """依 pending asset name 找出 release artifact policy。"""
+
+    artifact_policy = release_artifact_policy_for_asset_name(pending.asset_name)
+    if artifact_policy is None:
+        raise ValueError("pending_manifest_asset_platform_unknown")
+    return artifact_policy
 
 
 def _validate_pending_hash(pending: PendingUpdate) -> None:

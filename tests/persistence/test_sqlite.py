@@ -102,6 +102,21 @@ def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def table_sql(connection: sqlite3.Connection, table_name: str) -> str:
+    """回傳 sqlite_master 中的 table 建表 SQL。"""
+
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    return str(row["sql"] if row is not None else "")
+
+
 def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path: Path) -> None:
     """SQLite 連線與 schema 具備 Web UI/background worker 並行所需設定。"""
 
@@ -146,6 +161,224 @@ def test_sqlite_connection_uses_wal_busy_timeout_and_dashboard_indexes(tmp_path:
     assert "idx_targets_kind_scope" not in indexes
     assert "latest_scan_item_matches" not in revision_trigger_tables
     assert "match_history_matches" not in revision_trigger_tables
+
+
+def test_current_schema_enforces_selected_check_constraints(tmp_path: Path) -> None:
+    """fresh DB 對已導入的 enum / boolean CHECK constraints 會直接拒絕壞值。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        assert "CHECK (runtime_status IN" in table_sql(connection, "target_runtime_state")
+        assert "CHECK (status IN" in table_sql(connection, "notification_outbox")
+        assert "CHECK (min_refresh_sec >= 5)" in table_sql(connection, "target_configs")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO scan_scope_state (scope_id, initialized, updated_at)
+                VALUES ('scope-a', 2, '2026-05-01T00:00:00+00:00')
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("scan_scope_state.initialized should be constrained")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO seen_items (
+                    scope_id, item_key, item_kind, parent_post_id, comment_id,
+                    first_seen_at, last_seen_at
+                )
+                VALUES (
+                    'scope-a',
+                    'item-a',
+                    'unexpected_kind',
+                    '',
+                    '',
+                    '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("seen_items.item_kind should be constrained")
+
+
+def test_initialize_schema_migrates_v29_check_constraints(tmp_path: Path) -> None:
+    """v29 舊表升級後會重建成帶 CHECK constraints 的 v30 schema。"""
+
+    db_path = tmp_path / "app.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '29');
+            CREATE TABLE scan_scope_state (
+                scope_id TEXT PRIMARY KEY,
+                initialized INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO scan_scope_state (scope_id, initialized, updated_at)
+            VALUES ('scope-a', 1, '2026-05-01T00:00:00+00:00');
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        row = connection.execute(
+            "SELECT initialized FROM scan_scope_state WHERE scope_id = 'scope-a'"
+        ).fetchone()
+        scan_scope_sql = table_sql(connection, "scan_scope_state")
+        indexes = {
+            index_row["name"]
+            for index_row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        trigger_tables = {
+            trigger_row["tbl_name"]
+            for trigger_row in connection.execute(
+                """
+                SELECT tbl_name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name LIKE 'trg_dashboard_revision_%'
+                """
+            ).fetchall()
+        }
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO scan_scope_state (scope_id, initialized, updated_at)
+                VALUES ('scope-b', 9, '2026-05-01T00:00:00+00:00')
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v29 -> v30 migration should add initialized CHECK")
+
+    assert version == str(SCHEMA_VERSION)
+    assert row["initialized"] == 1
+    assert "CHECK (initialized IN (0, 1))" in scan_scope_sql
+    assert "idx_runtime_state_status_updated" in indexes
+    assert "target_runtime_state" in trigger_tables
+
+
+def test_initialize_schema_migrates_v31_runtime_notification_constraints(
+    tmp_path: Path,
+) -> None:
+    """v30 升級後 runtime notification 欄位也應帶 CHECK constraints。"""
+
+    db_path = tmp_path / "app.db"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '30');
+            CREATE TABLE notification_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+                status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE notification_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                target_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+                channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'pending', 'processing_pending', 'sent', 'failed',
+                        'processing_failed', 'skipped'
+                    )
+                ),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '',
+                permalink TEXT NOT NULL,
+                attempts INTEGER NOT NULL CHECK (attempts >= 0),
+                last_error TEXT NOT NULL,
+                notification_event_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()[0]
+        notification_events_sql = table_sql(connection, "notification_events")
+        notification_outbox_sql = table_sql(connection, "notification_outbox")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO notification_events (
+                    target_id, item_key, channel, status, event_kind, message, created_at
+                )
+                VALUES (
+                    'target-a', 'item-a', 'ntfy', 'sent', 'bad',
+                    'message', '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v30 -> v31 migration should constrain event_kind")
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO notification_outbox (
+                    idempotency_key, target_id, item_key, item_kind, channel, status,
+                    title, message, endpoint, permalink, failure_count,
+                    attempts, last_error, created_at, updated_at
+                )
+                VALUES (
+                    'key-a', 'target-a', 'item-a', 'post', 'ntfy', 'pending',
+                    'title', 'message', '', '', -1,
+                    0, '', '2026-05-01T00:00:00+00:00',
+                    '2026-05-01T00:00:00+00:00'
+                )
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v30 -> v31 migration should constrain failure_count")
+
+    assert version == str(SCHEMA_VERSION)
+    assert "CHECK (event_kind IN" in notification_events_sql
+    assert "CHECK (failure_count >= 0)" in notification_outbox_sql
 
 
 def test_initialize_schema_drops_stale_dashboard_revision_triggers(tmp_path: Path) -> None:
@@ -482,6 +715,7 @@ def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path)
         connection.execute(
             "UPDATE schema_metadata SET value = '11' WHERE key = 'version'"
         )
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             """
             UPDATE target_runtime_state
@@ -490,6 +724,7 @@ def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path)
             """,
             (target.id,),
         )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
@@ -591,16 +826,24 @@ def test_initialize_schema_migrates_v28_include_keyword_groups(
     now_text = encode_datetime(utc_now())
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="target-1",
+            canonical_url="https://www.facebook.com/groups/target-1",
+        )
+        group = SidebarGroup.create(name="group-1", sort_order=0)
+        TargetRepository(connection).save(target)
+        SidebarLayoutRepository(
+            connection,
+            secret_codec=PLAINTEXT_SECRET_CODEC,
+        ).save_group(group)
+        connection.execute("UPDATE schema_metadata SET value = '28' WHERE key = 'version'")
+        connection.execute("DROP TABLE target_configs")
+        connection.execute("DROP TABLE sidebar_group_config_templates")
         connection.executescript(
             """
-            CREATE TABLE schema_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            INSERT INTO schema_metadata (key, value) VALUES ('version', '28');
-
             CREATE TABLE target_configs (
-                target_id TEXT PRIMARY KEY,
+                target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
                 include_keywords TEXT NOT NULL,
                 exclude_keywords TEXT NOT NULL,
                 exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
@@ -619,7 +862,7 @@ def test_initialize_schema_migrates_v28_include_keyword_groups(
             );
 
             CREATE TABLE sidebar_group_config_templates (
-                sidebar_group_id TEXT PRIMARY KEY,
+                sidebar_group_id TEXT PRIMARY KEY REFERENCES sidebar_groups(id) ON DELETE CASCADE,
                 include_keywords TEXT NOT NULL DEFAULT '[]',
                 exclude_keywords TEXT NOT NULL DEFAULT '[]',
                 exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
@@ -650,7 +893,7 @@ def test_initialize_schema_migrates_v28_include_keyword_groups(
             )
             VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '')
             """,
-            ("target-1", encode_keywords(("票", "交換"))),
+            (target.id, encode_keywords(("票", "交換"))),
         )
         connection.execute(
             """
@@ -664,17 +907,17 @@ def test_initialize_schema_migrates_v28_include_keyword_groups(
             )
             VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '', ?)
             """,
-            ("group-1", encode_keywords(("模板",)), now_text),
+            (group.id, encode_keywords(("模板",)), now_text),
         )
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
-        config = target_config_repository(connection).get_for_target_id("target-1")
+        config = target_config_repository(connection).get_for_target_id(target.id)
         template = SidebarLayoutRepository(
             connection,
             secret_codec=PLAINTEXT_SECRET_CODEC,
-        ).get_template("group-1")
+        ).get_template(group.id)
 
     assert config is not None
     assert [group.keywords for group in config.include_keyword_groups] == [

@@ -59,6 +59,13 @@ class NotificationStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class NotificationEventKind(StrEnum):
+    """通知事件來源語義。"""
+
+    MATCH = "match"
+    RUNTIME_FAILURE = "runtime_failure"
+
+
 class NotificationOutboxStatus(StrEnum):
     """通知 outbox 事件狀態。"""
 
@@ -505,6 +512,10 @@ class NotificationEvent:
     channel: NotificationChannel
     status: NotificationStatus
     message: str = ""
+    event_kind: NotificationEventKind = NotificationEventKind.MATCH
+    source_scan_run_id: int | None = None
+    failure_reason: str = ""
+    failure_count: int = 0
     created_at: datetime = field(default_factory=utc_now)
 
 
@@ -521,6 +532,10 @@ class NotificationOutboxEntry:
     message: str
     endpoint: str = ""
     permalink: str = ""
+    event_kind: NotificationEventKind = NotificationEventKind.MATCH
+    source_scan_run_id: int | None = None
+    failure_reason: str = ""
+    failure_count: int = 0
     status: NotificationOutboxStatus = NotificationOutboxStatus.PENDING
     attempts: int = 0
     last_error: str = ""

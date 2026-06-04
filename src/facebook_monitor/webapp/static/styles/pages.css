@@ -41,7 +41,8 @@
 }
 
 .new-target-form input[type="text"],
-.new-target-form input[type="number"] {
+.new-target-form input[type="number"],
+.new-target-form input[type="password"] {
   font-size: 15px;
   line-height: 1.45;
 }

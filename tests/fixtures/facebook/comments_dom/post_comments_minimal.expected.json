@@ -1,0 +1,19 @@
+{
+  "article_contracts": [
+    "parent-post",
+    "comment",
+    "comment"
+  ],
+  "comment_permalinks": [
+    {
+      "comment_id": "4444444444444444",
+      "parent_post_id": "9999999999999999",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/9999999999999999/?comment_id=4444444444444444"
+    },
+    {
+      "comment_id": "5555555555555555",
+      "parent_post_id": "9999999999999999",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/9999999999999999/?comment_id=5555555555555555"
+    }
+  ]
+}

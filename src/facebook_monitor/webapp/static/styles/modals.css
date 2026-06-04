@@ -384,7 +384,8 @@
 }
 
 .settings-modal input[type="text"],
-.settings-modal input[type="number"] {
+.settings-modal input[type="number"],
+.settings-modal input[type="password"] {
   font-size: 15px;
   line-height: 1.45;
 }

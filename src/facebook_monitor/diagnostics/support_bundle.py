@@ -6,16 +6,20 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
+import sqlite3
 import zipfile
 
-from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
+from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.runtime.paths import RuntimePaths
 
 
@@ -78,8 +82,22 @@ def create_support_bundle(
 def _write_database_summary(archive: zipfile.ZipFile, *, db_path: Path) -> None:
     """寫入只含 counts 與 invariant 結果的 DB 摘要。"""
 
-    with SqliteApplicationContext(db_path) as app_context:
-        connection = app_context.repositories.maintenance.connection
+    if not db_path.is_file():
+        _write_json(
+            archive,
+            "database_summary.json",
+            {
+                "table_counts": {table_name: 0 for table_name in _SUPPORT_COUNT_TABLES},
+                "notification_outbox": _empty_outbox_summary(),
+                "invariant_violation_count": 0,
+                "invariant_violations": [],
+            },
+        )
+        return
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=5)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
         table_counts = {
             table_name: int(
                 connection.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()[
@@ -88,7 +106,10 @@ def _write_database_summary(archive: zipfile.ZipFile, *, db_path: Path) -> None:
             )
             for table_name in _SUPPORT_COUNT_TABLES
         }
-        outbox_summary = app_context.repositories.notification_outbox.summarize_all()
+        outbox_summary = NotificationOutboxRepository(
+            connection,
+            secret_codec=PlaintextSecretCodec(),
+        ).summarize_all()
         violations = validate_database_invariants(connection)
     _write_json(
         archive,
@@ -106,7 +127,10 @@ def _write_database_summary(archive: zipfile.ZipFile, *, db_path: Path) -> None:
             "invariant_violations": [
                 {
                     "table": violation.table,
-                    "row_id": violation.row_id,
+                    "row_id_hash": _support_row_id_hash(
+                        table=violation.table,
+                        row_id=violation.row_id,
+                    ),
                     "field": violation.field,
                     "message": violation.message,
                 }
@@ -114,6 +138,25 @@ def _write_database_summary(archive: zipfile.ZipFile, *, db_path: Path) -> None:
             ],
         },
     )
+
+
+def _empty_outbox_summary() -> dict[str, int]:
+    """回傳空 DB 時的 notification outbox 摘要。"""
+
+    return {
+        "pending": 0,
+        "processing": 0,
+        "failed": 0,
+        "terminal": 0,
+        "max_attempts": 0,
+    }
+
+
+def _support_row_id_hash(*, table: str, row_id: str) -> str:
+    """支援包內只輸出 row id 穩定短雜湊，避免外洩 target/item identifiers。"""
+
+    digest = hashlib.sha256(f"{table}:{row_id}".encode("utf-8")).hexdigest()
+    return digest[:12]
 
 
 def _redacted_runtime_paths(paths: RuntimePaths) -> dict[str, str]:

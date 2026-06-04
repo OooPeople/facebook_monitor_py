@@ -21,6 +21,8 @@
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
+| Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | 串接 Windows PyInstaller、release zip / `.sha256`、signed manifest / `.sig` 與 release validation | 否 |
+| macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | 串接 macOS Apple Silicon PyInstaller、release zip / `.sha256`、signed manifest / `.sig` 與 release validation；需在 macOS 上執行 | 否 |
 | Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 從 `dist/facebook-monitor` 建立 Windows / macOS release zip 與同名 `.sha256`，並先檢查平台必要檔案與私密 runtime data | 否 |
 | Release Manifest Builder | `scripts/admin/create_release_manifest.py` | Admin packaging | 從 release zip 建立 signed updater manifest JSON，記錄平台、檔名、size 與 SHA256 | 否 |
 | Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用本機或 CI secret 內的 Ed25519 私鑰輸出 manifest detached signature | 否 |
@@ -59,10 +61,7 @@
 .\scripts\uv.ps1 run python .\scripts\admin\console.py
 .\scripts\uv.ps1 run python .\scripts\admin\manage_targets.py
 .\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
-.\scripts\uv.ps1 run python .\scripts\admin\create_release_zip.py --platform windows --force
-.\scripts\uv.ps1 run python .\scripts\admin\create_release_manifest.py --version 0.4.0 --key-id release-ed25519-2026q2 --asset "windows=dist\facebook-monitor-0.4.0-windows-portable.zip" --output "dist\facebook-monitor-0.4.0-manifest.json" --force
-.\scripts\uv.ps1 run python .\scripts\admin\sign_release_manifest.py "dist\facebook-monitor-0.4.0-manifest.json" --private-key-file docs\local\release-signing\release-ed25519-2026q2.private-key.b64 --force
-.\scripts\uv.ps1 run python .\scripts\admin\release_artifact_validation.py --require-manifest
+.\scripts\uv.ps1 run python .\scripts\admin\build_windows_release.py --force
 .\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --max-complexity 12 --max-lines 80
 .\scripts\uv.ps1 run python .\scripts\admin\check_database_invariants.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py

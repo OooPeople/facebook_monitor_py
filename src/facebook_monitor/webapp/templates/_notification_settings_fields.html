@@ -6,6 +6,7 @@
 {% set ntfy_checked = notification_source and notification_source.enable_ntfy %}
 {% set discord_checked = notification_source and notification_source.enable_discord_notification %}
 {% set ntfy_topic_value = notification_source.ntfy_topic if notification_source else "" %}
+{% set ntfy_topic_saved = ntfy_topic_value|length > 0 %}
 {% set discord_webhook_value = notification_source.discord_webhook if notification_source else "" %}
 {% set discord_webhook_saved = discord_webhook_value|length > 0 %}
 <div class="notification-help-scope" data-notification-help-scope>
@@ -23,7 +24,19 @@
   </div>
   <label>
     ntfy topic
-    <input name="ntfy_topic" type="text" value="{{ ntfy_topic_value }}" maxlength="{{ input_limits.MAX_NTFY_TOPIC_LENGTH }}" autocomplete="off" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+    <span class="secret-input-row" data-secret-field>
+      {% if ntfy_topic_saved %}
+        <input name="ntfy_topic_keep" type="hidden" value="on" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+        <input name="clear_ntfy_topic" type="hidden" value="" data-secret-clear-input {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+      {% endif %}
+      <input name="ntfy_topic" type="text" value="" maxlength="{{ input_limits.MAX_NTFY_TOPIC_LENGTH }}" autocomplete="off" placeholder="{% if ntfy_topic_saved %}已設定；留空代表不變更{% endif %}" data-secret-input data-secret-default-placeholder="{% if ntfy_topic_saved %}已設定；留空代表不變更{% endif %}" data-secret-clear-placeholder="保存後將清除 ntfy topic" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+      {% if ntfy_topic_saved %}
+        <button class="secret-clear-button" type="button" data-secret-clear-button>清除</button>
+      {% endif %}
+    </span>
+    {% if ntfy_topic_saved %}
+      <span class="field-caption secret-clear-status" data-secret-clear-status hidden>保存後將清除此值。</span>
+    {% endif %}
   </label>
   <div class="notification-channel-row">
     <label class="checkbox">
@@ -34,17 +47,20 @@
   </div>
   <label>
     Discord webhook URL
+    <span class="secret-input-row" data-secret-field>
+      {% if discord_webhook_saved %}
+        <input name="discord_webhook_keep" type="hidden" value="on" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+        <input name="clear_discord_webhook" type="hidden" value="" data-secret-clear-input {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+      {% endif %}
+      <input name="discord_webhook" type="text" value="" maxlength="{{ input_limits.MAX_NOTIFICATION_ENDPOINT_LENGTH }}" autocomplete="off" placeholder="{% if discord_webhook_saved %}已設定；留空代表不變更{% endif %}" data-secret-input data-secret-default-placeholder="{% if discord_webhook_saved %}已設定；留空代表不變更{% endif %}" data-secret-clear-placeholder="保存後將清除 Discord webhook" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+      {% if discord_webhook_saved %}
+        <button class="secret-clear-button" type="button" data-secret-clear-button>清除</button>
+      {% endif %}
+    </span>
     {% if discord_webhook_saved %}
-      <input name="discord_webhook_keep" type="hidden" value="on" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
+      <span class="field-caption secret-clear-status" data-secret-clear-status hidden>保存後將清除此值。</span>
     {% endif %}
-    <input name="discord_webhook" type="password" value="" maxlength="{{ input_limits.MAX_NOTIFICATION_ENDPOINT_LENGTH }}" autocomplete="new-password" placeholder="{% if discord_webhook_saved %}已設定；留空代表不變更{% endif %}" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
   </label>
-  {% if discord_webhook_saved %}
-    <label class="checkbox">
-      <input name="clear_discord_webhook" type="checkbox" {% if notification_form_id %}form="{{ notification_form_id }}"{% endif %} {{ notification_input_attrs|safe }}>
-      清除已保存 Discord webhook
-    </label>
-  {% endif %}
 </div>
 <dialog class="settings-modal notification-help-modal" data-notification-help-modal="ntfy" aria-label="ntfy 說明">
   <div class="modal-shell">

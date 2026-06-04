@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 
@@ -75,7 +76,7 @@ def test_application_context_encrypts_notification_secrets_at_rest(tmp_path: Pat
         )
 
     assert secret_key_path_for_db(db_path).exists()
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         target_row = connection.execute("SELECT * FROM target_configs").fetchone()
         global_row = connection.execute("SELECT * FROM global_notification_settings").fetchone()
@@ -170,7 +171,7 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
     assert loaded_outbox is not None
     assert loaded_outbox.endpoint == "https://discord.com/api/webhooks/legacy-outbox"
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         target_row = connection.execute("SELECT * FROM target_configs").fetchone()
         global_row = connection.execute("SELECT * FROM global_notification_settings").fetchone()
@@ -255,7 +256,7 @@ def test_application_context_preserves_plaintext_that_looks_like_secret_prefix(
             ),
         )
 
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute("SELECT ntfy_topic FROM target_configs").fetchone()
 
@@ -298,7 +299,7 @@ def test_legacy_plaintext_with_secret_prefix_is_reencrypted(tmp_path: Path) -> N
 
     assert loaded_config is not None
     assert loaded_config.ntfy_topic == prefixed_plaintext
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute("SELECT ntfy_topic FROM target_configs").fetchone()
     assert row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)

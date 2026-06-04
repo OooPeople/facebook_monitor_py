@@ -1,0 +1,30 @@
+{
+  "items": [
+    {
+      "commentId": "4444444444444444",
+      "commentScopeReason": "route_post_match",
+      "containerRole": "article",
+      "parentPostId": "9999999999999999",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/9999999999999999/?comment_id=4444444444444444",
+      "text": "請問還有票嗎？",
+      "textSource": "comment"
+    },
+    {
+      "commentId": "5555555555555555",
+      "commentScopeReason": "route_post_match",
+      "containerRole": "article",
+      "parentPostId": "9999999999999999",
+      "permalink": "https://www.facebook.com/groups/222518561920110/posts/9999999999999999/?comment_id=5555555555555555",
+      "text": "排一張。",
+      "textSource": "comment"
+    }
+  ],
+  "meta": {
+    "articleElementCount": 2,
+    "candidateCount": 2,
+    "commentsWithCommentIdCount": 2,
+    "currentRouteMatchesTarget": true,
+    "filteredOutOfScopeCount": 0,
+    "parsedCount": 2
+  }
+}

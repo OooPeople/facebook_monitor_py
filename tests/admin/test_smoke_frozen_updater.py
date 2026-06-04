@@ -86,7 +86,20 @@ def test_run_smoke_reports_timeout(tmp_path: Path, monkeypatch) -> None:
             stderr="err",
         )
 
+    def fake_write_smoke_manifest(**kwargs):
+        updates_dir = kwargs["updates_dir"]
+        manifest_path = updates_dir / "facebook-monitor-0.4.1-manifest.json"
+        signature_path = manifest_path.with_name(manifest_path.name + ".sig")
+        manifest_path.write_text("{}", encoding="utf-8")
+        signature_path.write_text("signature", encoding="ascii")
+        return manifest_path, signature_path, "0" * 64, "release-ed25519-2026q2"
+
     monkeypatch.setattr(smoke_frozen_updater.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        smoke_frozen_updater,
+        "_write_smoke_manifest",
+        fake_write_smoke_manifest,
+    )
 
     result = smoke_frozen_updater.run_smoke(
         built_app=built_app,

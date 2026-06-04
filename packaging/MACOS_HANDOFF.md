@@ -14,8 +14,8 @@
   `facebook-monitor` child process；Dock Quit 會終止 child process。
 - 若舊版 updater 或 Finder 直接啟動 root `facebook-monitor` binary，新版
   frozen launcher 會自動轉交給 `.app` native launcher，避免 Dock item 消失。
-- macOS Web UI 已支援 stable Release 檢查、下載、SHA256 驗證、handoff、
-  temp updater 套用與重啟。
+- macOS Web UI 已支援 stable Release 檢查、下載、signed manifest / SHA256
+  驗證、handoff、temp updater 套用與重啟。
 - 尚未做 Developer ID signing / notarization；測試或使用者環境可能仍需處理
   Gatekeeper / quarantine。
 
@@ -29,10 +29,10 @@
   主程式。
 - 本地驗證曾覆蓋 artifact validation、frozen updater smoke、direct root
   binary self-redirect 與 `.app` launcher / child process lifecycle。
-- 目前 release / runtime 驗證也覆蓋 macOS staging app root 的 arm64 Mach-O、
-  executable bit、Info.plist version / Dock visibility、私密 runtime data 排除，
-  安全的 tree-internal symlink 保留，以及 temp updater 目錄 symlink / ownership /
-  permission 防護。
+- 目前 release / runtime 驗證也覆蓋 signed manifest / `.sig`、macOS staging
+  app root 的 arm64 Mach-O、executable bit、Info.plist version / Dock visibility、
+  私密 runtime data 排除、安全的 tree-internal symlink 保留，以及 temp updater
+  目錄 symlink / ownership / permission 防護。
 
 ## Build Notes
 
@@ -44,14 +44,12 @@
   內建立 `.app` native launcher，圖示來源為
   `packaging/assets/facebook-monitor.png`。
 - release 前必跑：
-  - `scripts/admin/release_artifact_validation.py --platform macos-arm64`
+  - `scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest`
   - `scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor`
 
 ## Deferred
 
 - Developer ID signing / notarization 尚未導入。
 - Intel Mac / universal binary artifact 尚未納入範圍。
-- signed manifest / detached signature 尚未導入；目前 release download 只做 SHA256
-  完整性驗證。
 - Windows release asset 可在 macOS updater release 之後由人工補上，但正式 release
   asset 命名仍必須與 tag version 對齊。

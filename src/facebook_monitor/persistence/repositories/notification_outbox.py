@@ -149,6 +149,15 @@ class NotificationOutboxRepository:
         ).fetchall()
         return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
 
+    def clear_failed(self) -> int:
+        """清除全域 failed rows；pending / processing / sent rows 不受影響。"""
+
+        cursor = self.connection.execute(
+            "DELETE FROM notification_outbox WHERE status = ?",
+            (NotificationOutboxStatus.FAILED.value,),
+        )
+        return int(cursor.rowcount or 0)
+
     def recover_stale_processing(self, *, older_than_seconds: float) -> int:
         """將過期 processing rows 放回來源狀態，避免 dispatcher 崩潰後永久卡住。"""
 

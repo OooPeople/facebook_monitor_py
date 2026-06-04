@@ -7,9 +7,16 @@ extractor 依賴的基本 DOM 契約：feed target 找貼文 permalink，comment
 
 from __future__ import annotations
 
+import json
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
+from playwright.sync_api import Page
+from playwright.sync_api import sync_playwright
+
+from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
 
@@ -50,20 +57,24 @@ def test_feed_dom_fixture_preserves_post_permalink_contract() -> None:
     """posts feed fixture 應解析出 group-scoped post permalink，不吃成留言 target。"""
 
     parser = _parse_fixture("feed_dom/group_feed_minimal.html")
-    details = [
-        extract_canonical_permalink_from_href(href, expected_group_id=GROUP_ID)
-        for href in parser.hrefs
-    ]
+    actual = {
+        "article_contracts": parser.article_contracts,
+        "post_permalinks": [
+            {
+                "permalink": detail.permalink,
+                "source": detail.source,
+            }
+            for detail in (
+                extract_canonical_permalink_from_href(
+                    href,
+                    expected_group_id=GROUP_ID,
+                )
+                for href in parser.hrefs
+            )
+        ],
+    }
 
-    assert parser.article_contracts == ["feed-post", "feed-post"]
-    assert [detail.source for detail in details] == [
-        "groups_post_anchor",
-        "groups_post_anchor",
-    ]
-    assert [detail.permalink for detail in details] == [
-        f"https://www.facebook.com/groups/{GROUP_ID}/posts/1111111111111111",
-        f"https://www.facebook.com/groups/{GROUP_ID}/posts/2222222222222222",
-    ]
+    assert actual == _load_expected_snapshot("feed_dom/group_feed_minimal.expected.json")
 
 
 def test_comments_dom_fixture_preserves_comment_permalink_contract() -> None:
@@ -79,21 +90,164 @@ def test_comments_dom_fixture_preserves_comment_permalink_contract() -> None:
         for href in parser.hrefs
     ]
     comment_details = [detail for detail in comment_details if detail.comment_id]
+    actual = {
+        "article_contracts": parser.article_contracts,
+        "comment_permalinks": [
+            {
+                "comment_id": detail.comment_id,
+                "parent_post_id": PARENT_POST_ID,
+                "permalink": detail.permalink,
+            }
+            for detail in comment_details
+        ],
+    }
 
-    assert parser.article_contracts == ["parent-post", "comment", "comment"]
-    assert [detail.comment_id for detail in comment_details] == [
-        "4444444444444444",
-        "5555555555555555",
-    ]
-    assert [detail.permalink for detail in comment_details] == [
-        f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=4444444444444444",
-        f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}/?comment_id=5555555555555555",
-    ]
+    assert actual == _load_expected_snapshot(
+        "comments_dom/post_comments_minimal.expected.json"
+    )
+
+
+def test_feed_dom_fixture_runs_actual_extractor_script() -> None:
+    """posts fixture 應可被實際 feed DOM extractor 解析成 snapshot payload。"""
+
+    html = _fixture_text("feed_dom/group_feed_minimal.html")
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}",
+        html=html,
+        script=POST_LIKE_ITEMS_SCRIPT,
+        arg=5,
+    )
+    actual = {
+        "items": [
+            {
+                "containerRole": item.get("containerRole"),
+                "permalink": item.get("permalink"),
+                "permalinkSource": item.get("permalinkSource"),
+                "postId": item.get("postId"),
+                "text": item.get("text"),
+                "textSource": item.get("textSource"),
+            }
+            for item in payload["items"]
+        ],
+        "meta": {
+            "articleElementCount": payload["meta"].get("articleElementCount"),
+            "candidateCount": payload["meta"].get("candidateCount"),
+            "filteredNonPostCount": payload["meta"].get("filteredNonPostCount"),
+            "parsedCount": payload["meta"].get("parsedCount"),
+            "postsWithPostIdCount": payload["meta"].get("postsWithPostIdCount"),
+        },
+    }
+
+    assert actual == _load_expected_snapshot(
+        "feed_dom/group_feed_minimal.extractor.expected.json"
+    )
+
+
+def test_comments_dom_fixture_runs_actual_extractor_script() -> None:
+    """comments fixture 應可被實際 comments DOM extractor 解析成 snapshot payload。"""
+
+    html = _fixture_text("comments_dom/post_comments_minimal.html")
+    payload = _evaluate_fixture_page(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}/posts/{PARENT_POST_ID}",
+        html=html,
+        script=COMMENTS_LIKE_ITEMS_SCRIPT,
+        arg={
+            "groupId": GROUP_ID,
+            "parentPostId": PARENT_POST_ID,
+            "limit": 5,
+        },
+    )
+    actual = {
+        "items": [
+            {
+                "commentId": item.get("commentId"),
+                "commentScopeReason": item.get("commentScopeReason"),
+                "containerRole": item.get("containerRole"),
+                "parentPostId": item.get("parentPostId"),
+                "permalink": item.get("permalink"),
+                "text": item.get("text"),
+                "textSource": item.get("textSource"),
+            }
+            for item in payload["items"]
+        ],
+        "meta": {
+            "articleElementCount": payload["meta"].get("articleElementCount"),
+            "candidateCount": payload["meta"].get("candidateCount"),
+            "commentsWithCommentIdCount": payload["meta"].get(
+                "commentsWithCommentIdCount"
+            ),
+            "currentRouteMatchesTarget": payload["meta"].get(
+                "currentRouteMatchesTarget"
+            ),
+            "filteredOutOfScopeCount": payload["meta"].get("filteredOutOfScopeCount"),
+            "parsedCount": payload["meta"].get("parsedCount"),
+        },
+    }
+
+    assert actual == _load_expected_snapshot(
+        "comments_dom/post_comments_minimal.extractor.expected.json"
+    )
 
 
 def _parse_fixture(relative_path: str) -> FacebookContractParser:
     """讀取並解析單一 DOM fixture。"""
 
     parser = FacebookContractParser()
-    parser.feed((FIXTURE_ROOT / relative_path).read_text(encoding="utf-8"))
+    parser.feed(_fixture_text(relative_path))
     return parser
+
+
+def _load_expected_snapshot(relative_path: str) -> dict[str, Any]:
+    """讀取 fixture 對應的 expected JSON snapshot。"""
+
+    return json.loads((FIXTURE_ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+def _fixture_text(relative_path: str) -> str:
+    """讀取 DOM fixture HTML。"""
+
+    return (FIXTURE_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _evaluate_fixture_page(
+    *,
+    url: str,
+    html: str,
+    script: str,
+    arg: object,
+) -> dict[str, Any]:
+    """用 Playwright Chromium 執行實際 DOM extractor payload。"""
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, timeout=10_000)
+        try:
+            page = browser.new_page()
+            _fulfill_fixture_route(page, url=url, html=html)
+            page.goto(url)
+            payload = page.evaluate(script, arg)
+        finally:
+            browser.close()
+    if not isinstance(payload, dict):
+        raise AssertionError("DOM extractor did not return an object payload")
+    return payload
+
+
+def _fulfill_fixture_route(page: Page, *, url: str, html: str) -> None:
+    """用 fixture HTML 回應 Facebook URL，讓 extractor 可讀正確 location。"""
+
+    page.route(
+        f"{url.rstrip('/')}/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html; charset=utf-8",
+            body=html,
+        ),
+    )
+    page.route(
+        url,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html; charset=utf-8",
+            body=html,
+        ),
+    )

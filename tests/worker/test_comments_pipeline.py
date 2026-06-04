@@ -120,6 +120,27 @@ class UnconfirmedCommentSortPage(FakeCommentsPage):
         raise AssertionError("sort-unconfirmed scan should skip before extractor")
 
 
+class MissingCommentSortControlPage(FakeCommentsPage):
+    """模擬留言頁完全找不到排序控制與排序標籤。"""
+
+    def evaluate(self, script: str, payload: object = None) -> object:
+        """comments 缺排序控制時仍應保護性跳過，不呼叫 extractor。"""
+
+        if "preferredLabel" in script and "getCurrentCommentSortControl" in script:
+            self.sort_adjusted = True
+            return {
+                "attempted": False,
+                "changed": False,
+                "preferredLabel": "由新到舊",
+                "beforeLabel": "",
+                "afterLabel": "",
+                "reason": "sort_control_not_found",
+                "mutationSuppressionMs": 0,
+                "mutationSuppressionReason": "",
+            }
+        raise AssertionError("missing-sort-control comments scan should skip before extractor")
+
+
 class ContentUnavailableLocator(FakeLocator):
     """提供 Facebook 內容不可見頁文字。"""
 
@@ -418,6 +439,61 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
     assert latest_scan.metadata["stop_reason"] == "sort_adjust_unconfirmed_skip"
     assert latest_scan.metadata["comment_sort"]["after_label"] == "最相關"
     assert latest_scan.metadata["comment_sort"]["preferred_label"] == "由新到舊"
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
+
+
+def test_scan_comments_target_page_skips_when_sort_control_is_missing(
+    tmp_path: Path,
+) -> None:
+    """comments 缺排序控制時不套用 posts 的缺排序控制放寬特例。"""
+
+    db_path = tmp_path / "app.db"
+    page = MissingCommentSortControlPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=(
+                    "https://www.facebook.com/groups/222518561920110/posts/"
+                    "2187454285426518"
+                ),
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    auto_adjust_sort=True,
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        summary = scan_comments_target_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+
+    assert page.sort_adjusted
+    assert summary.item_count == 0
+    assert summary.new_count == 0
+    assert summary.matched_count == 0
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == "sort_adjust_unconfirmed"
+    assert latest_scan.metadata["comment_sort"]["reason"] == "sort_control_not_found"
+    assert latest_scan.metadata["comment_sort"]["before_label"] == ""
+    assert latest_scan.metadata["comment_sort"]["after_label"] == ""
     assert latest_items == []
     assert history == []
     assert notifications == []

@@ -62,7 +62,7 @@ class NotificationPatchKwargs(TypedDict):
 
     enable_desktop_notification: bool
     enable_ntfy: bool
-    ntfy_topic: str
+    ntfy_topic: str | UnsetConfigValue
     enable_discord_notification: bool
     discord_webhook: str | UnsetConfigValue
 
@@ -132,7 +132,7 @@ def format_notification_form_error(exc: ValueError) -> str:
     return _DISCORD_WEBHOOK_ERROR_MESSAGES.get(message, message)
 
 
-def _discord_webhook_string(value: str | UnsetConfigValue) -> str:
+def _secret_string(value: str | UnsetConfigValue) -> str:
     """將不應出現在實際設定的 unset sentinel 轉成空字串。"""
 
     if isinstance(value, UnsetConfigValue):
@@ -184,6 +184,8 @@ class NotificationConfigForm:
     enable_desktop_notification: str | None = None
     enable_ntfy: str | None = None
     ntfy_topic: str = ""
+    ntfy_topic_keep: str | None = None
+    clear_ntfy_topic: str | None = None
     enable_discord_notification: str | None = None
     discord_webhook: str = ""
     discord_webhook_keep: str | None = None
@@ -195,6 +197,8 @@ class NotificationConfigForm:
         enable_desktop_notification: Annotated[str | None, Form()] = None,
         enable_ntfy: Annotated[str | None, Form()] = None,
         ntfy_topic: Annotated[str, Form()] = "",
+        ntfy_topic_keep: Annotated[str | None, Form()] = None,
+        clear_ntfy_topic: Annotated[str | None, Form()] = None,
         enable_discord_notification: Annotated[str | None, Form()] = None,
         discord_webhook: Annotated[str, Form()] = "",
         discord_webhook_keep: Annotated[str | None, Form()] = None,
@@ -206,6 +210,8 @@ class NotificationConfigForm:
             enable_desktop_notification=enable_desktop_notification,
             enable_ntfy=enable_ntfy,
             ntfy_topic=ntfy_topic,
+            ntfy_topic_keep=ntfy_topic_keep,
+            clear_ntfy_topic=clear_ntfy_topic,
             enable_discord_notification=enable_discord_notification,
             discord_webhook=discord_webhook,
             discord_webhook_keep=discord_webhook_keep,
@@ -234,12 +240,16 @@ class NotificationConfigForm:
         kwargs["clear_discord_webhook"] = checkbox_payload(
             payload.get("clear_discord_webhook")
         )
+        kwargs["ntfy_topic_keep"] = checkbox_payload(payload.get("ntfy_topic_keep"))
+        kwargs["clear_ntfy_topic"] = checkbox_payload(payload.get("clear_ntfy_topic"))
         return cls(
             enable_desktop_notification=checkbox_payload(
                 kwargs.get("enable_desktop_notification")
             ),
             enable_ntfy=checkbox_payload(kwargs.get("enable_ntfy")),
             ntfy_topic=str(kwargs.get("ntfy_topic", "")),
+            ntfy_topic_keep=checkbox_payload(kwargs.get("ntfy_topic_keep")),
+            clear_ntfy_topic=checkbox_payload(kwargs.get("clear_ntfy_topic")),
             enable_discord_notification=checkbox_payload(
                 kwargs.get("enable_discord_notification")
             ),
@@ -269,12 +279,14 @@ class NotificationConfigForm:
     def to_global_settings(
         self,
         *,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> GlobalNotificationSettings:
         """轉成全域通知預設值。"""
 
         return GlobalNotificationSettings(
             **self.notification_settings_kwargs(
+                existing_ntfy_topic=existing_ntfy_topic,
                 existing_discord_webhook=existing_discord_webhook,
             )
         )
@@ -283,6 +295,7 @@ class NotificationConfigForm:
         self,
         *,
         target_id: str,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> TargetConfig:
         """轉成 manual notification test 使用的 target config。"""
@@ -290,6 +303,7 @@ class NotificationConfigForm:
         return TargetConfig(
             target_id=target_id,
             **self.notification_settings_kwargs(
+                existing_ntfy_topic=existing_ntfy_topic,
                 existing_discord_webhook=existing_discord_webhook,
             ),
         )
@@ -297,6 +311,7 @@ class NotificationConfigForm:
     def notification_settings_kwargs(
         self,
         *,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> NotificationSettingsKwargs:
         """回傳實際保存或測試通知使用的 notification 欄位。"""
@@ -304,15 +319,37 @@ class NotificationConfigForm:
         return build_notification_settings_kwargs(
             enable_desktop_notification=self.enable_desktop_notification,
             enable_ntfy=self.enable_ntfy,
-            ntfy_topic=self.ntfy_topic,
+            ntfy_topic=_secret_string(
+                self.resolved_ntfy_topic(
+                    existing_ntfy_topic=existing_ntfy_topic,
+                    allow_unset=False,
+                )
+            ),
             enable_discord_notification=self.enable_discord_notification,
-            discord_webhook=_discord_webhook_string(
+            discord_webhook=_secret_string(
                 self.resolved_discord_webhook(
                     existing_discord_webhook=existing_discord_webhook,
                     allow_unset=False,
                 )
             ),
         )
+
+    def resolved_ntfy_topic(
+        self,
+        *,
+        existing_ntfy_topic: str = "",
+        allow_unset: bool,
+    ) -> str | UnsetConfigValue:
+        """依 masked form 欄位解析 ntfy topic 的更新語義。"""
+
+        if checkbox_checked(self.clear_ntfy_topic):
+            return ""
+        raw_topic = self.ntfy_topic.strip()
+        if raw_topic:
+            return normalize_ntfy_topic(raw_topic)
+        if checkbox_checked(self.ntfy_topic_keep):
+            return UNSET_CONFIG_VALUE if allow_unset else str(existing_ntfy_topic or "")
+        return ""
 
     def resolved_discord_webhook(
         self,
@@ -349,6 +386,8 @@ class TargetConfigForm:
     enable_desktop_notification: str | None = None
     enable_ntfy: str | None = None
     ntfy_topic: str = ""
+    ntfy_topic_keep: str | None = None
+    clear_ntfy_topic: str | None = None
     enable_discord_notification: str | None = None
     discord_webhook: str = ""
     discord_webhook_keep: str | None = None
@@ -382,6 +421,8 @@ class TargetConfigForm:
         enable_desktop_notification: Annotated[str | None, Form()] = None,
         enable_ntfy: Annotated[str | None, Form()] = None,
         ntfy_topic: Annotated[str, Form()] = "",
+        ntfy_topic_keep: Annotated[str | None, Form()] = None,
+        clear_ntfy_topic: Annotated[str | None, Form()] = None,
         enable_discord_notification: Annotated[str | None, Form()] = None,
         discord_webhook: Annotated[str, Form()] = "",
         discord_webhook_keep: Annotated[str | None, Form()] = None,
@@ -403,6 +444,8 @@ class TargetConfigForm:
             enable_desktop_notification=enable_desktop_notification,
             enable_ntfy=enable_ntfy,
             ntfy_topic=ntfy_topic,
+            ntfy_topic_keep=ntfy_topic_keep,
+            clear_ntfy_topic=clear_ntfy_topic,
             enable_discord_notification=enable_discord_notification,
             discord_webhook=discord_webhook,
             discord_webhook_keep=discord_webhook_keep,
@@ -443,6 +486,8 @@ class TargetConfigForm:
             enable_desktop_notification=notification_form.enable_desktop_notification,
             enable_ntfy=notification_form.enable_ntfy,
             ntfy_topic=notification_form.ntfy_topic,
+            ntfy_topic_keep=notification_form.ntfy_topic_keep,
+            clear_ntfy_topic=notification_form.clear_ntfy_topic,
             enable_discord_notification=notification_form.enable_discord_notification,
             discord_webhook=notification_form.discord_webhook,
             discord_webhook_keep=notification_form.discord_webhook_keep,
@@ -537,15 +582,17 @@ class TargetConfigForm:
     def to_config_patch(
         self,
         *,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
-        preserve_discord_webhook_as_unset: bool = True,
+        preserve_secret_fields_as_unset: bool = True,
     ) -> TargetConfigPatch:
         """轉成 target config patch，供 create/update request 共用。"""
 
         self.validate_refresh_range()
         notification_kwargs = self.notification_patch_kwargs(
+            existing_ntfy_topic=existing_ntfy_topic,
             existing_discord_webhook=existing_discord_webhook,
-            allow_unset=preserve_discord_webhook_as_unset,
+            allow_unset=preserve_secret_fields_as_unset,
         )
         return TargetConfigPatch(
             include_keywords=self.include_keyword_tuple,
@@ -577,12 +624,14 @@ class TargetConfigForm:
         self,
         *,
         sidebar_group_id: str,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> SidebarGroupConfigTemplate:
         """轉成 sidebar group config template；不是 target config owner。"""
 
         self.validate_refresh_range()
         notification_kwargs = self.notification_settings_kwargs(
+            existing_ntfy_topic=existing_ntfy_topic,
             existing_discord_webhook=existing_discord_webhook,
         )
         return SidebarGroupConfigTemplate(
@@ -603,6 +652,7 @@ class TargetConfigForm:
     def notification_settings_kwargs(
         self,
         *,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> NotificationSettingsKwargs:
         """回傳 group template 實際保存用 notification 欄位。"""
@@ -610,9 +660,14 @@ class TargetConfigForm:
         return build_notification_settings_kwargs(
             enable_desktop_notification=self.enable_desktop_notification,
             enable_ntfy=self.enable_ntfy,
-            ntfy_topic=self.ntfy_topic,
+            ntfy_topic=_secret_string(
+                self.resolved_ntfy_topic(
+                    existing_ntfy_topic=existing_ntfy_topic,
+                    allow_unset=False,
+                )
+            ),
             enable_discord_notification=self.enable_discord_notification,
-            discord_webhook=_discord_webhook_string(
+            discord_webhook=_secret_string(
                 self.resolved_discord_webhook(
                     existing_discord_webhook=existing_discord_webhook,
                     allow_unset=False,
@@ -623,11 +678,16 @@ class TargetConfigForm:
     def notification_patch_kwargs(
         self,
         *,
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
         allow_unset: bool,
     ) -> NotificationPatchKwargs:
         """回傳 target config patch 用 notification 欄位。"""
 
+        ntfy_topic = self.resolved_ntfy_topic(
+            existing_ntfy_topic=existing_ntfy_topic,
+            allow_unset=allow_unset,
+        )
         discord_webhook = self.resolved_discord_webhook(
             existing_discord_webhook=existing_discord_webhook,
             allow_unset=allow_unset,
@@ -635,17 +695,41 @@ class TargetConfigForm:
         base = build_notification_settings_kwargs(
             enable_desktop_notification=self.enable_desktop_notification,
             enable_ntfy=self.enable_ntfy,
-            ntfy_topic=self.ntfy_topic,
+            ntfy_topic=_secret_string(ntfy_topic),
             enable_discord_notification=self.enable_discord_notification,
-            discord_webhook=_discord_webhook_string(discord_webhook),
+            discord_webhook=_secret_string(discord_webhook),
         )
         return {
             "enable_desktop_notification": base["enable_desktop_notification"],
             "enable_ntfy": base["enable_ntfy"],
-            "ntfy_topic": base["ntfy_topic"],
+            "ntfy_topic": ntfy_topic,
             "enable_discord_notification": base["enable_discord_notification"],
             "discord_webhook": discord_webhook,
         }
+
+    def resolved_ntfy_topic(
+        self,
+        *,
+        existing_ntfy_topic: str = "",
+        allow_unset: bool,
+    ) -> str | UnsetConfigValue:
+        """依 masked form 欄位解析 ntfy topic 的更新語義。"""
+
+        form = NotificationConfigForm(
+            enable_desktop_notification=self.enable_desktop_notification,
+            enable_ntfy=self.enable_ntfy,
+            ntfy_topic=self.ntfy_topic,
+            ntfy_topic_keep=self.ntfy_topic_keep,
+            clear_ntfy_topic=self.clear_ntfy_topic,
+            enable_discord_notification=self.enable_discord_notification,
+            discord_webhook=self.discord_webhook,
+            discord_webhook_keep=self.discord_webhook_keep,
+            clear_discord_webhook=self.clear_discord_webhook,
+        )
+        return form.resolved_ntfy_topic(
+            existing_ntfy_topic=existing_ntfy_topic,
+            allow_unset=allow_unset,
+        )
 
     def resolved_discord_webhook(
         self,
@@ -659,6 +743,8 @@ class TargetConfigForm:
             enable_desktop_notification=self.enable_desktop_notification,
             enable_ntfy=self.enable_ntfy,
             ntfy_topic=self.ntfy_topic,
+            ntfy_topic_keep=self.ntfy_topic_keep,
+            clear_ntfy_topic=self.clear_ntfy_topic,
             enable_discord_notification=self.enable_discord_notification,
             discord_webhook=self.discord_webhook,
             discord_webhook_keep=self.discord_webhook_keep,
@@ -677,6 +763,7 @@ class TargetConfigForm:
         name: str,
         group_name: str,
         group_cover_image_url: str = "",
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> UpsertGroupPostsTargetRequest:
         """轉成 posts target upsert request。"""
@@ -688,8 +775,9 @@ class TargetConfigForm:
             group_name=group_name,
             group_cover_image_url=group_cover_image_url,
             config=self.to_config_patch(
+                existing_ntfy_topic=existing_ntfy_topic,
                 existing_discord_webhook=existing_discord_webhook,
-                preserve_discord_webhook_as_unset=False,
+                preserve_secret_fields_as_unset=False,
             ),
         )
 
@@ -702,6 +790,7 @@ class TargetConfigForm:
         name: str,
         group_name: str,
         group_cover_image_url: str = "",
+        existing_ntfy_topic: str = "",
         existing_discord_webhook: str = "",
     ) -> UpsertCommentsTargetRequest:
         """轉成 comments target upsert request。"""
@@ -714,8 +803,9 @@ class TargetConfigForm:
             group_name=group_name,
             group_cover_image_url=group_cover_image_url,
             config=self.to_config_patch(
+                existing_ntfy_topic=existing_ntfy_topic,
                 existing_discord_webhook=existing_discord_webhook,
-                preserve_discord_webhook_as_unset=False,
+                preserve_secret_fields_as_unset=False,
             ),
         )
 
@@ -737,6 +827,8 @@ class CreateTargetConfigFormFields:
     enable_desktop_notification: str | None = None
     enable_ntfy: str | None = None
     ntfy_topic: str = ""
+    ntfy_topic_keep: str | None = None
+    clear_ntfy_topic: str | None = None
     enable_discord_notification: str | None = None
     discord_webhook: str = ""
     discord_webhook_keep: str | None = None
@@ -770,6 +862,8 @@ class CreateTargetConfigFormFields:
         enable_desktop_notification: Annotated[str | None, Form()] = None,
         enable_ntfy: Annotated[str | None, Form()] = None,
         ntfy_topic: Annotated[str, Form()] = "",
+        ntfy_topic_keep: Annotated[str | None, Form()] = None,
+        clear_ntfy_topic: Annotated[str | None, Form()] = None,
         enable_discord_notification: Annotated[str | None, Form()] = None,
         discord_webhook: Annotated[str, Form()] = "",
         discord_webhook_keep: Annotated[str | None, Form()] = None,
@@ -791,6 +885,8 @@ class CreateTargetConfigFormFields:
             enable_desktop_notification=enable_desktop_notification,
             enable_ntfy=enable_ntfy,
             ntfy_topic=ntfy_topic,
+            ntfy_topic_keep=ntfy_topic_keep,
+            clear_ntfy_topic=clear_ntfy_topic,
             enable_discord_notification=enable_discord_notification,
             discord_webhook=discord_webhook,
             discord_webhook_keep=discord_webhook_keep,
@@ -827,6 +923,8 @@ class CreateTargetConfigFormFields:
             enable_desktop_notification=self.enable_desktop_notification,
             enable_ntfy=self.enable_ntfy,
             ntfy_topic=self.ntfy_topic,
+            ntfy_topic_keep=self.ntfy_topic_keep,
+            clear_ntfy_topic=self.clear_ntfy_topic,
             enable_discord_notification=self.enable_discord_notification,
             discord_webhook=self.discord_webhook,
             discord_webhook_keep=self.discord_webhook_keep,

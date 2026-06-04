@@ -135,6 +135,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
                 template = app_context.services.sidebar_layout.save_template(
                     form.to_sidebar_group_template(
                         sidebar_group_id=group_id,
+                        existing_ntfy_topic=current_template.ntfy_topic,
                         existing_discord_webhook=current_template.discord_webhook,
                     )
                 )

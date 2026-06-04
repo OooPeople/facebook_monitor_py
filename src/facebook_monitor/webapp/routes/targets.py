@@ -15,9 +15,6 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.target_actions import clear_target_match_history_action
-from facebook_monitor.application.target_actions import clear_target_notification_data_action
-from facebook_monitor.application.target_actions import clear_target_seen_baseline_action
 from facebook_monitor.application.target_actions import delete_target_action
 from facebook_monitor.application.target_actions import pause_target_monitoring_action
 from facebook_monitor.application.target_actions import request_target_scan_once_action
@@ -163,6 +160,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
+                            existing_ntfy_topic=notification_defaults.ntfy_topic,
                             existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
@@ -186,6 +184,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
+                            existing_ntfy_topic=notification_defaults.ntfy_topic,
                             existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
@@ -355,6 +354,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 existing_config = app_context.services.targets.get_config_for_target(target)
             config = notification_form.to_target_config(
                 target_id=target.id,
+                existing_ntfy_topic=existing_config.ntfy_topic,
                 existing_discord_webhook=existing_config.discord_webhook,
             )
             results = await run_in_threadpool(
@@ -459,75 +459,6 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except Exception as exc:
             return redirect_with_error(
                 "刪除失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
-            return_to=return_to,
-            feedback=outcome.feedback,
-        )
-
-    @app.post("/targets/{target_id}/data/seen/clear")
-    async def clear_target_seen_baseline(
-        request: Request,
-        target_id: str,
-        return_to: Annotated[str, Form()] = "",
-    ) -> RedirectResponse:
-        """清除單一 target 的 seen baseline。"""
-
-        try:
-            outcome = clear_target_seen_baseline_action(get_db_path(request), target_id)
-            if not outcome.ok:
-                return redirect_with_error(outcome.message, return_to=return_to)
-        except Exception as exc:
-            return redirect_with_error(
-                "資料清除失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
-            return_to=return_to,
-            feedback=outcome.feedback,
-        )
-
-    @app.post("/targets/{target_id}/data/history/clear")
-    async def clear_target_match_history(
-        request: Request,
-        target_id: str,
-        return_to: Annotated[str, Form()] = "",
-    ) -> RedirectResponse:
-        """清除單一 target 的命中紀錄。"""
-
-        try:
-            outcome = clear_target_match_history_action(get_db_path(request), target_id)
-            if not outcome.ok:
-                return redirect_with_error(outcome.message, return_to=return_to)
-        except Exception as exc:
-            return redirect_with_error(
-                "資料清除失敗：" + format_failure_message_text(str(exc)),
-                return_to=return_to,
-            )
-        return redirect_with_message(
-            outcome.message,
-            return_to=return_to,
-            feedback=outcome.feedback,
-        )
-
-    @app.post("/targets/{target_id}/data/notifications/clear")
-    async def clear_target_notification_data(
-        request: Request,
-        target_id: str,
-        return_to: Annotated[str, Form()] = "",
-    ) -> RedirectResponse:
-        """清除單一 target 的通知事件與 outbox rows。"""
-
-        try:
-            outcome = clear_target_notification_data_action(get_db_path(request), target_id)
-            if not outcome.ok:
-                return redirect_with_error(outcome.message, return_to=return_to)
-        except Exception as exc:
-            return redirect_with_error(
-                "資料清除失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(

@@ -57,6 +57,8 @@ from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
@@ -111,6 +113,39 @@ def make_supported_macos_update_paths(tmp_path: Path):
         encoding="utf-8",
     )
     return paths
+
+
+def verified_update_download_result(
+    *,
+    update_check: UpdateCheckResult,
+    file_path: Path,
+    expected_sha256: str = "a" * 64,
+    actual_sha256: str = "a" * 64,
+) -> UpdateDownloadResult:
+    """建立包含 signed manifest metadata 的 settings 測試下載結果。"""
+
+    manifest_path = file_path.with_name(
+        release_manifest_asset_name(update_check.latest_version)
+    )
+    signature_path = file_path.with_name(
+        release_manifest_signature_asset_name(update_check.latest_version)
+    )
+    manifest_path.write_text("manifest", encoding="utf-8")
+    signature_path.write_text("sig", encoding="utf-8")
+    return UpdateDownloadResult(
+        status="verified",
+        downloaded=True,
+        verified=True,
+        file_path=file_path,
+        sha256_path=file_path.with_name(file_path.name + ".sha256"),
+        expected_sha256=expected_sha256,
+        actual_sha256=actual_sha256,
+        failure_reason="",
+        manifest_path=manifest_path,
+        manifest_signature_path=signature_path,
+        manifest_sha256="b" * 64,
+        manifest_key_id="test-key",
+    )
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
@@ -311,7 +346,7 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     assert "Reset runtime data on startup" in response.text
     assert "複製診斷資訊" in response.text
     assert "runtime-diagnostics-copy-source" in response.text
-    assert "data-secret-input" not in response.text
+    assert "data-secret-input" in response.text
     assert "data-dirty-submit" in response.text
 
 
@@ -653,15 +688,9 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     opened_paths: list[Path] = []
@@ -751,15 +780,9 @@ def test_settings_macos_download_update_does_not_create_pending_update(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     monkeypatch.setattr(
@@ -833,15 +856,9 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     launched_paths: list[Path] = []
@@ -942,15 +959,9 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
         file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     launched_paths: list[Path] = []
@@ -1050,15 +1061,9 @@ def test_settings_macos_download_and_apply_uses_macos_release_asset_policy(
         file_path = updates_dir / "9.9.9" / update_check.asset_name
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
-        return UpdateDownloadResult(
-            status="verified",
-            downloaded=True,
-            verified=True,
+        return verified_update_download_result(
+            update_check=update_check,
             file_path=file_path,
-            sha256_path=file_path.with_name(file_path.name + ".sha256"),
-            expected_sha256="a" * 64,
-            actual_sha256="a" * 64,
-            failure_reason="",
         )
 
     def fake_launch_temp_updater(*, paths, wait_seconds=300):
@@ -2400,12 +2405,13 @@ def test_update_config_route_rejects_invalid_discord_webhook_without_overwrite(
     assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/original"
 
 
-def test_update_config_route_preserves_or_clears_masked_discord_webhook(
+def test_update_config_route_preserves_or_clears_masked_notification_secrets(
     tmp_path: Path,
 ) -> None:
-    """masked webhook 欄位留空時可保留，明確勾選清除時才刪除。"""
+    """masked notification 欄位留空時可保留，明確清除時才刪除。"""
 
     db_path = tmp_path / "app.db"
+    original_topic = "original-topic"
     original_webhook = "https://discord.com/api/webhooks/1234567890/original"
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.services.targets.upsert_group_posts_target(
@@ -2413,6 +2419,8 @@ def test_update_config_route_preserves_or_clears_masked_discord_webhook(
                 group_id="222518561920110",
                 canonical_url="https://www.facebook.com/groups/222518561920110",
                 config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic=original_topic,
                     enable_discord_notification=True,
                     discord_webhook=original_webhook,
                 ),
@@ -2428,6 +2436,9 @@ def test_update_config_route_preserves_or_clears_masked_discord_webhook(
             "min_refresh_sec": "20",
             "max_refresh_sec": "40",
             "max_items_per_scan": "5",
+            "enable_ntfy": "on",
+            "ntfy_topic": "",
+            "ntfy_topic_keep": "on",
             "enable_discord_notification": "on",
             "discord_webhook": "",
             "discord_webhook_keep": "on",
@@ -2444,6 +2455,10 @@ def test_update_config_route_preserves_or_clears_masked_discord_webhook(
             "min_refresh_sec": "20",
             "max_refresh_sec": "40",
             "max_items_per_scan": "5",
+            "enable_ntfy": "on",
+            "ntfy_topic": "",
+            "ntfy_topic_keep": "on",
+            "clear_ntfy_topic": "on",
             "enable_discord_notification": "on",
             "discord_webhook": "",
             "discord_webhook_keep": "on",
@@ -2456,9 +2471,11 @@ def test_update_config_route_preserves_or_clears_masked_discord_webhook(
 
     assert preserve_response.status_code == 303
     assert preserved_config is not None
+    assert preserved_config.ntfy_topic == original_topic
     assert preserved_config.discord_webhook == original_webhook
     assert clear_response.status_code == 303
     assert cleared_config is not None
+    assert cleared_config.ntfy_topic == ""
     assert cleared_config.discord_webhook == ""
 
 
@@ -2814,12 +2831,12 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert "可留空，系統會嘗試使用社團名稱" in form_response.text
     assert "data-new-target-form" in form_response.text
     assert 'data-loading-text="建立中..."' in form_response.text
-    assert "data-secret-input" not in form_response.text
+    assert "data-secret-input" in form_response.text
     assert f'maxlength="{MAX_TARGET_URL_LENGTH}"' in form_response.text
     assert f'maxlength="{MAX_DISPLAY_NAME_LENGTH}"' in form_response.text
     assert 'name="ntfy_topic" type="text"' in form_response.text
     assert f'maxlength="{MAX_NTFY_TOPIC_LENGTH}"' in form_response.text
-    assert 'name="discord_webhook" type="password"' in form_response.text
+    assert 'name="discord_webhook" type="text"' in form_response.text
     assert f'maxlength="{MAX_NOTIFICATION_ENDPOINT_LENGTH}"' in form_response.text
     assert (
         form_response.text.index('name="refresh_mode" type="radio" value="floating"')
@@ -2863,12 +2880,13 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/example_token"
 
 
-def test_create_target_route_copies_masked_global_discord_webhook(
+def test_create_target_route_copies_masked_global_notification_secrets(
     tmp_path: Path,
 ) -> None:
-    """新增 target 表單不回填完整 webhook，但仍可套用全域預設值。"""
+    """新增 target 表單不回填 secret，但仍可套用全域通知預設值。"""
 
     db_path = tmp_path / "app.db"
+    global_topic = "global-topic"
     global_webhook = "https://discord.com/api/webhooks/1234567890/global_token"
     client = TestClient(
         create_app(
@@ -2880,6 +2898,8 @@ def test_create_target_route_copies_masked_global_discord_webhook(
     client.post(
         "/settings/notifications",
         data={
+            "enable_ntfy": "on",
+            "ntfy_topic": global_topic,
             "enable_discord_notification": "on",
             "discord_webhook": global_webhook,
         },
@@ -2896,6 +2916,9 @@ def test_create_target_route_copies_masked_global_discord_webhook(
             "min_refresh_sec": "20",
             "max_refresh_sec": "40",
             "max_items_per_scan": "5",
+            "enable_ntfy": "on",
+            "ntfy_topic": "",
+            "ntfy_topic_keep": "on",
             "enable_discord_notification": "on",
             "discord_webhook": "",
             "discord_webhook_keep": "on",
@@ -2904,7 +2927,9 @@ def test_create_target_route_copies_masked_global_discord_webhook(
     )
 
     assert form_response.status_code == 200
+    assert global_topic not in form_response.text
     assert global_webhook not in form_response.text
+    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in form_response.text
     assert "已設定；留空代表不變更" in form_response.text
     assert create_response.status_code == 303
     with SqliteApplicationContext(db_path) as app_context:
@@ -2915,6 +2940,8 @@ def test_create_target_route_copies_masked_global_discord_webhook(
         assert target is not None
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
+    assert config.enable_ntfy
+    assert config.ntfy_topic == global_topic
     assert config.enable_discord_notification
     assert config.discord_webhook == global_webhook
 
@@ -3558,13 +3585,15 @@ def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path)
     assert "套用到所有 target" not in settings_page.text
     assert "發送測試通知" not in settings_page.text
     assert form_response.status_code == 200
-    assert "value=\"phase0test\"" in form_response.text
+    assert "phase0test" not in form_response.text
+    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in form_response.text
     assert "https://discord.com/api/webhooks/1234567890/example_token" not in (
         form_response.text
     )
     assert 'name="discord_webhook_keep" type="hidden" value="on"' in form_response.text
     assert "已設定；留空代表不變更" in form_response.text
-    assert "清除已保存 Discord webhook" in form_response.text
+    assert "清除已保存 Discord webhook" not in form_response.text
+    assert "data-secret-clear-button" in form_response.text
     assert test_response.status_code == 200
     assert (
         page_feedback(test_response.text)["message"]
@@ -3613,17 +3642,20 @@ def test_settings_notifications_reject_invalid_discord_webhook_without_saving(
     assert settings.discord_webhook == ""
 
 
-def test_settings_notifications_preserves_or_clears_masked_discord_webhook(
+def test_settings_notifications_preserves_or_clears_masked_notification_secrets(
     tmp_path: Path,
 ) -> None:
-    """設定頁 webhook 欄位留空不回寫 secret，清除需明確勾選。"""
+    """設定頁 notification secret 欄位留空不回寫，清除需明確操作。"""
 
     db_path = tmp_path / "app.db"
+    topic = "global-topic"
     webhook = "https://discord.com/api/webhooks/1234567890/global_token"
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
     client.post(
         "/settings/notifications",
         data={
+            "enable_ntfy": "on",
+            "ntfy_topic": topic,
             "enable_discord_notification": "on",
             "discord_webhook": webhook,
         },
@@ -3634,6 +3666,9 @@ def test_settings_notifications_preserves_or_clears_masked_discord_webhook(
     preserve_response = client.post(
         "/settings/notifications",
         data={
+            "enable_ntfy": "on",
+            "ntfy_topic": "",
+            "ntfy_topic_keep": "on",
             "enable_discord_notification": "on",
             "discord_webhook": "",
             "discord_webhook_keep": "on",
@@ -3645,6 +3680,10 @@ def test_settings_notifications_preserves_or_clears_masked_discord_webhook(
     clear_response = client.post(
         "/settings/notifications",
         data={
+            "enable_ntfy": "on",
+            "ntfy_topic": "",
+            "ntfy_topic_keep": "on",
+            "clear_ntfy_topic": "on",
             "enable_discord_notification": "on",
             "discord_webhook": "",
             "discord_webhook_keep": "on",
@@ -3656,11 +3695,15 @@ def test_settings_notifications_preserves_or_clears_masked_discord_webhook(
         cleared_settings = app_context.repositories.global_notification_settings.get()
 
     assert settings_page.status_code == 200
+    assert topic not in settings_page.text
     assert webhook not in settings_page.text
+    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in settings_page.text
     assert 'name="discord_webhook_keep" type="hidden" value="on"' in settings_page.text
     assert preserve_response.status_code == 303
+    assert preserved_settings.ntfy_topic == topic
     assert preserved_settings.discord_webhook == webhook
     assert clear_response.status_code == 303
+    assert cleared_settings.ntfy_topic == ""
     assert cleared_settings.discord_webhook == ""
 
 
@@ -3980,6 +4023,94 @@ def test_settings_shows_outbox_health_and_retries_failed_notifications(
         )
     assert entry is not None
     assert entry.status == NotificationOutboxStatus.SENT
+
+
+def test_settings_can_clear_failed_outbox_without_deleting_pending_rows(
+    tmp_path: Path,
+) -> None:
+    """Settings 頁可清 failed outbox，但不誤刪 pending rows。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:failed:desktop",
+                target_id=target.id,
+                item_key="failed",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="失敗通知",
+                message="失敗內容",
+                status=NotificationOutboxStatus.FAILED,
+                attempts=3,
+                last_error="desktop_failed",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:pending:desktop",
+                target_id=target.id,
+                item_key="pending",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="待送通知",
+                message="待送內容",
+                status=NotificationOutboxStatus.PENDING,
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+
+    response = client.post(
+        "/settings/notifications/clear-failed",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert page_feedback(response.text)["message"] == "已清除 failed 通知 1 筆"
+    with SqliteApplicationContext(db_path) as app_context:
+        failed_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:failed:desktop",
+        )
+        pending_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{target.id}:pending:desktop",
+        )
+    assert failed_entry is None
+    assert pending_entry is not None
+    assert pending_entry.status == NotificationOutboxStatus.PENDING
+
+
+def test_settings_clear_failed_outbox_reports_zero_when_no_failed_rows(
+    tmp_path: Path,
+) -> None:
+    """沒有 failed rows 時，清除操作仍回報 0 並保持可預期。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        )
+    )
+
+    response = client.post(
+        "/settings/notifications/clear-failed",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert page_feedback(response.text)["message"] == "已清除 failed 通知 0 筆"
 
 
 def test_settings_support_bundle_excludes_private_runtime_files(tmp_path: Path) -> None:
@@ -4721,110 +4852,6 @@ def test_scan_once_requires_started_target(tmp_path: Path) -> None:
     assert "error=" in response.headers["location"]
     assert scheduler_manager.started_count == 0
     assert scheduler_manager.woken_count == 0
-
-
-def test_target_data_clear_routes_are_target_scoped(tmp_path: Path) -> None:
-    """target 更多操作中的資料清除只影響指定 target。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app_context:
-        first = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="111",
-                canonical_url="https://www.facebook.com/groups/111",
-            )
-        )
-        second = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222",
-                canonical_url="https://www.facebook.com/groups/222",
-            )
-        )
-        for target in (first, second):
-            app_context.repositories.seen_items.mark_seen(
-                SeenItem(
-                    scope_id=target.scope_id,
-                    item_key=f"{target.id}:seen",
-                    item_kind=ItemKind.POST,
-                )
-            )
-            app_context.repositories.match_history.add(
-                MatchHistoryEntry(
-                    target_id=target.id,
-                    group_id=target.group_id,
-                    item_kind=ItemKind.POST,
-                    item_key=f"{target.id}:history",
-                    text="命中紀錄內容",
-                    include_rule="票",
-                )
-            )
-            app_context.repositories.notification_events.add(
-                NotificationEvent(
-                    target_id=target.id,
-                    item_key=f"{target.id}:event",
-                    channel=NotificationChannel.NTFY,
-                    status=NotificationStatus.FAILED,
-                    message="ntfy_failed",
-                )
-            )
-            app_context.repositories.notification_outbox.enqueue(
-                NotificationOutboxEntry(
-                    idempotency_key=f"{target.id}:outbox:ntfy",
-                    target_id=target.id,
-                    item_key=f"{target.id}:outbox",
-                    item_kind=ItemKind.POST,
-                    channel=NotificationChannel.NTFY,
-                    title="title",
-                    message="message",
-                )
-            )
-
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
-
-    seen_response = client.post(
-        f"/targets/{first.id}/data/seen/clear",
-        follow_redirects=False,
-    )
-    history_response = client.post(
-        f"/targets/{first.id}/data/history/clear",
-        follow_redirects=False,
-    )
-    notification_response = client.post(
-        f"/targets/{first.id}/data/notifications/clear",
-        follow_redirects=False,
-    )
-
-    assert seen_response.status_code == 303
-    assert history_response.status_code == 303
-    assert notification_response.status_code == 303
-    with SqliteApplicationContext(db_path) as app_context:
-        first_seen = app_context.repositories.seen_items.has_seen(
-            first.scope_id,
-            f"{first.id}:seen",
-        )
-        second_seen = app_context.repositories.seen_items.has_seen(
-            second.scope_id,
-            f"{second.id}:seen",
-        )
-        history_counts = app_context.repositories.match_history.count_by_targets(
-            [first.id, second.id]
-        )
-        first_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
-            f"{first.id}:outbox:ntfy",
-        )
-        second_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
-            f"{second.id}:outbox:ntfy",
-        )
-        first_events = app_context.repositories.notification_events.list_by_target(first.id)
-        second_events = app_context.repositories.notification_events.list_by_target(second.id)
-    assert not first_seen
-    assert second_seen
-    assert history_counts[first.id] == 0
-    assert history_counts[second.id] == 1
-    assert first_outbox is None
-    assert second_outbox is not None
-    assert first_events == []
-    assert len(second_events) == 1
 
 
 def test_dashboard_revision_endpoint_changes_after_target_update(tmp_path: Path) -> None:

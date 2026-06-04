@@ -7,6 +7,8 @@ from pathlib import Path
 
 from facebook_monitor.updater import main
 from facebook_monitor.updates.apply import UpdaterApplyResult
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 
 
 def test_updater_restart_invalid_pending_does_not_crash(
@@ -53,13 +55,18 @@ def test_updater_restart_uses_pending_loaded_before_success_cleanup(
     runtime_dir.mkdir(parents=True)
     zip_path = updates_dir / "update.zip"
     zip_path.write_bytes(b"zip")
+    manifest_path = updates_dir / release_manifest_asset_name("0.1.0")
+    signature_path = updates_dir / release_manifest_signature_asset_name("0.1.0")
+    manifest_path.write_text("manifest", encoding="utf-8")
+    signature_path.write_text("sig", encoding="utf-8")
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "version": "0.1.0",
-                "asset_name": zip_path.name,
+                "repository": "OooPeople/facebook_monitor_py",
+                "asset_name": "facebook-monitor-0.1.0-windows-portable.zip",
                 "zip_path": str(zip_path),
                 "expected_sha256": "a" * 64,
                 "actual_sha256": "a" * 64,
@@ -70,6 +77,10 @@ def test_updater_restart_uses_pending_loaded_before_success_cleanup(
                 "logs_dir": str(data_dir / "logs"),
                 "runtime_dir": str(runtime_dir),
                 "created_at": "2026-05-17T00:00:00+00:00",
+                "manifest_path": str(manifest_path),
+                "manifest_signature_path": str(signature_path),
+                "manifest_sha256": "b" * 64,
+                "manifest_key_id": "test-key",
             }
         ),
         encoding="utf-8",

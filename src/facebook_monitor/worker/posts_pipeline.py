@@ -51,6 +51,7 @@ from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
+from facebook_monitor.worker.scan_sort_policy import sort_control_absent_without_observed_label
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,7 @@ def scan_posts_page(
     if should_skip_scan_for_unconfirmed_sort(
         config=config,
         sort_adjust_result=sort_adjust_result,
+        allow_absent_sort_control_without_label=True,
     ):
         finalize_result = record_skipped_scan(
             app=app,
@@ -314,6 +316,7 @@ async def scan_posts_page_async(
     if should_skip_scan_for_unconfirmed_sort(
         config=config,
         sort_adjust_result=sort_adjust_result,
+        allow_absent_sort_control_without_label=True,
     ):
         finalize_result = record_skipped_scan(
             app=app,
@@ -438,14 +441,23 @@ def build_feed_seen_stop_predicate(
     scroll_rounds: int,
     sort_adjust_result: SortAdjustResult,
 ) -> SeenItemPredicate | None:
-    """只在已確認 feed 為新貼文排序時啟用 seen-stop，避免置頂貼文造成漏掃。"""
+    """只在可信的新貼文排序情境啟用 seen-stop，避免置頂貼文造成漏掃。"""
 
     if not config.auto_load_more or max(scroll_rounds, 0) <= 0:
         return None
-    if sort_adjust_result.after_label != FEED_SORT_NEWEST_LABEL:
+    if not _feed_seen_stop_sort_is_trusted(sort_adjust_result):
         return None
 
     def has_seen_item(item_aliases: tuple[str, ...]) -> bool:
         return app.repositories.seen_items.has_seen_any(target.scope_id, item_aliases)
 
     return has_seen_item
+
+
+def _feed_seen_stop_sort_is_trusted(sort_adjust_result: SortAdjustResult) -> bool:
+    """判斷 posts feed 是否可安全套用 seen-stop 的排序前提。"""
+
+    return (
+        sort_adjust_result.after_label == FEED_SORT_NEWEST_LABEL
+        or sort_control_absent_without_observed_label(sort_adjust_result)
+    )

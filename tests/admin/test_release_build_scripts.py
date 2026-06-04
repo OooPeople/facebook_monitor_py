@@ -6,6 +6,7 @@ import argparse
 
 from scripts.admin import build_macos_release
 from scripts.admin import build_windows_release
+from scripts.admin._release_build import PYINSTALLER_REQUIREMENT
 
 
 def _windows_args(**overrides: object) -> argparse.Namespace:
@@ -45,6 +46,7 @@ def test_windows_release_build_steps_cover_full_artifact_flow() -> None:
 
     assert labels == [
         "install pyinstaller",
+        "verify pyinstaller version",
         "install playwright chromium",
         "pyinstaller windows onedir",
         "create windows release zip",
@@ -54,6 +56,10 @@ def test_windows_release_build_steps_cover_full_artifact_flow() -> None:
     artifact_step = next(step for step in steps if step.label == "validate windows artifact")
     assert "--require-manifest" not in artifact_step.command
     assert "--expected-tag" in artifact_step.command
+    install_step = next(step for step in steps if step.label == "install pyinstaller")
+    assert PYINSTALLER_REQUIREMENT in install_step.command
+    verify_step = next(step for step in steps if step.label == "verify pyinstaller version")
+    assert "PyInstaller" in verify_step.command[-1]
     full_step = next(step for step in steps if step.label == "full release validation")
     assert "--include-artifacts" in full_step.command
     assert "--skip-artifact-manifest" in full_step.command
@@ -74,6 +80,7 @@ def test_windows_release_build_steps_can_skip_install_and_full_validation() -> N
     labels = [step.label for step in steps]
 
     assert "install pyinstaller" not in labels
+    assert "verify pyinstaller version" in labels
     assert "install playwright chromium" not in labels
     assert "full release validation" not in labels
     assert "validate windows artifact" in labels
@@ -103,6 +110,7 @@ def test_macos_release_build_steps_cover_full_artifact_flow() -> None:
 
     assert labels == [
         "install pyinstaller",
+        "verify pyinstaller version",
         "install playwright chromium",
         "pyinstaller macos onedir",
         "create macos release zip",
@@ -113,6 +121,10 @@ def test_macos_release_build_steps_cover_full_artifact_flow() -> None:
     assert "--platform" in artifact_step.command
     assert "macos-arm64" in artifact_step.command
     assert "--require-manifest" not in artifact_step.command
+    install_step = next(step for step in steps if step.label == "install pyinstaller")
+    assert PYINSTALLER_REQUIREMENT in install_step.command
+    verify_step = next(step for step in steps if step.label == "verify pyinstaller version")
+    assert "PyInstaller" in verify_step.command[-1]
     full_step = next(step for step in steps if step.label == "full release validation")
     assert "--artifact-platform" in full_step.command
     assert "macos-arm64" in full_step.command
@@ -133,6 +145,7 @@ def test_macos_release_build_steps_can_skip_install_and_full_validation() -> Non
     labels = [step.label for step in steps]
 
     assert "install pyinstaller" not in labels
+    assert "verify pyinstaller version" in labels
     assert "install playwright chromium" not in labels
     assert "full release validation" not in labels
     assert "validate macos artifact" in labels

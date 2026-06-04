@@ -765,6 +765,26 @@ def migrate_33_to_34(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE IF EXISTS group_configs")
 
 
+def migrate_34_to_35(connection: sqlite3.Connection) -> None:
+    """新增保留換行的顯示文字欄位，補齊掃描結果持久化語義。"""
+
+    for column in (
+        MigrationColumn(
+            "match_history",
+            "display_text",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        MigrationColumn(
+            "latest_scan_items",
+            "display_text",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+    ):
+        add_column_if_missing(connection, column)
+    _backfill_display_text_from_text(connection, "match_history")
+    _backfill_display_text_from_text(connection, "latest_scan_items")
+
+
 def ensure_v32_logical_dedupe_schema(connection: sqlite3.Connection) -> None:
     """建立 v32 logical item 與 notification dedupe tables/indexes。"""
 
@@ -1545,6 +1565,7 @@ MIGRATIONS: dict[int, Migration] = {
     31: migrate_31_to_32,
     32: migrate_32_to_33,
     33: migrate_33_to_34,
+    34: migrate_34_to_35,
 }
 
 
@@ -1661,6 +1682,25 @@ def _backfill_include_keyword_groups(connection: sqlite3.Connection, table_name:
         )
 
 
+def _backfill_display_text_from_text(connection: sqlite3.Connection, table_name: str) -> None:
+    """舊資料沒有 display_text 時，以既有 text 回填可呈現內容。"""
+
+    if not table_exists(connection, table_name):
+        return
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    column_names = {str(row[1]) for row in rows}
+    if "text" not in column_names or "display_text" not in column_names:
+        return
+    connection.execute(
+        f"""
+        UPDATE {table_name}
+        SET display_text = text
+        WHERE display_text = ''
+          AND text <> ''
+        """
+    )
+
+
 def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     """回傳 SQLite table 是否存在。"""
 
@@ -1734,6 +1774,7 @@ __all__ = [
     "migrate_31_to_32",
     "migrate_32_to_33",
     "migrate_33_to_34",
+    "migrate_34_to_35",
     "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

@@ -1386,3 +1386,106 @@ def test_initialize_schema_v14_copies_group_configs_to_each_target_before_v15(
     assert defaults_config is not None
     assert defaults_config.include_keywords == ()
     assert not has_group_configs
+
+
+def test_initialize_schema_migrates_v34_display_text_columns(
+    tmp_path: Path,
+) -> None:
+    """v35 會補上 display_text 欄位，並用既有 text 回填可呈現內容。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = encode_datetime(utc_now())
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '34');
+            CREATE TABLE match_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                item_kind TEXT NOT NULL,
+                parent_post_id TEXT NOT NULL,
+                comment_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                author TEXT NOT NULL,
+                text TEXT NOT NULL,
+                permalink TEXT NOT NULL,
+                include_rule TEXT NOT NULL,
+                timestamp_text TEXT NOT NULL,
+                notified_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE latest_scan_items (
+                target_id TEXT NOT NULL,
+                scan_run_id INTEGER NOT NULL,
+                item_kind TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                item_index INTEGER NOT NULL,
+                author TEXT NOT NULL,
+                text TEXT NOT NULL,
+                permalink TEXT NOT NULL,
+                matched_keyword TEXT NOT NULL,
+                debug_metadata TEXT NOT NULL DEFAULT '{}',
+                scanned_at TEXT NOT NULL,
+                PRIMARY KEY (target_id, item_key)
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO match_history (
+                target_id, group_id, group_name, item_kind, parent_post_id,
+                comment_id, item_key, author, text, permalink, include_rule,
+                timestamp_text, notified_at, created_at
+            )
+            VALUES (
+                'target-1', '111', '測試社團', 'post', '', '', 'item-1',
+                '作者', '第一行 第二行', '', '票券', '', ?, ?
+            );
+            """,
+            (now_text, now_text),
+        )
+        connection.execute(
+            """
+            INSERT INTO latest_scan_items (
+                target_id, scan_run_id, item_kind, item_key, item_index,
+                author, text, permalink, matched_keyword, debug_metadata, scanned_at
+            )
+            VALUES (
+                'target-1', 1, 'post', 'item-1', 0, '作者',
+                '第一行 第二行', '', '票券', '{}', ?
+            );
+            """,
+            (now_text,),
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        has_history_display_text = table_has_column(
+            connection,
+            "match_history",
+            "display_text",
+        )
+        has_latest_display_text = table_has_column(
+            connection,
+            "latest_scan_items",
+            "display_text",
+        )
+        history = MatchHistoryRepository(connection).list_by_target("target-1")
+        latest_items = LatestScanItemRepository(connection).list_by_target("target-1")
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_history_display_text
+    assert has_latest_display_text
+    assert history[0].display_text == "第一行 第二行"
+    assert latest_items[0].display_text == "第一行 第二行"

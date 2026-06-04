@@ -507,6 +507,30 @@ def test_comment_sort_script_waits_and_keeps_failure_candidates() -> None:
     assert "if (isMenuLike) return true;" in COMMENT_SORT_ADJUST_SCRIPT
 
 
+def test_native_sort_menu_root_selector_excludes_dialog_roots() -> None:
+    """native recovery 不可把 Facebook comments dialog 當成可 Escape 的排序 menu。"""
+
+    from facebook_monitor.facebook.sort_controls import SORT_MENU_ROOT_SELECTOR
+
+    assert '[role="menu"]' in SORT_MENU_ROOT_SELECTOR
+    assert '[role="listbox"]' in SORT_MENU_ROOT_SELECTOR
+    assert '[role="dialog"]' not in SORT_MENU_ROOT_SELECTOR
+    assert "[aria-modal" not in SORT_MENU_ROOT_SELECTOR
+
+
+def test_js_sort_fallback_menu_root_selector_excludes_dialog_roots() -> None:
+    """JS fallback diagnostics 也不可把 Facebook comments dialog 當成 sort menu。"""
+
+    from facebook_monitor.facebook.sort_controls import SORT_MENU_ROOT_SELECTOR
+
+    expected_call = f"document.querySelectorAll({json.dumps(SORT_MENU_ROOT_SELECTOR)})"
+    for script in (FEED_SORT_ADJUST_SCRIPT, COMMENT_SORT_ADJUST_SCRIPT):
+        assert "__SORT_MENU_ROOT_SELECTOR__" not in script
+        assert expected_call in script
+        assert '[role="dialog"]' not in script
+        assert "[aria-modal" not in script
+
+
 def test_comment_sort_uses_native_click_before_js_fallback() -> None:
     """comments path 優先用 Playwright trusted click，避免 JS click 打不開 menu。"""
 

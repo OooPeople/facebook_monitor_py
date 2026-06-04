@@ -113,7 +113,7 @@ zip 解開後的 root 是 `facebook-monitor/`。macOS zip 會在 root 放 `READM
 
 `build_windows_release.py` / `build_macos_release.py` 會依序執行：
 
-1. 安裝 PyInstaller。
+1. 安裝 scripts 內固定版本的 PyInstaller，並驗證目前環境版本。
 2. 安裝 Playwright Chromium。
 3. 執行對應 PyInstaller spec。
 4. 建立平台 zip 與同名 `.sha256`。
@@ -128,9 +128,26 @@ zip 解開後的 root 是 `facebook-monitor/`。macOS zip 會在 root 放 `READM
 .\scripts\uv.ps1 run python scripts\admin\build_windows_release.py --force --expected-signer-subject "簽章憑證 subject 片段"
 ```
 
-macOS build script 也支援 `--expected-tag`、`--skip-pyinstaller-install`、`--skip-playwright-install`、`--skip-release-validation`。
+macOS build script 也支援 `--expected-tag`、`--skip-pyinstaller-install`、`--skip-playwright-install`、`--skip-release-validation`。`--skip-pyinstaller-install` 只略過安裝，仍會驗證 PyInstaller 版本。
 
 ## 驗證
+
+一般 release validation：
+
+```powershell
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py
+```
+
+環境已同步時可加 `--skip-sync`；需要 dependency advisory 檢查時可加 `--include-audit` 執行 `pip-audit`。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace 或 conflict marker 時 fail。
+
+需要連 artifact 一起驗時：
+
+```powershell
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts
+.\scripts\uv.ps1 run python scripts\admin\release_validation.py --include-artifacts --artifact-platform macos-arm64
+```
+
+`--include-artifacts` 預設檢查目前 version 的 Windows portable zip、同名 `.sha256`、signed manifest / `.sig`、zip 內 EXE version resource、generated Windows version resource、必要 onedir 檔案與私密 runtime data。若平台 build 階段尚未 finalize manifest，可加 `--skip-artifact-manifest` 只驗 zip / `.sha256` / 平台內容。若要驗 macOS Apple Silicon onedir zip，加 `--artifact-platform macos-arm64`，會檢查 `.app` Info.plist version、主要 executable / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit。若已有正式 Windows code signing 憑證，可加 `--expected-signer-subject "<subject>"`；若要確認 tag 語義，可加 `--expected-tag vX.Y.Z`。
 
 finalize 後重驗 release asset：
 
@@ -154,13 +171,16 @@ macOS 已有打包產物時：
 uv run python scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor
 ```
 
+Updater 程式碼的聚焦開發驗證指令看 `docs/tooling.md#updater-開發驗證`。
+
 發佈前至少確認：
 
 - zip、`.sha256`、manifest、`.sig` 都是目前版本，且 validation 通過。
 - frozen app 用隔離 data dir 可啟動，`/health`、首頁與 static assets 正常。
 - Windows zip 有 main EXE、updater EXE、bundled Chromium 與 tray icon asset。
 - macOS zip 有 `Facebook Monitor.app`，主要 executable / updater / bundled browser 保留 arm64 Mach-O 與 executable bit。
-- updater smoke 可替換 app files、保留 `data/` / profiles，並清除本次下載 zip / `.sha256` / manifest / pending handoff。
+- updater smoke 可等待舊 app 退出、替換 app files、保留 `data/` / profiles、重啟新版 app，並清除本次下載 zip / `.sha256` / manifest / pending handoff。
+- 正式 tag 前保留完整輸出紀錄，包含 Facebook login、metadata resolver、posts/comments scan 與 notification smoke 結果。
 
 ## 目前不做
 

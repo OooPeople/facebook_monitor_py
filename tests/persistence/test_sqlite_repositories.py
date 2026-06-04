@@ -218,6 +218,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                 item_kind=ItemKind.POST,
                 item_key="item-hash",
                 text="測試文字",
+                display_text="測試文字\n第二行",
                 permalink="https://www.facebook.com/groups/example/posts/1",
                 include_rule="票;讓票",
                 include_rules=("票", "讓票"),
@@ -230,6 +231,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert history_id > 0
         history = history_repo.list_by_target(target.id)
         assert len(history) == 1
+        assert history[0].display_text == "測試文字\n第二行"
         assert history[0].include_rule == "票;讓票"
         assert history[0].include_rules == ("票", "讓票")
         assert [
@@ -262,6 +264,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                     item_index=0,
                     author="王小明",
                     text="測試文字",
+                    display_text="測試文字\n第二行",
                     permalink="https://www.facebook.com/groups/example/posts/1",
                     matched_keyword="票;讓票",
                     matched_keywords=("票", "讓票"),
@@ -276,6 +279,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         latest_items = latest_repo.list_by_target(target.id)
         assert len(latest_items) == 1
         assert latest_items[0].author == "王小明"
+        assert latest_items[0].display_text == "測試文字\n第二行"
         assert latest_items[0].matched_keyword == "票;讓票"
         assert latest_items[0].matched_keywords == ("票", "讓票")
         assert [

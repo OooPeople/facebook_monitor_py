@@ -46,9 +46,7 @@ SORT_NATIVE_STAGE_CURRENT_LABEL = "current_label"
 SORT_NATIVE_STAGE_CLICK_CONTROL = "click_control"
 SORT_NATIVE_STAGE_FIND_OPTION = "find_option"
 SORT_NATIVE_STAGE_CONFIRM_LABEL = "confirm_label"
-SORT_MENU_ROOT_SELECTOR = (
-    '[role="menu"],[role="listbox"],[role="dialog"],[aria-modal="true"]'
-)
+SORT_MENU_ROOT_SELECTOR = '[role="menu"],[role="listbox"]'
 SORT_OPTION_ROLES = (
     "menuitemradio",
     "menuitemcheckbox",
@@ -837,7 +835,10 @@ def _should_recover_sort_menu_before_fallback(diagnostics: dict[str, Any]) -> bo
 
     if diagnostics.get("native_failure_stage") != SORT_NATIVE_STAGE_FIND_OPTION:
         return False
-    return diagnostics.get("menu_opened") is True
+    return (
+        diagnostics.get("menu_opened") is True
+        and diagnostics.get("menu_role") == SORT_MENU_ROOT_SELECTOR
+    )
 
 
 def _record_sort_menu_recovery(
@@ -1279,7 +1280,7 @@ async (preferredLabel) => {
   };
   const countVisibleMenuRootsForLabel = (label) => {
     let count = 0;
-    for (const element of document.querySelectorAll('[role="menu"],[role="listbox"],[role="dialog"],[aria-modal="true"]')) {
+    for (const element of document.querySelectorAll(__SORT_MENU_ROOT_SELECTOR__)) {
       if (!(element instanceof HTMLElement)) continue;
       if (!isVisibleElement(element)) continue;
       const text = normalizeText(element.innerText || element.textContent || "");
@@ -1447,6 +1448,9 @@ async (preferredLabel) => {
     "__SORT_OPTION_WAIT_INTERVAL_MS__",
     str(SORT_OPTION_WAIT_INTERVAL_MS),
 ).replace(
+    "__SORT_MENU_ROOT_SELECTOR__",
+    _js_literal(SORT_MENU_ROOT_SELECTOR),
+).replace(
     "__SORT_METHOD_JS_FALLBACK__",
     _js_literal(SORT_METHOD_JS_FALLBACK),
 )
@@ -1603,7 +1607,7 @@ async (preferredLabel) => {
   };
   const countVisibleMenuRootsForLabel = (label) => {
     let count = 0;
-    for (const element of document.querySelectorAll('[role="menu"],[role="listbox"],[role="dialog"],[aria-modal="true"]')) {
+    for (const element of document.querySelectorAll(__SORT_MENU_ROOT_SELECTOR__)) {
       if (!(element instanceof HTMLElement)) continue;
       if (!isVisibleElement(element)) continue;
       const text = normalizeText(element.innerText || element.textContent || "");
@@ -1773,6 +1777,9 @@ async (preferredLabel) => {
 ).replace(
     "__SORT_MUTATION_SUPPRESSION_REASON__",
     _js_literal(SORT_MUTATION_SUPPRESSION_REASON),
+).replace(
+    "__SORT_MENU_ROOT_SELECTOR__",
+    _js_literal(SORT_MENU_ROOT_SELECTOR),
 ).replace(
     "__SORT_METHOD_JS_FALLBACK__",
     _js_literal(SORT_METHOD_JS_FALLBACK),

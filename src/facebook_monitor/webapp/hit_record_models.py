@@ -66,6 +66,7 @@ class FullHitRecordRow:
     def to_dict(self) -> dict[str, object]:
         """轉成 API response 使用的純 dict。"""
 
+        content = self.entry.display_text or self.entry.text
         return {
             "record_id": self.entry.item_key,
             "sequence_number": self.sequence_number,
@@ -86,11 +87,11 @@ class FullHitRecordRow:
             "recorded_at": self.recorded_at,
             "notified_at": self.recorded_at,
             "notification_summary": self.notification_summary,
-            "content": self.entry.text,
+            "content": content,
             "content_segments": build_highlight_segment_dicts(
-                self.entry.text,
+                content,
                 self.entry.include_rule,
             ),
-            "content_preview": trim_preview_text(self.entry.text, max_length=220),
+            "content_preview": trim_preview_text(content, max_length=220),
             "permalink": safe_facebook_permalink(self.entry.permalink),
         }

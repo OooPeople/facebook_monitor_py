@@ -23,6 +23,8 @@ from scripts.admin._release_build import force_args
 from scripts.admin._release_build import maybe_expected_tag_args
 from scripts.admin._release_build import metadata_env
 from scripts.admin._release_build import python_command
+from scripts.admin._release_build import PYINSTALLER_REQUIREMENT
+from scripts.admin._release_build import pyinstaller_version_command
 from scripts.admin._release_build import run_steps
 
 
@@ -49,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-pyinstaller-install",
         action="store_true",
-        help="Skip `python -m pip install pyinstaller`.",
+        help=f"Skip `python -m pip install {PYINSTALLER_REQUIREMENT}`.",
     )
     parser.add_argument(
         "--skip-playwright-install",
@@ -72,9 +74,15 @@ def build_steps(args: argparse.Namespace, *, version: str = APP_VERSION) -> list
         steps.append(
             ReleaseBuildStep(
                 "install pyinstaller",
-                python_command("-m", "pip", "install", "pyinstaller"),
+                python_command("-m", "pip", "install", PYINSTALLER_REQUIREMENT),
             )
         )
+    steps.append(
+        ReleaseBuildStep(
+            "verify pyinstaller version",
+            pyinstaller_version_command(),
+        )
+    )
     if not args.skip_playwright_install:
         steps.append(
             ReleaseBuildStep(

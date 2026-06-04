@@ -89,6 +89,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 item_key="first-2",
                 author="陳小華",
                 text="留言也有票券關鍵字",
+                display_text="留言也有票券關鍵字\n補充第二行",
                 permalink="https://www.facebook.com/groups/111/posts/1234567890?comment_id=2222222222",
                 include_rule="票券",
             )
@@ -165,6 +166,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 item_key="first-current",
                 author="林本次",
                 text="本次啟動期間的票券命中",
+                display_text="本次啟動期間的票券命中\n補充第二行",
                 permalink="https://www.facebook.com/groups/111/posts/3333333333",
                 include_rule="票券",
                 notified_at=app.state.session_started_at + timedelta(seconds=1),
@@ -189,10 +191,11 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     assert preview_payload["total_count"] == 1
     assert preview_payload["items"][0]["author_name"] == "林本次"
     assert preview_payload["items"][0]["badge_text"] == "命中: 票券"
+    assert preview_payload["items"][0]["content_preview"] == "本次啟動期間的票券命中 補充第二行"
     assert preview_payload["items"][0]["content_segments"] == [
         {"text": "本次啟動期間的", "highlighted": False},
         {"text": "票券", "highlighted": True},
-        {"text": "命中", "highlighted": False},
+        {"text": "命中 補充第二行", "highlighted": False},
     ]
     assert count_response.json() == {"target_id": first_target.id, "total_count": 1}
     full_payload = full_response.json()
@@ -201,6 +204,8 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     assert full_payload["items"][0]["item_type"] == "留言"
     assert full_payload["items"][0]["notified_at"]
     assert "notification_summary" in full_payload["items"][0]
+    assert full_payload["items"][0]["content"] == "留言也有票券關鍵字\n補充第二行"
+    assert full_payload["items"][0]["content_preview"] == "留言也有票券關鍵字 補充第二行"
     assert {"text": "票券", "highlighted": True} in full_payload["items"][0]["content_segments"]
     hit_records_js = Path("src/facebook_monitor/webapp/static/dashboard/hit_records.js").read_text(
         encoding="utf-8"

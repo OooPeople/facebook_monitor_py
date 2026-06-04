@@ -187,8 +187,8 @@ def test_send_discord_notification_matches_webhook_payload(
     payload = calls[0]["json"]
     assert payload["username"] == "facebook_monitor_py"
     assert payload["allowed_mentions"] == {"parse": []}
-    assert payload["flags"] == 4
     assert payload["content"] == "社團: 測試社團"
+    assert "flags" not in payload
     assert "components" not in payload
     assert "embeds" not in payload
     assert calls[0]["headers"]["Accept"] == "*/*"

@@ -126,6 +126,55 @@ def test_unknown_packaged_runtime_capability_is_check_only(tmp_path: Path) -> No
     assert "沒有對應的更新檔" in capability.unsupported_reason
 
 
+def test_external_db_path_disables_auto_apply_but_keeps_download(tmp_path: Path) -> None:
+    """外部 DB 可作 runtime 覆寫，但 updater handoff 只能支援 data tree 內 DB。"""
+
+    app_base_dir = tmp_path / "app"
+    app_base_dir.mkdir()
+    (app_base_dir / "facebook-monitor-updater.exe").write_text(
+        "updater",
+        encoding="utf-8",
+    )
+
+    capability = resolve_update_capability(
+        packaging_mode="pyinstaller-onedir-gui-tray",
+        frozen=True,
+        app_base_dir=app_base_dir,
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "external" / "app.db",
+        system="win32",
+    )
+
+    assert capability.download_supported
+    assert not capability.apply_supported
+    assert "外部 DB 路徑不支援自動套用更新" in capability.unsupported_reason
+
+
+def test_macos_external_db_path_disables_auto_apply_but_keeps_download(
+    tmp_path: Path,
+) -> None:
+    """macOS updater 同樣不可對 data tree 外 DB 建立自動套用 handoff。"""
+
+    app_base_dir = tmp_path / "app"
+    app_base_dir.mkdir()
+    (app_base_dir / "facebook-monitor").write_text("app", encoding="utf-8")
+    (app_base_dir / "facebook-monitor-updater").write_text("updater", encoding="utf-8")
+
+    capability = resolve_update_capability(
+        packaging_mode="pyinstaller-macos-arm64-onedir",
+        frozen=True,
+        app_base_dir=app_base_dir,
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "external" / "app.db",
+        system="darwin",
+        machine="arm64",
+    )
+
+    assert capability.download_supported
+    assert not capability.apply_supported
+    assert "外部 DB 路徑不支援自動套用更新" in capability.unsupported_reason
+
+
 def test_intel_macos_packaged_runtime_capability_is_check_only(tmp_path: Path) -> None:
     """Intel macOS packaged runtime 只能檢查版本，不可下載 arm64 更新檔。"""
 

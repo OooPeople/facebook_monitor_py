@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from facebook_monitor.core.keyword_highlight import build_highlight_segments
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.notifications.payload import MatchNotificationFields
@@ -9,7 +11,8 @@ from facebook_monitor.notifications.payload import item_kind_label
 from facebook_monitor.notifications.payload import normalize_notification_fields
 
 
-DISCORD_MESSAGE_SEPARATOR = "-" * 40
+ANSI_ESCAPE_CHAR = "\x1b"
+ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DISCORD_MARKDOWN_SPECIAL_CHARS = "\\`*_~|[]()<>"
 
 
@@ -25,21 +28,16 @@ def build_discord_match_notification_payload(
         else "Facebook group match"
     )
     lines = [
-        f"社團: {normalize_discord_single_line(normalized.group_name)}",
-        f"類型: {normalize_discord_single_line(item_kind_label(normalized.item_kind))}",
-        f"作者: {normalize_discord_single_line(normalized.author)}",
-        f"命中: {format_discord_matched_rule_label(normalized.include_rule)}",
+        f"社團：{normalize_discord_single_line(normalized.group_name)}",
+        f"類型：{normalize_discord_single_line(item_kind_label(normalized.item_kind))}",
+        f"作者：{normalize_discord_single_line(normalized.author)}",
+        f"命中：{format_discord_matched_rule_label(normalized.include_rule)}",
         "",
-        format_discord_highlighted_text(normalized.text, normalized.include_rule),
+        format_discord_highlighted_text_body(normalized.text, normalized.include_rule),
     ]
     if normalized.permalink:
-        lines.extend(
-            (
-                "",
-                f"[開啟連結]({escape_discord_link_url(normalized.permalink)})",
-            )
-        )
-    lines.append(DISCORD_MESSAGE_SEPARATOR)
+        lines.append("")
+        lines.append(format_discord_link_url(normalized.permalink))
     return title, "\n".join(lines)
 
 
@@ -55,16 +53,18 @@ def format_discord_matched_rule_label(matched_rule: str) -> str:
     """把分號儲存格式轉成 Discord 較易掃讀的顯示文字。"""
 
     rules = split_keyword_rule_text(matched_rule)
-    label = " · ".join(rules) if rules else str(matched_rule or "")
-    return normalize_discord_single_line(label)
+    if rules:
+        return "  ,  ".join(normalize_discord_single_line(rule) for rule in rules)
+    return normalize_discord_single_line(matched_rule)
 
 
-def format_discord_highlighted_text(text: str, matched_rule: str) -> str:
+def format_discord_highlighted_text_body(text: str, matched_rule: str) -> str:
     """把內容區命中片段轉成 Discord 粗體 Markdown。"""
 
-    segments = build_highlight_segments(text, matched_rule)
+    cleaned_text = strip_ansi_escape_sequences(text)
+    segments = build_highlight_segments(cleaned_text, matched_rule)
     if not segments:
-        return escape_discord_markdown(text)
+        return escape_discord_markdown(cleaned_text)
     rendered: list[str] = []
     for segment in segments:
         escaped_text = escape_discord_markdown(segment.text)
@@ -93,7 +93,14 @@ def escape_discord_markdown(value: object) -> str:
     return "".join(escaped)
 
 
-def escape_discord_link_url(value: object) -> str:
-    """整理 Discord masked link target，避免右括號截斷連結。"""
+def strip_ansi_escape_sequences(value: object) -> str:
+    """移除原文 ANSI 控制碼，避免污染 Discord content。"""
+
+    text = ANSI_ESCAPE_SEQUENCE_PATTERN.sub("", str(value or ""))
+    return text.replace(ANSI_ESCAPE_CHAR, "")
+
+
+def format_discord_link_url(value: object) -> str:
+    """整理 Discord content 中直接顯示的連結。"""
 
     return str(value or "").replace("\\", "%5C").replace(")", "%29").replace(" ", "%20")

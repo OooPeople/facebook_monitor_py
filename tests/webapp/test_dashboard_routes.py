@@ -460,6 +460,7 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
                     item_index=0,
                     author="王小明",
                     text="最近掃描內容",
+                    display_text="最近掃描內容\n第二行",
                     matched_keyword="票券",
                 ),
                 LatestScanItem(
@@ -482,6 +483,7 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
                 item_key="history-1",
                 author="陳小華",
                 text="歷史命中內容",
+                display_text="歷史命中內容\n第二行",
                 include_rule="票券",
             )
         )
@@ -506,10 +508,12 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert row.settings_summary.lines[-1].value == "ntfy"
     assert latest_preview.author_name == "王小明"
     assert latest_preview.badge_kind == "hit"
+    assert latest_preview.content_preview == "最近掃描內容 第二行"
     assert latest_preview.link_label == "開啟連結"
     assert not latest_preview.has_debug
     assert hit_preview.author_name == "陳小華"
     assert hit_preview.badge_text == "命中: 票券"
+    assert hit_preview.content_preview == "歷史命中內容 第二行"
     assert hit_preview.link_label == "開啟連結"
     assert not hit_preview.has_debug
 
@@ -517,7 +521,7 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert response.status_code == 200
     assert "最近掃描" in response.text
     assert "命中紀錄 0" in response.text
-    assert "最近掃描內容" in response.text
+    assert "最近掃描內容 第二行" in response.text
 
 
 def test_dashboard_partial_payload_changes_sidebar_layout_signature_for_groups(

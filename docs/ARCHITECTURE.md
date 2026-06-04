@@ -67,7 +67,7 @@
 - Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
-- Discord webhook 使用傳統 `content` payload、`flags=4` suppress embeds 與 `allowed_mentions.parse=[]`；內容區可用 Discord Markdown 標示命中關鍵字。Components V2 曾是較理想的頻道內排版選項，但手機通知 preview 無法穩定顯示必要摘要，因此正式路徑不使用 Components V2。
+- Discord webhook 使用傳統 `content` payload 與 `allowed_mentions.parse=[]`；內容本文保留多行格式，並用 Discord 粗體 Markdown 標示命中關鍵字，`命中：` 欄位保留作為可靠摘要，Facebook 連結直接顯示 URL。Components V2 曾是較理想的頻道內排版選項，但手機通知 preview 無法穩定顯示必要摘要，因此正式路徑不使用 Components V2。
 - ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
 - SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存；application、worker 與 Web UI 的 domain model 維持明文。
 - 目前加密欄位是 `target_configs.ntfy_topic`、`target_configs.discord_webhook`、`sidebar_group_config_templates.ntfy_topic`、`sidebar_group_config_templates.discord_webhook`、`global_notification_settings.ntfy_topic`、`global_notification_settings.discord_webhook` 與 `notification_outbox.endpoint`；`global_notification_settings` 只保留給既有 DB / secret storage 相容性，不再作為 Web UI 全域通知預設入口。
@@ -90,7 +90,7 @@
 - 成功套用後 updater 會清除本次下載 zip、`.sha256`、signed manifest / `.sig`、pending handoff 與 staging，並只保留本次成功套用產生的 1 份 updater 管理的 app backup 供人工追查或 rollback；cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
 - 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
 - updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
-- release artifact validation 會檢查 app version、Windows version metadata、platform zip 檔名、`.sha256` 內容、signed manifest / `.sig`、zip 內必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE metadata、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 tag 與可選 Windows Authenticode signer subject；這是發佈前檢查，不是 runtime updater 的替代品。
+- release artifact validation 是發佈前 gate，負責確認版本、manifest / signature、platform layout 與私密 runtime data 邊界；詳細 checklist 放在 `packaging/README.md`。這是發佈前檢查，不是 runtime updater 的替代品。
 - Ed25519 signed manifest 是目前免費 updater 信任鏈，驗證 release metadata 由受信任 key 簽出；SHA256 只作 zip 完整性與交叉檢查。Windows Authenticode / macOS Developer ID signing 與 notarization 尚未導入，因此 OS 層發布者身分提示仍需由 release note 說明。
 
 ## Persistence

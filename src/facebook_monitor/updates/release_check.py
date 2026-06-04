@@ -282,6 +282,36 @@ def evaluate_release(
             sha256_asset_download_url="",
             failure_reason="asset_missing",
         )
+    manifest_failure_reason = _manifest_failure_reason(
+        manifest_asset=manifest_asset,
+        manifest_signature_asset=manifest_signature_asset,
+    )
+    if manifest_failure_reason:
+        return UpdateCheckResult(
+            checked=True,
+            status=manifest_failure_reason,
+            channel=channel,
+            repository=repository,
+            current_version=current_version,
+            latest_version=latest_version,
+            update_available=False,
+            summary=f"找到新版 {latest_version}，但缺少 signed manifest",
+            detail="Release 必須同時包含 signed manifest 與 detached signature 才能自動下載或套用更新。",
+            release_url=release_url,
+            asset_name=portable_asset.name,
+            asset_download_url=portable_asset.download_url,
+            sha256_asset_name=sha256_asset.name if sha256_asset else "",
+            sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
+            failure_reason=manifest_failure_reason,
+            manifest_asset_name=manifest_asset.name if manifest_asset else "",
+            manifest_asset_download_url=manifest_asset.download_url if manifest_asset else "",
+            manifest_signature_asset_name=manifest_signature_asset.name
+            if manifest_signature_asset
+            else "",
+            manifest_signature_asset_download_url=manifest_signature_asset.download_url
+            if manifest_signature_asset
+            else "",
+        )
     return UpdateCheckResult(
         checked=True,
         status="available",
@@ -297,10 +327,7 @@ def evaluate_release(
         asset_download_url=portable_asset.download_url,
         sha256_asset_name=sha256_asset.name if sha256_asset else "",
         sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
-        failure_reason=_manifest_failure_reason(
-            manifest_asset=manifest_asset,
-            manifest_signature_asset=manifest_signature_asset,
-        ),
+        failure_reason="",
         manifest_asset_name=manifest_asset.name if manifest_asset else "",
         manifest_asset_download_url=manifest_asset.download_url if manifest_asset else "",
         manifest_signature_asset_name=manifest_signature_asset.name

@@ -11,7 +11,7 @@ from facebook_monitor.persistence.schema_repair import repair_duplicate_target_s
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 MIN_SUPPORTED_SCHEMA_VERSION = 10
 REQUIRED_CURRENT_SCHEMA_TABLES = frozenset(
     {

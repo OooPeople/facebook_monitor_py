@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
 from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.version import APP_VERSION
 from tests.helpers.webapp import FakeSchedulerManager
@@ -19,6 +21,21 @@ from tests.webapp.app_test_helpers import create_app
 from tests.webapp.app_test_helpers import make_supported_macos_update_paths
 from tests.webapp.app_test_helpers import make_supported_update_paths
 from tests.webapp.app_test_helpers import verified_update_download_result
+
+
+def signed_manifest_update_fields(version: str) -> dict[str, str]:
+    """建立可安裝 release 需要的 signed manifest 欄位。"""
+
+    manifest_name = release_manifest_asset_name(version)
+    signature_name = release_manifest_signature_asset_name(version)
+    return {
+        "manifest_asset_name": manifest_name,
+        "manifest_asset_download_url": f"https://downloads.example.test/{manifest_name}",
+        "manifest_signature_asset_name": signature_name,
+        "manifest_signature_asset_download_url": (
+            f"https://downloads.example.test/{signature_name}"
+        ),
+    }
 
 
 def test_settings_page_shows_problem_report_diagnostics(tmp_path: Path) -> None:
@@ -188,6 +205,7 @@ def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
             sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     monkeypatch.setattr(
@@ -203,6 +221,114 @@ def test_settings_update_check_shows_download_action_when_sha256_asset_exists(
     assert response.status_code == 200
     assert 'action="/settings/updates/download-and-apply"' in response.text
     assert "下載新版並套用更新" in response.text
+
+
+def test_settings_update_check_hides_action_without_signed_manifest(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """即使 release metadata 標示有新版，缺 signed manifest 也不可顯示更新入口。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+        allow_env_repository_override: bool = True,
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="manifest_file_missing",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=False,
+            summary="找到新版 0.1.1，但缺少 signed manifest",
+            detail="此版本缺少 signed manifest，無法下載或套用。",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="manifest_file_missing",
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert 'action="/settings/updates/download"' not in response.text
+    assert 'action="/settings/updates/download-and-apply"' not in response.text
+
+
+def test_settings_download_update_does_not_download_without_signed_manifest(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """缺 signed manifest 時 route 層不可呼叫下載流程。"""
+
+    paths = make_supported_update_paths(tmp_path)
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+    download_called = False
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+        allow_env_repository_override: bool = True,
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="manifest_file_missing",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=False,
+            summary="找到新版 0.1.1，但缺少 signed manifest",
+            detail="此版本缺少 signed manifest，無法下載或套用。",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="manifest_file_missing",
+        )
+
+    async def fake_download_and_verify_update(*args, **kwargs):
+        nonlocal download_called
+        download_called = True
+        raise AssertionError("download should not be called without signed manifest")
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.download_and_verify_update",
+        fake_download_and_verify_update,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.post("/settings/updates/download", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert not download_called
 
 
 def test_settings_update_check_shows_macos_apply_action_when_updater_exists(
@@ -242,6 +368,7 @@ def test_settings_update_check_shows_macos_apply_action_when_updater_exists(
             sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     monkeypatch.setattr(
@@ -297,6 +424,7 @@ def test_settings_update_check_shows_macos_download_only_when_updater_missing(
             sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     monkeypatch.setattr(
@@ -313,6 +441,66 @@ def test_settings_update_check_shows_macos_download_only_when_updater_missing(
     assert 'action="/settings/updates/download"' in response.text
     assert "下載並驗證更新" in response.text
     assert 'action="/settings/updates/download-and-apply"' not in response.text
+
+
+def test_settings_update_check_shows_download_only_for_external_db_path(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """外部 DB runtime 可檢查與下載更新，但不可顯示自動套用入口。"""
+
+    paths = resolve_runtime_paths(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "external" / "app.db",
+        app_base_dir=tmp_path / "app",
+    )
+    paths.app_base_dir.mkdir(parents=True, exist_ok=True)
+    (paths.app_base_dir / "facebook-monitor-updater.exe").write_text(
+        "updater",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FACEBOOK_MONITOR_PACKAGING_MODE", "pyinstaller-onedir-gui-tray")
+    monkeypatch.setattr("facebook_monitor.webapp.routes.settings._is_windows", lambda: True)
+
+    async def fake_check_github_release_updates(
+        *,
+        current_version: str,
+        channel: str = "stable",
+        allow_env_repository_override: bool = True,
+    ) -> UpdateCheckResult:
+        return UpdateCheckResult(
+            checked=True,
+            status="available",
+            channel=channel,
+            repository="OooPeople/facebook_monitor_py",
+            current_version=current_version,
+            latest_version="0.1.1",
+            update_available=True,
+            summary="有新版 0.1.1",
+            detail="",
+            release_url="https://github.com/OooPeople/facebook_monitor_py/releases/tag/v0.1.1",
+            asset_name="facebook-monitor-0.1.1-windows-portable.zip",
+            asset_download_url="https://downloads.example.test/app.zip",
+            sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
+            sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
+            failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.routes.settings.check_github_release_updates",
+        fake_check_github_release_updates,
+    )
+    app = create_app(db_path=paths.db_path, profile_dir=paths.profile_dir)
+    app.state.runtime_paths = paths
+    client = TestClient(app)
+
+    response = client.get("/settings?update_check=1")
+
+    assert response.status_code == 200
+    assert 'action="/settings/updates/download"' in response.text
+    assert 'action="/settings/updates/download-and-apply"' not in response.text
+    assert "外部 DB 路徑不支援自動套用更新" in response.text
 
 
 def test_settings_update_check_hides_download_action_on_intel_macos(
@@ -352,6 +540,7 @@ def test_settings_update_check_hides_download_action_on_intel_macos(
             sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     monkeypatch.setattr(
@@ -405,6 +594,7 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
             sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     async def fake_download_and_verify_update(
@@ -530,6 +720,7 @@ def test_settings_macos_download_update_does_not_create_pending_update(
             sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     async def fake_download_and_verify_update(
@@ -605,6 +796,7 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
             sha256_asset_name="facebook-monitor-0.1.1-windows-portable.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     async def fake_download_and_verify_update(
@@ -744,6 +936,7 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
             sha256_asset_name="facebook-monitor-0.1.1-macos-arm64-onedir.zip.sha256",
             sha256_asset_download_url="https://downloads.example.test/app.zip.sha256",
             failure_reason="",
+            **signed_manifest_update_fields("0.1.1"),
         )
 
     async def fake_download_and_verify_update(
@@ -844,6 +1037,14 @@ def test_settings_macos_download_and_apply_uses_macos_release_asset_policy(
                 {
                     "name": "facebook-monitor-9.9.9-macos-arm64-onedir.zip.sha256",
                     "browser_download_url": "https://downloads.example.test/macos.zip.sha256",
+                },
+                {
+                    "name": release_manifest_asset_name("9.9.9"),
+                    "browser_download_url": "https://downloads.example.test/manifest.json",
+                },
+                {
+                    "name": release_manifest_signature_asset_name("9.9.9"),
+                    "browser_download_url": "https://downloads.example.test/manifest.json.sig",
                 },
             ],
         }

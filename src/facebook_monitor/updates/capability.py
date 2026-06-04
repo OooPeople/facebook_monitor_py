@@ -29,6 +29,8 @@ def resolve_update_capability(
     packaging_mode: str,
     frozen: bool,
     app_base_dir: object,
+    data_dir: object | None = None,
+    db_path: object | None = None,
     system: str | None = None,
     machine: str | None = None,
 ) -> UpdateCapability:
@@ -61,10 +63,14 @@ def resolve_update_capability(
                 apply_supported=False,
                 unsupported_reason="macOS PyInstaller 打包版缺少 updater，僅支援下載並驗證",
             )
-        return UpdateCapability(
-            download_supported=True,
-            apply_supported=True,
-            unsupported_reason="",
+        return _apply_external_db_guard(
+            UpdateCapability(
+                download_supported=True,
+                apply_supported=True,
+                unsupported_reason="",
+            ),
+            data_dir=data_dir,
+            db_path=db_path,
         )
     updater_available = find_bundled_updater(Path(str(app_base_dir))) is not None
     if not updater_available:
@@ -73,8 +79,33 @@ def resolve_update_capability(
             apply_supported=False,
             unsupported_reason="Windows PyInstaller 打包版缺少 updater，僅支援檢查更新",
         )
+    return _apply_external_db_guard(
+        UpdateCapability(
+            download_supported=True,
+            apply_supported=True,
+            unsupported_reason="",
+        ),
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+
+def _apply_external_db_guard(
+    capability: UpdateCapability,
+    *,
+    data_dir: object | None,
+    db_path: object | None,
+) -> UpdateCapability:
+    """外部 DB 可運作，但 updater handoff 只支援 data tree 內 DB。"""
+
+    if not capability.apply_supported or data_dir is None or db_path is None:
+        return capability
+    resolved_data_dir = Path(str(data_dir)).resolve(strict=False)
+    resolved_db_path = Path(str(db_path)).resolve(strict=False)
+    if resolved_db_path.is_relative_to(resolved_data_dir):
+        return capability
     return UpdateCapability(
-        download_supported=True,
-        apply_supported=True,
-        unsupported_reason="",
+        download_supported=capability.download_supported,
+        apply_supported=False,
+        unsupported_reason="外部 DB 路徑不支援自動套用更新，僅支援下載並驗證",
     )

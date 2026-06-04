@@ -196,6 +196,89 @@ def test_support_bundle_redacts_runtime_diagnostics_secrets(tmp_path: Path) -> N
     assert "作者王小明" not in metadata_text
 
 
+def test_support_bundle_pending_update_uses_expected_sha256_prefix(tmp_path: Path) -> None:
+    """pending update 摘要需讀正式 handoff 的 expected_sha256 欄位。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    digest = "abcdef123456" + "0" * 52
+    (paths.runtime_dir / "pending_update.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "1.2.3",
+                "repository": "owner/repo",
+                "platform": "windows-x64",
+                "zip_path": str(paths.updates_dir / "app.zip"),
+                "manifest_path": str(paths.updates_dir / "manifest.json"),
+                "manifest_signature_path": str(paths.updates_dir / "manifest.json.sig"),
+                "expected_sha256": digest,
+                "actual_sha256": digest,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("maintenance_update_summary.json").decode("utf-8"))
+
+    pending_update = payload["pending_update"]
+    assert pending_update["exists"] is True
+    assert pending_update["zip_path_present"] is True
+    assert pending_update["manifest_path_present"] is True
+    assert pending_update["signature_path_present"] is True
+    assert pending_update["sha256_prefix"] == digest[:12]
+    assert pending_update["expected_sha256_prefix"] == digest[:12]
+    assert pending_update["actual_sha256_prefix"] == digest[:12]
+    assert pending_update["sha256_match"] is True
+
+
+def test_support_bundle_pending_update_reports_sha256_mismatch(tmp_path: Path) -> None:
+    """pending update 摘要需標示 expected / actual hash 是否不一致。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    expected = "a" * 64
+    actual = "b" * 64
+    (paths.runtime_dir / "pending_update.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": "1.2.3",
+                "repository": "owner/repo",
+                "platform": "windows-x64",
+                "zip_path": str(paths.updates_dir / "app.zip"),
+                "manifest_path": str(paths.updates_dir / "manifest.json"),
+                "manifest_signature_path": str(paths.updates_dir / "manifest.json.sig"),
+                "expected_sha256": expected,
+                "actual_sha256": actual,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("maintenance_update_summary.json").decode("utf-8"))
+
+    pending_update = payload["pending_update"]
+    assert pending_update["sha256_prefix"] == expected[:12]
+    assert pending_update["expected_sha256_prefix"] == expected[:12]
+    assert pending_update["actual_sha256_prefix"] == actual[:12]
+    assert pending_update["sha256_match"] is False
+
+
 def test_support_bundle_preserves_known_scan_stop_reason_counts(
     tmp_path: Path,
 ) -> None:

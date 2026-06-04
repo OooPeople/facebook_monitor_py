@@ -35,7 +35,9 @@ _LATEST_SCAN_ITEM_DEBUG_KEYS = (
     "textSource",
     "textDiagnostics",
     "textLength",
+    "displayTextLength",
     "rawTextLength",
+    "rawDisplayTextLength",
     "permalinkSource",
     "canonicalPermalinkCandidateCount",
     "postId",
@@ -68,6 +70,7 @@ _SORT_DIAGNOSTIC_KEYS = (
     "method",
     "target_kind",
     "fallback_used",
+    "fallback_recovery",
     "failure_stage",
     "native_attempted",
     "native_failure_stage",
@@ -297,7 +300,7 @@ def _format_latest_scan_item_debug_lines(item: LatestScanItem) -> list[str]:
         f"  author={item.author or '(unknown)'}",
         f"  permalink={item.permalink or '(none)'}",
         f"  matched_keyword={item.matched_keyword or '(none)'}",
-        f"  text={_format_latest_item_text(item.text)}",
+        f"  text={_format_latest_item_text(item.display_text or item.text)}",
     ]
     for key in _LATEST_SCAN_ITEM_DEBUG_KEYS:
         if key in metadata:

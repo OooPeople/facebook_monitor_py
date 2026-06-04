@@ -133,7 +133,7 @@ target 可啟用：
 
 desktop notification 目前偏 Windows 使用情境。在不支援的平台上，sender 會回傳結構化失敗結果，而不是讓 scan crash。
 
-Discord 通知會以傳統 content 多行訊息送出，保留內容換行，並在內容區以 Discord Markdown 標示命中關鍵字，同時抑制 Facebook 連結預覽。這個格式刻意不用 Components V2，因為 Components V2 雖能提供較好的頻道內分隔排版，但手機通知 preview 可能無法顯示訊息摘要。
+Discord 通知會以傳統 content 多行訊息送出，保留內容換行，並以粗體標示本文中的命中關鍵字；`命中：` 欄位仍會列出符合的規則。Facebook 連結會直接顯示 URL。這個格式刻意不用 Components V2，因為 Components V2 雖能提供較好的頻道內分隔排版，但手機通知 preview 可能無法顯示訊息摘要。
 
 ntfy topic 與 Discord webhook 都視為敏感 endpoint。SQLite 內會加密保存；錯誤訊息與診斷摘要會遮罩 token / URL credential。啟用 ntfy 或 Discord 時，通知標題、摘要與連結會送到對應第三方服務，若 target 內容不適合外送，請只使用 desktop notification 或停用外部通知。
 

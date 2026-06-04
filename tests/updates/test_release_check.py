@@ -145,8 +145,8 @@ def test_evaluate_release_keeps_missing_sha256_non_blocking_with_manifest() -> N
     assert result.sha256_asset_name == ""
 
 
-def test_evaluate_release_keeps_missing_manifest_as_download_blocking_reason() -> None:
-    """缺 signed manifest 時仍可提示新版，但自動下載會被後續流程擋下。"""
+def test_evaluate_release_marks_missing_manifest_as_not_installable() -> None:
+    """缺 signed manifest 時不可把 release 顯示成可下載更新。"""
 
     result = evaluate_release(
         current_version="0.1.0-rc1",
@@ -162,10 +162,36 @@ def test_evaluate_release_keeps_missing_manifest_as_download_blocking_reason() -
         ),
     )
 
-    assert result.status == "available"
-    assert result.update_available
+    assert result.status == "manifest_file_missing"
+    assert not result.update_available
     assert result.failure_reason == "manifest_file_missing"
+    assert result.asset_name == "facebook-monitor-0.1.0-windows-portable.zip"
     assert result.manifest_asset_name == ""
+
+
+def test_evaluate_release_marks_missing_manifest_signature_as_not_installable() -> None:
+    """缺 detached signature 時不可把 release 顯示成可下載更新。"""
+
+    result = evaluate_release(
+        current_version="0.1.0-rc1",
+        channel="stable",
+        repository="OooPeople/facebook_monitor_py",
+        artifact_policy=WINDOWS_PORTABLE_POLICY,
+        release=release_payload(
+            tag_name="v0.1.0",
+            assets=[
+                asset("facebook-monitor-0.1.0-windows-portable.zip"),
+                asset("facebook-monitor-0.1.0-windows-portable.zip.sha256"),
+                asset(release_manifest_asset_name("0.1.0")),
+            ],
+        ),
+    )
+
+    assert result.status == "manifest_signature_asset_missing"
+    assert not result.update_available
+    assert result.failure_reason == "manifest_signature_asset_missing"
+    assert result.manifest_asset_name == "facebook-monitor-0.1.0-manifest.json"
+    assert result.manifest_signature_asset_name == ""
 
 
 def test_evaluate_release_reports_current_when_remote_is_not_newer() -> None:

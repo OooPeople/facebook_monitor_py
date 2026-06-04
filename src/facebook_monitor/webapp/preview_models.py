@@ -103,7 +103,7 @@ class LatestScanItemRow:
     def preview_text(self) -> str:
         """回傳掃描項目內容預覽。"""
 
-        return trim_preview_text(self.item.text, max_length=120)
+        return trim_preview_text(self.item.display_text or self.item.text, max_length=120)
 
     def to_preview_row(self, *, link_label: str) -> TargetPreviewRow:
         """轉成最近掃描 / 命中紀錄共用 preview row。"""
@@ -147,7 +147,7 @@ class HitRecordPreviewRow:
     def content_preview(self) -> str:
         """回傳命中紀錄內容預覽。"""
 
-        return trim_preview_text(self.entry.text, max_length=120)
+        return trim_preview_text(self.entry.display_text or self.entry.text, max_length=120)
 
     @property
     def permalink(self) -> str:

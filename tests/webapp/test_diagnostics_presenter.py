@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.webapp.diagnostics_presenter import _append_sort_block
+from facebook_monitor.webapp.diagnostics_presenter import _format_latest_scan_item_debug_lines
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_failure_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_stop_reason
@@ -65,6 +68,7 @@ def test_append_sort_block_shows_native_and_fallback_diagnostics() -> None:
             "reason": "preferred_sort_option_not_found",
             "method": "js_fallback",
             "fallback_used": True,
+            "fallback_recovery": "escape",
             "native_failure_stage": "click_control",
             "native_exception_class": "TimeoutError",
             "menu_opened": False,
@@ -75,11 +79,41 @@ def test_append_sort_block_shows_native_and_fallback_diagnostics() -> None:
 
     assert "method=js_fallback" in lines
     assert "fallback_used=True" in lines
+    assert "fallback_recovery=escape" in lines
     assert "native_failure_stage=click_control" in lines
     assert "native_exception_class=TimeoutError" in lines
     assert "menu_opened=False" in lines
     assert "preferred_option_count=0" in lines
     assert not any(line.startswith("clicked_option_text=") for line in lines)
+
+
+def test_latest_scan_debug_lines_show_display_text_lengths() -> None:
+    """latest item diagnostics 需顯示 display text 長度，方便判斷換行抽取狀態。"""
+
+    lines = _format_latest_scan_item_debug_lines(
+        LatestScanItem(
+            target_id="target-1",
+            scan_run_id=1,
+            item_kind=ItemKind.POST,
+            item_key="item-1",
+            item_index=0,
+            author="作者",
+            text="第一行 第二行",
+            display_text="第一行\n第二行",
+            debug_metadata={
+                "textLength": 7,
+                "displayTextLength": 6,
+                "rawTextLength": 7,
+                "rawDisplayTextLength": 6,
+            },
+        )
+    )
+
+    assert "  text=第一行 第二行" in lines
+    assert "  textLength=7" in lines
+    assert "  displayTextLength=6" in lines
+    assert "  rawTextLength=7" in lines
+    assert "  rawDisplayTextLength=6" in lines
 
 
 def test_sort_unconfirmed_skip_reason_is_user_readable() -> None:

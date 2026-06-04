@@ -254,6 +254,10 @@
   overflow-wrap: anywhere;
 }
 
+.hit-record-content p {
+  white-space: pre-line;
+}
+
 .hit-record-actions {
   align-self: center;
   display: grid;

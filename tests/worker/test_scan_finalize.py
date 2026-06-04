@@ -204,10 +204,10 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert app.repositories.notification_outbox.list_pending() == []
 
 
-def test_finalize_scan_items_uses_display_text_only_for_notifications(
+def test_finalize_scan_items_persists_display_text_for_visible_results(
     tmp_path: Path,
 ) -> None:
-    """通知使用多行 display text，但 keyword/history/latest 維持單行 text 語義。"""
+    """通知與可見掃描結果使用 display text，keyword 比對仍維持 text 語義。"""
 
     sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
 
@@ -260,8 +260,12 @@ def test_finalize_scan_items_uses_display_text_only_for_notifications(
 
     assert result.notification_payloads[0].text == "第一行票券\n第二行座位"
     assert result.history_entries[0].text == "第一行票券 第二行座位"
+    assert result.history_entries[0].display_text == "第一行票券\n第二行座位"
+    assert result.latest_items[0].display_text == "第一行票券\n第二行座位"
     assert history[0].text == "第一行票券 第二行座位"
+    assert history[0].display_text == "第一行票券\n第二行座位"
     assert latest_items[0].text == "第一行票券 第二行座位"
+    assert latest_items[0].display_text == "第一行票券\n第二行座位"
     assert sent_ntfy
     assert "內容:\n第一行票券\n第二行座位" in sent_ntfy[0][2]
 

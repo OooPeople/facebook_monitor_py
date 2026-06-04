@@ -35,9 +35,9 @@ class LatestScanItemRepository:
             """
             INSERT INTO latest_scan_items (
                 target_id, scan_run_id, item_kind, item_key, item_index,
-                author, text, permalink, matched_keyword, debug_metadata, scanned_at
+                author, text, display_text, permalink, matched_keyword, debug_metadata, scanned_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -48,6 +48,7 @@ class LatestScanItemRepository:
                     item.item_index,
                     item.author,
                     item.text,
+                    item.display_text or item.text,
                     item.permalink,
                     item.matched_keyword,
                     json.dumps(item.debug_metadata, ensure_ascii=False),

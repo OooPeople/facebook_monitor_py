@@ -478,6 +478,7 @@ class MatchHistoryEntry:
     item_key: str
     author: str = ""
     text: str = ""
+    display_text: str = ""
     permalink: str = ""
     group_name: str = ""
     parent_post_id: str = ""
@@ -501,6 +502,7 @@ class LatestScanItem:
     item_index: int
     author: str = ""
     text: str = ""
+    display_text: str = ""
     permalink: str = ""
     matched_keyword: str = ""
     matched_keywords: tuple[str, ...] = ()

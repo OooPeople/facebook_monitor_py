@@ -136,6 +136,11 @@ def match_history_from_row(row: sqlite3.Row) -> MatchHistoryEntry:
         item_key=row["item_key"],
         author=row["author"],
         text=row["text"],
+        display_text=(
+            row["display_text"] or row["text"]
+            if _row_has_column(row, "display_text")
+            else row["text"]
+        ),
         permalink=row["permalink"],
         include_rule=row["include_rule"],
         timestamp_text=row["timestamp_text"],
@@ -179,6 +184,11 @@ def latest_scan_item_from_row(row: sqlite3.Row) -> LatestScanItem:
         item_index=row["item_index"],
         author=row["author"],
         text=row["text"],
+        display_text=(
+            row["display_text"] or row["text"]
+            if _row_has_column(row, "display_text")
+            else row["text"]
+        ),
         permalink=row["permalink"],
         matched_keyword=row["matched_keyword"],
         matched_keywords=split_keyword_rule_text(row["matched_keyword"]),

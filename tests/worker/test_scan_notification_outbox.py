@@ -599,12 +599,22 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
             )
         )
         assert entry is not None
+        assert "命中：票券\n\n第一行**票券**" in entry.message
         assert "第一行**票券**\n第二行座位" in entry.message
         assert "內容:" not in entry.message
+        assert "命中:" not in entry.message
+        assert "```" not in entry.message
+        assert "\x1b" not in entry.message
+        assert "━" not in entry.message
 
     assert len(sent_discord) == 1
+    assert "命中：票券\n\n第一行**票券**" in sent_discord[0][2]
     assert "第一行**票券**\n第二行座位" in sent_discord[0][2]
     assert "內容:" not in sent_discord[0][2]
+    assert "命中:" not in sent_discord[0][2]
+    assert "```" not in sent_discord[0][2]
+    assert "\x1b" not in sent_discord[0][2]
+    assert "━" not in sent_discord[0][2]
 
 
 def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(

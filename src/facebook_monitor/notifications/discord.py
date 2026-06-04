@@ -14,7 +14,6 @@ from facebook_monitor.notifications.safe_messages import safe_exception_message
 
 
 DISCORD_CONTENT_LIMIT = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_content_limit
-DISCORD_SUPPRESS_EMBEDS_FLAG = 4
 DISCORD_RATE_LIMIT_STATUS = 429
 DISCORD_RATE_LIMIT_RETRY_LIMIT = (
     PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.discord_rate_limit_retry_limit
@@ -122,7 +121,6 @@ def build_discord_webhook_payload(
     return {
         "username": username,
         "allowed_mentions": {"parse": []},
-        "flags": DISCORD_SUPPRESS_EMBEDS_FLAG,
         "content": truncate_discord_content(message),
     }
 

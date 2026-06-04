@@ -57,10 +57,10 @@ class MatchHistoryRepository:
             """
             INSERT INTO match_history (
                 target_id, group_id, group_name, item_kind, parent_post_id,
-                comment_id, item_key, author, text, permalink, include_rule,
+                comment_id, item_key, author, text, display_text, permalink, include_rule,
                 timestamp_text, notified_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.target_id,
@@ -72,6 +72,7 @@ class MatchHistoryRepository:
                 entry.item_key,
                 entry.author,
                 entry.text,
+                entry.display_text or entry.text,
                 entry.permalink,
                 entry.include_rule,
                 entry.timestamp_text,

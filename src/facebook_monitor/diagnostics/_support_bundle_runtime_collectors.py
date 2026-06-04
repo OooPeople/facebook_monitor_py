@@ -215,6 +215,15 @@ def _pending_update_summary(path: Path) -> dict[str, object]:
         return {"exists": True, "error": _safe_exception_summary(exc)}
     if not isinstance(raw, dict):
         return {"exists": True, "error": "pending_update_not_object"}
+    expected_sha256 = str(raw.get("expected_sha256") or "")
+    actual_sha256 = str(raw.get("actual_sha256") or "")
+    legacy_sha256 = str(raw.get("sha256") or "")
+    sha256 = expected_sha256 or actual_sha256 or legacy_sha256
+    sha256_match = (
+        expected_sha256 == actual_sha256
+        if expected_sha256 and actual_sha256
+        else None
+    )
     return {
         "exists": True,
         "version": _redacted_truncated(str(raw.get("version") or "")),
@@ -223,7 +232,10 @@ def _pending_update_summary(path: Path) -> dict[str, object]:
         "zip_path_present": bool(raw.get("zip_path")),
         "manifest_path_present": bool(raw.get("manifest_path")),
         "signature_path_present": bool(raw.get("manifest_signature_path")),
-        "sha256_prefix": _redacted_truncated(str(raw.get("sha256") or "")[:12]),
+        "sha256_prefix": _redacted_truncated(str(sha256)[:12]),
+        "expected_sha256_prefix": _redacted_truncated(expected_sha256[:12]),
+        "actual_sha256_prefix": _redacted_truncated(actual_sha256[:12]),
+        "sha256_match": sha256_match,
     }
 
 

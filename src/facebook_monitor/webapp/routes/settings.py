@@ -270,6 +270,8 @@ def _build_settings_update_context(request: Request) -> _SettingsUpdateContext:
             packaging_mode=metadata.packaging_mode,
             frozen=metadata.frozen,
             app_base_dir=paths.app_base_dir,
+            data_dir=paths.data_dir,
+            db_path=paths.db_path,
         ),
     )
 
@@ -431,6 +433,8 @@ def _resolve_update_capability(
     packaging_mode: str,
     frozen: bool,
     app_base_dir: object,
+    data_dir: object | None = None,
+    db_path: object | None = None,
 ) -> UpdateCapability:
     """依 settings 測試替換後的平台判斷委派 updates capability。"""
 
@@ -438,6 +442,8 @@ def _resolve_update_capability(
         packaging_mode=packaging_mode,
         frozen=frozen,
         app_base_dir=app_base_dir,
+        data_dir=data_dir,
+        db_path=db_path,
         system=_current_update_system(),
         machine=_current_update_machine(),
     )

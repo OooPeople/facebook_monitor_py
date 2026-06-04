@@ -17,6 +17,8 @@ DEFAULT_KEY_ID = "release-ed25519-2026q2"
 DEFAULT_PRIVATE_KEY_FILE = (
     ROOT / "docs" / "local" / "release-signing" / f"{DEFAULT_KEY_ID}.private-key.b64"
 )
+PYINSTALLER_VERSION = "6.20.0"
+PYINSTALLER_REQUIREMENT = f"pyinstaller=={PYINSTALLER_VERSION}"
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,33 @@ def python_command(*args: str) -> tuple[str, ...]:
     """使用目前 Python executable 建立 command。"""
 
     return (sys.executable, *args)
+
+
+def pyinstaller_version_command() -> tuple[str, ...]:
+    """建立 PyInstaller 版本驗證 command，避免 skip install 使用錯版打包。"""
+
+    return python_command(
+        "-c",
+        "\n".join(
+            (
+                "import sys",
+                "try:",
+                "    import PyInstaller",
+                "except Exception as exc:",
+                "    print(f'PyInstaller import failed: {exc}', file=sys.stderr)",
+                "    raise SystemExit(1)",
+                f"expected = {PYINSTALLER_VERSION!r}",
+                "actual = getattr(PyInstaller, '__version__', '')",
+                "if actual != expected:",
+                "    print(",
+                "        f'Expected PyInstaller {expected}, got {actual or \"unknown\"}',",
+                "        file=sys.stderr,",
+                "    )",
+                "    raise SystemExit(1)",
+                "print(f'PyInstaller {actual}')",
+            )
+        ),
+    )
 
 
 def current_build_date() -> str:

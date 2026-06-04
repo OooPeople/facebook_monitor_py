@@ -352,12 +352,17 @@ def test_hit_records_modal_renders_keyword_segments_without_inner_html() -> None
     hit_records_js = Path("src/facebook_monitor/webapp/static/dashboard/hit_records.js").read_text(
         encoding="utf-8"
     )
+    modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
+        encoding="utf-8"
+    )
 
     assert "const appendTextSegments" in hit_records_js
     assert 'document.createElement("mark")' in hit_records_js
     assert "keyword-highlight" in hit_records_js
     assert "item.content_segments" in hit_records_js
     assert "content.innerHTML" not in hit_records_js
+    content_rule = _css_rule_body(modals_css, ".hit-record-content p")
+    assert "white-space: pre-line;" in content_rule
 
 
 def test_partial_update_syncs_rename_modal_name_without_overwriting_active_input() -> None:

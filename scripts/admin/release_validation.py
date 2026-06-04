@@ -100,6 +100,21 @@ def git_commit() -> str:
         return "unknown"
 
 
+def node_version() -> str:
+    """讀取 static JS syntax check 使用的 Node 版本。"""
+
+    try:
+        return subprocess.check_output(
+            ["node", "--version"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.STDOUT,
+            env=validation_env(),
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return f"unavailable ({exc})"
+
+
 def is_git_checkout() -> bool:
     """回傳 ROOT 是否位於 Git checkout 內。"""
 
@@ -138,6 +153,7 @@ def print_environment() -> None:
     except (OSError, subprocess.CalledProcessError) as exc:
         uv_version = f"unavailable ({exc})"
     print(f"uv: {uv_version}")
+    print(f"Node: {node_version()}")
     print("Manual smoke still required: Facebook login, metadata resolver, posts/comments scan, notifications.")
     print()
     sys.stdout.flush()
@@ -157,7 +173,17 @@ def validation_steps(
     """建立 release validation command 清單。"""
 
     steps = [
-        ValidationStep("pytest", uv_command("run", "pytest", "-q")),
+        ValidationStep(
+            "pytest",
+            uv_command(
+                "run",
+                "pytest",
+                "-q",
+                "--cov=facebook_monitor",
+                "--cov-report=term-missing",
+                "--cov-fail-under=80",
+            ),
+        ),
         ValidationStep("mypy", uv_command("run", "mypy")),
         ValidationStep(
             "ruff",
@@ -174,6 +200,14 @@ def validation_steps(
                 "src",
                 "scripts",
                 "tests",
+            ),
+        ),
+        ValidationStep(
+            "static js syntax",
+            uv_command(
+                "run",
+                "python",
+                "scripts/admin/check_static_js_syntax.py",
             ),
         ),
     ]

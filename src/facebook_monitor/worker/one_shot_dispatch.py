@@ -159,6 +159,8 @@ def record_failure(
     )
     if recorded is not None:
         return
+    if commit_guard is not None:
+        return
     with SqliteApplicationContext(db_path) as app:
         record_scan_failure(
             app=app,

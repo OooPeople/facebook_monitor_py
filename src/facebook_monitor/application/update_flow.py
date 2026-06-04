@@ -14,6 +14,8 @@ from pathlib import Path
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_update_reason_message
 from facebook_monitor.runtime.paths import RuntimePaths
+from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
+from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
 from facebook_monitor.updates.capability import UpdateCapability
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.handoff import pending_update_path
@@ -52,7 +54,38 @@ async def download_verified_update(
     write_pending_update: WritePendingUpdate,
     reveal_download: bool,
 ) -> UpdateFlowOutcome:
-    """下載並驗證更新；支援平台會同步建立 pending handoff。"""
+    """下載並驗證更新；同一時間只允許一個 updater operation。"""
+
+    try:
+        with acquire_update_operation_lock(paths.runtime_dir, "settings-download"):
+            return await _download_verified_update_unlocked(
+                current_version=current_version,
+                paths=paths,
+                update_capability=update_capability,
+                allow_env_repository_override=allow_env_repository_override,
+                check_updates=check_updates,
+                download_update=download_update,
+                reveal_file_manager=reveal_file_manager,
+                write_pending_update=write_pending_update,
+                reveal_download=reveal_download,
+            )
+    except UpdateOperationLockError as exc:
+        return _update_operation_lock_outcome(exc)
+
+
+async def _download_verified_update_unlocked(
+    *,
+    current_version: str,
+    paths: RuntimePaths,
+    update_capability: UpdateCapability,
+    allow_env_repository_override: bool,
+    check_updates: CheckUpdates,
+    download_update: DownloadUpdate,
+    reveal_file_manager: RevealFileManager,
+    write_pending_update: WritePendingUpdate,
+    reveal_download: bool,
+) -> UpdateFlowOutcome:
+    """下載並驗證更新；呼叫端必須已持有 operation lock。"""
 
     if not update_capability.download_supported:
         return UpdateFlowOutcome(
@@ -135,7 +168,28 @@ def launch_verified_update(
     launch_updater: LaunchUpdater,
     request_shutdown: RequestShutdown,
 ) -> UpdateFlowOutcome:
-    """啟動 temp updater，讓主程式退出後套用已驗證更新。"""
+    """啟動 temp updater；同一時間只允許一個 updater operation。"""
+
+    try:
+        with acquire_update_operation_lock(paths.runtime_dir, "settings-apply"):
+            return _launch_verified_update_unlocked(
+                paths=paths,
+                update_capability=update_capability,
+                launch_updater=launch_updater,
+                request_shutdown=request_shutdown,
+            )
+    except UpdateOperationLockError as exc:
+        return _update_operation_lock_outcome(exc)
+
+
+def _launch_verified_update_unlocked(
+    *,
+    paths: RuntimePaths,
+    update_capability: UpdateCapability,
+    launch_updater: LaunchUpdater,
+    request_shutdown: RequestShutdown,
+) -> UpdateFlowOutcome:
+    """啟動 temp updater；呼叫端必須已持有 operation lock。"""
 
     if not update_capability.apply_supported:
         return UpdateFlowOutcome(
@@ -175,7 +229,38 @@ async def download_and_launch_verified_update(
     launch_updater: LaunchUpdater,
     request_shutdown: RequestShutdown,
 ) -> UpdateFlowOutcome:
-    """下載、驗證、建立 handoff 並啟動 updater。"""
+    """下載、驗證、建立 handoff 並啟動 updater；全流程使用同一把 operation lock。"""
+
+    try:
+        with acquire_update_operation_lock(paths.runtime_dir, "settings-download-and-apply"):
+            return await _download_and_launch_verified_update_unlocked(
+                current_version=current_version,
+                paths=paths,
+                update_capability=update_capability,
+                allow_env_repository_override=allow_env_repository_override,
+                check_updates=check_updates,
+                download_update=download_update,
+                write_pending_update=write_pending_update,
+                launch_updater=launch_updater,
+                request_shutdown=request_shutdown,
+            )
+    except UpdateOperationLockError as exc:
+        return _update_operation_lock_outcome(exc)
+
+
+async def _download_and_launch_verified_update_unlocked(
+    *,
+    current_version: str,
+    paths: RuntimePaths,
+    update_capability: UpdateCapability,
+    allow_env_repository_override: bool,
+    check_updates: CheckUpdates,
+    download_update: DownloadUpdate,
+    write_pending_update: WritePendingUpdate,
+    launch_updater: LaunchUpdater,
+    request_shutdown: RequestShutdown,
+) -> UpdateFlowOutcome:
+    """下載、驗證、建立 handoff 並啟動 updater；呼叫端必須已持有 operation lock。"""
 
     if not update_capability.apply_supported:
         return UpdateFlowOutcome(
@@ -183,7 +268,7 @@ async def download_and_launch_verified_update(
             stage="environment",
             message=update_capability.unsupported_reason,
         )
-    download_outcome = await download_verified_update(
+    download_outcome = await _download_verified_update_unlocked(
         current_version=current_version,
         paths=paths,
         update_capability=update_capability,
@@ -196,7 +281,7 @@ async def download_and_launch_verified_update(
     )
     if not download_outcome.ok:
         return download_outcome
-    launch_outcome = launch_verified_update(
+    launch_outcome = _launch_verified_update_unlocked(
         paths=paths,
         update_capability=update_capability,
         launch_updater=launch_updater,
@@ -224,3 +309,13 @@ def _reveal_download_if_requested(
     if not reveal_download or file_path is None:
         return False
     return reveal_file_manager(file_path)
+
+
+def _update_operation_lock_outcome(exc: UpdateOperationLockError) -> UpdateFlowOutcome:
+    """把 updater operation lock 衝突轉成既有 route 可處理的 outcome。"""
+
+    return UpdateFlowOutcome(
+        ok=False,
+        stage="operation_lock",
+        message=str(exc),
+    )

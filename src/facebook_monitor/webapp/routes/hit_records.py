@@ -14,6 +14,8 @@ from facebook_monitor.application.target_actions import clear_target_hit_records
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_session_started_at
+from facebook_monitor.webapp.dependencies import run_web_db_operation
+from facebook_monitor.webapp.dependencies import run_web_read_operation
 from facebook_monitor.webapp.query_service import count_hit_records
 from facebook_monitor.webapp.query_service import list_full_hit_record_rows
 from facebook_monitor.webapp.query_service import list_hit_record_preview_rows
@@ -24,11 +26,15 @@ from facebook_monitor.webapp.query_service import DashboardReadUnavailable
 def register_hit_record_routes(app: FastAPI) -> None:
     """註冊 target-scoped hit record API routes。"""
 
-    def ensure_target_exists(request: Request, target_id: str) -> None:
+    async def ensure_target_exists(request: Request, target_id: str) -> None:
         """確認 target 存在，讓 API 對不存在 target 回傳 404。"""
 
+        db_path = get_db_path(request)
         try:
-            exists = target_exists(get_db_path(request), target_id)
+            exists = await run_web_read_operation(
+                lambda: target_exists(db_path, target_id),
+                operation_name="hit_records.target_exists",
+            )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         if not exists:
@@ -46,19 +52,26 @@ def register_hit_record_routes(app: FastAPI) -> None:
     ) -> dict[str, object]:
         """回傳右側 preview tab 使用的本次 session 命中紀錄。"""
 
-        ensure_target_exists(request, target_id)
+        await ensure_target_exists(request, target_id)
         db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            rows = list_hit_record_preview_rows(
-                db_path,
-                target_id,
-                limit=limit,
-                session_started_at=get_session_started_at(request),
+            rows = await run_web_read_operation(
+                lambda: list_hit_record_preview_rows(
+                    db_path,
+                    target_id,
+                    limit=limit,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="hit_records.preview",
             )
-            total_count = count_hit_records(
-                db_path,
-                target_id,
-                session_started_at=get_session_started_at(request),
+            total_count = await run_web_read_operation(
+                lambda: count_hit_records(
+                    db_path,
+                    target_id,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="hit_records.preview_count",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
@@ -72,12 +85,17 @@ def register_hit_record_routes(app: FastAPI) -> None:
     async def hit_record_count(request: Request, target_id: str) -> dict[str, object]:
         """回傳單一 target 本次 session 的命中紀錄總數。"""
 
-        ensure_target_exists(request, target_id)
+        await ensure_target_exists(request, target_id)
+        db_path = get_db_path(request)
+        session_started_at = get_session_started_at(request)
         try:
-            total_count = count_hit_records(
-                get_db_path(request),
-                target_id,
-                session_started_at=get_session_started_at(request),
+            total_count = await run_web_read_operation(
+                lambda: count_hit_records(
+                    db_path,
+                    target_id,
+                    session_started_at=session_started_at,
+                ),
+                operation_name="hit_records.count",
             )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
@@ -96,16 +114,22 @@ def register_hit_record_routes(app: FastAPI) -> None:
     ) -> dict[str, object]:
         """回傳完整查看紀錄 modal 使用的持久詳細列表。"""
 
-        ensure_target_exists(request, target_id)
+        await ensure_target_exists(request, target_id)
         db_path = get_db_path(request)
         try:
-            rows = list_full_hit_record_rows(
-                db_path,
-                target_id,
-                limit=limit,
-                offset=offset,
+            rows = await run_web_read_operation(
+                lambda: list_full_hit_record_rows(
+                    db_path,
+                    target_id,
+                    limit=limit,
+                    offset=offset,
+                ),
+                operation_name="hit_records.list",
             )
-            total_count = count_hit_records(db_path, target_id)
+            total_count = await run_web_read_operation(
+                lambda: count_hit_records(db_path, target_id),
+                operation_name="hit_records.list_count",
+            )
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         return {
@@ -120,8 +144,12 @@ def register_hit_record_routes(app: FastAPI) -> None:
     async def clear_hit_record_list(request: Request, target_id: str) -> dict[str, object]:
         """清空單一 target 的命中紀錄，不影響其他 runtime/debug 資料。"""
 
-        ensure_target_exists(request, target_id)
-        outcome = clear_target_hit_records_action(get_db_path(request), target_id)
+        await ensure_target_exists(request, target_id)
+        db_path = get_db_path(request)
+        outcome = await run_web_db_operation(
+            lambda: clear_target_hit_records_action(db_path, target_id),
+            operation_name="hit_records.clear_target",
+        )
         if not outcome.ok:
             raise HTTPException(status_code=404, detail=outcome.message)
         return {

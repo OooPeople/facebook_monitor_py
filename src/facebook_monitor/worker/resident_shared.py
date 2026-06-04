@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,8 +26,12 @@ from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.facebook.route_detection import FACEBOOK_HOSTS
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 from facebook_monitor.facebook.route_detection import detect_group_comments_route
+from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.target_validation import validate_posts_target_route
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -181,16 +186,30 @@ def _group_feed_route_key(url: str) -> tuple[str, str] | None:
 def mark_resident_target_error(db_path: Path, target_id: str, message: str) -> None:
     """將 target runtime state 標成 error；target 已不存在時忽略。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.targets.mark_target_error(target_id, message)
+    def operation() -> None:
+        with SqliteApplicationContext(db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return
+            app.services.targets.mark_target_error(target_id, message)
+
+    run_sqlite_operation_with_retry(
+        operation,
+        operation_name="mark_resident_target_error",
+        logger=logger,
+    )
 
 
 def mark_resident_target_idle(db_path: Path, target_id: str) -> None:
     """將 target runtime state 標回 idle；target 已不存在時忽略。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.targets.mark_target_idle(target_id)
+    def operation() -> None:
+        with SqliteApplicationContext(db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return
+            app.services.targets.mark_target_idle(target_id)
+
+    run_sqlite_operation_with_retry(
+        operation,
+        operation_name="mark_resident_target_idle",
+        logger=logger,
+    )

@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from collections.abc import Coroutine
+from concurrent.futures import Future
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -22,29 +25,32 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
+from facebook_monitor.application.maintenance import run_bounded_retention_maintenance_for_db
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.models import TargetCoverImageRefreshState
-from facebook_monitor.core.models import TargetMetadataStatus
-from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
-from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
-from facebook_monitor.facebook.group_metadata import GroupMetadataError
-from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
-from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.notifications.outbox_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
+from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
+from facebook_monitor.worker.resident_maintenance import (
+    refresh_pending_target_cover_images,
+)
+from facebook_monitor.worker.resident_maintenance import (
+    refresh_requested_target_metadata,
+)
+from facebook_monitor.worker.resident_maintenance import (
+    refresh_target_group_cover_image_from_context,
+)
+from facebook_monitor.worker.resident_runtime_errors import (
+    _is_playwright_driver_shutdown_exception,
+)
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
@@ -56,25 +62,18 @@ from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinato
 
 
 logger = logging.getLogger(__name__)
-_LAST_RETENTION_MAINTENANCE_BY_DB: dict[Path, datetime] = {}
+_DISPLAY_NEXT_DUE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="facebook-monitor-display-next-due",
+)
+_DISPLAY_NEXT_DUE_BUSY_TIMEOUT_MS = 100
 AsyncSleepCallable = Callable[[float], Coroutine[Any, Any, None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
-METADATA_REFRESH_TARGET_LIMIT_PER_TICK = (
-    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.metadata_refresh_target_limit_per_tick
+__all__ = (
+    "refresh_requested_target_metadata",
+    "refresh_target_group_cover_image_from_context",
 )
-COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK = (
-    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_refresh_target_limit_per_tick
-)
-
-
-def _is_playwright_driver_shutdown_exception(exc: object) -> bool:
-    """判斷是否為 Playwright driver 關閉期間產生的已知背景 future 例外。"""
-
-    return (
-        isinstance(exc, Exception)
-        and "Connection closed while reading from the driver" in str(exc)
-    )
 
 
 def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
@@ -83,9 +82,7 @@ def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
 
-    def handle_exception(
-        loop: asyncio.AbstractEventLoop, context: dict[str, object]
-    ) -> None:
+    def handle_exception(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
         """只消化 Playwright driver shutdown 的已知背景 future 例外。"""
 
         if _is_playwright_driver_shutdown_exception(context.get("exception")):
@@ -140,14 +137,11 @@ async def run_resident_main_loop(
     stop_requested = should_stop or (lambda: False)
     sleep = sleep_fn or asyncio.sleep
 
-    restore_playwright_exception_handler = (
-        _install_playwright_shutdown_exception_handler()
-    )
+    restore_playwright_exception_handler = _install_playwright_shutdown_exception_handler()
     try:
         try:
-            while (
-                not stop_requested()
-                and (options.max_cycles is None or cycle_index < options.max_cycles)
+            while not stop_requested() and (
+                options.max_cycles is None or cycle_index < options.max_cycles
             ):
                 runtime_restart_requested = False
                 target_queue = TargetQueue()
@@ -194,12 +188,8 @@ async def run_resident_main_loop(
                             )
                             await executor.start()
                             try:
-                                while (
-                                    not stop_requested()
-                                    and (
-                                        options.max_cycles is None
-                                        or cycle_index < options.max_cycles
-                                    )
+                                while not stop_requested() and (
+                                    options.max_cycles is None or cycle_index < options.max_cycles
                                 ):
                                     if executor.runtime_restart_requested():
                                         runtime_restart_requested = True
@@ -253,9 +243,7 @@ async def run_resident_main_loop(
                                     )
                             finally:
                                 await executor.stop(
-                                    cancel_running=(
-                                        stop_requested() or runtime_restart_requested
-                                    ),
+                                    cancel_running=(stop_requested() or runtime_restart_requested),
                                     runtime_restart=runtime_restart_requested,
                                 )
                                 await page_pool.close_all()
@@ -279,10 +267,74 @@ def _publish_display_next_due_at(
     def publish(target_id: str, due_at: datetime | None) -> None:
         """將 planner 已決定的 next due 寫入 read model。"""
 
-        with SqliteApplicationContext(db_path) as app:
-            app.services.targets.set_target_display_next_due_at(target_id, due_at)
+        future = _DISPLAY_NEXT_DUE_EXECUTOR.submit(
+            _write_display_next_due_at_best_effort,
+            db_path,
+            target_id,
+            due_at,
+        )
+        future.add_done_callback(
+            lambda done: _log_display_next_due_update_exception(done, target_id)
+        )
 
     return publish
+
+
+def _write_display_next_due_at_best_effort(
+    db_path: Path,
+    target_id: str,
+    due_at: datetime | None,
+) -> None:
+    """以短 timeout 更新 UI-only next due read model；lock 時直接略過。"""
+
+    try:
+        with closing(sqlite3.connect(db_path, timeout=0.1)) as connection:
+            connection.execute(f"PRAGMA busy_timeout = {_DISPLAY_NEXT_DUE_BUSY_TIMEOUT_MS}")
+            connection.execute(
+                """
+                UPDATE target_runtime_state
+                SET display_next_due_at = ?, updated_at = ?
+                WHERE target_id = ?
+                """,
+                (
+                    encode_datetime(due_at),
+                    encode_datetime(utc_now()),
+                    target_id,
+                ),
+            )
+            connection.commit()
+    except sqlite3.OperationalError as exc:
+        if not is_sqlite_lock_error(exc):
+            raise
+        logger.warning(
+            "display next due update skipped: database locked target_id=%s exception_class=%s",
+            target_id,
+            exc.__class__.__name__,
+        )
+
+
+def _log_display_next_due_update_exception(
+    future: Future[None],
+    target_id: str,
+) -> None:
+    """記錄背景 display-next-due 更新的非 lock 例外。"""
+
+    exc = future.exception()
+    if exc is None:
+        return
+    if is_sqlite_lock_error(exc):
+        logger.warning(
+            "display next due update skipped: database locked target_id=%s exception_class=%s",
+            target_id,
+            exc.__class__.__name__,
+        )
+        return
+    logger.error(
+        "display next due update failed target_id=%s exception_class=%s",
+        target_id,
+        exc.__class__.__name__,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 async def run_resident_main_scheduler_tick(
@@ -440,9 +492,7 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
         return dispatch_new_pending_notification_outbox_for_db(db_path=options.db_path)
     except sqlite3.OperationalError as exc:
         if _is_sqlite_database_locked(exc):
-            logger.warning(
-                "pending notification outbox dispatch skipped: database locked"
-            )
+            logger.warning("pending notification outbox dispatch skipped: database locked")
             return 0
         logger.exception("pending notification outbox dispatch failed")
         return 0
@@ -451,34 +501,13 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
 def run_bounded_retention_maintenance_if_due(options: ResidentRuntimeOptions) -> int:
     """週期性清理 bounded retention horizon 外的內部資料。"""
 
-    now = utc_now()
-    last_run = _LAST_RETENTION_MAINTENANCE_BY_DB.get(options.db_path)
-    if (
-        last_run is not None
-        and (now - last_run).total_seconds()
-        < PYTHON_PERSISTENCE_RETENTION_DEFAULTS.maintenance_interval_seconds
-    ):
-        return 0
-    try:
-        with SqliteApplicationContext(options.db_path) as app:
-            result = app.repositories.maintenance.prune_bounded_retention(now=now)
-        _LAST_RETENTION_MAINTENANCE_BY_DB[options.db_path] = now
-        return result.total_deleted
-    except sqlite3.OperationalError as exc:
-        if _is_sqlite_database_locked(exc):
-            logger.warning("bounded retention maintenance skipped: database locked")
-            return 0
-        logger.exception("bounded retention maintenance failed")
-        return 0
-    except Exception:
-        logger.exception("bounded retention maintenance failed")
-        return 0
+    return run_bounded_retention_maintenance_for_db(options.db_path)
 
 
 def _is_sqlite_database_locked(exc: sqlite3.OperationalError) -> bool:
     """判斷 SQLite OperationalError 是否為暫時性 lock contention。"""
 
-    return "locked" in str(exc).lower()
+    return is_sqlite_lock_error(exc)
 
 
 async def _sleep_or_runtime_restart(
@@ -539,453 +568,6 @@ async def _drain_queue_or_runtime_restart(
         await asyncio.gather(join_task, restart_task, return_exceptions=True)
 
 
-async def refresh_requested_target_metadata(
-    *,
-    options: ResidentRuntimeOptions,
-    browser_context: Any | None,
-    should_stop: StopCheckCallable | None = None,
-    request_runtime_restart: Callable[[], None] | None = None,
-) -> int:
-    """消化 Web UI request 與 DB pending metadata refresh job。"""
-
-    stop_requested = should_stop or (lambda: False)
-    if browser_context is None or stop_requested():
-        return 0
-    refreshed_count = 0
-    for target_id in list_metadata_refresh_target_ids(options):
-        if stop_requested():
-            break
-        try:
-            if await refresh_target_group_name_from_context(
-                options=options,
-                browser_context=browser_context,
-                target_id=target_id,
-            ):
-                refreshed_count += 1
-        except Exception as exc:
-            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
-                logger.info(
-                    "metadata refresh skipped because scheduler is stopping",
-                    extra={"target_id": target_id},
-                )
-                break
-            if _is_scheduler_runtime_refresh_failure(exc):
-                logger.warning(
-                    "metadata refresh requested browser runtime restart",
-                    extra={"target_id": target_id},
-                )
-                recorded_failure = record_refresh_runtime_failure(
-                    options=options,
-                    target_id=target_id,
-                    exc=exc,
-                )
-                if recorded_failure and request_runtime_restart is not None:
-                    request_runtime_restart()
-                break
-            logger.exception(
-                "metadata refresh failed",
-                extra={"target_id": target_id},
-            )
-            mark_target_metadata_refresh_failed(
-                options,
-                target_id,
-                "metadata refresh failed",
-            )
-    return refreshed_count
-
-
-def list_metadata_refresh_target_ids(options: ResidentRuntimeOptions) -> tuple[str, ...]:
-    """列出本輪要消化的明確 metadata refresh target ids。"""
-
-    target_ids: list[str] = []
-    if options.metadata_refresh_provider is not None:
-        target_ids.extend(options.metadata_refresh_provider())
-    with SqliteApplicationContext(options.db_path) as app:
-        target_ids.extend(
-            target.id
-            for target in app.repositories.targets.list_by_metadata_status(
-                TargetMetadataStatus.PENDING,
-                limit=METADATA_REFRESH_TARGET_LIMIT_PER_TICK,
-            )
-        )
-    return filter_maintenance_refresh_target_ids(
-        options,
-        tuple(dict.fromkeys(target_id for target_id in target_ids if target_id)),
-    )
-
-
-async def refresh_pending_target_cover_images(
-    *,
-    options: ResidentRuntimeOptions,
-    browser_context: Any | None,
-    should_stop: StopCheckCallable | None = None,
-    request_runtime_restart: Callable[[], None] | None = None,
-) -> int:
-    """消化 dashboard 壞圖上報排入的 image-only cover refresh jobs。"""
-
-    stop_requested = should_stop or (lambda: False)
-    if browser_context is None or stop_requested():
-        return 0
-    refreshed_count = 0
-    with SqliteApplicationContext(options.db_path) as app:
-        states = app.services.targets.list_pending_cover_image_refreshes(
-            limit=COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK,
-        )
-    states = filter_maintenance_cover_refresh_states(options, states)
-    for state in states:
-        if stop_requested():
-            break
-        try:
-            if await refresh_target_group_cover_image_from_context(
-                options=options,
-                browser_context=browser_context,
-                state=state,
-            ):
-                refreshed_count += 1
-        except Exception as exc:
-            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
-                logger.info(
-                    "cover image refresh skipped because scheduler is stopping",
-                    extra={"target_id": state.target_id},
-                )
-                break
-            if _is_scheduler_runtime_refresh_failure(exc):
-                logger.warning(
-                    "cover image refresh requested browser runtime restart",
-                    extra={"target_id": state.target_id},
-                )
-                recorded_failure = record_refresh_runtime_failure(
-                    options=options,
-                    target_id=state.target_id,
-                    exc=exc,
-                )
-                if recorded_failure and request_runtime_restart is not None:
-                    request_runtime_restart()
-                break
-            logger.exception(
-                "cover image refresh failed",
-                extra={"target_id": state.target_id},
-            )
-            mark_target_cover_image_refresh_failed(
-                options,
-                state.target_id,
-                _format_exception_message(exc),
-                reported_url=state.last_reported_url,
-                requested_at=state.requested_at,
-            )
-    return refreshed_count
-
-
-def filter_maintenance_refresh_target_ids(
-    options: ResidentRuntimeOptions,
-    target_ids: tuple[str, ...],
-) -> tuple[str, ...]:
-    """避開已有正式掃描工作的 target，避免 maintenance job 擋住 retry。"""
-
-    if not target_ids:
-        return ()
-    with SqliteApplicationContext(options.db_path) as app:
-        runtime_states = app.repositories.runtime_states.list_by_targets(list(target_ids))
-        targets = {
-            target_id: app.repositories.targets.get(target_id)
-            for target_id in target_ids
-        }
-    return tuple(
-        target_id
-        for target_id in target_ids
-        if targets.get(target_id) is not None
-        and _runtime_state_allows_maintenance_refresh(runtime_states.get(target_id))
-    )
-
-
-def filter_maintenance_cover_refresh_states(
-    options: ResidentRuntimeOptions,
-    states: list[TargetCoverImageRefreshState],
-) -> list[TargetCoverImageRefreshState]:
-    """避開已有正式掃描工作的 cover refresh jobs。"""
-
-    if not states:
-        return []
-    target_ids = [state.target_id for state in states]
-    with SqliteApplicationContext(options.db_path) as app:
-        runtime_states = app.repositories.runtime_states.list_by_targets(target_ids)
-        targets = {
-            target_id: app.repositories.targets.get(target_id)
-            for target_id in target_ids
-        }
-    return [
-        state
-        for state in states
-        if targets.get(state.target_id) is not None
-        and _runtime_state_allows_maintenance_refresh(
-            runtime_states.get(state.target_id)
-        )
-    ]
-
-
-def _runtime_state_allows_maintenance_refresh(
-    state: TargetRuntimeState | None,
-) -> bool:
-    """runtime recovery retry 等待期間，maintenance refresh 先讓位。"""
-
-    if state is None:
-        return True
-    if _runtime_state_has_pending_failure_retry(state):
-        return False
-    return state.runtime_status not in {
-        TargetRuntimeStatus.QUEUED,
-        TargetRuntimeStatus.RUNNING,
-        TargetRuntimeStatus.ERROR,
-    }
-
-
-def _runtime_state_has_pending_failure_retry(state: TargetRuntimeState) -> bool:
-    """判斷 target 是否正等待 failure policy 自動重試掃描。"""
-
-    return (
-        state.runtime_status == TargetRuntimeStatus.IDLE
-        and state.scan_requested_at is not None
-        and state.consecutive_failure_count > 0
-    )
-
-
-def record_refresh_runtime_failure(
-    *,
-    options: ResidentRuntimeOptions,
-    target_id: str,
-    exc: Exception,
-) -> bool:
-    """將 maintenance refresh 的 browser runtime failure 接回 scan failure policy。"""
-
-    exception_class, message = _runtime_refresh_failure_detail(exc)
-    decision = record_guarded_scan_failure_for_db(
-        db_path=options.db_path,
-        target_id=target_id,
-        reason=SCHEDULER_RUNTIME_REASON,
-        message=message,
-        source="unknown_exception",
-        worker_path="resident_main",
-        commit_guard=None,
-        exception_class=exception_class,
-    )
-    return decision is not None
-
-
-def _runtime_refresh_failure_detail(exc: Exception) -> tuple[str, str]:
-    """取出最接近 Playwright runtime closed 的 exception 類型與訊息。"""
-
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, Exception) and (
-            classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON
-            or _is_playwright_driver_shutdown_exception(current)
-        ):
-            return current.__class__.__name__, _format_exception_message(current)
-        current = current.__cause__ or current.__context__
-    return exc.__class__.__name__, _format_exception_message(exc)
-
-
-def _should_skip_refresh_failure_for_shutdown(
-    exc: Exception,
-    should_stop: StopCheckCallable,
-) -> bool:
-    """停止流程中 Playwright driver 關閉不應污染 maintenance job 診斷。"""
-
-    return should_stop() and _is_playwright_driver_shutdown_exception(exc)
-
-
-def _is_scheduler_runtime_refresh_failure(exc: Exception) -> bool:
-    """判斷 metadata/cover refresh 失敗是否代表 browser runtime 已損壞。"""
-
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, Exception):
-            if classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON:
-                return True
-            if _is_playwright_driver_shutdown_exception(current):
-                return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-async def refresh_target_group_cover_image_from_context(
-    *,
-    options: ResidentRuntimeOptions,
-    browser_context: Any,
-    state: TargetCoverImageRefreshState,
-) -> bool:
-    """用 resident browser context 只刷新 target group cover image URL。"""
-
-    group_id = ""
-    target_id = state.target_id
-    reported_url = state.last_reported_url.strip()
-    with SqliteApplicationContext(options.db_path) as app:
-        target = app.repositories.targets.get(target_id)
-        if target is None:
-            return False
-        current_url = target.group_cover_image_url.strip()
-        if current_url != reported_url:
-            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
-                target_id,
-                current_url=current_url,
-                reported_url=reported_url,
-                requested_at=state.requested_at,
-            )
-            return False
-        group_id = target.group_id
-        if not app.services.targets.mark_target_cover_image_refresh_attempted(
-            target_id,
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        ):
-            return False
-    if not group_id:
-        mark_target_cover_image_refresh_failed(
-            options,
-            target_id,
-            "target group id is empty",
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        )
-        return False
-    try:
-        cover_image_url = await resolve_group_cover_image_with_context(
-            browser_context,
-            canonical_url=f"https://www.facebook.com/groups/{group_id}",
-        )
-    except GroupMetadataError as exc:
-        if _is_scheduler_runtime_refresh_failure(exc):
-            raise
-        logger.info(
-            "cover image refresh skipped",
-            extra={"target_id": target_id},
-        )
-        mark_target_cover_image_refresh_failed(
-            options,
-            target_id,
-            str(exc),
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        )
-        return False
-    with SqliteApplicationContext(options.db_path) as app:
-        target = app.repositories.targets.get(target_id)
-        if target is None:
-            return False
-        current_url = target.group_cover_image_url.strip()
-        if current_url != reported_url:
-            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
-                target_id,
-                current_url=current_url,
-                reported_url=reported_url,
-                requested_at=state.requested_at,
-            )
-            return True
-        normalized_cover_image_url = cover_image_url.strip()
-        changed = normalized_cover_image_url != current_url
-        app.services.targets.refresh_target_group_cover_image(
-            target_id,
-            normalized_cover_image_url,
-        )
-        app.services.targets.mark_target_cover_image_refresh_succeeded(
-            target_id,
-            resolved_url=normalized_cover_image_url,
-            changed=changed,
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        )
-    return True
-
-
-def _format_exception_message(exc: Exception) -> str:
-    """保留非預期例外類型，讓 cover refresh 診斷可回查真正原因。"""
-
-    message = str(exc).strip()
-    if message:
-        return f"{exc.__class__.__name__}: {message}"
-    return exc.__class__.__name__
-
-
-def mark_target_cover_image_refresh_failed(
-    options: ResidentRuntimeOptions,
-    target_id: str,
-    error: str,
-    *,
-    reported_url: str | None = None,
-    requested_at: datetime | None = None,
-) -> None:
-    """將 cover image refresh 失敗寫回獨立狀態；target 已刪除時忽略。"""
-
-    with SqliteApplicationContext(options.db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.targets.mark_target_cover_image_refresh_failed(
-            target_id,
-            error,
-            reported_url=reported_url,
-            requested_at=requested_at,
-        )
-
-
-def mark_target_metadata_refresh_failed(
-    options: ResidentRuntimeOptions,
-    target_id: str,
-    error: str,
-) -> None:
-    """將 metadata refresh 失敗寫回 DB；target 已被刪除時忽略。"""
-
-    with SqliteApplicationContext(options.db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.targets.mark_target_metadata_refresh_failed(target_id, error)
-
-
-async def refresh_target_group_name_from_context(
-    *,
-    options: ResidentRuntimeOptions,
-    browser_context: Any,
-    target_id: str,
-) -> bool:
-    """用 resident browser context 補齊 target group name。"""
-
-    group_id = ""
-    with SqliteApplicationContext(options.db_path) as app:
-        target = app.repositories.targets.get(target_id)
-        if target is None:
-            return False
-        group_id = target.group_id
-    if not group_id:
-        return False
-    try:
-        metadata = await resolve_group_metadata_with_context(
-            browser_context,
-            canonical_url=f"https://www.facebook.com/groups/{group_id}",
-        )
-    except GroupMetadataError as exc:
-        if _is_scheduler_runtime_refresh_failure(exc):
-            raise
-        logger.info(
-            "metadata refresh skipped",
-            extra={"target_id": target_id},
-        )
-        mark_target_metadata_refresh_failed(options, target_id, str(exc))
-        return False
-    with SqliteApplicationContext(options.db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return False
-        app.services.targets.refresh_target_group_metadata(
-            target_id,
-            group_name=metadata.group_name,
-            group_cover_image_url=metadata.group_cover_image_url,
-            overwrite_name=True,
-        )
-    return True
-
-
 async def run_resident_main_cycle(
     *,
     options: ResidentRuntimeOptions,
@@ -1004,7 +586,11 @@ async def run_resident_main_cycle(
         target_queue=target_queue,
         schedule_planner=schedule_planner,
         scan_page=scan_page,
-        **({"scan_comments_target_page": scan_comments_target_page} if scan_comments_target_page is not None else {}),
+        **(
+            {"scan_comments_target_page": scan_comments_target_page}
+            if scan_comments_target_page is not None
+            else {}
+        ),
     )
     await executor.start()
     runtime_restart_requested = False

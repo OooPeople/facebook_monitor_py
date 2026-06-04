@@ -13,11 +13,14 @@ from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
+from facebook_monitor.worker.one_shot_dispatch import record_failure
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
 
 
@@ -281,6 +284,54 @@ def test_run_one_shot_scan_success_clears_direct_runtime_streaks(
     assert state.consecutive_failure_count == 0
     assert state.consecutive_scan_skip_reason == ""
     assert state.consecutive_scan_skip_count == 0
+
+
+def test_record_failure_with_guard_does_not_fallback_after_owner_changed(
+    tmp_path: Path,
+) -> None:
+    """有 owner guard 的 one-shot failure 不可污染 stale attempt diagnostics。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        target = app.services.targets.restart_target_monitoring(target.id)
+        assert app.services.targets.try_mark_target_running(
+            target.id,
+            "current-worker",
+            page_id="current-page",
+        )
+        current_state = app.repositories.runtime_states.get(target.id)
+        assert current_state is not None
+        assert current_state.last_started_at is not None
+
+    record_failure(
+        db_path,
+        target,
+        UNKNOWN_REASON,
+        "stale failure",
+        commit_guard=ScanCommitGuard(
+            worker_id="stale-worker",
+            page_id="stale-page",
+            started_at=current_state.last_started_at,
+        ),
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert scan_count == 0
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == "current-worker"
 
 
 def test_run_one_shot_scan_skipped_success_preserves_direct_failure_streak(

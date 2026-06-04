@@ -12,6 +12,7 @@ from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
+from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
@@ -43,6 +44,7 @@ _FAILURE_REASON_LABELS = {
     PROFILE_MISSING_REASON: "瀏覽器設定檔不存在",
     SCHEDULER_RUNTIME_REASON: "背景掃描執行錯誤",
     EXTRACTOR_EMPTY_REASON: "未抽取到可用項目",
+    EXTRACTOR_RUNTIME_REASON: "頁面抽取執行錯誤",
     SCAN_TIMEOUT_REASON: "掃描逾時",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入逾時",
     SORT_ADJUST_UNCONFIRMED_REASON: "調整排序失敗",
@@ -66,6 +68,7 @@ _FAILURE_REASON_DETAILS = {
     PROFILE_MISSING_REASON: "找不到自動化瀏覽器設定檔，請先到設定頁開啟 Facebook 登入視窗。",
     SCHEDULER_RUNTIME_REASON: "背景掃描程序或瀏覽器 context 發生錯誤，系統會重啟執行環境並重試。",
     EXTRACTOR_EMPTY_REASON: "頁面載入完成但沒有抽取到可辨識的貼文或留言，系統會重啟頁面並重試。",
+    EXTRACTOR_RUNTIME_REASON: "Facebook DOM 抽取腳本或 selector 執行失敗，系統會重啟頁面並重試。",
     SCAN_TIMEOUT_REASON: "本輪掃描超過設定時間，系統已中止本輪並會重啟頁面重試。",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入、重新導向或重新整理時中斷，掃描中的頁面內容已失效；請稍後重試。",
     SORT_ADJUST_UNCONFIRMED_REASON: "連續多輪未能確認 Facebook 排序已切到最新，系統會重啟頁面並重試。",

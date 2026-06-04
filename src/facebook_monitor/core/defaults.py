@@ -104,6 +104,14 @@ class UpdaterRuntimeDefaults:
 
 
 @dataclass(frozen=True)
+class DiagnosticsRuntimeDefaults:
+    """保存診斷產物 retention 預設值。"""
+
+    support_bundle_retention_days: int = 14
+    support_bundle_max_files: int = 10
+
+
+@dataclass(frozen=True)
 class NotificationRuntimeDefaults:
     """保存 notification sender、outbox 與 event retention 預設值。"""
 
@@ -139,6 +147,7 @@ class PersistenceRetentionDefaults:
     terminal_outbox_retention_days: int = 7
     failed_outbox_retention_days: int = 14
     maintenance_interval_seconds: int = 3600
+    maintenance_retry_interval_seconds: int = 60
 
 
 PYTHON_TARGET_CONFIG_DEFAULTS = TargetConfigDefaults()
@@ -147,6 +156,7 @@ PYTHON_BROWSER_RUNTIME_DEFAULTS = BrowserRuntimeDefaults()
 PYTHON_WEBUI_RUNTIME_DEFAULTS = WebUiRuntimeDefaults()
 PYTHON_PROFILE_LOGIN_DEFAULTS = ProfileLoginDefaults()
 PYTHON_UPDATER_RUNTIME_DEFAULTS = UpdaterRuntimeDefaults()
+PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS = DiagnosticsRuntimeDefaults()
 PYTHON_NOTIFICATION_RUNTIME_DEFAULTS = NotificationRuntimeDefaults()
 PYTHON_PERSISTENCE_QUERY_DEFAULTS = PersistenceQueryDefaults()
 PYTHON_PERSISTENCE_RETENTION_DEFAULTS = PersistenceRetentionDefaults()

@@ -20,6 +20,7 @@ from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
+from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationOutboxSummary
@@ -444,7 +445,7 @@ def _read_application_context(db_path: Path) -> SqliteApplicationContext:
 def _raise_dashboard_read_unavailable_if_locked(exc: sqlite3.OperationalError) -> None:
     """將 SQLite lock 轉成 route 可處理的 read model 暫不可用錯誤。"""
 
-    if "locked" in str(exc).lower():
+    if is_sqlite_lock_error(exc):
         raise DashboardReadUnavailable(str(exc)) from exc
 
 
@@ -553,7 +554,7 @@ def get_dashboard_revision(db_path: Path) -> DashboardRevision:
     try:
         connection = sqlite3.connect(uri, uri=True, timeout=5)
     except sqlite3.OperationalError as exc:
-        if "locked" in str(exc).lower():
+        if is_sqlite_lock_error(exc):
             raise DashboardRevisionUnavailable(str(exc)) from exc
         return DashboardRevision(revision="0", last_changed_at="")
     try:
@@ -564,7 +565,7 @@ def get_dashboard_revision(db_path: Path) -> DashboardRevision:
         ).fetchone()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
-        if "locked" in message:
+        if is_sqlite_lock_error(exc):
             raise DashboardRevisionUnavailable(str(exc)) from exc
         if "no such table" not in message:
             raise

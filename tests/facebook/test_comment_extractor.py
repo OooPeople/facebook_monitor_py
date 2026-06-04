@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -9,7 +10,12 @@ from typing import Any
 
 import pytest
 
+import facebook_monitor.facebook.comment_extractor as comment_extractor
 from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more_guard_held
+from facebook_monitor.facebook.comment_extractor import (
+    collect_comment_items_with_load_more_guard_held_async,
+)
 from facebook_monitor.facebook.comment_extractor import extract_visible_comment_items
 from facebook_monitor.facebook.text_snippet_dom import TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
 
@@ -158,6 +164,224 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
     }
     assert meta.candidate_count == 2
     assert meta.accumulated_count == 1
+
+
+def test_collect_comments_releases_guard_when_snapshot_capture_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """snapshot capture 失敗仍需釋放 comments load-more guard。"""
+
+    released: list[bool] = []
+    restored: list[bool] = []
+
+    def raise_snapshot(_page: object) -> None:
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(comment_extractor, "capture_comment_scroll_snapshot", raise_snapshot)
+    monkeypatch.setattr(
+        comment_extractor,
+        "restore_comment_scroll_snapshot",
+        lambda _page: restored.append(True),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "end_comment_load_more_guard",
+        lambda _page: released.append(True),
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        collect_comment_items_with_load_more_guard_held(
+            page=object(),
+            group_id="group",
+            parent_post_id="post",
+            max_items=5,
+            scroll_rounds=1,
+            scroll_wait_ms=0,
+            auto_load_more=True,
+        )
+
+    assert released == [True]
+    assert restored == []
+
+
+def test_collect_comments_async_releases_guard_when_snapshot_capture_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """async snapshot capture 失敗仍需釋放 comments load-more guard。"""
+
+    released: list[bool] = []
+    restored: list[bool] = []
+
+    async def raise_snapshot(_page: object) -> None:
+        raise RuntimeError("snapshot failed")
+
+    async def restore_snapshot(_page: object) -> None:
+        restored.append(True)
+
+    async def release_guard(_page: object) -> None:
+        released.append(True)
+
+    monkeypatch.setattr(
+        comment_extractor,
+        "capture_comment_scroll_snapshot_async",
+        raise_snapshot,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "restore_comment_scroll_snapshot_async",
+        restore_snapshot,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "end_comment_load_more_guard_async",
+        release_guard,
+    )
+
+    async def run_test() -> None:
+        with pytest.raises(RuntimeError, match="snapshot failed"):
+            await collect_comment_items_with_load_more_guard_held_async(
+                page=object(),
+                group_id="group",
+                parent_post_id="post",
+                max_items=5,
+                scroll_rounds=1,
+                scroll_wait_ms=0,
+                auto_load_more=True,
+            )
+
+    asyncio.run(run_test())
+
+    assert released == [True]
+    assert restored == []
+
+
+def test_collect_comments_releases_guard_when_snapshot_restore_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """snapshot restore 失敗仍需釋放 comments load-more guard。"""
+
+    released: list[bool] = []
+
+    def raise_restore(_page: object) -> None:
+        raise RuntimeError("restore failed")
+
+    monkeypatch.setattr(comment_extractor, "capture_comment_scroll_snapshot", lambda _page: None)
+    monkeypatch.setattr(comment_extractor, "restore_comment_scroll_snapshot", raise_restore)
+    monkeypatch.setattr(
+        comment_extractor,
+        "end_comment_load_more_guard",
+        lambda _page: released.append(True),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "wait_for_comment_dom_settle",
+        lambda _page, *, max_items: None,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "extract_visible_comment_items",
+        lambda _page, *, group_id, parent_post_id, max_items: (
+            [],
+            comment_extractor.CommentCollectionMeta(
+                target_count=max_items,
+                candidate_count=0,
+                parsed_count=0,
+                accumulated_count=0,
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="restore failed"):
+        collect_comment_items_with_load_more_guard_held(
+            page=object(),
+            group_id="group",
+            parent_post_id="post",
+            max_items=5,
+            scroll_rounds=0,
+            scroll_wait_ms=0,
+            auto_load_more=True,
+        )
+
+    assert released == [True]
+
+
+def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """async snapshot restore 失敗仍需釋放 comments load-more guard。"""
+
+    released: list[bool] = []
+
+    async def capture_snapshot(_page: object) -> None:
+        return None
+
+    async def raise_restore(_page: object) -> None:
+        raise RuntimeError("restore failed")
+
+    async def release_guard(_page: object) -> None:
+        released.append(True)
+
+    async def wait_for_settle(_page: object, *, max_items: int) -> None:
+        return None
+
+    async def extract_items(
+        _page: object,
+        *,
+        group_id: str,
+        parent_post_id: str,
+        max_items: int,
+    ):
+        return (
+            [],
+            comment_extractor.CommentCollectionMeta(
+                target_count=max_items,
+                candidate_count=0,
+                parsed_count=0,
+                accumulated_count=0,
+            ),
+        )
+
+    monkeypatch.setattr(
+        comment_extractor,
+        "capture_comment_scroll_snapshot_async",
+        capture_snapshot,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "restore_comment_scroll_snapshot_async",
+        raise_restore,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "end_comment_load_more_guard_async",
+        release_guard,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "wait_for_comment_dom_settle_async",
+        wait_for_settle,
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "extract_visible_comment_items_async",
+        extract_items,
+    )
+
+    async def run_test() -> None:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            await collect_comment_items_with_load_more_guard_held_async(
+                page=object(),
+                group_id="group",
+                parent_post_id="post",
+                max_items=5,
+                scroll_rounds=0,
+                scroll_wait_ms=0,
+                auto_load_more=True,
+            )
+
+    asyncio.run(run_test())
+
+    assert released == [True]
 
 
 def _run_text_snippet_helper(values: list[str]) -> dict[str, Any]:

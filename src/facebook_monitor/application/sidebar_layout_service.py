@@ -270,6 +270,7 @@ def _merge_template_sections(
         next_config = replace(
             next_config,
             include_keywords=template.include_keywords,
+            include_keyword_groups=template.include_keyword_groups,
             exclude_keywords=template.exclude_keywords,
             exclude_ignore_phrases=template.exclude_ignore_phrases,
         )

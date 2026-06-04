@@ -25,6 +25,7 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
+from facebook_monitor.persistence.sqlite_codec import decode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
 from facebook_monitor.persistence.sqlite_codec import decode_runtime_status
 
@@ -62,6 +63,11 @@ def target_config_from_row(row: sqlite3.Row, *, id_column: str) -> TargetConfig:
     return TargetConfig(
         target_id=row[id_column],
         include_keywords=decode_keywords(row["include_keywords"]),
+        include_keyword_groups=(
+            decode_include_keyword_groups(row["include_keyword_groups"])
+            if _row_has_column(row, "include_keyword_groups")
+            else ()
+        ),
         exclude_keywords=decode_keywords(row["exclude_keywords"]),
         exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
         min_refresh_sec=row["min_refresh_sec"],
@@ -85,6 +91,11 @@ def legacy_target_config_from_row(row: sqlite3.Row) -> LegacyTargetConfig:
     return LegacyTargetConfig(
         target_id=row["target_id"],
         include_keywords=decode_keywords(row["include_keywords"]),
+        include_keyword_groups=(
+            decode_include_keyword_groups(row["include_keyword_groups"])
+            if _row_has_column(row, "include_keyword_groups")
+            else ()
+        ),
         exclude_keywords=decode_keywords(row["exclude_keywords"]),
         exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
         min_refresh_sec=row["min_refresh_sec"],
@@ -100,6 +111,12 @@ def legacy_target_config_from_row(row: sqlite3.Row) -> LegacyTargetConfig:
         enable_discord_notification=bool(row["enable_discord_notification"]),
         discord_webhook=row["discord_webhook"],
     )
+
+
+def _row_has_column(row: sqlite3.Row, column_name: str) -> bool:
+    """回傳 SQLite row 是否包含指定欄位。"""
+
+    return column_name in row.keys()
 
 
 def match_history_from_row(row: sqlite3.Row) -> MatchHistoryEntry:

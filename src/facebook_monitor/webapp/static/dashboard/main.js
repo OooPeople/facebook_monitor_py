@@ -54,7 +54,12 @@ const dispatchPageFeedback = () => {
     handled = true;
     clearSubmittedConfigAnchor();
   } else if (
-    ["target_started", "target_stopped", "scan_requested"].includes(feedback) &&
+    [
+      "target_started",
+      "target_stopped",
+      "scan_requested",
+      "notification_state_reset",
+    ].includes(feedback) &&
     targetElement
   ) {
     showInlineStatus(

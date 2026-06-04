@@ -22,6 +22,8 @@
 ## 撰寫原則
 
 - `summary` 應簡短明確，直接描述這次提交做了什麼。
+- `body` 可依變更複雜度寫較完整的背景、行為差異與風險；不需要刻意壓成簡短敘述。
+- commit message 不需要寫上驗證結果。
 - 不要在 `summary` 結尾加句號。
 - 避免模糊訊息，例如 `update`、`fix bug`、`modify code`。
 - 一次 commit 盡量聚焦單一職責。

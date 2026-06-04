@@ -19,6 +19,7 @@ from facebook_monitor.application.target_actions import delete_target_action
 from facebook_monitor.application.target_actions import pause_target_monitoring_action
 from facebook_monitor.application.target_actions import request_target_scan_once_action
 from facebook_monitor.application.target_actions import restart_target_monitoring_action
+from facebook_monitor.application.target_actions import reset_target_notification_state_action
 from facebook_monitor.application.target_route_service import DetectedCommentsTargetRoute
 from facebook_monitor.application.target_route_service import detect_target_route_from_url
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
@@ -41,7 +42,6 @@ from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_app_theme
 from facebook_monitor.webapp.dependencies import get_desktop_sender
 from facebook_monitor.webapp.dependencies import get_discord_sender
-from facebook_monitor.webapp.dependencies import get_global_notification_settings
 from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import get_group_name_resolver
 from facebook_monitor.webapp.dependencies import get_profile_dir
@@ -113,7 +113,6 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             {
                 "message": message,
                 "error": error,
-                "notification_settings": get_global_notification_settings(request),
                 "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,
                 "min_refresh_seconds": MIN_REFRESH_SECONDS,
                 "min_target_posts": MIN_TARGET_POSTS,
@@ -137,7 +136,6 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
         try:
             keyword_defaults = get_target_keyword_defaults(request)
-            notification_defaults = get_global_notification_settings(request)
             config_form = config_fields.to_target_config_form(
                 default_exclude_keywords=keyword_defaults.exclude_keywords_text,
                 default_exclude_ignore_phrases=keyword_defaults.exclude_ignore_phrases_text,
@@ -160,8 +158,6 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
-                            existing_ntfy_topic=notification_defaults.ntfy_topic,
-                            existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -184,8 +180,6 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                             name=custom_name,
                             group_name=resolved_metadata.group_name,
                             group_cover_image_url=resolved_metadata.group_cover_image_url,
-                            existing_ntfy_topic=notification_defaults.ntfy_topic,
-                            existing_discord_webhook=notification_defaults.discord_webhook,
                         )
                     )
                     if scheduler_running and not custom_name:
@@ -406,7 +400,7 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         target_id: str,
         return_to: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
-        """重新開始單一 target，清 seen/outbox 去重並要求立即掃描。"""
+        """開始單一 target，保留 seen/outbox 並要求立即掃描。"""
 
         try:
             outcome = restart_target_monitoring_action(get_db_path(request), target_id)
@@ -415,6 +409,27 @@ def register_target_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except Exception as exc:
             return redirect_with_error(
                 "啟動失敗：" + format_failure_message_text(str(exc)),
+                return_to=return_to,
+            )
+        return redirect_with_message(
+            outcome.message,
+            return_to=return_to,
+            feedback=outcome.feedback,
+        )
+
+    @app.post("/targets/{target_id}/notifications/clear")
+    async def reset_target_notification_state_route(
+        request: Request,
+        target_id: str,
+        return_to: Annotated[str, Form()] = "",
+    ) -> RedirectResponse:
+        """重置單一 target 的通知與 seen 去重狀態。"""
+
+        try:
+            outcome = reset_target_notification_state_action(get_db_path(request), target_id)
+        except Exception as exc:
+            return redirect_with_error(
+                "重置通知狀態失敗：" + format_failure_message_text(str(exc)),
                 return_to=return_to,
             )
         return redirect_with_message(

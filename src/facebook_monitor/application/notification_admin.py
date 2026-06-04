@@ -1,6 +1,6 @@
 """通知 outbox 管理 use case。
 
-職責：提供 settings 頁需要的 outbox 健康摘要與手動 retry，不改變一般
+職責：提供 settings 頁需要的失敗通知摘要與明確清除入口，不改變一般
 scan commit 後自動 dispatch pending 的主流程。
 """
 
@@ -11,10 +11,6 @@ from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.user_messages import format_notification_event_message
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
-from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
 
 
 @dataclass(frozen=True)
@@ -62,24 +58,6 @@ def load_notification_outbox_health(db_path: Path) -> NotificationOutboxHealth:
         if latest_failed
         else "",
     )
-
-
-def retry_failed_notifications(
-    *,
-    db_path: Path,
-    ntfy_sender: NtfySender,
-    desktop_sender: DesktopSender,
-    discord_sender: DiscordSender,
-) -> int:
-    """手動重試 failed outbox rows，回傳本次嘗試派送筆數。"""
-
-    with SqliteApplicationContext(db_path) as app_context:
-        return retry_failed_notification_outbox(
-            app=app_context,
-            ntfy_sender=ntfy_sender,
-            desktop_sender=desktop_sender,
-            discord_sender=discord_sender,
-        )
 
 
 def clear_failed_notifications(*, db_path: Path) -> int:

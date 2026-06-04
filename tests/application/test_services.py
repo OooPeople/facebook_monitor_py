@@ -18,9 +18,10 @@ from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.application.services import UpdateTargetConfigRequest
 from facebook_monitor.application.services import UpdateTargetStatusRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
@@ -410,6 +411,7 @@ def test_build_target_config_from_patch_preserves_explicit_values_and_defaults()
 
     assert config.target_id == "target-1"
     assert config.include_keywords == ()
+    assert [group.keywords for group in config.include_keyword_groups] == [(), (), ()]
     assert config.exclude_keywords == ()
     assert config.exclude_ignore_phrases == (
         PYTHON_TARGET_CONFIG_DEFAULTS.exclude_ignore_phrases
@@ -444,11 +446,40 @@ def test_merge_target_config_patch_preserves_omitted_values_and_clamps() -> None
 
     assert merged.target_id == "target-1"
     assert merged.include_keywords == ()
+    assert [group.keywords for group in merged.include_keyword_groups] == [(), (), ()]
     assert merged.exclude_keywords == ("old-exclude",)
     assert merged.enable_ntfy is True
     assert merged.ntfy_topic == "old-topic"
     assert merged.max_items_per_scan == 10
     assert merged.auto_load_more is False
+
+
+def test_target_config_patch_syncs_include_keyword_groups_projection() -> None:
+    """include groups 更新時同步維持 legacy flat include_keywords projection。"""
+
+    groups = keyword_group_slots((("5/1;5/2",), ("108;109",)))
+
+    legacy_config = build_target_config_from_patch(
+        "target-1",
+        TargetConfigPatch(include_keywords=("票", "交換")),
+    )
+    config = build_target_config_from_patch(
+        "target-1",
+        TargetConfigPatch(include_keyword_groups=groups),
+    )
+    merged = merge_target_config_patch(
+        TargetConfig(target_id="target-1", include_keywords=("old",)),
+        TargetConfigPatch(include_keyword_groups=groups),
+    )
+
+    assert [
+        group.keywords for group in legacy_config.include_keyword_groups
+    ] == [("票", "交換"), (), ()]
+    assert config.include_keywords == ("5/1;5/2", "108;109")
+    assert merged.include_keywords == ("5/1;5/2", "108;109")
+    assert [
+        group.keywords for group in merged.include_keyword_groups
+    ] == [("5/1;5/2",), ("108;109",), ()]
 
 
 def test_target_facade_exposes_display_next_due_update(tmp_path: Path) -> None:
@@ -1134,56 +1165,6 @@ def test_update_target_config_preserves_omitted_notification_channels(
         assert config.discord_webhook == "https://discord.com/api/webhooks/example"
 
 
-def test_apply_global_notification_settings_updates_each_target_config(tmp_path: Path) -> None:
-    """同 group 多個 target 套用通知預設值時不得被 group_id 去重跳過。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app:
-        posts_target = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222518561920110",
-                canonical_url="https://www.facebook.com/groups/222518561920110",
-            )
-        )
-        first_comments_target = app.services.targets.upsert_comments_target(
-            UpsertCommentsTargetRequest(
-                group_id="222518561920110",
-                parent_post_id="111",
-                canonical_url="https://www.facebook.com/groups/222518561920110/posts/111",
-            )
-        )
-        second_comments_target = app.services.targets.upsert_comments_target(
-            UpsertCommentsTargetRequest(
-                group_id="222518561920110",
-                parent_post_id="222",
-                canonical_url="https://www.facebook.com/groups/222518561920110/posts/222",
-            )
-        )
-
-        count = app.services.targets.apply_global_notification_settings(
-            GlobalNotificationSettings(
-                enable_desktop_notification=True,
-                enable_ntfy=True,
-                ntfy_topic="global-topic",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/global",
-            )
-        )
-        configs = [
-            app.repositories.configs.get_for_target(target)
-            for target in (posts_target, first_comments_target, second_comments_target)
-        ]
-
-    assert count == 3
-    for config in configs:
-        assert config is not None
-        assert config.enable_desktop_notification
-        assert config.enable_ntfy
-        assert config.ntfy_topic == "global-topic"
-        assert config.enable_discord_notification
-        assert config.discord_webhook == "https://discord.com/api/webhooks/global"
-
-
 def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> None:
     """單一 target 開始/停止不會影響其他 target。"""
 
@@ -1228,8 +1209,8 @@ def test_start_and_stop_target_do_not_touch_other_targets(tmp_path: Path) -> Non
         assert first_runtime_state.scan_requested_at is not None
 
 
-def test_restart_monitoring_clears_only_target_runtime_dedupe_state(tmp_path: Path) -> None:
-    """開始監視會清該 target seen/outbox 去重狀態，不影響其他 target。"""
+def test_restart_monitoring_preserves_target_dedupe_state(tmp_path: Path) -> None:
+    """開始監視只恢復排程，不清 seen/outbox 去重狀態。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -1276,8 +1257,89 @@ def test_restart_monitoring_clears_only_target_runtime_dedupe_state(tmp_path: Pa
 
         app.services.targets.restart_target_monitoring(first.id)
 
+        assert app.repositories.seen_items.has_seen(first.scope_id, "first-item")
+        assert app.repositories.seen_items.has_seen(second.scope_id, "second-item")
+        assert (
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                f"{first.id}:first-item:ntfy"
+            )
+            is not None
+        )
+        assert (
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                f"{second.id}:second-item:ntfy"
+            )
+            is not None
+        )
+
+
+def test_reset_target_notification_state_clears_target_outbox_and_seen(
+    tmp_path: Path,
+) -> None:
+    """明確重置通知狀態會讓該 target 下輪可重新通知，但保留 history/scope。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        first = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        app.repositories.seen_items.mark_seen(
+            SeenItem(scope_id=first.scope_id, item_key="first-item", item_kind=ItemKind.POST)
+        )
+        app.repositories.seen_items.mark_seen(
+            SeenItem(scope_id=second.scope_id, item_key="second-item", item_kind=ItemKind.POST)
+        )
+        app.repositories.scan_scope_state.mark_initialized(first.scope_id)
+        app.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=first.id,
+                group_id=first.group_id,
+                item_kind=ItemKind.POST,
+                item_key="first-item",
+                text="first",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{first.id}:first-item:ntfy",
+                target_id=first.id,
+                item_key="first-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{second.id}:second-item:ntfy",
+                target_id=second.id,
+                item_key="second-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+        result = app.services.targets.reset_target_notification_state(first.id)
+
+        assert result.notification_outbox_rows == 1
+        assert result.seen_items == 1
+        assert result.total_rows == 2
         assert not app.repositories.seen_items.has_seen(first.scope_id, "first-item")
         assert app.repositories.seen_items.has_seen(second.scope_id, "second-item")
+        assert app.repositories.scan_scope_state.is_initialized(first.scope_id)
+        assert len(app.repositories.match_history.list_by_target(first.id)) == 1
         assert (
             app.repositories.notification_outbox.get_by_idempotency_key(
                 f"{first.id}:first-item:ntfy"
@@ -1292,8 +1354,26 @@ def test_restart_monitoring_clears_only_target_runtime_dedupe_state(tmp_path: Pa
         )
 
 
-def test_restart_comments_monitoring_clears_comments_seen_scope(tmp_path: Path) -> None:
-    """comments target 開始監視時也會清自己的 seen scope 並要求立即掃描。"""
+def test_restart_monitoring_preserves_uninitialized_scan_scope(tmp_path: Path) -> None:
+    """開始監視不主動略過第一次 baseline scan。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.repositories.scan_scope_state.clear_scope(target.scope_id)
+
+        app.services.targets.restart_target_monitoring(target.id)
+
+        assert not app.repositories.scan_scope_state.is_initialized(target.scope_id)
+
+
+def test_restart_comments_monitoring_preserves_comments_seen_scope(tmp_path: Path) -> None:
+    """comments target 開始監視時也會保留 seen scope 並要求立即掃描。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -1329,7 +1409,7 @@ def test_restart_comments_monitoring_clears_comments_seen_scope(tmp_path: Path) 
         assert state is not None
         assert state.desired_state == TargetDesiredState.ACTIVE
         assert state.scan_requested_at is not None
-        assert not app.repositories.seen_items.has_seen(target.scope_id, "comment-before-start")
+        assert app.repositories.seen_items.has_seen(target.scope_id, "comment-before-start")
         assert app.repositories.seen_items.has_seen(other.scope_id, "post-before-start")
 
 

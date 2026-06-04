@@ -8,8 +8,10 @@ from datetime import timedelta
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import GlobalNotificationSettings
+from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
@@ -52,6 +54,7 @@ from facebook_monitor.persistence.schema import repair_duplicate_target_scopes
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+from facebook_monitor.persistence.sqlite_codec import encode_keywords
 
 
 PLAINTEXT_SECRET_CODEC = PlaintextSecretCodec()
@@ -380,6 +383,83 @@ def test_repair_duplicate_target_scopes_preserves_single_row_state(
     assert "duplicate-target" not in placements
 
 
+def test_repair_duplicate_target_scopes_rewrites_notification_outbox_keys(
+    tmp_path: Path,
+) -> None:
+    """duplicate target repair 需同步修正 outbox idempotency key 並合併邏輯重複通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        target_repository = TargetRepository(connection)
+        first = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-target",
+            name="duplicate",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        target_repository.save(first)
+        target_repository.save(duplicate)
+        outbox = notification_outbox_repository(connection)
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{first.id}:same-item:ntfy",
+                target_id=first.id,
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:same-item:ntfy",
+                target_id=duplicate.id,
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{duplicate.id}:unique-item:discord",
+                target_id=duplicate.id,
+                item_key="unique-item",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DISCORD,
+                title="title",
+                message="message",
+            )
+        )
+
+        repair_duplicate_target_scopes(connection)
+
+        rows = connection.execute(
+            """
+            SELECT target_id, item_key, channel, idempotency_key
+            FROM notification_outbox
+            ORDER BY item_key, channel
+            """
+        ).fetchall()
+
+    assert [row["target_id"] for row in rows] == [first.id, first.id]
+    assert [row["idempotency_key"] for row in rows] == [
+        f"{first.id}:same-item:ntfy",
+        f"{first.id}:unique-item:discord",
+    ]
+    assert [row["item_key"] for row in rows] == ["same-item", "unique-item"]
+
+
 def test_initialize_schema_migrates_legacy_paused_runtime_status(tmp_path: Path) -> None:
     """舊 DB 的 runtime_status=paused 會升級成 idle，paused 語義只保留在 target flag。"""
 
@@ -500,6 +580,114 @@ def test_initialize_schema_migrates_v20_keyword_match_tables(
     assert version == str(SCHEMA_VERSION)
     assert history[0].include_rules == ("6/5", "6/6")
     assert latest_items[0].matched_keywords == ("6/5", "6/6")
+
+
+def test_initialize_schema_migrates_v28_include_keyword_groups(
+    tmp_path: Path,
+) -> None:
+    """v29 會把既有 flat include keywords 回填到第 1 個 include group。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = encode_datetime(utc_now())
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '28');
+
+            CREATE TABLE target_configs (
+                target_id TEXT PRIMARY KEY,
+                include_keywords TEXT NOT NULL,
+                exclude_keywords TEXT NOT NULL,
+                exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+                min_refresh_sec INTEGER NOT NULL,
+                max_refresh_sec INTEGER NOT NULL,
+                jitter_enabled INTEGER NOT NULL,
+                fixed_refresh_sec INTEGER,
+                max_items_per_scan INTEGER NOT NULL,
+                auto_load_more INTEGER NOT NULL,
+                auto_adjust_sort INTEGER NOT NULL,
+                enable_desktop_notification INTEGER NOT NULL,
+                enable_ntfy INTEGER NOT NULL,
+                ntfy_topic TEXT NOT NULL,
+                enable_discord_notification INTEGER NOT NULL,
+                discord_webhook TEXT NOT NULL
+            );
+
+            CREATE TABLE sidebar_group_config_templates (
+                sidebar_group_id TEXT PRIMARY KEY,
+                include_keywords TEXT NOT NULL DEFAULT '[]',
+                exclude_keywords TEXT NOT NULL DEFAULT '[]',
+                exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
+                min_refresh_sec INTEGER NOT NULL,
+                max_refresh_sec INTEGER NOT NULL,
+                jitter_enabled INTEGER NOT NULL,
+                fixed_refresh_sec INTEGER,
+                max_items_per_scan INTEGER NOT NULL,
+                auto_load_more INTEGER NOT NULL,
+                auto_adjust_sort INTEGER NOT NULL,
+                enable_desktop_notification INTEGER NOT NULL,
+                enable_ntfy INTEGER NOT NULL,
+                ntfy_topic TEXT NOT NULL,
+                enable_discord_notification INTEGER NOT NULL,
+                discord_webhook TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO target_configs (
+                target_id, include_keywords, exclude_keywords, exclude_ignore_phrases,
+                min_refresh_sec, max_refresh_sec, jitter_enabled, fixed_refresh_sec,
+                max_items_per_scan, auto_load_more, auto_adjust_sort,
+                enable_desktop_notification, enable_ntfy, ntfy_topic,
+                enable_discord_notification, discord_webhook
+            )
+            VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '')
+            """,
+            ("target-1", encode_keywords(("票", "交換"))),
+        )
+        connection.execute(
+            """
+            INSERT INTO sidebar_group_config_templates (
+                sidebar_group_id, include_keywords, exclude_keywords,
+                exclude_ignore_phrases, min_refresh_sec, max_refresh_sec,
+                jitter_enabled, fixed_refresh_sec, max_items_per_scan,
+                auto_load_more, auto_adjust_sort, enable_desktop_notification,
+                enable_ntfy, ntfy_topic, enable_discord_notification,
+                discord_webhook, updated_at
+            )
+            VALUES (?, ?, '[]', '[]', 50, 70, 1, NULL, 20, 1, 1, 0, 0, '', 0, '', ?)
+            """,
+            ("group-1", encode_keywords(("模板",)), now_text),
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        config = target_config_repository(connection).get_for_target_id("target-1")
+        template = SidebarLayoutRepository(
+            connection,
+            secret_codec=PLAINTEXT_SECRET_CODEC,
+        ).get_template("group-1")
+
+    assert config is not None
+    assert [group.keywords for group in config.include_keyword_groups] == [
+        ("票", "交換"),
+        (),
+        (),
+    ]
+    assert template is not None
+    assert [group.keywords for group in template.include_keyword_groups] == [
+        ("模板",),
+        (),
+        (),
+    ]
 
 
 def test_initialize_schema_migrates_v18_sidebar_placements(
@@ -1462,6 +1650,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         config = TargetConfig(
             target_id=target.id,
             include_keywords=("票", "交換"),
+            include_keyword_groups=keyword_group_slots((("票",), ("交換",))),
             exclude_ignore_phrases=("全收;回收",),
             enable_desktop_notification=True,
             enable_ntfy=True,
@@ -1481,6 +1670,9 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_config.target_id == target.id
         assert not hasattr(loaded_config, "group_id")
         assert loaded_config.include_keywords == ("票", "交換")
+        assert [
+            group.keywords for group in loaded_config.include_keyword_groups
+        ] == [("票",), ("交換",), ()]
         assert loaded_config.exclude_ignore_phrases == ("全收;回收",)
         assert loaded_config.enable_desktop_notification
         assert loaded_config.enable_ntfy
@@ -1573,6 +1765,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                 permalink="https://www.facebook.com/groups/example/posts/1",
                 include_rule="票;讓票",
                 include_rules=("票", "讓票"),
+                include_group_matches=(
+                    KeywordGroupMatch("1", "關鍵字 1", "票"),
+                    KeywordGroupMatch("2", "關鍵字 2", "讓票"),
+                ),
             )
         )
         assert history_id > 0
@@ -1580,11 +1776,24 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert len(history) == 1
         assert history[0].include_rule == "票;讓票"
         assert history[0].include_rules == ("票", "讓票")
+        assert [
+            (match.group_id, match.group_label, match.rule)
+            for match in history[0].include_group_matches
+        ] == [("1", "關鍵字 1", "票"), ("2", "關鍵字 2", "讓票")]
         history_match_rows = connection.execute(
-            "SELECT rule FROM match_history_matches WHERE history_id = ? ORDER BY match_order",
+            """
+            SELECT rule, keyword_group_id, keyword_group_label
+            FROM match_history_matches
+            WHERE history_id = ?
+            ORDER BY match_order
+            """,
             (history_id,),
         ).fetchall()
         assert [row["rule"] for row in history_match_rows] == ["票", "讓票"]
+        assert [
+            (row["keyword_group_id"], row["keyword_group_label"])
+            for row in history_match_rows
+        ] == [("1", "關鍵字 1"), ("2", "關鍵字 2")]
 
         latest_repo = LatestScanItemRepository(connection)
         latest_repo.replace_for_target(
@@ -1601,6 +1810,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                     permalink="https://www.facebook.com/groups/example/posts/1",
                     matched_keyword="票;讓票",
                     matched_keywords=("票", "讓票"),
+                    matched_keyword_groups=(
+                        KeywordGroupMatch("1", "關鍵字 1", "票"),
+                        KeywordGroupMatch("2", "關鍵字 2", "讓票"),
+                    ),
                     debug_metadata={"textSource": "primary", "expandCount": 1},
                 )
             ],
@@ -1610,10 +1823,14 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert latest_items[0].author == "王小明"
         assert latest_items[0].matched_keyword == "票;讓票"
         assert latest_items[0].matched_keywords == ("票", "讓票")
+        assert [
+            (match.group_id, match.group_label, match.rule)
+            for match in latest_items[0].matched_keyword_groups
+        ] == [("1", "關鍵字 1", "票"), ("2", "關鍵字 2", "讓票")]
         assert latest_items[0].debug_metadata == {"textSource": "primary", "expandCount": 1}
         latest_match_rows = connection.execute(
             """
-            SELECT rule
+            SELECT rule, keyword_group_id, keyword_group_label
             FROM latest_scan_item_matches
             WHERE target_id = ? AND item_key = ?
             ORDER BY match_order
@@ -1621,6 +1838,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             (target.id, "item-hash"),
         ).fetchall()
         assert [row["rule"] for row in latest_match_rows] == ["票", "讓票"]
+        assert [
+            (row["keyword_group_id"], row["keyword_group_label"])
+            for row in latest_match_rows
+        ] == [("1", "關鍵字 1"), ("2", "關鍵字 2")]
 
         event_id = NotificationEventRepository(connection).add(
             NotificationEvent(
@@ -1668,7 +1889,7 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
 def test_notification_outbox_clear_by_target_only_deletes_target_rows(
     tmp_path: Path,
 ) -> None:
-    """notification outbox 可依 target 清除，支援重新開始監看時重置通知去重。"""
+    """清除 target 通知紀錄會刪該 target 所有 outbox 狀態。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -1685,17 +1906,19 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
         TargetRepository(connection).save(first)
         TargetRepository(connection).save(second)
         repo = notification_outbox_repository(connection)
-        repo.enqueue(
-            NotificationOutboxEntry(
-                idempotency_key=f"{first.id}:item-hash:ntfy",
-                target_id=first.id,
-                item_key="item-hash",
-                item_kind=ItemKind.POST,
-                channel=NotificationChannel.NTFY,
-                title="title",
-                message="message",
+        for status in NotificationOutboxStatus:
+            repo.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{first.id}:{status.value}:ntfy",
+                    target_id=first.id,
+                    item_key=status.value,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title=status.value,
+                    message=status.value,
+                    status=status,
+                )
             )
-        )
         repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{second.id}:item-hash:ntfy",
@@ -1708,10 +1931,38 @@ def test_notification_outbox_clear_by_target_only_deletes_target_rows(
             )
         )
 
-        assert repo.clear_by_target(first.id) == 1
+        assert repo.clear_by_target(first.id) == len(NotificationOutboxStatus)
 
-        assert repo.get_by_idempotency_key(f"{first.id}:item-hash:ntfy") is None
+        for status in NotificationOutboxStatus:
+            assert repo.get_by_idempotency_key(f"{first.id}:{status.value}:ntfy") is None
         assert repo.get_by_idempotency_key(f"{second.id}:item-hash:ntfy") is not None
+
+
+def test_seen_items_clear_scope_only_deletes_that_scan_scope(tmp_path: Path) -> None:
+    """清除 seen scope 僅影響指定 target scope，避免跨 target 重播通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        repo = SeenItemRepository(connection)
+        repo.mark_seen_aliases(
+            SeenItem(scope_id="scope-a", item_key="same-item", item_kind=ItemKind.POST),
+            ("same-item", "same-item-alias"),
+        )
+        repo.mark_seen(
+            SeenItem(
+                scope_id="scope-b",
+                item_key="same-item",
+                item_kind=ItemKind.POST,
+            )
+        )
+
+        assert repo.clear_scope("scope-a") == 2
+
+        assert not repo.has_seen("scope-a", "same-item")
+        assert not repo.has_seen("scope-a", "same-item-alias")
+        assert repo.has_seen("scope-b", "same-item")
 
 
 def test_notification_outbox_clear_failed_only_deletes_failed_rows(
@@ -1829,6 +2080,24 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
     assert loaded is not None
     assert loaded.status == NotificationOutboxStatus.SENT
     assert loaded.attempts == 1
+
+
+def test_notification_outbox_recover_stale_processing_skips_write_without_candidates(
+    tmp_path: Path,
+) -> None:
+    """沒有過期 processing rows 時，recovery 不應開啟 SQLite write transaction。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.commit()
+        repo = notification_outbox_repository(connection)
+
+        recovered_count = repo.recover_stale_processing(older_than_seconds=60)
+
+        assert recovered_count == 0
+        assert not connection.in_transaction
 
 
 def test_notification_outbox_recovers_stale_processing_for_future_claim(
@@ -2023,7 +2292,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert result.seen_items == 1
         assert result.scan_scope_state == 1
         assert result.notification_outbox == 0
-        assert result.total_deleted == 4
+        assert result.total_deleted == 5
         assert table_count(connection, "scan_runs") == 0
         assert table_count(connection, "latest_scan_items") == 0
         assert table_count(connection, "match_history") == 1

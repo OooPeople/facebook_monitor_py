@@ -44,7 +44,9 @@
   內建立 `.app` native launcher，圖示來源為
   `packaging/assets/facebook-monitor.png`。
 - release 前必跑：
-  - `scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest`
+  - macOS build 階段：`scripts/admin/release_artifact_validation.py --platform macos-arm64`
+  - final manifest 階段：`scripts/admin/finalize_release_manifest.py --force`
+  - finalize 後：`scripts/admin/release_artifact_validation.py --platform macos-arm64 --require-manifest`
   - `scripts/admin/smoke_frozen_updater.py --built-app dist/facebook-monitor`
 
 ## Deferred
@@ -52,4 +54,5 @@
 - Developer ID signing / notarization 尚未導入。
 - Intel Mac / universal binary artifact 尚未納入範圍。
 - Windows release asset 可在 macOS updater release 之後由人工補上，但正式 release
-  asset 命名仍必須與 tag version 對齊。
+  asset 命名仍必須與 tag version 對齊；補上或移除平台 zip 後需重新執行
+  `finalize_release_manifest.py`，讓 manifest / `.sig` 反映實際上傳的 asset set。

@@ -6,7 +6,6 @@ from typing import Annotated
 import platform
 import sys
 
-from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import Form
 from fastapi import HTTPException
@@ -20,7 +19,6 @@ from starlette.concurrency import run_in_threadpool
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.notification_admin import clear_failed_notifications
 from facebook_monitor.application.notification_admin import load_notification_outbox_health
-from facebook_monitor.application.notification_admin import retry_failed_notifications
 from facebook_monitor.application.update_flow import download_and_launch_verified_update
 from facebook_monitor.application.update_flow import download_verified_update
 from facebook_monitor.application.update_flow import launch_verified_update
@@ -28,7 +26,6 @@ from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
-from facebook_monitor.notifications.manual_test import send_manual_test_notification
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
 from facebook_monitor.runtime.build_metadata import collect_build_metadata
@@ -44,10 +41,6 @@ from facebook_monitor.updates.launcher import launch_temp_updater
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_app_theme
-from facebook_monitor.webapp.dependencies import get_desktop_sender
-from facebook_monitor.webapp.dependencies import get_discord_sender
-from facebook_monitor.webapp.dependencies import get_global_notification_settings
-from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_runtime_paths
@@ -58,8 +51,6 @@ from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
-from facebook_monitor.webapp.form_models import format_notification_form_error
-from facebook_monitor.webapp.form_models import NotificationConfigForm
 from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
 
@@ -100,9 +91,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "feedback": feedback,
                 "error": error,
                 "profile_dir": str(get_profile_dir(request)),
-                "notification_settings": get_global_notification_settings(request),
                 "target_keyword_defaults": get_target_keyword_defaults(request),
-                "runtime_diagnostics": build_runtime_diagnostics_view(request.app.state),
                 "notification_outbox_health": load_notification_outbox_health(
                     get_db_path(request)
                 ),
@@ -126,31 +115,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         with SqliteApplicationContext(get_db_path(request)) as app_context:
             saved_theme = app_context.repositories.app_settings.save_theme(theme)
         return {"theme": saved_theme}
-
-    @app.post("/settings/notifications")
-    async def update_global_notifications(
-        request: Request,
-        notification_form: Annotated[
-            NotificationConfigForm,
-            Depends(NotificationConfigForm.as_form),
-        ],
-    ) -> RedirectResponse:
-        """更新 Web UI 通知預設值。"""
-
-        with SqliteApplicationContext(get_db_path(request)) as app_context:
-            current_settings = app_context.repositories.global_notification_settings.get()
-            try:
-                settings = notification_form.to_global_settings(
-                    existing_ntfy_topic=current_settings.ntfy_topic,
-                    existing_discord_webhook=current_settings.discord_webhook,
-                )
-            except ValueError as exc:
-                return redirect_settings_with_error(format_notification_form_error(exc))
-            app_context.repositories.global_notification_settings.save(settings)
-        return redirect_settings_with_message(
-            "通知預設值已保存",
-            feedback="notification_defaults_saved",
-        )
 
     @app.post("/settings/target-keywords")
     async def update_target_keyword_defaults(
@@ -268,80 +232,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             }
         )
 
-    @app.post("/settings/notifications/apply-to-targets")
-    async def apply_global_notifications_to_targets(request: Request) -> RedirectResponse:
-        """將通知預設值套用到所有 target 設定。"""
-
-        with SqliteApplicationContext(get_db_path(request)) as app_context:
-            settings = app_context.repositories.global_notification_settings.get()
-            count = app_context.services.targets.apply_global_notification_settings(settings)
-        return redirect_settings_with_message(f"已套用通知預設值到 {count} 個 target 設定")
-
-    @app.post("/settings/notifications/test")
-    async def test_global_notifications(
-        request: Request,
-        notification_form: Annotated[
-            NotificationConfigForm,
-            Depends(NotificationConfigForm.as_form),
-        ],
-    ) -> RedirectResponse:
-        """依 settings 頁目前表單欄位送出一則測試通知，不保存設定。"""
-
-        try:
-            current_settings = get_global_notification_settings(request)
-            config = notification_form.to_target_config(
-                target_id="global-notification-test",
-                existing_ntfy_topic=current_settings.ntfy_topic,
-                existing_discord_webhook=current_settings.discord_webhook,
-            )
-            results = await run_in_threadpool(
-                send_manual_test_notification,
-                config=config,
-                ntfy_sender=get_ntfy_sender(request),
-                desktop_sender=get_desktop_sender(request),
-                discord_sender=get_discord_sender(request),
-            )
-        except ValueError as exc:
-            return redirect_settings_with_error(
-                "測試通知失敗：" + format_notification_form_error(exc)
-            )
-        except Exception as exc:
-            return redirect_settings_with_error(
-                "測試通知失敗："
-                + format_notification_event_message(
-                    safe_exception_message("notification_test_failed", exc)
-                )
-            )
-        localized_results = [
-            format_notification_event_message(result)
-            for result in results
-        ]
-        return redirect_settings_with_message("測試通知結果：" + " / ".join(localized_results))
-
-    @app.post("/settings/notifications/retry-failed")
-    async def retry_failed_notification_outbox_route(request: Request) -> RedirectResponse:
-        """手動重試 failed notification outbox rows。"""
-
-        try:
-            dispatched_count = await run_in_threadpool(
-                retry_failed_notifications,
-                db_path=get_db_path(request),
-                ntfy_sender=get_ntfy_sender(request),
-                desktop_sender=get_desktop_sender(request),
-                discord_sender=get_discord_sender(request),
-            )
-        except Exception as exc:
-            return redirect_settings_with_error(
-                "重試通知失敗："
-                + format_notification_event_message(
-                    safe_exception_message("notification_retry_failed", exc)
-                )
-            )
-        return redirect_settings_with_message(
-            f"已重試 failed 通知 {dispatched_count} 筆",
-            feedback="notification_retry_finished",
-        )
-
     @app.post("/settings/notifications/clear-failed")
     async def clear_failed_notification_outbox_route(request: Request) -> RedirectResponse:
         """手動清除 failed notification outbox rows，不影響 pending rows。"""
@@ -353,13 +243,13 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             )
         except Exception as exc:
             return redirect_settings_with_error(
-                "清除 failed 通知失敗："
+                "清除失敗通知失敗："
                 + format_notification_event_message(
                     safe_exception_message("notification_clear_failed", exc)
                 )
             )
         return redirect_settings_with_message(
-            f"已清除 failed 通知 {cleared_count} 筆",
+            f"已清除失敗通知 {cleared_count} 筆",
             feedback="notification_clear_failed_finished",
         )
 

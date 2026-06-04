@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -58,6 +59,16 @@ def _serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:
         "hit_count": item.hit_count,
         "latest_error_summary": item.latest_error_summary,
         "thumbnail_url": item.thumbnail_url,
+        "active": item.active,
+    }
+
+
+def _serialize_sidebar_payload(dashboard: Any) -> dict[str, object]:
+    """序列化 sidebar partial payload，包含 group/order 結構簽章。"""
+
+    return {
+        "layout_signature": getattr(dashboard, "sidebar_layout_signature", ""),
+        "items": [_serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
     }
 
 
@@ -281,9 +292,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             "profile_session_warning": _serialize_profile_session_warning(
                 dashboard.profile_session_warning
             ),
-            "sidebar": {
-                "items": [_serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
-            },
+            "sidebar": _serialize_sidebar_payload(dashboard),
             "cards": [_serialize_target_card(row, templates) for row in dashboard.rows],
         }
 

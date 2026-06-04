@@ -28,6 +28,7 @@ from facebook_monitor.core.input_limits import MAX_NOTIFICATION_ENDPOINT_LENGTH
 from facebook_monitor.core.input_limits import MAX_NTFY_TOPIC_LENGTH
 from facebook_monitor.core.input_limits import MAX_TARGET_URL_LENGTH
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
@@ -47,8 +48,6 @@ from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
-from facebook_monitor.notifications.ntfy import NtfyConfig
-from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import parse_keywords_text
 from facebook_monitor.webapp import query_service
@@ -171,7 +170,9 @@ def test_static_assets_revalidate_for_local_ui(tmp_path: Path) -> None:
 def test_web_ui_responses_include_basic_security_headers(tmp_path: Path) -> None:
     """本機 Web UI response 仍應帶基本瀏覽器安全 header。"""
 
-    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+    client = TestClient(
+        create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+    )
 
     response = client.get("/")
 
@@ -309,8 +310,8 @@ def test_pages_render_csrf_token_for_forms_and_fetch_headers(tmp_path: Path) -> 
     assert re.search(r'name="csrf_token" value="known-token"', response.text)
 
 
-def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
-    """設定頁顯示可複製的 runtime diagnostics。"""
+def test_settings_page_shows_problem_report_diagnostics(tmp_path: Path) -> None:
+    """設定頁只保留問題回報診斷入口，不顯示 runtime 明細。"""
 
     paths = resolve_runtime_paths(data_dir=tmp_path / "data")
     app = create_app(
@@ -324,29 +325,16 @@ def test_settings_page_shows_runtime_diagnostics(tmp_path: Path) -> None:
     response = client.get("/settings")
 
     assert response.status_code == 200
-    assert "Runtime diagnostics" in response.text
-    assert response.text.index("通知預設值") < response.text.index("Runtime diagnostics")
-    assert response.text.index("通知預設值") < response.text.index("程式更新")
-    assert response.text.index("程式更新") < response.text.index("Runtime diagnostics")
-    assert '<details class="target settings-card runtime-diagnostics-card">' in response.text
-    assert '<summary class="runtime-diagnostics-summary">' in response.text
-    assert str(paths.db_path) in response.text
-    assert str(paths.profile_dir) in response.text
-    assert str(paths.logs_dir) in response.text
-    assert str(paths.updates_dir) in response.text
-    assert "Browser mode" in response.text
-    assert "playwright_chromium" in response.text
-    assert "Asset version" in response.text
-    assert "Python version" in response.text
-    assert "Packaging mode" in response.text
-    assert "Build date" in response.text
-    assert "Git commit" in response.text
-    assert "Reset targets on startup" in response.text
-    assert "Resume active targets on startup" in response.text
-    assert "Reset runtime data on startup" in response.text
-    assert "複製診斷資訊" in response.text
-    assert "runtime-diagnostics-copy-source" in response.text
-    assert "data-secret-input" in response.text
+    assert "問題回報與診斷" in response.text
+    assert "下載支援診斷包" in response.text
+    assert "Runtime diagnostics" not in response.text
+    assert "複製診斷資訊" not in response.text
+    assert "通知預設值" not in response.text
+    assert "通知 outbox" not in response.text
+    assert "通知發送失敗" not in response.text
+    assert "清除失敗通知" not in response.text
+    assert str(paths.db_path) not in response.text
+    assert str(paths.logs_dir) not in response.text
     assert "data-dirty-submit" in response.text
 
 
@@ -1435,7 +1423,7 @@ def test_target_card_panels_share_preview_height_contract() -> None:
     assert ".section-title .form-status" in styles
     assert "overflow-y: auto;" in styles
     assert ".compact-config-form .keyword-rule-tabs" in styles
-    assert ".keyword-field-header" in styles
+    assert ".keyword-rule-field-label" in styles
     assert ".keyword-rule-tab-row" in styles
     assert ".compact-config-form .keyword-rule-tab" in styles
     assert ".keyword-help-button" in styles
@@ -2283,6 +2271,59 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert "最近掃描內容" in response.text
 
 
+def test_dashboard_partial_payload_changes_sidebar_layout_signature_for_groups(
+    tmp_path: Path,
+) -> None:
+    """dashboard partial payload 需帶 group/order 簽章，讓前端遇到結構變更時 reload。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                group_name="第一個社團",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+                group_name="第二個社團",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("工作")
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id]), (None, [second.id])]
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    page_response = client.get("/")
+    first_payload = client.get("/api/dashboard-cards").json()
+    first_signature = first_payload["sidebar"]["layout_signature"]
+
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [first.id, second.id]), (None, [])]
+        )
+    second_payload = client.get("/api/dashboard-cards").json()
+    second_signature = second_payload["sidebar"]["layout_signature"]
+
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.sidebar_layout.rename_group(group.id, "重新命名")
+    renamed_payload = client.get("/api/dashboard-cards").json()
+
+    assert page_response.status_code == 200
+    assert f'data-sidebar-layout-signature="{first_signature}"' in page_response.text
+    assert first_signature
+    assert second_signature != first_signature
+    assert renamed_payload["sidebar"]["layout_signature"] != second_signature
+    assert [item["target_id"] for item in second_payload["sidebar"]["items"]] == [
+        first.id,
+        second.id,
+    ]
+
+
 def test_index_renders_scan_guard_skip_reason(tmp_path: Path) -> None:
     """首頁會顯示同 target 重入被 guard 擋下的原因。"""
 
@@ -2329,6 +2370,8 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
         f"/targets/{target.id}/config",
         data={
             "include_keywords": "票,交換",
+            "include_keywords_2": "5/1;5/2",
+            "include_keywords_3": "108;109",
             "exclude_keywords": "售完",
             "exclude_ignore_phrases": "全收,回收",
             "refresh_mode": "fixed",
@@ -2348,7 +2391,12 @@ def test_update_config_route_updates_target_config(tmp_path: Path) -> None:
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
-    assert config.include_keywords == ("票", "交換")
+    assert config.include_keywords == ("票", "交換", "5/1", "5/2", "108", "109")
+    assert [group.keywords for group in config.include_keyword_groups] == [
+        ("票", "交換"),
+        ("5/1", "5/2"),
+        ("108", "109"),
+    ]
     assert config.exclude_keywords == ("售完",)
     assert config.exclude_ignore_phrases == ("全收", "回收")
     assert config.fixed_refresh_sec == 90
@@ -2509,7 +2557,7 @@ def test_update_config_route_rejects_oversized_keyword_text_without_overwrite(
     )
 
     assert response.status_code == 200
-    assert f"包含關鍵字 不可超過 {MAX_KEYWORD_TEXT_LENGTH} 個字元" in response.text
+    assert f"包含關鍵字 1 不可超過 {MAX_KEYWORD_TEXT_LENGTH} 個字元" in response.text
     with SqliteApplicationContext(db_path) as app_context:
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
@@ -2880,10 +2928,10 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/example_token"
 
 
-def test_create_target_route_copies_masked_global_notification_secrets(
+def test_create_target_route_does_not_copy_global_notification_secrets(
     tmp_path: Path,
 ) -> None:
-    """新增 target 表單不回填 secret，但仍可套用全域通知預設值。"""
+    """新增 target 不再套用全域通知預設，避免看不見的設定影響新 target。"""
 
     db_path = tmp_path / "app.db"
     global_topic = "global-topic"
@@ -2895,16 +2943,15 @@ def test_create_target_route_copies_masked_global_notification_secrets(
             group_name_resolver=lambda _profile_dir, _url: "測試社團",
         )
     )
-    client.post(
-        "/settings/notifications",
-        data={
-            "enable_ntfy": "on",
-            "ntfy_topic": global_topic,
-            "enable_discord_notification": "on",
-            "discord_webhook": global_webhook,
-        },
-        follow_redirects=False,
-    )
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.global_notification_settings.save(
+            GlobalNotificationSettings(
+                enable_ntfy=True,
+                ntfy_topic=global_topic,
+                enable_discord_notification=True,
+                discord_webhook=global_webhook,
+            )
+        )
 
     form_response = client.get("/targets/new")
     create_response = client.post(
@@ -2916,12 +2963,6 @@ def test_create_target_route_copies_masked_global_notification_secrets(
             "min_refresh_sec": "20",
             "max_refresh_sec": "40",
             "max_items_per_scan": "5",
-            "enable_ntfy": "on",
-            "ntfy_topic": "",
-            "ntfy_topic_keep": "on",
-            "enable_discord_notification": "on",
-            "discord_webhook": "",
-            "discord_webhook_keep": "on",
         },
         follow_redirects=False,
     )
@@ -2929,8 +2970,8 @@ def test_create_target_route_copies_masked_global_notification_secrets(
     assert form_response.status_code == 200
     assert global_topic not in form_response.text
     assert global_webhook not in form_response.text
-    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in form_response.text
-    assert "已設定；留空代表不變更" in form_response.text
+    assert 'name="ntfy_topic_keep" type="hidden" value="on"' not in form_response.text
+    assert "已設定；留空代表不變更" not in form_response.text
     assert create_response.status_code == 303
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.repositories.targets.find_by_kind_scope(
@@ -2940,10 +2981,10 @@ def test_create_target_route_copies_masked_global_notification_secrets(
         assert target is not None
         config = app_context.repositories.configs.get_for_target(target)
     assert config is not None
-    assert config.enable_ntfy
-    assert config.ntfy_topic == global_topic
-    assert config.enable_discord_notification
-    assert config.discord_webhook == global_webhook
+    assert not config.enable_ntfy
+    assert config.ntfy_topic == ""
+    assert not config.enable_discord_notification
+    assert config.discord_webhook == ""
 
 
 def test_create_target_route_supports_fixed_refresh_mode(tmp_path: Path) -> None:
@@ -3526,263 +3567,6 @@ def test_settings_routes_control_profile_window(tmp_path: Path) -> None:
     assert not profile_manager.active
 
 
-def test_settings_updates_tests_and_applies_global_notifications(tmp_path: Path) -> None:
-    """設定頁可保存通知預設值；測試通知 route 保留給診斷使用。"""
-
-    db_path = tmp_path / "app.db"
-    notifications = NotificationRecorder()
-
-    with SqliteApplicationContext(db_path) as app_context:
-        target = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222518561920110",
-                canonical_url="https://www.facebook.com/groups/222518561920110",
-            )
-        )
-
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            desktop_sender=notifications.desktop_sender,
-            ntfy_sender=notifications.ntfy_sender,
-            discord_sender=notifications.discord_sender,
-        )
-    )
-    settings_page = client.get("/settings")
-    save_response = client.post(
-        "/settings/notifications",
-        data={
-            "enable_desktop_notification": "on",
-            "enable_ntfy": "on",
-            "ntfy_topic": "phase0test",
-            "enable_discord_notification": "on",
-            "discord_webhook": "https://discord.com/api/webhooks/1234567890/example_token",
-        },
-        follow_redirects=False,
-    )
-    form_response = client.get("/targets/new")
-    test_response = client.post(
-        "/settings/notifications/test",
-        data={
-            "enable_desktop_notification": "on",
-            "enable_ntfy": "on",
-            "ntfy_topic": "phase0test",
-            "enable_discord_notification": "on",
-            "discord_webhook": "https://discord.com/api/webhooks/1234567890/example_token",
-        },
-        follow_redirects=True,
-    )
-    apply_response = client.post(
-        "/settings/notifications/apply-to-targets",
-        follow_redirects=False,
-    )
-
-    assert save_response.status_code == 303
-    assert "通知預設值" in settings_page.text
-    assert "未填寫也不影響功能" in settings_page.text
-    assert "批次套用來源" not in settings_page.text
-    assert "套用到所有 target" not in settings_page.text
-    assert "發送測試通知" not in settings_page.text
-    assert form_response.status_code == 200
-    assert "phase0test" not in form_response.text
-    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in form_response.text
-    assert "https://discord.com/api/webhooks/1234567890/example_token" not in (
-        form_response.text
-    )
-    assert 'name="discord_webhook_keep" type="hidden" value="on"' in form_response.text
-    assert "已設定；留空代表不變更" in form_response.text
-    assert "清除已保存 Discord webhook" not in form_response.text
-    assert "data-secret-clear-button" in form_response.text
-    assert test_response.status_code == 200
-    assert (
-        page_feedback(test_response.text)["message"]
-        == "測試通知結果：桌面通知已送出 / ntfy 通知已送出 / Discord 通知已送出"
-    )
-    assert any(item.startswith("desktop:") for item in notifications.sent)
-    assert any(item.startswith("ntfy:phase0test:") for item in notifications.sent)
-    assert any(
-        item.startswith("discord:https://discord.com/api/webhooks/1234567890/example_token:")
-        for item in notifications.sent
-    )
-    assert apply_response.status_code == 303
-    with SqliteApplicationContext(db_path) as app_context:
-        config = app_context.repositories.configs.get_for_target(target)
-    assert config is not None
-    assert config.enable_desktop_notification
-    assert config.enable_ntfy
-    assert config.ntfy_topic == "phase0test"
-    assert config.enable_discord_notification
-    assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/example_token"
-
-
-def test_settings_notifications_reject_invalid_discord_webhook_without_saving(
-    tmp_path: Path,
-) -> None:
-    """全域通知預設不得保存非 Discord 官方 webhook URL。"""
-
-    db_path = tmp_path / "app.db"
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
-
-    response = client.post(
-        "/settings/notifications",
-        data={
-            "enable_discord_notification": "on",
-            "discord_webhook": "https://127.0.0.1/api/webhooks/123/token",
-        },
-        follow_redirects=True,
-    )
-
-    assert response.status_code == 200
-    assert "Discord webhook 必須是 Discord 官方 webhook URL" in response.text
-    assert "https://127.0.0.1/api/webhooks/123/token" not in response.text
-    with SqliteApplicationContext(db_path) as app_context:
-        settings = app_context.repositories.global_notification_settings.get()
-    assert not settings.enable_discord_notification
-    assert settings.discord_webhook == ""
-
-
-def test_settings_notifications_preserves_or_clears_masked_notification_secrets(
-    tmp_path: Path,
-) -> None:
-    """設定頁 notification secret 欄位留空不回寫，清除需明確操作。"""
-
-    db_path = tmp_path / "app.db"
-    topic = "global-topic"
-    webhook = "https://discord.com/api/webhooks/1234567890/global_token"
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
-    client.post(
-        "/settings/notifications",
-        data={
-            "enable_ntfy": "on",
-            "ntfy_topic": topic,
-            "enable_discord_notification": "on",
-            "discord_webhook": webhook,
-        },
-        follow_redirects=False,
-    )
-
-    settings_page = client.get("/settings")
-    preserve_response = client.post(
-        "/settings/notifications",
-        data={
-            "enable_ntfy": "on",
-            "ntfy_topic": "",
-            "ntfy_topic_keep": "on",
-            "enable_discord_notification": "on",
-            "discord_webhook": "",
-            "discord_webhook_keep": "on",
-        },
-        follow_redirects=False,
-    )
-    with SqliteApplicationContext(db_path) as app_context:
-        preserved_settings = app_context.repositories.global_notification_settings.get()
-    clear_response = client.post(
-        "/settings/notifications",
-        data={
-            "enable_ntfy": "on",
-            "ntfy_topic": "",
-            "ntfy_topic_keep": "on",
-            "clear_ntfy_topic": "on",
-            "enable_discord_notification": "on",
-            "discord_webhook": "",
-            "discord_webhook_keep": "on",
-            "clear_discord_webhook": "on",
-        },
-        follow_redirects=False,
-    )
-    with SqliteApplicationContext(db_path) as app_context:
-        cleared_settings = app_context.repositories.global_notification_settings.get()
-
-    assert settings_page.status_code == 200
-    assert topic not in settings_page.text
-    assert webhook not in settings_page.text
-    assert 'name="ntfy_topic_keep" type="hidden" value="on"' in settings_page.text
-    assert 'name="discord_webhook_keep" type="hidden" value="on"' in settings_page.text
-    assert preserve_response.status_code == 303
-    assert preserved_settings.ntfy_topic == topic
-    assert preserved_settings.discord_webhook == webhook
-    assert clear_response.status_code == 303
-    assert cleared_settings.ntfy_topic == ""
-    assert cleared_settings.discord_webhook == ""
-
-
-def test_settings_notification_test_rejects_invalid_discord_webhook_without_sending(
-    tmp_path: Path,
-) -> None:
-    """全域測試通知遇到 invalid webhook 時不得呼叫 Discord sender。"""
-
-    db_path = tmp_path / "app.db"
-    notifications = NotificationRecorder()
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            discord_sender=notifications.discord_sender,
-        )
-    )
-
-    response = client.post(
-        "/settings/notifications/test",
-        data={
-            "enable_discord_notification": "on",
-            "discord_webhook": "https://example.com/api/webhooks/123/token",
-        },
-        follow_redirects=True,
-    )
-
-    assert response.status_code == 200
-    assert "測試通知失敗：Discord webhook 必須是 Discord 官方 webhook URL" in response.text
-    assert notifications.sent == []
-
-
-def test_settings_notification_test_does_not_save_global_defaults(
-    tmp_path: Path,
-) -> None:
-    """全域測試通知使用表單值，但不得保存為通知預設值。"""
-
-    db_path = tmp_path / "app.db"
-    notifications = NotificationRecorder()
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            desktop_sender=notifications.desktop_sender,
-            ntfy_sender=notifications.ntfy_sender,
-            discord_sender=notifications.discord_sender,
-        )
-    )
-    with SqliteApplicationContext(db_path) as app_context:
-        before = app_context.repositories.global_notification_settings.get()
-
-    response = client.post(
-        "/settings/notifications/test",
-        data={
-            "enable_desktop_notification": "on",
-            "enable_ntfy": "on",
-            "ntfy_topic": "test-only-topic",
-            "enable_discord_notification": "on",
-            "discord_webhook": "https://discord.com/api/webhooks/1234567890/test-only",
-        },
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 303
-    assert any(item.startswith("desktop:") for item in notifications.sent)
-    assert any(item.startswith("ntfy:test-only-topic:") for item in notifications.sent)
-    assert any(
-        item.startswith("discord:https://discord.com/api/webhooks/1234567890/test-only:")
-        for item in notifications.sent
-    )
-    with SqliteApplicationContext(db_path) as app_context:
-        after = app_context.repositories.global_notification_settings.get()
-    assert after.enable_desktop_notification == before.enable_desktop_notification
-    assert after.enable_ntfy == before.enable_ntfy
-    assert after.ntfy_topic == before.ntfy_topic
-    assert after.enable_discord_notification == before.enable_discord_notification
-    assert after.discord_webhook == before.discord_webhook
-
-
 def test_target_settings_modal_can_test_notifications_without_saving(
     tmp_path: Path,
 ) -> None:
@@ -3844,21 +3628,22 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert "data-notification-test" in index_response.text
     assert "data-notification-test-status" in index_response.text
     assert f'form="config-{target.id}"' in index_response.text
-    assert (
-        index_response.text.index(
-            f'name="refresh_mode" type="radio" value="floating" form="config-{target.id}"'
-        )
-        < index_response.text.index(
-            f'name="refresh_mode" type="radio" value="fixed" form="config-{target.id}"'
-        )
-    )
-    assert re.search(
-        rf'name="refresh_mode" type="radio" value="floating"[^>]*form="config-{target.id}"[^>]*checked',
+    floating_refresh = re.search(
+        rf'name="refresh_mode" type="radio" value="floating"[^>]*form="config-{re.escape(target.id)}"',
         index_response.text,
     )
-    assert f'name="refresh_mode" type="radio" value="fixed" form="config-{target.id}"' in (
-        index_response.text
+    fixed_refresh = re.search(
+        rf'name="refresh_mode" type="radio" value="fixed"[^>]*form="config-{re.escape(target.id)}"',
+        index_response.text,
     )
+    assert floating_refresh is not None
+    assert fixed_refresh is not None
+    assert floating_refresh.start() < fixed_refresh.start()
+    assert re.search(
+        rf'name="refresh_mode" type="radio" value="floating"[^>]*form="config-{re.escape(target.id)}"[^>]*checked',
+        index_response.text,
+    )
+    assert fixed_refresh is not None
     assert (
         f'name="fixed_refresh_sec" type="number" min="{MIN_REFRESH_SECONDS}" '
         f'value="60" form="config-{target.id}"'
@@ -3888,39 +3673,6 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert config.ntfy_topic == ""
     assert not config.enable_discord_notification
     assert config.discord_webhook == ""
-
-
-def test_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
-    """手動測試通知失敗時，UI 錯誤不得回填 webhook / topic。"""
-
-    db_path = tmp_path / "app.db"
-
-    def failing_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
-        """模擬自訂 sender 例外內含 topic。"""
-
-        raise RuntimeError(f"failed https://ntfy.sh/{config.topic}")
-
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            ntfy_sender=failing_ntfy_sender,
-        )
-    )
-
-    response = client.post(
-        "/settings/notifications/test",
-        data={
-            "enable_ntfy": "on",
-            "ntfy_topic": "private-topic",
-        },
-        follow_redirects=True,
-    )
-
-    assert response.status_code == 200
-    assert "通知測試發生錯誤" in response.text
-    assert "notification_test_failed:RuntimeError" not in response.text
-    assert "private-topic" not in response.text
 
 
 def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
@@ -3968,13 +3720,12 @@ def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:
     assert "private-token" not in response.text
 
 
-def test_settings_shows_outbox_health_and_retries_failed_notifications(
+def test_settings_shows_failed_notification_clear_without_retry_action(
     tmp_path: Path,
 ) -> None:
-    """Settings 頁顯示 failed outbox 摘要，並可手動重試 failed rows。"""
+    """Settings 頁只顯示失敗通知清除入口，不提供重試操作。"""
 
     db_path = tmp_path / "app.db"
-    notifications = NotificationRecorder()
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -3997,32 +3748,41 @@ def test_settings_shows_outbox_health_and_retries_failed_notifications(
             )
         )
 
-    client = TestClient(
-        create_app(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            desktop_sender=notifications.desktop_sender,
-        )
-    )
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
 
     settings_response = client.get("/settings")
-    retry_response = client.post(
-        "/settings/notifications/retry-failed",
-        follow_redirects=True,
-    )
+    retry_response = client.post("/settings/notifications/retry-failed")
 
     assert settings_response.status_code == 200
-    assert "通知 outbox" in settings_response.text
-    assert "失敗 1" in settings_response.text
-    assert retry_response.status_code == 200
-    assert page_feedback(retry_response.text)["message"] == "已重試 failed 通知 1 筆"
-    assert notifications.sent == ["desktop:測試標題:測試內容"]
+    assert "有 1 筆通知發送失敗" in settings_response.text
+    assert "清除失敗通知" in settings_response.text
+    assert "通知 outbox" not in settings_response.text
+    assert "待送" not in settings_response.text
+    assert "最大嘗試" not in settings_response.text
+    assert "重試失敗通知" not in settings_response.text
+    assert "重試 failed 通知" not in settings_response.text
+    assert retry_response.status_code == 404
     with SqliteApplicationContext(db_path) as app_context:
         entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
             f"{target.id}:failed:desktop",
         )
     assert entry is not None
-    assert entry.status == NotificationOutboxStatus.SENT
+    assert entry.status == NotificationOutboxStatus.FAILED
+
+
+def test_removed_global_notification_routes_are_not_available(tmp_path: Path) -> None:
+    """Settings 不再提供全域通知預設、測試或 failed retry 隱藏入口。"""
+
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    for path in (
+        "/settings/notifications",
+        "/settings/notifications/apply-to-targets",
+        "/settings/notifications/test",
+        "/settings/notifications/retry-failed",
+    ):
+        response = client.post(path)
+        assert response.status_code == 404
 
 
 def test_settings_can_clear_failed_outbox_without_deleting_pending_rows(
@@ -4078,7 +3838,7 @@ def test_settings_can_clear_failed_outbox_without_deleting_pending_rows(
     )
 
     assert response.status_code == 200
-    assert page_feedback(response.text)["message"] == "已清除 failed 通知 1 筆"
+    assert page_feedback(response.text)["message"] == "已清除失敗通知 1 筆"
     with SqliteApplicationContext(db_path) as app_context:
         failed_entry = app_context.repositories.notification_outbox.get_by_idempotency_key(
             f"{target.id}:failed:desktop",
@@ -4110,7 +3870,7 @@ def test_settings_clear_failed_outbox_reports_zero_when_no_failed_rows(
     )
 
     assert response.status_code == 200
-    assert page_feedback(response.text)["message"] == "已清除 failed 通知 0 筆"
+    assert page_feedback(response.text)["message"] == "已清除失敗通知 0 筆"
 
 
 def test_settings_support_bundle_excludes_private_runtime_files(tmp_path: Path) -> None:
@@ -4183,6 +3943,55 @@ def test_settings_open_pauses_scheduler_until_profile_window_ends(tmp_path: Path
 
     assert scheduler_manager.started_count == 1
     assert scheduler_manager.running
+
+
+def test_manual_scan_does_not_restart_scheduler_while_profile_window_is_active(
+    tmp_path: Path,
+) -> None:
+    """profile 視窗開啟期間 manual scan 只排入 request，不重新搶 automation profile。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+
+    profile_manager = FakeProfileManager()
+    scheduler_manager = FakeSchedulerManager()
+    scheduler_manager.running = True
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        profile_manager=profile_manager,
+        scheduler_manager=scheduler_manager,
+    )
+    client = TestClient(app)
+
+    open_response = client.post("/settings/facebook/open", follow_redirects=False)
+    scan_response = client.post(f"/targets/{target.id}/scan-once", follow_redirects=False)
+
+    assert open_response.status_code == 303
+    assert scan_response.status_code == 303
+    assert profile_manager.active
+    assert scheduler_manager.started_count == 0
+    assert scheduler_manager.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        state = app_context.repositories.runtime_states.get(target.id)
+    assert state is not None
+    assert state.scan_requested_at is not None
+
+    profile_manager.active = False
+    assert profile_manager.options is not None
+    assert profile_manager.options.on_close is not None
+    profile_manager.options.on_close()
+
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.running
+    assert app.state.scheduler_paused_for_profile is False
 
 
 def test_webui_shutdown_closes_active_profile_window(tmp_path: Path) -> None:
@@ -4713,13 +4522,240 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
     assert not loaded.paused
     assert state is not None
     assert state.scan_requested_at is not None
-    assert not has_seen
-    assert outbox_entry is None
+    assert has_seen
+    assert outbox_entry is not None
     assert scheduler_manager.woken_count == 2
 
 
+def test_reset_target_notification_state_route_clears_outbox_and_seen(
+    tmp_path: Path,
+) -> None:
+    """target 更多操作會重置通知與 seen 去重狀態，但不喚醒 scheduler。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        app_context.repositories.seen_items.mark_seen(
+            SeenItem(
+                scope_id=first.scope_id,
+                item_key="first-seen",
+                item_kind=ItemKind.POST,
+            )
+        )
+        app_context.repositories.seen_items.mark_seen(
+            SeenItem(
+                scope_id=second.scope_id,
+                item_key="second-seen",
+                item_kind=ItemKind.POST,
+            )
+        )
+        for target, item_key in ((first, "first-seen"), (second, "second-seen")):
+            app_context.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:{item_key}:ntfy",
+                    target_id=target.id,
+                    item_key=item_key,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                )
+            )
+
+    scheduler_manager = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+    response = client.post(
+        f"/targets/{first.id}/notifications/clear",
+        data={"return_to": f"#target-{first.id}"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert (
+        page_feedback(response.text)["message"]
+        == "已重置通知狀態：清除通知紀錄 1 筆、已看紀錄 1 筆"
+    )
+    assert page_feedback(response.text)["feedback"] == "notification_state_reset"
+    with SqliteApplicationContext(db_path) as app_context:
+        first_seen = app_context.repositories.seen_items.has_seen(
+            first.scope_id,
+            "first-seen",
+        )
+        first_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{first.id}:first-seen:ntfy",
+        )
+        second_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{second.id}:second-seen:ntfy",
+        )
+        second_seen = app_context.repositories.seen_items.has_seen(
+            second.scope_id,
+            "second-seen",
+        )
+    assert not first_seen
+    assert second_seen
+    assert first_outbox is None
+    assert second_outbox is not None
+    assert scheduler_manager.woken_count == 0
+
+
+def test_sidebar_group_start_and_stop_routes_update_only_group_targets(
+    tmp_path: Path,
+) -> None:
+    """sidebar group 開始/停止批次套用 target 語義，且只喚醒 scheduler 一次。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        second = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222",
+                canonical_url="https://www.facebook.com/groups/222",
+            )
+        )
+        outside = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="333",
+                canonical_url="https://www.facebook.com/groups/333",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("批次操作")
+        app_context.services.sidebar_layout.save_placements(
+            [
+                (group.id, [first.id, second.id]),
+                (None, [outside.id]),
+            ]
+        )
+        app_context.services.targets.restart_target_monitoring(second.id)
+        app_context.services.targets.restart_target_monitoring(outside.id)
+        for target, item_key in (
+            (first, "first-seen"),
+            (second, "second-seen"),
+            (outside, "outside-seen"),
+        ):
+            app_context.repositories.seen_items.mark_seen(
+                SeenItem(
+                    scope_id=target.scope_id,
+                    item_key=item_key,
+                    item_kind=ItemKind.POST,
+                )
+            )
+            app_context.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:{item_key}:desktop",
+                    target_id=target.id,
+                    item_key=item_key,
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.DESKTOP,
+                    title="title",
+                    message="message",
+                )
+            )
+
+    scheduler_manager = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+        )
+    )
+
+    stop_response = client.post(f"/api/sidebar/groups/{group.id}/stop")
+
+    assert stop_response.status_code == 200
+    assert stop_response.json()["updated_count"] == 2
+    with SqliteApplicationContext(db_path) as app_context:
+        first_stopped = app_context.repositories.targets.get(first.id)
+        second_stopped = app_context.repositories.targets.get(second.id)
+        outside_after_stop = app_context.repositories.targets.get(outside.id)
+        first_seen_after_stop = app_context.repositories.seen_items.has_seen(
+            first.scope_id,
+            "first-seen",
+        )
+        first_outbox_after_stop = (
+            app_context.repositories.notification_outbox.get_by_idempotency_key(
+                f"{first.id}:first-seen:desktop",
+            )
+        )
+    assert first_stopped is not None and first_stopped.enabled and first_stopped.paused
+    assert second_stopped is not None and second_stopped.enabled and second_stopped.paused
+    assert outside_after_stop is not None and outside_after_stop.enabled
+    assert not outside_after_stop.paused
+    assert first_seen_after_stop
+    assert first_outbox_after_stop is not None
+
+    start_response = client.post(f"/api/sidebar/groups/{group.id}/start")
+
+    assert start_response.status_code == 200
+    assert start_response.json()["updated_count"] == 2
+    assert scheduler_manager.woken_count == 2
+    with SqliteApplicationContext(db_path) as app_context:
+        first_loaded = app_context.repositories.targets.get(first.id)
+        second_loaded = app_context.repositories.targets.get(second.id)
+        outside_loaded = app_context.repositories.targets.get(outside.id)
+        first_state = app_context.repositories.runtime_states.get(first.id)
+        second_state = app_context.repositories.runtime_states.get(second.id)
+        outside_state = app_context.repositories.runtime_states.get(outside.id)
+        first_seen = app_context.repositories.seen_items.has_seen(
+            first.scope_id,
+            "first-seen",
+        )
+        second_seen = app_context.repositories.seen_items.has_seen(
+            second.scope_id,
+            "second-seen",
+        )
+        outside_seen = app_context.repositories.seen_items.has_seen(
+            outside.scope_id,
+            "outside-seen",
+        )
+        first_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{first.id}:first-seen:desktop",
+        )
+        second_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{second.id}:second-seen:desktop",
+        )
+        outside_outbox = app_context.repositories.notification_outbox.get_by_idempotency_key(
+            f"{outside.id}:outside-seen:desktop",
+        )
+
+    assert first_loaded is not None and first_loaded.enabled and not first_loaded.paused
+    assert second_loaded is not None and second_loaded.enabled and not second_loaded.paused
+    assert outside_loaded is not None and outside_loaded.enabled and not outside_loaded.paused
+    assert first_state is not None and first_state.scan_requested_at is not None
+    assert second_state is not None and second_state.scan_requested_at is not None
+    assert outside_state is not None and outside_state.scan_requested_at is not None
+    assert first_seen
+    assert second_seen
+    assert outside_seen
+    assert first_outbox is not None
+    assert second_outbox is not None
+    assert outside_outbox is not None
+
+
 def test_start_route_supports_comments_target(tmp_path: Path) -> None:
-    """Web UI comments target 的開始 route 會清 comments seen 並喚醒 scheduler。"""
+    """Web UI comments target 的開始 route 保留 comments seen 並喚醒 scheduler。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -4767,7 +4803,7 @@ def test_start_route_supports_comments_target(tmp_path: Path) -> None:
     assert not loaded.paused
     assert state is not None
     assert state.scan_requested_at is not None
-    assert not has_seen
+    assert has_seen
     assert scheduler_manager.woken_count == 1
 
 
@@ -5208,6 +5244,8 @@ def test_sidebar_group_template_route_saves_json_config_payload(
         f"/api/sidebar/groups/{group.id}/template",
         json={
             "include_keywords": "票,交換",
+            "include_keywords_2": "5/1;5/2",
+            "include_keywords_3": "108;109",
             "exclude_keywords": "售完",
             "exclude_ignore_phrases": "全收,回收",
             "refresh_mode": "fixed",
@@ -5230,7 +5268,12 @@ def test_sidebar_group_template_route_saves_json_config_payload(
     with SqliteApplicationContext(db_path) as app_context:
         template = app_context.repositories.sidebar_layout.get_template(group.id)
     assert template is not None
-    assert template.include_keywords == ("票", "交換")
+    assert template.include_keywords == ("票", "交換", "5/1", "5/2", "108", "109")
+    assert [group.keywords for group in template.include_keyword_groups] == [
+        ("票", "交換"),
+        ("5/1", "5/2"),
+        ("108", "109"),
+    ]
     assert template.exclude_keywords == ("售完",)
     assert template.exclude_ignore_phrases == ("全收", "回收")
     assert template.fixed_refresh_sec == 90

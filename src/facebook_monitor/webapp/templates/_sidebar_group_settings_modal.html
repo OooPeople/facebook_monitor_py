@@ -15,8 +15,16 @@
         <h4>關鍵字設定</h4>
         <div class="sidebar-template-keyword-grid">
           <label>
-            包含關鍵字
+            關鍵字 1
             <textarea name="include_keywords" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text }}</textarea>
+          </label>
+          <label>
+            關鍵字 2
+            <textarea name="include_keywords_2" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text_2 }}</textarea>
+          </label>
+          <label>
+            關鍵字 3
+            <textarea name="include_keywords_3" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text_3 }}</textarea>
           </label>
           <label>
             排除關鍵字
@@ -36,6 +44,8 @@
           {% include "_scan_settings_fields.html" %}
           {% set refresh_source = group %}
           {% set refresh_input_attrs = "data-sidebar-template-field" %}
+          {% set refresh_mode_name = "refresh_mode_" ~ group.group_id %}
+          {% set refresh_mode_payload_name = "refresh_mode" %}
           {% include "_refresh_settings_fields.html" %}
         </div>
       </section>

@@ -74,83 +74,6 @@
       </div>
     </section>
 
-    <section class="target settings-card">
-      <div class="settings-card-head">
-        <div class="settings-card-title">
-          <h2>通知預設值</h2>
-          <p>未填寫也不影響功能；各 target 仍以自己的通知設定為準。此區塊只作為新增 target 預設值來源。</p>
-        </div>
-      </div>
-
-      <form id="notification-defaults-form" class="config-form settings-notification-form" method="post" action="/settings/notifications">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        {% set notification_source = notification_settings %}
-        {% include "_notification_settings_fields.html" %}
-      </form>
-
-      <div class="settings-card-actions settings-actions settings-actions--right">
-        <span
-          class="inline-feedback form-status"
-          data-dirty-status="notification-defaults-form"
-          aria-live="polite"
-        >尚未儲存</span>
-        <button class="button button--primary" type="submit" form="notification-defaults-form" data-dirty-submit>保存通知預設值</button>
-      </div>
-    </section>
-
-    <section class="target settings-card">
-      <div class="settings-card-head">
-        <div class="settings-card-title">
-          <h2>通知 outbox</h2>
-          <p>{{ notification_outbox_health.summary_label }}</p>
-        </div>
-      </div>
-
-      <dl class="field-grid update-check-grid" aria-label="通知 outbox 狀態">
-        <div class="field-grid-cell">
-          <dt>待送</dt>
-          <dd>{{ notification_outbox_health.pending_count }}</dd>
-        </div>
-        <div class="field-grid-cell">
-          <dt>失敗</dt>
-          <dd>{{ notification_outbox_health.failed_count }}</dd>
-        </div>
-        <div class="field-grid-cell">
-          <dt>最大嘗試</dt>
-          <dd>{{ notification_outbox_health.max_attempts }}</dd>
-        </div>
-        <div class="field-grid-cell">
-          <dt>最近失敗</dt>
-          <dd>
-            {% if notification_outbox_health.last_failure_reason %}
-              {{ notification_outbox_health.last_failure_channel }} · {{ notification_outbox_health.last_failure_reason }}
-            {% else %}
-              無
-            {% endif %}
-          </dd>
-        </div>
-      </dl>
-
-      <div class="settings-card-actions settings-actions settings-actions--right">
-        <form method="post" action="/settings/notifications/retry-failed">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="button button--primary" type="submit" {% if not notification_outbox_health.has_failed %}disabled{% endif %}>重試 failed 通知</button>
-        </form>
-        <form
-          method="post"
-          action="/settings/notifications/clear-failed"
-          data-confirm-submit
-          data-confirm-title="清除 failed 通知"
-          data-confirm-message="清除所有 failed 通知？這會移除這些通知的重試與去重紀錄，之後若同一 target/item/channel 再次命中，可能重新建立待送通知。"
-          data-confirm-label="清除"
-          data-confirm-danger="1"
-        >
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button class="button" type="submit" {% if not notification_outbox_health.has_failed %}disabled{% endif %}>清除 failed 通知</button>
-        </form>
-      </div>
-    </section>
-
     <section class="target settings-card" data-update-section>
       <div class="settings-card-head">
         <div class="settings-card-title">
@@ -194,10 +117,28 @@
     <section class="target settings-card">
       <div class="settings-card-head">
         <div class="settings-card-title">
-          <h2>資料與支援</h2>
-          <p>支援診斷包會排除 DB、profile、cookies、secrets、logs 與完整貼文/留言內容；target 資料清除在各 target 的更多操作中執行。</p>
+          <h2>問題回報與診斷</h2>
+          <p>回報問題時下載支援診斷包；內容只包含程式狀態摘要與安全檢查結果，會排除 DB、profile、cookies、secrets、logs 與完整貼文/留言內容。</p>
         </div>
       </div>
+
+      {% if notification_outbox_health.has_failed %}
+        <div class="settings-alert" role="status">
+          <span>有 {{ notification_outbox_health.failed_count }} 筆通知發送失敗</span>
+          <form
+            method="post"
+            action="/settings/notifications/clear-failed"
+            data-confirm-submit
+            data-confirm-title="清除失敗通知"
+            data-confirm-message="清除所有失敗通知？這會移除這些通知發送失敗紀錄；不會重置已看紀錄，因此已看過的同一項目不會因為這個操作再次通知。"
+            data-confirm-label="清除"
+            data-confirm-danger="1"
+          >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button" type="submit">清除失敗通知</button>
+          </form>
+        </div>
+      {% endif %}
 
       <div class="settings-card-actions settings-actions settings-actions--right">
         <form method="post" action="/settings/support-bundle">
@@ -206,31 +147,6 @@
         </form>
       </div>
     </section>
-
-    <details class="target settings-card runtime-diagnostics-card">
-      <summary class="runtime-diagnostics-summary">
-        <span class="settings-card-title">
-          <span class="runtime-diagnostics-heading">Runtime diagnostics</span>
-          <span class="runtime-diagnostics-description">啟動路徑與目前背景服務狀態。</span>
-        </span>
-        <span class="runtime-diagnostics-toggle" aria-hidden="true">展開</span>
-      </summary>
-      <div class="runtime-diagnostics-body">
-        <dl class="field-grid runtime-diagnostics-grid">
-          {% for field in runtime_diagnostics.fields %}
-            <div class="field-grid-cell">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </div>
-          {% endfor %}
-        </dl>
-        <textarea id="runtime-diagnostics-copy-source" class="debug-copy-source" readonly rows="8">{{ runtime_diagnostics.copy_text }}</textarea>
-        <div class="settings-card-actions settings-actions settings-actions--left settings-card-actions--compact">
-          <button type="button" data-copy-runtime-diagnostics>複製診斷資訊</button>
-          <span class="inline-feedback form-status" data-runtime-diagnostics-status aria-live="polite"></span>
-        </div>
-      </div>
-    </details>
   </main>
   <dialog class="settings-modal app-dialog update-progress-modal" data-update-progress-modal>
     <div class="modal-shell">

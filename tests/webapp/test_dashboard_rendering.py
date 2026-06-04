@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -263,7 +264,9 @@ def test_index_renders_target_settings_summary_and_collapse_controls(
         "data-collapsed-summary hidden>"
     ) in text
     assert "target-collapsed-summary-field" in text
-    assert "包含關鍵字" in text
+    assert "關鍵字 1" in text
+    assert "關鍵字 2" in text
+    assert "關鍵字 3" in text
     assert "data-include-keyword-help-button" in text
     assert "data-include-keyword-help-modal" in text
     assert "關鍵字輸入規則</h3>" in text
@@ -303,3 +306,44 @@ def test_index_renders_sidebar_without_targets(tmp_path: Path) -> None:
     assert "尚未建立 target" in response.text
     assert "新增 Facebook target" in response.text
     assert "建立後按「開始」才會掃描" in response.text
+
+
+def test_index_renders_sidebar_group_monitoring_without_target_count(
+    tmp_path: Path,
+) -> None:
+    """sidebar 群組 header 不顯示 target 數量，並顯示群組開始/停止 icon。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        first = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                group_name="第一群 target",
+            )
+        )
+        empty_group = app_context.services.sidebar_layout.create_group("空群組")
+        active_group = app_context.services.sidebar_layout.create_group("啟用群組")
+        app_context.services.sidebar_layout.save_placements(
+            [
+                (active_group.id, [first.id]),
+                (empty_group.id, []),
+                (None, []),
+            ]
+        )
+        app_context.services.targets.restart_target_monitoring(first.id)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "sidebar-group-count" not in response.text
+    assert 'data-sidebar-group-monitoring="stop"' in response.text
+    assert 'aria-label="停止群組"' in response.text
+    assert 'data-sidebar-group-monitoring="start"' in response.text
+    assert 'aria-label="開始群組"' in response.text
+    assert "disabled" in response.text
+    assert re.search(
+        rf'name="refresh_mode_{re.escape(active_group.id)}" type="radio" value="floating"[^>]*checked',
+        response.text,
+    )

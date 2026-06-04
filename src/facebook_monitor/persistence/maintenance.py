@@ -32,6 +32,7 @@ class RuntimeDataCleanupResult:
             + self.notification_events
             + self.notification_outbox
             + self.seen_items
+            + self.scan_scope_state
         )
 
 

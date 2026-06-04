@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS targets (
 CREATE TABLE IF NOT EXISTS target_configs (
     target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
     include_keywords TEXT NOT NULL,
+    include_keyword_groups TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL,
     exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
     min_refresh_sec INTEGER NOT NULL,
@@ -92,6 +93,8 @@ CREATE TABLE IF NOT EXISTS match_history_matches (
     history_id INTEGER NOT NULL REFERENCES match_history(id) ON DELETE CASCADE,
     match_order INTEGER NOT NULL,
     rule TEXT NOT NULL,
+    keyword_group_id TEXT NOT NULL DEFAULT '',
+    keyword_group_label TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (history_id, match_order)
 );
 
@@ -115,6 +118,8 @@ CREATE TABLE IF NOT EXISTS latest_scan_item_matches (
     item_key TEXT NOT NULL,
     match_order INTEGER NOT NULL,
     rule TEXT NOT NULL,
+    keyword_group_id TEXT NOT NULL DEFAULT '',
+    keyword_group_label TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (target_id, item_key, match_order),
     FOREIGN KEY (target_id, item_key)
         REFERENCES latest_scan_items(target_id, item_key)
@@ -236,6 +241,7 @@ CREATE TABLE IF NOT EXISTS sidebar_target_placements (
 CREATE TABLE IF NOT EXISTS sidebar_group_config_templates (
     sidebar_group_id TEXT PRIMARY KEY REFERENCES sidebar_groups(id) ON DELETE CASCADE,
     include_keywords TEXT NOT NULL DEFAULT '[]',
+    include_keyword_groups TEXT NOT NULL DEFAULT '[]',
     exclude_keywords TEXT NOT NULL DEFAULT '[]',
     exclude_ignore_phrases TEXT NOT NULL DEFAULT '[]',
     min_refresh_sec INTEGER NOT NULL,

@@ -82,6 +82,30 @@ class SidebarGroupSection:
         return len(self.items)
 
     @property
+    def has_active_target(self) -> bool:
+        """回傳 group 內是否至少一個 target 正在啟用。"""
+
+        return any(item.active for item in self.items)
+
+    @property
+    def monitoring_action(self) -> str:
+        """回傳 group 開始/停止按鈕提交的 action。"""
+
+        return "stop" if self.has_active_target else "start"
+
+    @property
+    def monitoring_button_label(self) -> str:
+        """回傳 group 開始/停止按鈕的可讀標籤。"""
+
+        return "停止群組" if self.monitoring_action == "stop" else "開始群組"
+
+    @property
+    def monitoring_disabled(self) -> bool:
+        """回傳 group 是否沒有可操作 target。"""
+
+        return not self.items
+
+    @property
     def dom_group_id(self) -> str:
         """回傳前端 data attribute 使用的 group id。"""
 
@@ -101,6 +125,20 @@ class SidebarGroupSection:
 
         presenter = self.template_presenter
         return presenter.include_text if presenter else ""
+
+    @property
+    def include_text_2(self) -> str:
+        """回傳 template include keyword 第 2 組表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.include_text_2 if presenter else ""
+
+    @property
+    def include_text_3(self) -> str:
+        """回傳 template include keyword 第 3 組表單文字。"""
+
+        presenter = self.template_presenter
+        return presenter.include_text_3 if presenter else ""
 
     @property
     def exclude_text(self) -> str:
@@ -532,6 +570,18 @@ class TargetRow:
         return self.settings_presenter.include_text
 
     @property
+    def include_text_2(self) -> str:
+        """回傳 include keyword 第 2 組表單文字。"""
+
+        return self.settings_presenter.include_text_2
+
+    @property
+    def include_text_3(self) -> str:
+        """回傳 include keyword 第 3 組表單文字。"""
+
+        return self.settings_presenter.include_text_3
+
+    @property
     def exclude_text(self) -> str:
         """回傳 exclude keywords 表單文字。"""
 
@@ -605,6 +655,7 @@ class TargetRow:
             hit_count=self.hit_record_total_count,
             latest_error_summary=latest_error_summary,
             thumbnail_url=self.thumbnail_url,
+            active=self.target.enabled and not self.target.paused,
         )
 
     @property

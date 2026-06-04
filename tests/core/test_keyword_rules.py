@@ -14,6 +14,7 @@ from facebook_monitor.core.keyword_rules import mask_exclude_ignore_phrases
 from facebook_monitor.core.keyword_rules import normalize_for_match
 from facebook_monitor.core.keyword_rules import parse_keyword_input
 from facebook_monitor.core.keyword_rules import parse_keyword_values
+from facebook_monitor.core.keyword_groups import keyword_group_slots
 
 
 SURROGATE_CATEGORIES: tuple[Literal["Cs"], ...] = ("Cs",)
@@ -189,6 +190,54 @@ def test_evaluate_keyword_rules_uses_nfkc_normalization() -> None:
 
     assert result.eligible is True
     assert result.include_rule == "Ａ席 123"
+
+
+def test_evaluate_keyword_rules_requires_each_include_group() -> None:
+    """include keyword groups 採組內 OR、組間 AND，不展開成組合。"""
+
+    groups = keyword_group_slots((("5/1;5/2",), ("108;109",)))
+
+    matched = evaluate_keyword_rules(
+        "售 5/2 在 109 區的票",
+        include_keywords=(),
+        include_keyword_groups=groups,
+    )
+    missing_group = evaluate_keyword_rules(
+        "售 5/2 的票，不限區",
+        include_keywords=(),
+        include_keyword_groups=groups,
+    )
+
+    assert matched.eligible is True
+    assert matched.include_rules == ("5/2", "109")
+    assert matched.include_rule == "5/2;109"
+    assert [
+        (result.group_id, result.matched, result.rules)
+        for result in matched.include_group_results
+    ] == [("1", True, ("5/2",)), ("2", True, ("109",))]
+    assert missing_group.eligible is False
+    assert missing_group.include_rules == ()
+    assert [
+        (result.group_id, result.matched, result.rules)
+        for result in missing_group.include_group_results
+    ] == [("1", True, ("5/2",)), ("2", False, ())]
+
+
+def test_evaluate_keyword_rules_keeps_duplicate_rule_group_identity() -> None:
+    """同一 rule 出現在不同組時，group match 仍保留各自分組身分。"""
+
+    result = evaluate_keyword_rules(
+        "售 5/2 票",
+        include_keywords=(),
+        include_keyword_groups=keyword_group_slots((("5/2",), ("5/2",))),
+    )
+
+    assert result.eligible is True
+    assert result.include_rules == ("5/2",)
+    assert [
+        (match.group_id, match.rule)
+        for match in result.include_group_matches
+    ] == [("1", "5/2"), ("2", "5/2")]
 
 
 def test_build_keyword_rule_ignores_blank_input() -> None:

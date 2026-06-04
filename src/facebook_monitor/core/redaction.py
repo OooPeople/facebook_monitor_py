@@ -15,8 +15,8 @@ _DISCORD_WEBHOOK_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_RE = re.compile(r"\bhttps?://[^\s\"'<>]+", re.IGNORECASE)
-_WINDOWS_USER_PATH_RE = re.compile(r"\b[A-Za-z]:\\Users\\[^\\\s]+")
-_POSIX_HOME_PATH_RE = re.compile(r"(?<!\w)/(?:Users|home)/[^/\s]+")
+_WINDOWS_USER_PATH_RE = re.compile(r"\b[A-Za-z]:\\Users\\[^\\\r\n]+")
+_POSIX_HOME_PATH_RE = re.compile(r"(?<!\w)/(?:Users|home)/[^/\r\n]+")
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(token|secret|password|authorization|api[_-]?key)\s*[:=]\s*([^\s,;]+)"
 )

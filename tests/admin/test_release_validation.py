@@ -82,6 +82,20 @@ def test_validation_steps_include_artifact_validation_when_requested() -> None:
     assert "Example Publisher" in artifact_step.command
 
 
+def test_validation_steps_can_skip_artifact_manifest_for_platform_build() -> None:
+    """平台 build 階段可驗 artifact 但不要求 finalized signed manifest。"""
+
+    artifact_steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=False,
+        include_artifacts=True,
+        require_artifact_manifest=False,
+    )
+
+    artifact_step = next(step for step in artifact_steps if step.label == "release artifacts")
+    assert "--require-manifest" not in artifact_step.command
+
+
 def test_validation_steps_pass_expected_tag_to_artifact_validation() -> None:
     """expected tag 由 release validation 傳給 artifact validation。"""
 
@@ -121,6 +135,7 @@ def test_validate_cli_args_rejects_signer_without_artifacts() -> None:
             artifact_platform="windows",
             expected_signer_subject="Example Publisher",
             expected_tag="",
+            skip_artifact_manifest=False,
         )
     )
 
@@ -136,6 +151,7 @@ def test_validate_cli_args_rejects_tag_without_artifacts() -> None:
             artifact_platform="windows",
             expected_signer_subject="",
             expected_tag="v0.1.0",
+            skip_artifact_manifest=False,
         )
     )
 
@@ -151,6 +167,7 @@ def test_validate_cli_args_rejects_platform_without_artifacts() -> None:
             artifact_platform="macos-arm64",
             expected_signer_subject="",
             expected_tag="",
+            skip_artifact_manifest=False,
         )
     )
 
@@ -166,7 +183,24 @@ def test_validate_cli_args_rejects_macos_signer_subject() -> None:
             artifact_platform="macos-arm64",
             expected_signer_subject="Example Publisher",
             expected_tag="",
+            skip_artifact_manifest=False,
         )
     )
 
     assert error == "--expected-signer-subject is only supported for Windows artifacts"
+
+
+def test_validate_cli_args_rejects_skip_manifest_without_artifacts() -> None:
+    """skip manifest 只對 artifact validation 階段有意義。"""
+
+    error = release_validation.validate_cli_args(
+        argparse.Namespace(
+            include_artifacts=False,
+            artifact_platform="windows",
+            expected_signer_subject="",
+            expected_tag="",
+            skip_artifact_manifest=True,
+        )
+    )
+
+    assert error == "--skip-artifact-manifest requires --include-artifacts"

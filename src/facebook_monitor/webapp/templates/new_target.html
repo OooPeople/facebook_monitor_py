@@ -62,7 +62,7 @@
 
         <section class="new-target-section">
           <h2>通知設定</h2>
-          {% set notification_source = notification_settings %}
+          {# 保留新 target 通知設定：移除全域通知預設後，使用者仍可在建立時明確選擇通道；預設不繼承任何隱性設定。 #}
           {% include "_notification_settings_fields.html" %}
         </section>
 

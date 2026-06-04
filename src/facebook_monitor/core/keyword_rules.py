@@ -13,6 +13,11 @@ from dataclasses import dataclass
 
 import ahocorasick  # type: ignore[import-not-found]
 
+from facebook_monitor.core.keyword_groups import effective_include_keyword_groups
+from facebook_monitor.core.keyword_groups import keyword_group_match_rules
+from facebook_monitor.core.models import IncludeKeywordGroup
+from facebook_monitor.core.models import KeywordGroupMatch
+
 
 ZERO_WIDTH_PATTERN = re.compile(r"[\u200b-\u200d\ufeff]")
 WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -33,6 +38,18 @@ class KeywordMatchResult:
     matched: bool
     rule: str = ""
     rules: tuple[str, ...] = ()
+    group_results: tuple["KeywordGroupMatchResult", ...] = ()
+    group_matches: tuple[KeywordGroupMatch, ...] = ()
+
+
+@dataclass(frozen=True)
+class KeywordGroupMatchResult:
+    """保存 include keyword 單一分組的比對結果。"""
+
+    group_id: str
+    group_label: str
+    matched: bool
+    rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,8 @@ class KeywordEvaluation:
     exclude_rule: str = ""
     include_rules: tuple[str, ...] = ()
     exclude_rules: tuple[str, ...] = ()
+    include_group_results: tuple[KeywordGroupMatchResult, ...] = ()
+    include_group_matches: tuple[KeywordGroupMatch, ...] = ()
 
     @property
     def display_rule(self) -> str:
@@ -159,6 +178,76 @@ class KeywordRuleSetMatcher:
         )
 
 
+class GroupedKeywordRuleSetMatcher:
+    """以固定 include groups 套用組內 OR、組間 AND 的 matcher。"""
+
+    def __init__(
+        self,
+        *,
+        include_keywords: Iterable[object],
+        include_keyword_groups: Iterable[IncludeKeywordGroup] = (),
+    ) -> None:
+        groups = effective_include_keyword_groups(
+            include_keywords=tuple(str(value) for value in include_keywords),
+            include_keyword_groups=include_keyword_groups,
+        )
+        self.group_rules = tuple(
+            (group, parse_keyword_values(group.keywords))
+            for group in groups
+            if group.keywords
+        )
+        terms = tuple(
+            dict.fromkeys(
+                term
+                for _group, rules in self.group_rules
+                for rule in rules
+                for term in rule.terms
+                if term
+            )
+        )
+        self._automaton = _build_automaton(terms)
+
+    def match(self, normalized_text: str) -> KeywordMatchResult:
+        """回傳所有 include groups 是否成立與各組命中的 rules。"""
+
+        if not self.group_rules:
+            return KeywordMatchResult(matched=False, rule="", rules=())
+        found_terms = set(_iter_automaton_values(self._automaton, normalized_text))
+        group_results: list[KeywordGroupMatchResult] = []
+        group_matches: list[KeywordGroupMatch] = []
+        for group, group_rules in self.group_rules:
+            matched_rules = dedupe_keyword_rules(
+                rule.raw
+                for rule in group_rules
+                if all(term in found_terms for term in rule.terms)
+            )
+            group_results.append(
+                KeywordGroupMatchResult(
+                    group_id=group.group_id,
+                    group_label=group.label,
+                    matched=bool(matched_rules),
+                    rules=matched_rules,
+                )
+            )
+            group_matches.extend(
+                KeywordGroupMatch(
+                    group_id=group.group_id,
+                    group_label=group.label,
+                    rule=rule,
+                )
+                for rule in matched_rules
+            )
+        matched = all(result.matched for result in group_results)
+        matched_group_rules = keyword_group_match_rules(group_matches) if matched else ()
+        return KeywordMatchResult(
+            matched=matched,
+            rule=format_keyword_rules(matched_group_rules),
+            rules=matched_group_rules,
+            group_results=tuple(group_results),
+            group_matches=tuple(group_matches) if matched else (),
+        )
+
+
 class PhraseRangeMatcher:
     """以 Aho-Corasick automaton 尋找多組片語 range。"""
 
@@ -182,10 +271,14 @@ class CompiledKeywordMatcher:
         self,
         *,
         include_keywords: Iterable[object],
+        include_keyword_groups: Iterable[IncludeKeywordGroup] = (),
         exclude_keywords: Iterable[object] = (),
         exclude_ignore_phrases: Iterable[object] = (),
     ) -> None:
-        self.include_matcher = KeywordRuleSetMatcher(parse_keyword_values(include_keywords))
+        self.include_matcher = GroupedKeywordRuleSetMatcher(
+            include_keywords=include_keywords,
+            include_keyword_groups=include_keyword_groups,
+        )
         self.exclude_matcher = KeywordRuleSetMatcher(parse_keyword_values(exclude_keywords))
         self.exclude_ignore_matcher = PhraseRangeMatcher(
             normalize_for_match(rule.raw)
@@ -207,12 +300,15 @@ class CompiledKeywordMatcher:
             exclude_rule=format_keyword_rules(exclude_rules),
             include_rules=include_rules,
             exclude_rules=exclude_rules,
+            include_group_results=include_result.group_results,
+            include_group_matches=include_result.group_matches,
         )
 
 
 def compile_keyword_matcher(
     *,
     include_keywords: Iterable[object],
+    include_keyword_groups: Iterable[IncludeKeywordGroup] = (),
     exclude_keywords: Iterable[object] = (),
     exclude_ignore_phrases: Iterable[object] = (),
 ) -> CompiledKeywordMatcher:
@@ -220,6 +316,7 @@ def compile_keyword_matcher(
 
     return CompiledKeywordMatcher(
         include_keywords=include_keywords,
+        include_keyword_groups=include_keyword_groups,
         exclude_keywords=exclude_keywords,
         exclude_ignore_phrases=exclude_ignore_phrases,
     )
@@ -240,6 +337,7 @@ def mask_exclude_ignore_phrases(
 def evaluate_keyword_rules(
     text: object,
     include_keywords: Iterable[object],
+    include_keyword_groups: Iterable[IncludeKeywordGroup] = (),
     exclude_keywords: Iterable[object] = (),
     exclude_ignore_phrases: Iterable[object] = (),
 ) -> KeywordEvaluation:
@@ -247,6 +345,7 @@ def evaluate_keyword_rules(
 
     return compile_keyword_matcher(
         include_keywords=include_keywords,
+        include_keyword_groups=include_keyword_groups,
         exclude_keywords=exclude_keywords,
         exclude_ignore_phrases=exclude_ignore_phrases,
     ).evaluate(text)

@@ -14,9 +14,9 @@
 - frozen Windows 預設啟用 system tray；source mode 預設不啟用 tray。
 - Windows PyInstaller spec 會從 `APP_VERSION` 分別產生主程式與 updater 的 version resource；code signing 本輪不做。
 - `facebook-monitor-updater.exe` 是 PyInstaller onedir app，從 Web UI 啟動 temp updater 時必須連同 `_internal\` 複製；不可只複製單一 updater exe。
-- 每次輸出 release zip 時，必須同時產生同名 `.sha256`，並建立 signed release manifest / `.sig`。runtime updater 以 Ed25519 signed manifest 作為信任根，`.sha256` 只作相容與交叉檢查；正式壓縮入口是 `scripts/admin/create_release_zip.py`。
+- 每次輸出 release zip 時，必須同時產生同名 `.sha256`。同一個 GitHub Release 的 signed release manifest / `.sig` 只在最後 finalize 階段建立一次，內容依 `dist/` 內目前版本的正式平台 zip 決定。runtime updater 以 Ed25519 signed manifest 作為信任根，`.sha256` 只作相容與交叉檢查；正式壓縮入口是 `scripts/admin/create_release_zip.py`。
 - GitHub Release tag、app version、Windows version metadata、macOS Info.plist version、release zip 檔名與 `.sha256` 內容必須互相對齊；updater 只接受精確版本檔名，不 fallback 到其他版本 zip。
-- Release artifact validation 會檢查 zip、`.sha256`、signed manifest / `.sig`、必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE version resource、generated Windows version resource、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 Git tag 與可選 Windows Authenticode signer；正式發佈前應納入 release validation。
+- Release artifact validation 會檢查 zip、`.sha256`、必要 onedir 檔案、私密 runtime data 是否誤入包、Windows EXE version resource、generated Windows version resource、macOS `.app` Info.plist version、macOS app / updater / bundled browser / `.app` launcher 的 arm64 Mach-O 與 executable bit、可選 Git tag 與可選 Windows Authenticode signer；finalize 後還會檢查 signed manifest / `.sig` 是否與各平台 zip metadata 對齊。正式發佈前應納入 release validation。
 - macOS Apple Silicon 目前使用 PyInstaller onedir zip，內含 `Facebook Monitor.app` native launcher 外殼，避免 Finder 啟動時跳出 Terminal，並讓程式執行期間持續顯示在 Dock；尚未做 Developer ID signing / notarization。
 
 ## 發佈內容
@@ -100,9 +100,9 @@ macOS zip 內預期包含：
 
 以下腳本都會透過 `facebook_monitor.version.APP_VERSION` 讀取 `pyproject.toml` 的 `[project].version`。升版時只要更新 `pyproject.toml`，不需要在打包指令中手動改 zip 檔名。
 
-平台 release build 腳本會依序安裝 PyInstaller、安裝 Playwright Chromium、執行 PyInstaller、建立 release zip / `.sha256`、建立 signed manifest、簽署 `.sig`、執行 artifact validation，最後跑完整 release validation。若只想快速重建正式 release artifact，可加 `--skip-release-validation`，但仍然需要 release 簽章私鑰，因為 artifact validation 會檢查 signed manifest。
+平台 release build 腳本會依序安裝 PyInstaller、安裝 Playwright Chromium、執行 PyInstaller、建立 release zip / `.sha256`、執行不含 manifest 的 artifact validation，最後跑完整 release validation。平台 build 階段不產生 manifest / `.sig`，也不需要 release 簽章私鑰；只有最後執行 `scripts/admin/finalize_release_manifest.py` 時才會建立 signed manifest / `.sig`。
 
-release build wrapper 會優先使用 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`；若該檔不存在，`sign_release_manifest.py` 會改讀 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64` 環境變數。若直接手動執行 `sign_release_manifest.py`，需明確傳 `--private-key-file docs/local/release-signing/release-ed25519-2026q2.private-key.b64`，或設定上述環境變數。
+finalize 腳本會優先使用 `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`；若該檔不存在，`sign_release_manifest.py` 會改讀 `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64` 環境變數。若直接手動執行 `sign_release_manifest.py`，需明確傳 `--private-key-file docs/local/release-signing/release-ed25519-2026q2.private-key.b64`，或設定上述環境變數。
 若看到 `manifest_private_key_missing`，代表上述檔案與環境變數都不存在；這是私鑰缺失，不是 PyInstaller 或 macOS packaging 失敗。私鑰必須對應 `src/facebook_monitor/updates/trust.py` 內建 trusted public key，否則後續 manifest validation 仍會失敗。
 
 ### Windows
@@ -132,7 +132,17 @@ uv run python scripts/admin/create_release_zip.py --platform macos-arm64 --force
 uv run python scripts/admin/release_artifact_validation.py --platform macos-arm64
 ```
 
-若同一個 release 同時發佈 Windows 與 macOS，可在兩個平台 zip 都已放進同一個 `dist/` 後，用同一份 manifest 帶入多個 `--asset`，再重新簽署 manifest。Windows / macOS artifact 仍應各自在對應平台跑 release artifact validation。
+### Finalize signed manifest
+
+平台 zip / `.sha256` 都放進同一個 `dist/` 後，最後產生唯一 signed manifest / `.sig`：
+
+```powershell
+.\scripts\uv.ps1 run python scripts\admin\finalize_release_manifest.py --force
+```
+
+finalize 腳本只接受目前 `APP_VERSION` 的正式平台 zip 命名；若 `dist/` 內只有 Windows 或只有 macOS，manifest 只列出該平台；若兩個平台 zip 都存在，manifest 會列出兩個平台 asset。腳本會先檢查每個 zip 的同名 `.sha256`，再簽署 manifest，最後對存在的平台逐一執行 signed manifest artifact validation。
+
+若同一個 release 同時發佈 Windows 與 macOS，建議先在 macOS build machine 產出 macOS zip / `.sha256`，複製到 Windows build machine 的 `dist/`，再產 Windows zip / `.sha256`，最後在 Windows 端執行 finalize。Windows / macOS artifact 仍應各自在對應平台完成平台 build 階段的 artifact validation；finalize 後的 signed manifest validation 才代表 release asset set 完整。
 
 ## Windows Tray
 

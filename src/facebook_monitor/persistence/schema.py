@@ -8,7 +8,7 @@ from facebook_monitor.persistence.current_schema import create_current_schema
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -170,13 +170,71 @@ def _merge_duplicate_target(connection: sqlite3.Connection, *, keep_id: str, dup
         "scan_runs",
         "match_history",
         "notification_events",
-        "notification_outbox",
     ):
         connection.execute(
             f"UPDATE {table_name} SET target_id = ? WHERE target_id = ?",
             (keep_id, duplicate_id),
         )
+    _merge_duplicate_notification_outbox(
+        connection,
+        keep_id=keep_id,
+        duplicate_id=duplicate_id,
+    )
     connection.execute("DELETE FROM targets WHERE id = ?", (duplicate_id,))
+
+
+def _merge_duplicate_notification_outbox(
+    connection: sqlite3.Connection,
+    *,
+    keep_id: str,
+    duplicate_id: str,
+) -> None:
+    """合併 duplicate target outbox，並同步重寫 target-scoped idempotency key。"""
+
+    rows = connection.execute(
+        """
+        SELECT id, item_key, channel
+        FROM notification_outbox
+        WHERE target_id = ?
+        ORDER BY id
+        """,
+        (duplicate_id,),
+    ).fetchall()
+    for row in rows:
+        item_key = str(row["item_key"])
+        channel = str(row["channel"])
+        duplicate_row_id = int(row["id"])
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM notification_outbox
+            WHERE target_id = ?
+              AND item_key = ?
+              AND channel = ?
+            """,
+            (keep_id, item_key, channel),
+        ).fetchone()
+        if existing is not None:
+            connection.execute(
+                "DELETE FROM notification_outbox WHERE id = ?",
+                (duplicate_row_id,),
+            )
+            continue
+        try:
+            connection.execute(
+                """
+                UPDATE notification_outbox
+                SET target_id = ?,
+                    idempotency_key = ?
+                WHERE id = ?
+                """,
+                (keep_id, f"{keep_id}:{item_key}:{channel}", duplicate_row_id),
+            )
+        except sqlite3.IntegrityError:
+            connection.execute(
+                "DELETE FROM notification_outbox WHERE id = ?",
+                (duplicate_row_id,),
+            )
 
 
 def _move_single_target_row_if_keep_missing(

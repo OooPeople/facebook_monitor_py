@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
 
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.assets import DASHBOARD_MODULE_FILENAMES
@@ -88,7 +93,7 @@ def test_masked_secret_clear_buttons_are_loaded_by_form_pages() -> None:
     clear_button_rule = forms_css.split(".secret-clear-button {", 1)[1].split("}", 1)[0]
     assert "color: var(--text);" in clear_button_rule
     assert "color: var(--danger);" not in clear_button_rule
-    for filename in ("main.js", "settings.js", "new_target.js"):
+    for filename in ("main.js", "new_target.js"):
         text = (dashboard_dir / filename).read_text(encoding="utf-8")
         assert '"/static/dashboard/forms.js"' in text
         assert "setupSecretClearButtons();" in text
@@ -181,6 +186,7 @@ def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     assert "export const setupKeywordTabs" in tabs_js
     assert "[data-keyword-tabs]" in tabs_js
     assert "[data-keyword-panel]" in tabs_js
+    assert "keywordDefaultTab" in tabs_js
     assert "setupKeywordTabs();" in main_js
     assert "[data-include-keyword-help-button]" in modals_js
     assert "[data-include-keyword-help-modal]" in modals_js
@@ -235,7 +241,7 @@ def test_notification_help_is_loaded_by_formal_page_entrypoints() -> None:
     assert "測試通知" not in notification_fields
     assert ".notification-help-modal" in modals_css
     assert ".notification-help-steps ol" in modals_css
-    for filename in ("main.js", "settings.js", "new_target.js"):
+    for filename in ("main.js", "new_target.js"):
         text = (dashboard_dir / filename).read_text(encoding="utf-8")
         assert '"/static/dashboard/notification_help.js"' in text
         assert "setupNotificationHelp();" in text
@@ -289,6 +295,38 @@ def test_unsafe_dashboard_fetches_use_shared_csrf_helper() -> None:
     assert "headers: csrfHeaders()" in hit_records_js
     assert '"/static/dashboard/api.js"' in sidebar_layout_js
     assert "const requestJson" not in sidebar_layout_js
+
+
+def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
+    """漢堡選單維持向右展開，但需脫離 sidebar scroll layer 避免被裁切。"""
+
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
+    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
+        encoding="utf-8"
+    )
+    sidebar_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_sidebar.html"
+    ).read_text(encoding="utf-8")
+
+    assert "document.body.appendChild(panel);" in sidebar_layout_js
+    assert "data-sidebar-menu-floating" in sidebar_layout_js
+    assert "SIDEBAR_MENU_ACTION_SELECTOR" in sidebar_layout_js
+    assert "focusFirstSidebarMenuAction(panel);" in sidebar_layout_js
+    assert "focusSidebarMenuTrigger(menu);" in sidebar_layout_js
+    assert 'aria-controls="sidebar-menu-panel"' in sidebar_template
+    assert 'id="sidebar-menu-panel"' in sidebar_template
+    assert "rect.right + gap" in sidebar_layout_js
+    assert 'event.target.closest?.(".sidebar-menu-panel")' in sidebar_layout_js
+    assert "sidebarRect.right - panelWidth - viewportPadding" not in sidebar_layout_js
+    assert 'panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);' in (
+        sidebar_layout_js
+    )
+    assert "closeSidebarMenu," in sidebar_layout_js
+    assert _css_rule_body(sidebar_css, ".sidebar-menu-panel,\n.sidebar-menu-panel.menu-panel").count(
+        "z-index: 30;"
+    ) == 1
 
 
 def test_dashboard_modals_use_shared_dismiss_helper() -> None:
@@ -446,7 +484,7 @@ def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_trac
 
 
 def test_settings_failed_outbox_clear_requires_dynamic_confirmation() -> None:
-    """Settings 全域 failed outbox 清除需走共用確認彈窗。"""
+    """Settings 失敗通知清除需走共用確認彈窗。"""
 
     settings_template = Path(
         "src/facebook_monitor/webapp/templates/settings.html"
@@ -454,8 +492,12 @@ def test_settings_failed_outbox_clear_requires_dynamic_confirmation() -> None:
 
     assert 'action="/settings/notifications/clear-failed"' in settings_template
     assert "data-confirm-submit" in settings_template
-    assert 'data-confirm-title="清除 failed 通知"' in settings_template
+    assert 'data-confirm-title="清除失敗通知"' in settings_template
+    assert "不會重置已看紀錄" in settings_template
+    assert "不會因為這個操作再次通知" in settings_template
     assert 'data-confirm-danger="1"' in settings_template
+    assert "重試失敗通知" not in settings_template
+    assert "通知 outbox" not in settings_template
 
 
 def test_sidebar_sort_mode_does_not_reserve_drag_column_when_inactive() -> None:
@@ -622,6 +664,8 @@ def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored()
     ).read_text(encoding="utf-8")
 
     assert "data-sidebar-group-actions-toggle" in sidebar_template
+    assert "data-sidebar-group-monitoring" in sidebar_template
+    assert "sidebar-group-count" not in sidebar_template
     assert "sidebar-menu-trigger" in sidebar_template
     assert "sidebar-group-action-strip" in sidebar_template
     assert ".sidebar-group-action-strip" in sidebar_css
@@ -645,8 +689,155 @@ def test_sidebar_group_operation_buttons_are_borderless_by_default() -> None:
     assert ".sidebar-group-collapse:hover,\n.sidebar-drag-handle:hover," in sidebar_css
     assert "background: var(--surface-soft);" in sidebar_css
     assert "border-color: transparent;" in sidebar_css
-    assert ".sidebar-group-actions .button--icon,\n.sidebar-group-actions-toggle" in sidebar_css
+    assert ".sidebar-group-actions .button--icon," in sidebar_css
+    assert ".sidebar-group-actions .button--icon:not(:disabled):hover," in sidebar_css
     assert "box-shadow: none;" in sidebar_css
+    assert "color: var(--muted);" in sidebar_css
+    assert "color: var(--text);" in sidebar_css
+    actions_hover_rule = _css_rule_body(
+        sidebar_css,
+        ".sidebar-group-actions .button--icon:not(:disabled):hover,\n.sidebar-group-actions-toggle:hover",
+    )
+    assert "color: var(--text);" in actions_hover_rule
+    assert ".sidebar-group-monitoring:disabled:hover" in sidebar_css
+    disabled_hover_rule = _css_rule_body(
+        sidebar_css, ".sidebar-group-monitoring:disabled:hover"
+    )
+    assert "background: transparent;" in disabled_hover_rule
+    assert "border-color: transparent;" in disabled_hover_rule
+    assert ".sidebar-group-monitoring.is-active" not in sidebar_css
+    assert ".sidebar-group-monitoring {\n  color: var(--success);" not in sidebar_css
+    assert "grid-template-columns: 30px minmax(0, 1fr) auto;" in sidebar_css
+
+
+def test_sidebar_group_monitoring_sync_preserves_pending_button() -> None:
+    """群組開始/停止送出中時，背景 partial sync 不可重新啟用按鈕。"""
+
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        pytest.skip("node is required to execute dashboard ES module behavior tests")
+    module_path = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_status.js"
+    ).resolve()
+    script = textwrap.dedent(
+        """
+        import assert from "node:assert/strict";
+        import { pathToFileURL } from "node:url";
+
+        const { syncSidebarGroupMonitoringButtons } = await import(
+          pathToFileURL(process.argv[1]).href
+        );
+
+        const makeIcon = () => ({
+          hidden: false,
+          toggleAttribute(name, force) {
+            if (name === "hidden") {
+              this.hidden = Boolean(force);
+            }
+          },
+        });
+
+        const makeButton = () => {
+          const play = makeIcon();
+          const stop = makeIcon();
+          const classes = new Set();
+          return {
+            dataset: {},
+            disabled: false,
+            title: "",
+            attrs: {},
+            play,
+            stop,
+            classList: {
+              toggle(name, force) {
+                if (force) {
+                  classes.add(name);
+                } else {
+                  classes.delete(name);
+                }
+              },
+              contains(name) {
+                return classes.has(name);
+              },
+            },
+            setAttribute(name, value) {
+              this.attrs[name] = String(value);
+            },
+            getAttribute(name) {
+              return this.attrs[name];
+            },
+            querySelector(selector) {
+              if (selector === ".sidebar-action-icon--play") return play;
+              if (selector === ".sidebar-action-icon--stop") return stop;
+              return null;
+            },
+          };
+        };
+
+        const button = makeButton();
+        let items = [{ dataset: { sidebarItemActive: "0" } }];
+        const root = {
+          querySelectorAll(selector) {
+            assert.equal(selector, "[data-sidebar-group][data-group-id]");
+            return [group];
+          },
+        };
+        const group = {
+          matches(selector) {
+            return selector === "[data-sidebar-group][data-group-id]";
+          },
+          querySelectorAll(selector) {
+            if (selector === "[data-sidebar-group][data-group-id]") return [];
+            assert.equal(selector, "[data-sidebar-item]");
+            return items;
+          },
+          querySelector(selector) {
+            assert.equal(selector, "[data-sidebar-group-monitoring]");
+            return button;
+          },
+        };
+
+        syncSidebarGroupMonitoringButtons(root);
+        assert.equal(button.dataset.sidebarGroupMonitoring, "start");
+        assert.equal(button.disabled, false);
+        assert.equal(button.getAttribute("aria-label"), "開始群組");
+        assert.equal(button.play.hidden, false);
+        assert.equal(button.stop.hidden, true);
+
+        button.dataset.sidebarGroupMonitoringPending = "1";
+        button.disabled = true;
+        items = [{ dataset: { sidebarItemActive: "1" } }];
+        syncSidebarGroupMonitoringButtons(root);
+        assert.equal(button.dataset.sidebarGroupMonitoring, "start");
+        assert.equal(button.disabled, true);
+        assert.equal(button.getAttribute("aria-label"), "開始群組");
+        assert.equal(button.play.hidden, false);
+        assert.equal(button.stop.hidden, true);
+
+        delete button.dataset.sidebarGroupMonitoringPending;
+        syncSidebarGroupMonitoringButtons(root);
+        assert.equal(button.dataset.sidebarGroupMonitoring, "stop");
+        assert.equal(button.disabled, false);
+        assert.equal(button.getAttribute("aria-label"), "停止群組");
+        assert.equal(button.play.hidden, true);
+        assert.equal(button.stop.hidden, false);
+
+        items = [];
+        syncSidebarGroupMonitoringButtons(group);
+        assert.equal(button.dataset.sidebarGroupMonitoring, "start");
+        assert.equal(button.disabled, true);
+        assert.equal(button.getAttribute("aria-label"), "開始群組");
+        assert.equal(button.play.hidden, false);
+        assert.equal(button.stop.hidden, true);
+      """
+    )
+
+    subprocess.run(
+        [node_bin, "--input-type=module", "-e", script, str(module_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_sidebar_group_operation_icons_are_slightly_larger() -> None:
@@ -661,8 +852,11 @@ def test_sidebar_group_operation_icons_are_slightly_larger() -> None:
 
     assert "sidebar-action-icon--chevron" in sidebar_template
     assert "sidebar-action-icon--dots" in sidebar_template
+    assert "sidebar-action-icon--play" in sidebar_template
+    assert "sidebar-action-icon--stop" in sidebar_template
     assert 'aria-label="監看清單操作"' in sidebar_template
     assert '<path d="M4 7h16"/>' in sidebar_template
+    assert '<path d="M8 5v14l11-7Z"/>' in sidebar_template
     assert "aria-label=\"重新命名群組\"" in sidebar_template
     assert "aria-label=\"群組設定模板\"" in sidebar_template
     assert "aria-label=\"刪除群組\"" in sidebar_template
@@ -703,6 +897,22 @@ def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> No
     assert "sidebar-status-token sidebar-status-pill" in sidebar_status_js
     assert "sidebar-status-token target-mode-chip sidebar-mode-chip" in sidebar_status_js
     assert ".sidebar-status .sidebar-status-token" in sidebar_css
+
+
+def test_dashboard_partial_update_reloads_when_sidebar_layout_signature_changes() -> None:
+    """partial update 不可用平面 sidebar items 覆蓋已改變的 group/order 結構。"""
+
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+    sidebar_template = Path(
+        "src/facebook_monitor/webapp/templates/_target_sidebar.html"
+    ).read_text(encoding="utf-8")
+
+    assert "data-sidebar-layout-signature" in sidebar_template
+    assert "payload.layout_signature" in partial_updates_js
+    assert "sidebarLayoutSignature" in partial_updates_js
+    assert "partial_update_requires_reload:target_list_changed" in partial_updates_js
 
 
 def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
@@ -856,7 +1066,12 @@ def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
     assert ">刪除</button>" in card_template
     assert "清除 baseline" not in card_template
     assert "清除命中紀錄" not in card_template
-    assert "清除通知資料" not in card_template
+    assert "重置通知狀態" in card_template
+    assert 'action="/targets/{{ row.target.id }}/notifications/clear"' in card_template
+    assert 'data-confirm-title="重置通知狀態"' in card_template
+    assert "通知紀錄與已看狀態" in card_template
+    assert "可能再次通知" in card_template
+    assert "不會刪除命中紀錄或設定" in card_template
     assert "data-scan-diagnostics-modal" in card_template
     assert 'class="settings-modal scan-diagnostics-modal"' in card_template
     assert 'class="settings-modal scan-diagnostics-modal scan-debug-details"' not in card_template
@@ -1003,8 +1218,11 @@ def test_target_settings_modal_attaches_controls_to_config_form() -> None:
         assert tags
         assert all('form="{{ scan_form_id }}"' in tag for tag in tags)
 
+    assert 'name="{{ refresh_mode_name }}"' in refresh_fields
+    assert "data-refresh-mode-input" in refresh_fields
+    assert 'form="{{ refresh_form_id }}"' in refresh_fields
+
     for field_name in (
-        "refresh_mode",
         "fixed_refresh_sec",
         "min_refresh_sec",
         "max_refresh_sec",
@@ -1106,6 +1324,8 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     assert "data-include-keyword-help-button" in card_template
     assert "data-include-keyword-help-modal" in card_template
     assert "include-keywords-{{ row.target.id }}" in card_template
+    assert "include_keywords_2" in card_template
+    assert "include_keywords_3" in card_template
     assert "關鍵字輸入規則" in card_template
     assert '<div class="keyword-help-rule-list">' in card_template
     assert '<section class="modal-section-card keyword-help-rule-list">' not in (
@@ -1113,6 +1333,7 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     )
     assert "<code>;</code> 表示 <strong>OR</strong>" in card_template
     assert "空格表示 <strong>AND</strong>" in card_template
+    assert "關鍵字 1 / 2 / 3 之間也會套用 <strong>AND</strong>" in card_template
     assert "<code>搖滾;6880;5880</code>" in card_template
     assert "只要出現 <code>搖滾</code> 或 <code>6880</code> 或 <code>5880</code> 就通知。" in (
         card_template
@@ -1121,8 +1342,8 @@ def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     assert "代表 <code>搖滾</code> 且 <code>6880</code>，或 <code>搖滾</code> 且 <code>5880</code> 才通知。" in (
         card_template
     )
-    assert "排除關鍵字也使用同樣規則。" in card_template
-    assert ".keyword-field-header" in target_card_css
+    assert "排除關鍵字只沿用分號 OR 與空格 AND，不套用關鍵字 1 / 2 / 3 分組。" in card_template
+    assert ".keyword-rule-field-label" in target_card_css
     assert ".keyword-help-example" in modals_css
 
 
@@ -1194,7 +1415,21 @@ def test_refresh_mode_options_put_floating_before_fixed() -> None:
     assert target_refresh_template.index("<strong>浮動刷新</strong>") < target_refresh_template.index(
         "<strong>固定刷新</strong>"
     )
+    assert (
+        '{% set refresh_mode_value = refresh_source.refresh_mode if refresh_source and '
+        'refresh_source.refresh_mode else "floating" %}'
+    ) in target_refresh_template
+    assert '{% set floating_checked = refresh_mode_value != "fixed" %}' in target_refresh_template
+    assert 'name="{{ refresh_mode_name }}"' in target_refresh_template
+    assert "data-refresh-mode-input" in target_refresh_template
     assert '{% include "_refresh_settings_fields.html" %}' in sidebar_group_template
+    assert '{% set refresh_mode_name = "refresh_mode_" ~ group.group_id %}' in (
+        sidebar_group_template
+    )
+    assert '{% set refresh_mode_payload_name = "refresh_mode" %}' in sidebar_group_template
+    assert "sidebarTemplatePayloadName" in Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
     assert '|| "floating"' in forms_js
 
 

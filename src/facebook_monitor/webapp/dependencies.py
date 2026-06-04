@@ -19,7 +19,6 @@ from starlette.concurrency import run_in_threadpool
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.facebook.group_metadata import GroupMetadata
@@ -199,13 +198,6 @@ def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupM
     )
 
 
-def get_global_notification_settings(request: Request) -> GlobalNotificationSettings:
-    """讀取 Web UI 通知預設值。"""
-
-    with SqliteApplicationContext(get_db_path(request)) as app_context:
-        return app_context.repositories.global_notification_settings.get()
-
-
 def get_app_theme(request: Request) -> str:
     """讀取 Web UI DB-backed theme preference。"""
 
@@ -312,6 +304,16 @@ def start_resident_scheduler_if_needed(request: Request) -> None:
     """manual scan 需要 scheduler 時，以 resident mode 啟動或喚醒。"""
 
     scheduler = get_scheduler_manager(request)
+    if get_profile_manager(request).is_active():
+        request.app.state.scheduler_paused_for_profile = True
+        request.app.state.scheduler_resume_options = (
+            scheduler.options
+            or getattr(request.app.state, "scheduler_resume_options", None)
+            or build_scheduler_options(request)
+        )
+        if scheduler.is_running():
+            scheduler.stop()
+        return
     if not scheduler.is_running():
         scheduler.start(build_scheduler_options(request))
     scheduler.wake()

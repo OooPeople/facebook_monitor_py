@@ -1,4 +1,4 @@
-<aside class="target-sidebar" aria-label="監看清單快速跳轉" data-sidebar-layout>
+<aside class="target-sidebar" aria-label="監看清單快速跳轉" data-sidebar-layout data-sidebar-layout-signature="{{ dashboard.sidebar_layout_signature }}">
   <div class="sidebar-brand">
     <span class="sidebar-brand-name">Facebook Monitor</span>
   </div>
@@ -7,14 +7,14 @@
     <div class="sidebar-header-actions">
       <button class="button button--primary sidebar-sort-confirm" type="button" data-sidebar-confirm-sort hidden>確認</button>
       <details class="sidebar-menu" data-sidebar-menu>
-        <summary class="button button--icon sidebar-menu-trigger" aria-label="監看清單操作">
+        <summary class="button button--icon sidebar-menu-trigger" aria-label="監看清單操作" aria-controls="sidebar-menu-panel" aria-expanded="false">
           <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 7h16"/>
             <path d="M4 12h16"/>
             <path d="M4 17h16"/>
           </svg>
         </summary>
-        <div class="sidebar-menu-panel menu-panel">
+        <div class="sidebar-menu-panel menu-panel" id="sidebar-menu-panel">
           <button class="sidebar-menu-action menu-action" type="button" data-sidebar-create-group>新增群組</button>
           <button class="sidebar-menu-action menu-action" type="button" data-sidebar-start-sort>調整順序</button>
           <button class="sidebar-menu-action menu-action" type="button" data-sidebar-cancel-sort hidden>取消排序</button>
@@ -39,9 +39,24 @@
               </svg>
             </button>
             <span class="sidebar-group-name">{{ group.name }}</span>
-            <span class="sidebar-group-count">{{ group.target_count }}</span>
             {% if not group.is_system %}
               <div class="sidebar-group-actions" data-sidebar-group-actions>
+                <button
+                  class="button--icon sidebar-group-monitoring{% if group.monitoring_action == 'stop' %} is-active{% endif %}"
+                  type="button"
+                  data-sidebar-group-monitoring="{{ group.monitoring_action }}"
+                  data-group-id="{{ group.group_id }}"
+                  aria-label="{{ group.monitoring_button_label }}"
+                  title="{{ group.monitoring_button_label }}"
+                  {% if group.monitoring_disabled %}disabled{% endif %}
+                >
+                  <svg class="sidebar-action-icon sidebar-action-icon--play" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {% if group.monitoring_action == "stop" %}hidden{% endif %}>
+                    <path d="M8 5v14l11-7Z"/>
+                  </svg>
+                  <svg class="sidebar-action-icon sidebar-action-icon--stop" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {% if group.monitoring_action != "stop" %}hidden{% endif %}>
+                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                  </svg>
+                </button>
                 <div class="sidebar-group-action-strip">
                   <button class="button--icon sidebar-group-menu" type="button" data-sidebar-group-rename aria-label="重新命名群組">
                     <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -74,7 +89,7 @@
           </header>
           <ul class="sidebar-list" data-sidebar-list data-group-id="{{ group.dom_group_id }}">
             {% for item in group.items %}
-              <li class="sidebar-list-item" data-sidebar-item data-target-id="{{ item.target_id }}">
+              <li class="sidebar-list-item" data-sidebar-item data-target-id="{{ item.target_id }}" data-sidebar-item-active="{{ 1 if item.active else 0 }}">
                 <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
                   <span class="sidebar-avatar{% if item.thumbnail_url %} has-image{% endif %}" aria-hidden="true">
                     {% if item.thumbnail_url %}

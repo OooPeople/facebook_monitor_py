@@ -1,7 +1,7 @@
 """Notification outbox application service。
 
 職責：負責 match notification enqueue、after-commit 註冊、outbox claim、
-pending dispatch 與 failed retry。外部 I/O 前必須先 claim rows，避免跨
+pending dispatch 與內部維運 helper。外部 I/O 前必須先 claim rows，避免跨
 connection 並發 commit 重複發送同一筆通知。
 """
 
@@ -227,7 +227,7 @@ def retry_failed_notification_outbox(
     discord_sender: DiscordSender = send_discord_notification,
     batch_limit: int = DEFAULT_DISPATCH_BATCH_LIMIT,
 ) -> int:
-    """明確 claim 並重試 failed outbox events；不由一般 scan commit 自動觸發。"""
+    """內部/測試用 failed outbox retry；日常 UI 不提供此入口。"""
 
     return dispatch_notification_outbox_entries(
         app=app,
@@ -274,6 +274,7 @@ def dispatch_notification_outbox_entries(
                 entry_id=entry_id,
                 status=entry.status,
             )
+            app.repositories.notification_outbox.connection.commit()
             entry = refresh_outbox_entry_delivery_endpoint(
                 app=app,
                 target=target,

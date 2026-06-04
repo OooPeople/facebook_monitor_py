@@ -57,6 +57,11 @@ def parse_args() -> argparse.Namespace:
         help="Also validate release zip, SHA256, and platform-specific artifact metadata.",
     )
     parser.add_argument(
+        "--skip-artifact-manifest",
+        action="store_true",
+        help="Validate platform artifacts before the final signed manifest is created.",
+    )
+    parser.add_argument(
         "--artifact-platform",
         default="windows",
         choices=ARTIFACT_PLATFORM_CHOICES,
@@ -144,6 +149,7 @@ def validation_steps(
     git_checkout: bool,
     include_audit: bool = False,
     include_artifacts: bool = False,
+    require_artifact_manifest: bool = True,
     artifact_platform: str = "windows",
     expected_signer_subject: str = "",
     expected_tag: str = "",
@@ -181,9 +187,10 @@ def validation_steps(
                 "scripts/admin/release_artifact_validation.py",
                 "--platform",
                 artifact_platform,
-                "--require-manifest",
             )
         ]
+        if require_artifact_manifest:
+            artifact_command.append("--require-manifest")
         if expected_signer_subject:
             artifact_command.extend(
                 ["--expected-signer-subject", expected_signer_subject]
@@ -237,6 +244,8 @@ def validate_cli_args(args: argparse.Namespace) -> str | None:
         return "--expected-signer-subject requires --include-artifacts"
     if args.expected_tag and not args.include_artifacts:
         return "--expected-tag requires --include-artifacts"
+    if args.skip_artifact_manifest and not args.include_artifacts:
+        return "--skip-artifact-manifest requires --include-artifacts"
     if args.artifact_platform != "windows" and not args.include_artifacts:
         return "--artifact-platform requires --include-artifacts"
     if args.artifact_platform != "windows" and args.expected_signer_subject:
@@ -260,11 +269,14 @@ def main() -> int:
         print("已啟用 pip-audit；此步驟可能需要網路或 advisory DB。")
     if args.include_artifacts:
         print(f"已啟用 {args.artifact_platform} release artifact 一致性檢查。")
+        if args.skip_artifact_manifest:
+            print("artifact validation 將略過 signed manifest；finalize 後仍需重驗。")
     for step in validation_steps(
         skip_sync=args.skip_sync,
         git_checkout=git_checkout,
         include_audit=args.include_audit,
         include_artifacts=args.include_artifacts,
+        require_artifact_manifest=not bool(args.skip_artifact_manifest),
         artifact_platform=args.artifact_platform,
         expected_signer_subject=args.expected_signer_subject,
         expected_tag=args.expected_tag,

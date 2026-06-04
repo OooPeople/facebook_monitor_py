@@ -72,6 +72,7 @@ export const setupSidebarSorting = ({
   updateEmptyStates,
   reorderCardsBySidebar,
   closeExpandedGroupActions,
+  closeSidebarMenu,
 }) => {
   let targetSortables = [];
   let groupSortable = null;
@@ -156,7 +157,9 @@ export const setupSidebarSorting = ({
 
   document.querySelector("[data-sidebar-start-sort]")?.addEventListener("click", async () => {
     const menu = document.querySelector("[data-sidebar-menu]");
-    if (menu) {
+    if (typeof closeSidebarMenu === "function") {
+      closeSidebarMenu();
+    } else if (menu) {
       menu.open = false;
       menu.querySelector(".sidebar-menu-trigger")?.setAttribute("aria-expanded", "false");
     }

@@ -12,6 +12,9 @@ from datetime import datetime
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.application.scan_recording_service import ScanApplicationService
 from facebook_monitor.application.target_config_service import TargetConfigService
+from facebook_monitor.application.target_monitoring_commands import (
+    ResetTargetNotificationStateResult,
+)
 from facebook_monitor.application.target_monitoring_commands import TargetMonitoringCommands
 from facebook_monitor.application.target_registry_service import TargetRegistryService
 from facebook_monitor.application.target_registry_service import clean_facebook_group_name
@@ -24,7 +27,6 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
@@ -187,10 +189,20 @@ class TargetApplicationService:
 
         return self.cover_image_refreshes.list_pending(limit=limit)
 
-    def mark_target_cover_image_refresh_attempted(self, target_id: str) -> None:
+    def mark_target_cover_image_refresh_attempted(
+        self,
+        target_id: str,
+        *,
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """記錄 target cover image refresh 已開始嘗試。"""
 
-        self.cover_image_refreshes.mark_attempted(target_id)
+        return self.cover_image_refreshes.mark_attempted(
+            target_id,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
 
     def mark_target_cover_image_refresh_succeeded(
         self,
@@ -199,14 +211,18 @@ class TargetApplicationService:
         resolved_url: str,
         changed: bool,
         result: TargetCoverImageRefreshResult | None = None,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """標記 target cover image refresh 成功。"""
 
-        self.cover_image_refreshes.mark_succeeded(
+        return self.cover_image_refreshes.mark_succeeded(
             target_id,
             resolved_url=resolved_url,
             changed=changed,
             result=result,
+            reported_url=reported_url,
+            requested_at=requested_at,
         )
 
     def mark_target_cover_image_refresh_stale_skipped(
@@ -214,12 +230,16 @@ class TargetApplicationService:
         target_id: str,
         *,
         current_url: str,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """現行圖片 URL 已非 UI 上報 URL 時，清除過期 cover refresh job。"""
 
-        self.cover_image_refreshes.mark_stale_skipped(
+        return self.cover_image_refreshes.mark_stale_skipped(
             target_id,
             current_url=current_url,
+            reported_url=reported_url,
+            requested_at=requested_at,
         )
 
     def mark_target_cover_image_refresh_failed(
@@ -228,10 +248,18 @@ class TargetApplicationService:
         error: str,
         *,
         result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.FAILED,
-    ) -> None:
+        reported_url: str | None = None,
+        requested_at: datetime | None = None,
+    ) -> bool:
         """標記 target cover image refresh 失敗。"""
 
-        self.cover_image_refreshes.mark_failed(target_id, error, result=result)
+        return self.cover_image_refreshes.mark_failed(
+            target_id,
+            error,
+            result=result,
+            reported_url=reported_url,
+            requested_at=requested_at,
+        )
 
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
         """標記 target 正等待 resident worker 補齊 metadata。"""
@@ -286,14 +314,6 @@ class TargetApplicationService:
         """更新單一 target 監視設定。"""
 
         return self.config_service.update_target_config(request)
-
-    def apply_global_notification_settings(
-        self,
-        settings: GlobalNotificationSettings,
-    ) -> int:
-        """將通知預設值套用到所有既有 target config。"""
-
-        return self.config_service.apply_global_notification_settings(settings)
 
     def ensure_runtime_state(self, target_id: str) -> TargetRuntimeState:
         """確保 target 已有 runtime state，供 scheduler/UI 查詢。"""
@@ -472,9 +492,17 @@ class TargetApplicationService:
         return self.monitoring_commands.update_target_status(request)
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """執行 target「開始」語義：清 seen scope、啟用並要求立即掃描。"""
+        """執行 target「開始」語義：恢復監看並要求立即掃描。"""
 
         return self.monitoring_commands.restart_target_monitoring(target_id)
+
+    def reset_target_notification_state(
+        self,
+        target_id: str,
+    ) -> ResetTargetNotificationStateResult:
+        """重置單一 target 的通知與 seen 去重狀態，讓下一輪可重新通知。"""
+
+        return self.monitoring_commands.reset_target_notification_state(target_id)
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

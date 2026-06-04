@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from dataclasses import replace
 
 from facebook_monitor.application.target_config_service import TargetConfigService
@@ -24,6 +25,20 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+
+
+@dataclass(frozen=True)
+class ResetTargetNotificationStateResult:
+    """描述 target 通知狀態重置結果。"""
+
+    notification_outbox_rows: int = 0
+    seen_items: int = 0
+
+    @property
+    def total_rows(self) -> int:
+        """回傳本次清除的總筆數，供 UI 顯示摘要。"""
+
+        return self.notification_outbox_rows + self.seen_items
 
 
 class TargetMonitoringCommands:
@@ -75,7 +90,7 @@ class TargetMonitoringCommands:
         return updated_target
 
     def restart_target_monitoring(self, target_id: str) -> TargetDescriptor:
-        """執行 target「開始」語義：清 runtime 去重狀態並要求立即掃描。"""
+        """執行 target「開始」語義：恢復監看並要求立即掃描。"""
 
         target = self.targets.get(target_id)
         if target is None:
@@ -84,9 +99,6 @@ class TargetMonitoringCommands:
             raise ValueError(f"Unsupported target kind: {target.target_kind.value}")
         target = self.registry.normalize_target_names(target)
 
-        self.seen_items.clear_scope(target.scope_id)
-        self.scan_scope_state.mark_initialized(target.scope_id)
-        self.notification_outbox.clear_by_target(target.id)
         updated_target = replace(
             target,
             enabled=True,
@@ -96,6 +108,20 @@ class TargetMonitoringCommands:
         self.targets.save(updated_target)
         self.runtime.restart_target_runtime(target_id)
         return updated_target
+
+    def reset_target_notification_state(
+        self,
+        target_id: str,
+    ) -> ResetTargetNotificationStateResult:
+        """重置單一 target 的通知與 seen 去重狀態，讓下一輪可重新通知。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        return ResetTargetNotificationStateResult(
+            notification_outbox_rows=self.notification_outbox.clear_by_target(target.id),
+            seen_items=self.seen_items.clear_scope(target.scope_id),
+        )
 
     def pause_target_monitoring(self, target_id: str) -> TargetDescriptor:
         """執行 target「停止」語義：停止排程但保留 seen/history。"""

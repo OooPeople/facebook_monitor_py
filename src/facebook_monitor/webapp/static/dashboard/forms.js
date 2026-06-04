@@ -26,14 +26,14 @@ export const setupConfigForms = (state) => {
 
 export const setupRefreshFields = () => {
   document.querySelectorAll("[data-refresh-form]").forEach((refreshForm) => {
-    const firstRefreshInput = refreshForm.querySelector('input[name="refresh_mode"]');
+    const firstRefreshInput = refreshForm.querySelector("[data-refresh-mode-input]");
     const form = refreshForm.closest("form") || firstRefreshInput?.form;
     const refreshContainer = refreshForm.closest("[data-refresh-container]")
       || refreshForm.parentElement
       || form;
     if (!refreshContainer) return;
     const syncRefreshFields = () => {
-      const mode = refreshContainer.querySelector('input[name="refresh_mode"]:checked')?.value
+      const mode = refreshContainer.querySelector("[data-refresh-mode-input]:checked")?.value
         || "floating";
       refreshContainer.querySelectorAll("[data-refresh-fixed]").forEach((node) => {
         node.hidden = mode === "floating";
@@ -42,7 +42,7 @@ export const setupRefreshFields = () => {
         node.hidden = mode !== "floating";
       });
     };
-    refreshContainer.querySelectorAll('input[name="refresh_mode"]').forEach((node) => {
+    refreshContainer.querySelectorAll("[data-refresh-mode-input]").forEach((node) => {
       node.addEventListener("change", syncRefreshFields);
     });
     syncRefreshFields();

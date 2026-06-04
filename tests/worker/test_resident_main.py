@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
+import sqlite3
 from typing import Any
 
+from pytest import MonkeyPatch
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetDescriptor
@@ -21,6 +27,8 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import _is_playwright_driver_shutdown_exception
+from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
+from facebook_monitor.worker.resident_main import refresh_target_group_cover_image_from_context
 from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -260,6 +268,117 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated.metadata_error == ""
 
 
+def test_resident_scheduler_tick_dispatches_existing_pending_outbox(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """resident tick 會 drain 已存在 pending outbox，補上 after-commit hook 漏跑情境。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-1:ntfy",
+                target_id=target.id,
+                item_key="item-1",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+    dispatched_db_paths: list[Path] = []
+
+    def fake_dispatch(**kwargs: object) -> int:
+        db_path_arg = kwargs["db_path"]
+        assert isinstance(db_path_arg, Path)
+        dispatched_db_paths.append(db_path_arg)
+        return 1
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",
+        fake_dispatch,
+    )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """本測試不應執行掃描。"""
+
+        raise AssertionError("pending outbox dispatch should not enqueue scans")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=None,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 0
+        assert summary.notification_dispatch_count == 1
+
+    asyncio.run(run_test())
+
+    assert dispatched_db_paths == [db_path]
+
+
+def test_dispatch_pending_notification_outbox_treats_sqlite_lock_as_transient(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: Any,
+) -> None:
+    """resident tick 遇到暫時性 SQLite lock 時保留 pending outbox 給下輪重試。"""
+
+    db_path = tmp_path / "app.db"
+
+    def raise_locked(**_kwargs: object) -> int:
+        """模擬 dispatch 開頭遇到其他 writer 持鎖。"""
+
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",
+        raise_locked,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="facebook_monitor.worker.resident_main"):
+        dispatched_count = dispatch_pending_notification_outbox(
+            ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            )
+        )
+
+    assert dispatched_count == 0
+    assert "database locked" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
 def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
     tmp_path: Path,
 ) -> None:
@@ -495,6 +614,63 @@ def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
     assert state.last_resolved_url == "https://scontent.xx.fbcdn.net/manual-new.jpg"
     assert state.last_result == "stale_skipped"
     assert state.changed is False
+
+
+def test_cover_image_refresh_stale_worker_does_not_clear_newer_request(
+    tmp_path: Path,
+) -> None:
+    """舊 worker 只能完成自己讀到的 cover refresh request，不可清掉較新的 pending row。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="既有社團名稱",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
+            min_interval_seconds=21600,
+        )
+        stale_worker_state = app.repositories.cover_image_refreshes.get(target.id)
+        app.services.targets.refresh_target_group_cover_image(
+            target.id,
+            "https://scontent.xx.fbcdn.net/new-current.jpg",
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.xx.fbcdn.net/new-current.jpg",
+            min_interval_seconds=21600,
+        )
+    assert stale_worker_state is not None
+
+    async def run_test() -> bool:
+        """以舊 state 跑一次 worker refresh，模擬途中又收到新壞圖 request。"""
+
+        return await refresh_target_group_cover_image_from_context(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+            state=stale_worker_state,
+        )
+
+    refreshed = asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert refreshed is False
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/new-current.jpg"
+    assert state.last_result == "queued"
+    assert state.last_resolved_url == ""
 
 
 def test_resident_scheduler_tick_records_cover_image_refresh_failure(

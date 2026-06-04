@@ -1,5 +1,6 @@
 import { requestJson } from "/static/dashboard/api.js";
 import { confirmDialog, promptDialog } from "/static/dashboard/dialogs.js";
+import { syncSidebarGroupMonitoringButtons } from "/static/dashboard/sidebar_status.js";
 import { saveScrollPosition } from "/static/dashboard/state.js";
 import {
   groupStack,
@@ -18,6 +19,9 @@ import {
 } from "/static/dashboard/utils.js";
 
 const isSorting = () => sidebarRoot()?.classList.contains("sorting");
+const SIDEBAR_MENU_ACTION_SELECTOR = ".sidebar-menu-action:not([hidden]):not(:disabled)";
+let sidebarMenuPanelHost = null;
+let sidebarMenuPanelNextSibling = null;
 
 const reloadDashboardPreservingScroll = () => {
   saveScrollPosition();
@@ -30,12 +34,7 @@ const updateEmptyStates = () => {
     if (!empty) return;
     empty.hidden = listTargetIds(list).length > 0;
   });
-  sidebarGroups().forEach((group) => {
-    const count = group.querySelector(".sidebar-group-count");
-    if (count) {
-      count.textContent = String(listTargetIds(group.querySelector("[data-sidebar-list]")).length);
-    }
-  });
+  syncSidebarGroupMonitoringButtons();
 };
 
 const syncGroupCollapsedA11y = () => {
@@ -72,13 +71,49 @@ const closeExpandedGroupActions = (except = null) => {
   });
 };
 
-const positionSidebarMenuPanel = () => {
+const sidebarMenuPanel = (menu) => (
+  menu?.querySelector(".sidebar-menu-panel")
+  || document.querySelector(".sidebar-menu-panel[data-sidebar-menu-floating]")
+);
+
+const floatSidebarMenuPanel = (menu, panel) => {
+  if (panel.parentElement === document.body) return;
+  sidebarMenuPanelHost = menu;
+  sidebarMenuPanelNextSibling = panel.nextSibling;
+  panel.dataset.sidebarMenuFloating = "1";
+  document.body.appendChild(panel);
+};
+
+const restoreSidebarMenuPanel = (menu, panel = sidebarMenuPanel(menu)) => {
+  if (!panel?.dataset.sidebarMenuFloating) return;
+  const host = sidebarMenuPanelHost || menu;
+  if (host?.isConnected) {
+    host.insertBefore(
+      panel,
+      sidebarMenuPanelNextSibling?.parentNode === host ? sidebarMenuPanelNextSibling : null,
+    );
+  }
+  delete panel.dataset.sidebarMenuFloating;
+  sidebarMenuPanelHost = null;
+  sidebarMenuPanelNextSibling = null;
+};
+
+const focusFirstSidebarMenuAction = (panel) => {
+  panel?.querySelector(SIDEBAR_MENU_ACTION_SELECTOR)?.focus?.({ preventScroll: true });
+};
+
+const focusSidebarMenuTrigger = (menu) => {
+  menu?.querySelector(".sidebar-menu-trigger")?.focus?.({ preventScroll: true });
+};
+
+const positionSidebarMenuPanel = ({ focusFirstAction = false } = {}) => {
   const menu = document.querySelector("[data-sidebar-menu]");
-  const panel = menu?.querySelector(".sidebar-menu-panel");
+  const panel = sidebarMenuPanel(menu);
   const trigger = menu?.querySelector(".sidebar-menu-trigger");
   if (!menu?.open || !panel || !trigger) return;
   const gap = 10;
   const viewportPadding = 8;
+  floatSidebarMenuPanel(menu, panel);
   const rect = trigger.getBoundingClientRect();
   const panelWidth = panel.offsetWidth || 132;
   const left = Math.min(
@@ -87,14 +122,21 @@ const positionSidebarMenuPanel = () => {
   );
   panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);
   panel.style.setProperty("--sidebar-menu-top", `${Math.max(viewportPadding, rect.top)}px`);
+  if (focusFirstAction) {
+    focusFirstSidebarMenuAction(panel);
+  }
 };
 
-const closeSidebarMenu = () => {
+const closeSidebarMenu = ({ restoreFocus = false } = {}) => {
   const menu = document.querySelector("[data-sidebar-menu]");
   const trigger = menu?.querySelector(".sidebar-menu-trigger");
   if (!menu) return;
   menu.open = false;
+  restoreSidebarMenuPanel(menu);
   trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) {
+    focusSidebarMenuTrigger(menu);
+  }
 };
 
 const setSidebarMenuOpen = (open) => {
@@ -104,7 +146,11 @@ const setSidebarMenuOpen = (open) => {
   menu.open = open;
   trigger?.setAttribute("aria-expanded", String(open));
   if (open) {
-    window.requestAnimationFrame(positionSidebarMenuPanel);
+    window.requestAnimationFrame(() => {
+      positionSidebarMenuPanel({ focusFirstAction: true });
+    });
+  } else {
+    restoreSidebarMenuPanel(menu);
   }
 };
 
@@ -118,16 +164,26 @@ const setupSidebarMenuPosition = () => {
     event.stopPropagation();
     setSidebarMenuOpen(!menu.open);
   });
-  menu.addEventListener("toggle", positionSidebarMenuPanel);
+  menu.addEventListener("toggle", () => {
+    if (menu.open) {
+      positionSidebarMenuPanel();
+    } else {
+      restoreSidebarMenuPanel(menu);
+    }
+  });
   window.addEventListener("resize", positionSidebarMenuPanel);
   sidebarRoot()?.addEventListener("scroll", positionSidebarMenuPanel, { passive: true });
   document.addEventListener("click", (event) => {
-    if (!menu.open || event.target.closest?.("[data-sidebar-menu]")) return;
+    if (
+      !menu.open
+      || event.target.closest?.("[data-sidebar-menu]")
+      || event.target.closest?.(".sidebar-menu-panel")
+    ) return;
     closeSidebarMenu();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      closeSidebarMenu();
+      closeSidebarMenu({ restoreFocus: true });
     }
   });
 };
@@ -222,6 +278,36 @@ const setupGroupControls = (showToast) => {
       );
     });
   });
+
+  document.querySelectorAll("[data-sidebar-group-monitoring]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (isSorting() || button.disabled) return;
+      const group = button.closest("[data-sidebar-group]");
+      const groupId = group?.dataset.groupId || "";
+      const action = button.dataset.sidebarGroupMonitoring || "start";
+      if (!groupId) return;
+      button.dataset.sidebarGroupMonitoringPending = "1";
+      button.disabled = true;
+      try {
+        const data = await requestJson(
+          `/api/sidebar/groups/${encodeURIComponent(groupId)}/${encodeURIComponent(action)}`,
+        );
+        showToast?.(data.message || "群組狀態已更新", "success");
+        reloadDashboardPreservingScroll();
+      } catch (error) {
+        delete button.dataset.sidebarGroupMonitoringPending;
+        if (group) {
+          syncSidebarGroupMonitoringButtons(group);
+        } else {
+          button.disabled = false;
+        }
+        showToast?.(
+          `群組狀態更新失敗：${formatClientErrorMessage(error, "請稍後再試")}`,
+          "error",
+        );
+      }
+    });
+  });
 };
 
 const animateGroupCollapsed = (group, collapsed) => {
@@ -308,17 +394,18 @@ const collectTemplatePayload = (modal) => {
   modal.querySelectorAll("[data-sidebar-template-field]").forEach((field) => {
     const name = field.name || "";
     if (!name) return;
+    const payloadName = field.dataset.sidebarTemplatePayloadName || name;
     if (field.type === "checkbox") {
-      payload[name] = Boolean(field.checked);
+      payload[payloadName] = Boolean(field.checked);
       return;
     }
     if (field.type === "radio") {
       if (field.checked) {
-        payload[name] = field.value;
+        payload[payloadName] = field.value;
       }
       return;
     }
-    payload[name] = field.value;
+    payload[payloadName] = field.value;
   });
   return payload;
 };
@@ -433,6 +520,7 @@ export const setupSidebarLayout = ({ showToast } = {}) => {
     updateEmptyStates,
     reorderCardsBySidebar,
     closeExpandedGroupActions,
+    closeSidebarMenu,
   });
   setupGroupControls(showToast);
   setupGroupCreate(showToast);

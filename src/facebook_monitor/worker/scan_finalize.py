@@ -15,8 +15,10 @@ from typing import Any
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.keyword_rules import KeywordEvaluation
+from facebook_monitor.core.keyword_rules import KeywordGroupMatchResult
 from facebook_monitor.core.keyword_rules import compile_keyword_matcher
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import ScanStatus
@@ -72,6 +74,8 @@ class ScanMatchResult:
     matched_keyword: str
     baseline_mode: bool = False
     matched_keywords: tuple[str, ...] = ()
+    matched_keyword_groups: tuple[KeywordGroupMatch, ...] = ()
+    include_group_results: tuple[KeywordGroupMatchResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,7 +157,7 @@ def record_skipped_scan(
     app: ApplicationContext,
     target: TargetDescriptor,
     metadata: dict[str, Any],
-    commit_guard: ScanCommitGuard | None,
+    commit_guard: ScanCommitGuard | None = None,
 ) -> ScanFinalizeResult:
     """記錄保護性跳過的 scan run，且清空本輪 latest scan 快照。"""
 
@@ -244,6 +248,7 @@ def finalize_scan_items(
     notification_payloads: list[MatchNotificationPayload] = []
     keyword_matcher = compile_keyword_matcher(
         include_keywords=config.include_keywords,
+        include_keyword_groups=config.include_keyword_groups,
         exclude_keywords=config.exclude_keywords,
         exclude_ignore_phrases=config.exclude_ignore_phrases,
     )
@@ -289,6 +294,7 @@ def finalize_scan_items(
             permalink=item.permalink,
             include_rule=result.include_rule,
             include_rules=keyword_evaluation.include_rules,
+            include_group_matches=keyword_evaluation.include_group_matches,
             timestamp_text=item.timestamp_text,
             notified_at=notified_at,
             created_at=notified_at,
@@ -475,6 +481,10 @@ def build_scan_match_result(
         matched_keyword=keyword_evaluation.display_rule,
         baseline_mode=baseline_mode,
         matched_keywords=keyword_evaluation.include_rules if keyword_evaluation.eligible else (),
+        matched_keyword_groups=(
+            keyword_evaluation.include_group_matches if keyword_evaluation.eligible else ()
+        ),
+        include_group_results=keyword_evaluation.include_group_results,
     )
 
 
@@ -501,6 +511,7 @@ def build_latest_scan_items(
             permalink=result.item.permalink,
             matched_keyword=result.matched_keyword,
             matched_keywords=result.matched_keywords,
+            matched_keyword_groups=result.matched_keyword_groups,
             debug_metadata={
                 **(result.item.metadata or {}),
                 "classification": {
@@ -508,6 +519,15 @@ def build_latest_scan_items(
                     "is_matched": result.is_matched,
                     "include_rule": result.include_rule,
                     "include_rules": list(result.matched_keywords),
+                    "include_group_results": [
+                        {
+                            "group_id": group_result.group_id,
+                            "group_label": group_result.group_label,
+                            "matched": group_result.matched,
+                            "rules": list(group_result.rules),
+                        }
+                        for group_result in result.include_group_results
+                    ],
                     "exclude_rule": result.exclude_rule,
                     "eligible_for_notify": result.eligible_for_notify,
                     "baseline_mode": result.baseline_mode,

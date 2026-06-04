@@ -62,6 +62,7 @@ _LATEST_SCAN_ITEM_DEBUG_KEYS = (
     "warmupDiagnostics",
     "expandAttempted",
     "expandCount",
+    "classification",
 )
 
 

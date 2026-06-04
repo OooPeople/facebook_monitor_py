@@ -201,7 +201,7 @@ class FakeMetadataPage:
     async def title(self) -> str:
         """回傳可清理的 Facebook title。"""
 
-        return "(2) 測試社團 | Facebook"
+        return "(20+) 測試社團 | Facebook"
 
     async def evaluate(self, script: str) -> str:
         """回傳 metadata resolver 抽到的 cover image URL。"""
@@ -478,6 +478,364 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
     assert state.consecutive_failure_reason == ""
     assert latest_scan is not None
     assert latest_scan.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+
+
+def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: Any,
+) -> None:
+    """runtime restart request 不應被誤記成 worker pool unhealthy。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    contexts: list[FakeAsyncBrowserContext] = []
+    summaries: list[Any] = []
+    stop_event = asyncio.Event()
+    refresh_calls = 0
+    caplog.set_level(logging.WARNING, logger="facebook_monitor.worker.resident_main")
+
+    class FakePlaywrightManager:
+        """測試用 async_playwright context manager。"""
+
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    async def fake_launch_persistent_context_async(
+        _playwright: object,
+        _options: object,
+    ) -> FakeAsyncBrowserContext:
+        context = FakeAsyncBrowserContext()
+        contexts.append(context)
+        return context
+
+    async def fake_refresh_requested_target_metadata(**kwargs: Any) -> int:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        kwargs["request_runtime_restart"]()
+        return 0
+
+    async def unused_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        """本測試不會掃描 target。"""
+
+        raise AssertionError("scan should not run")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.acquire_profile_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.async_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.launch_persistent_context_async",
+        fake_launch_persistent_context_async,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.refresh_requested_target_metadata",
+        fake_refresh_requested_target_metadata,
+    )
+
+    def stop_after_cycle(summary: Any) -> None:
+        summaries.append(summary)
+        stop_event.set()
+
+    async def run_test() -> None:
+        await asyncio.wait_for(
+            run_resident_main_loop(
+                ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=profile_dir,
+                    interval_seconds=0,
+                    scheduler_tick_seconds=0,
+                ),
+                scan_page=unused_scan_page,
+                should_stop=lambda: stop_event.is_set(),
+                on_cycle=stop_after_cycle,
+            ),
+            timeout=2,
+        )
+
+    asyncio.run(run_test())
+
+    assert refresh_calls == 1
+    assert len(contexts) == 1
+    assert contexts[0].closed is True
+    assert summaries[0].worker_health_ok is True
+    assert summaries[0].resident_browser_alive is False
+    assert "worker_pool_unhealthy" not in caplog.text
+
+
+def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: Any,
+) -> None:
+    """worker task 在 complete 前死亡時，外層 loop 要重建完整 executor pool。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    contexts: list[FakeAsyncBrowserContext] = []
+    summaries_by_context: list[tuple[int, Any]] = []
+    stop_event = asyncio.Event()
+    release_failed = False
+    caplog.set_level(logging.INFO, logger="facebook_monitor.worker")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    class FakePlaywrightManager:
+        """測試用 async_playwright context manager。"""
+
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    class ReleaseFailsOncePagePool(AsyncResidentPagePool):
+        """第一個 runtime 的 page release 失敗，用來模擬 complete 前 worker death。"""
+
+        async def release_if_page_id(
+            self,
+            target_id: str,
+            page_id: str,
+            *,
+            current_url: str = "",
+        ) -> bool:
+            nonlocal release_failed
+            if not release_failed:
+                release_failed = True
+                raise RuntimeError("page release failed before queue complete")
+            return await super().release_if_page_id(
+                target_id,
+                page_id,
+                current_url=current_url,
+            )
+
+    async def fake_launch_persistent_context_async(
+        _playwright: object,
+        _options: object,
+    ) -> FakeAsyncBrowserContext:
+        context = FakeAsyncBrowserContext()
+        contexts.append(context)
+        return context
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.acquire_profile_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.async_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.launch_persistent_context_async",
+        fake_launch_persistent_context_async,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.AsyncResidentPagePool",
+        ReleaseFailsOncePagePool,
+    )
+
+    def stop_after_second_runtime(summary: Any) -> None:
+        summaries_by_context.append((len(contexts), summary))
+        if len(contexts) >= 2:
+            stop_event.set()
+
+    async def run_test() -> None:
+        await asyncio.wait_for(
+            run_resident_main_loop(
+                ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=profile_dir,
+                    interval_seconds=0,
+                    scheduler_tick_seconds=0,
+                    max_concurrent_scans=4,
+                ),
+                scan_page=fake_scan_page,
+                should_stop=lambda: stop_event.is_set(),
+                on_cycle=stop_after_second_runtime,
+            ),
+            timeout=2,
+        )
+
+    asyncio.run(run_test())
+
+    second_runtime_summary = next(
+        summary for context_count, summary in summaries_by_context if context_count == 2
+    )
+    assert release_failed is True
+    assert len(contexts) == 2
+    assert contexts[0].closed is True
+    assert contexts[1].closed is True
+    assert second_runtime_summary.worker_health_ok is True
+    assert set(second_runtime_summary.worker_statuses) == {
+        "resident-slot-1:running",
+        "resident-slot-2:running",
+        "resident-slot-3:running",
+        "resident-slot-4:running",
+    }
+    assert caplog.text.count("resident_executor_start max_concurrent_scans=4") == 2
+    assert "resident_executor_worker_stopped worker_id=resident-slot-" in caplog.text
+    assert "reason=exception exception_class=RuntimeError" in caplog.text
+
+
+def test_resident_main_loop_final_drain_exits_on_worker_task_death(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    caplog: Any,
+) -> None:
+    """max_cycles 進入 final drain 後，worker 死亡仍要喚醒 shutdown。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    contexts: list[FakeAsyncBrowserContext] = []
+    allow_scan_finish = asyncio.Event()
+    release_failed = False
+    caplog.set_level(logging.INFO, logger="facebook_monitor.worker")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    class FakePlaywrightManager:
+        """測試用 async_playwright context manager。"""
+
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    class ReleaseFailsOncePagePool(AsyncResidentPagePool):
+        """第一次 release 失敗，模擬 queue complete 前 worker death。"""
+
+        async def release_if_page_id(
+            self,
+            target_id: str,
+            page_id: str,
+            *,
+            current_url: str = "",
+        ) -> bool:
+            nonlocal release_failed
+            if not release_failed:
+                release_failed = True
+                raise RuntimeError("page release failed before queue complete")
+            return await super().release_if_page_id(
+                target_id,
+                page_id,
+                current_url=current_url,
+            )
+
+    async def fake_launch_persistent_context_async(
+        _playwright: object,
+        _options: object,
+    ) -> FakeAsyncBrowserContext:
+        context = FakeAsyncBrowserContext()
+        contexts.append(context)
+        return context
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        await allow_scan_finish.wait()
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.acquire_profile_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.async_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.launch_persistent_context_async",
+        fake_launch_persistent_context_async,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.AsyncResidentPagePool",
+        ReleaseFailsOncePagePool,
+    )
+
+    def release_after_first_summary(_summary: Any) -> None:
+        allow_scan_finish.set()
+
+    async def run_test() -> None:
+        await asyncio.wait_for(
+            run_resident_main_loop(
+                ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=profile_dir,
+                    interval_seconds=0,
+                    scheduler_tick_seconds=0,
+                    max_concurrent_scans=4,
+                    max_cycles=1,
+                ),
+                scan_page=fake_scan_page,
+                on_cycle=release_after_first_summary,
+            ),
+            timeout=2,
+        )
+
+    asyncio.run(run_test())
+
+    assert release_failed is True
+    assert len(contexts) == 1
+    assert contexts[0].closed is True
+    assert "resident_executor_worker_stopped worker_id=resident-slot-" in caplog.text
+    assert "reason=exception exception_class=RuntimeError" in caplog.text
 
 
 def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
@@ -2948,9 +3306,11 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
 
 def test_resident_main_executor_keeps_third_target_queued(
     tmp_path: Path,
+    caplog: Any,
 ) -> None:
     """queue-based executor 會讓兩個 target running，第三個保持 queued。"""
 
+    caplog.set_level(logging.INFO, logger="facebook_monitor.worker")
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         targets = [
@@ -3034,6 +3394,134 @@ def test_resident_main_executor_keeps_third_target_queued(
             await executor.stop()
 
     asyncio.run(run_test())
+    log_text = caplog.text
+    assert "resident_executor_start max_concurrent_scans=2" in log_text
+    assert "resident_target_enqueued target_id=" in log_text
+    assert "resident_target_running target_id=" in log_text
+    assert "resident_scheduler_tick cycle=1 selected=3" in log_text
+
+
+def test_resident_main_executor_requests_restart_when_worker_exits_unexpectedly(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    """executor worker slot 非預期結束時會要求重建 runtime。"""
+
+    caplog.set_level(
+        logging.ERROR,
+        logger="facebook_monitor.worker.resident_main_executor",
+    )
+
+    async def unused_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        """本測試不會實際掃描 target。"""
+
+        raise AssertionError("scan should not run")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=tmp_path / "app.db",
+                profile_dir=tmp_path / "profile",
+                max_concurrent_scans=1,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=TargetSchedulePlanner(),
+            scan_page=unused_scan_page,
+        )
+        await executor.start()
+        try:
+            await target_queue.stop_worker()
+            await asyncio.wait_for(executor.worker_tasks[0], timeout=1)
+            await asyncio.sleep(0)
+
+            assert executor.runtime_restart_requested()
+            assert not executor.worker_health_ok()
+        finally:
+            await executor.stop(runtime_restart=True)
+
+    asyncio.run(run_test())
+    assert (
+        "resident_executor_worker_stopped worker_id=resident-slot-1 "
+        "reason=returned_unexpectedly"
+    ) in caplog.text
+
+
+def test_resident_main_executor_requests_restart_when_worker_task_raises(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    """worker task 若在清理階段噴例外，必須記錄並要求 runtime restart。"""
+
+    db_path = tmp_path / "app.db"
+    caplog.set_level(
+        logging.ERROR,
+        logger="facebook_monitor.worker.resident_main_executor",
+    )
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    class CompleteFailsTargetQueue(TargetQueue):
+        """測試用 queue：模擬 worker cleanup 發生非預期例外。"""
+
+        async def complete(self, target_id: str, owner_key: str = "") -> None:
+            await super().complete(target_id, owner_key=owner_key)
+            raise RuntimeError("queue complete failed")
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = CompleteFailsTargetQueue()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                max_concurrent_scans=1,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=TargetSchedulePlanner(),
+            scan_page=fake_scan_page,
+        )
+        await executor.start()
+        try:
+            due_target = DueTarget(
+                target_id=target.id,
+                interval_seconds=60,
+                due_at=utc_now(),
+            )
+            assert await executor.enqueue_due_targets((due_target,)) == 1
+            await asyncio.wait_for(executor.wait_runtime_restart_requested(), timeout=1)
+            done, _pending = await asyncio.wait(executor.worker_tasks, timeout=1)
+            assert executor.worker_tasks[0] in done
+            assert not executor.worker_health_ok()
+            assert executor.worker_statuses() == (
+                "resident-slot-1:failed:RuntimeError",
+            )
+        finally:
+            await executor.stop(runtime_restart=True)
+
+    asyncio.run(run_test())
+    assert (
+        "resident_executor_worker_stopped worker_id=resident-slot-1 "
+        "reason=exception exception_class=RuntimeError"
+    ) in caplog.text
 
 
 def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) -> None:

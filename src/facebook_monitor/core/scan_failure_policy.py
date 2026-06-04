@@ -81,6 +81,9 @@ DEFAULT_AUTO_RESTART_ACTION = TARGET_PAGE_RESTART_ACTION
 DISCARD_PAGE_FAILURE_SOURCES = frozenset(
     {"playwright", "unknown_exception", "runtime_recovery"}
 )
+NON_TERMINAL_NOTIFICATION_FAILURE_REASONS = (
+    IDLE_FAILURE_REASONS | SCHEDULER_CANCEL_IDLE_FAILURE_REASONS
+)
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,7 @@ def decide_scan_failure(
 ) -> ScanFailureDecision:
     """依 reason、來源與既有連續失敗狀態決定本輪失敗後的處置。"""
 
-    normalized_reason = str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
+    normalized_reason = normalize_scan_failure_reason(reason)
     discard_page = source in DISCARD_PAGE_FAILURE_SOURCES
     if (
         source == "scheduler_cancel"
@@ -175,6 +178,33 @@ def decide_scan_failure(
         auto_restart=will_retry,
         recovery_action=recovery_action,
     )
+
+
+def is_runtime_failure_notification_terminal(
+    reason: str,
+    *,
+    failure_count: int,
+    source: ScanFailureSource = "unknown_exception",
+) -> bool:
+    """判斷 runtime failure 通知是否已達 terminal 門檻。"""
+
+    normalized_reason = normalize_scan_failure_reason(reason)
+    if normalized_reason in NON_TERMINAL_NOTIFICATION_FAILURE_REASONS:
+        return False
+    normalized_count = max(int(failure_count), 1)
+    decision = decide_scan_failure(
+        normalized_reason,
+        source=source,
+        previous_failure_reason=normalized_reason,
+        previous_failure_count=normalized_count - 1,
+    )
+    return decision.terminal
+
+
+def normalize_scan_failure_reason(reason: str) -> str:
+    """將 scan failure reason 正規化成可持久化的 canonical 值。"""
+
+    return str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
 
 
 def _next_retry_streak(

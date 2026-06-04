@@ -163,6 +163,7 @@ def _record_stale_running_failure(
             reason=recovery.decision.reason,
             failure_count=recovery.decision.notification_failure_count,
             error_message=recovery.state.last_error,
+            failure_source="runtime_recovery",
         )
     return RunningRecoveryAction(
         target_id=recovery.state.target_id,

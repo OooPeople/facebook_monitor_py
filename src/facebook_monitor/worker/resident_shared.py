@@ -69,6 +69,7 @@ class ResidentCycleSummary:
     queue_length: int = 0
     queued_target_ids: tuple[str, ...] = ()
     worker_ids: tuple[str, ...] = ()
+    worker_statuses: tuple[str, ...] = ()
     page_pool_size: int = 0
     resident_browser_alive: bool = False
     recovered_runtime_count: int = 0

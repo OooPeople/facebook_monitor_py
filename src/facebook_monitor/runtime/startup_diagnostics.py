@@ -14,6 +14,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.runtime.build_metadata import collect_build_metadata
 from facebook_monitor.runtime.logging_setup import LOG_BACKUP_COUNT
 from facebook_monitor.runtime.logging_setup import LOG_MAX_BYTES
@@ -48,6 +49,12 @@ def build_startup_diagnostics(
     scheduler_interval_seconds: float,
     reset_runtime_data_on_startup: bool,
     access_log: bool,
+    scheduler_tick_seconds: float = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_tick_seconds
+    ),
+    max_concurrent_scans: int = (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans
+    ),
     auto_port: bool = False,
     resource_lock_paths: tuple[Path, ...] = (),
     reset_targets_on_startup: bool = True,
@@ -89,6 +96,8 @@ def build_startup_diagnostics(
             "Browser mode: playwright_chromium",
             "Auto-start scheduler: true",
             f"Scheduler interval seconds: {scheduler_interval_seconds}",
+            f"Scheduler tick seconds: {scheduler_tick_seconds}",
+            f"Scheduler max concurrent scans: {max_concurrent_scans}",
             f"Reset targets on startup: {str(reset_targets_on_startup).lower()}",
             f"Resume active targets on startup: {str(resume_active_targets_on_startup).lower()}",
             f"Reset runtime data on startup: {str(reset_runtime_data_on_startup).lower()}",

@@ -81,6 +81,8 @@ def test_startup_diagnostics_append_startup_log(tmp_path) -> None:
     assert "Git commit: unknown" in text
     assert f"Data dir: {paths.data_dir}" in text
     assert "Browser mode: playwright_chromium" in text
+    assert "Scheduler tick seconds: 2" in text
+    assert "Scheduler max concurrent scans: 4" in text
     assert "Reset targets on startup: true" in text
     assert "Resume active targets on startup: false" in text
     assert "Reset runtime data on startup: true" in text

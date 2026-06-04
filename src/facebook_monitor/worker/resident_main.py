@@ -8,8 +8,8 @@ producer-only scheduler tick 接線；queue、page pool 與 executor worker pool
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Coroutine
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -22,22 +22,29 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_async
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
-from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
-from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
-from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetMetadataStatus
+from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
+from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.notifications.outbox_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
+from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
@@ -49,7 +56,8 @@ from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinato
 
 
 logger = logging.getLogger(__name__)
-AsyncSleepCallable = Callable[[float], Awaitable[None]]
+_LAST_RETENTION_MAINTENANCE_BY_DB: dict[Path, datetime] = {}
+AsyncSleepCallable = Callable[[float], Coroutine[Any, Any, None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
 METADATA_REFRESH_TARGET_LIMIT_PER_TICK = (
@@ -116,7 +124,6 @@ async def run_resident_main_loop(
     schedule_planner = TargetSchedulePlanner(
         on_display_next_due_changed=_publish_display_next_due_at(options.db_path)
     )
-    target_queue = TargetQueue()
     stop_requested = should_stop or (lambda: False)
     sleep = sleep_fn or asyncio.sleep
 
@@ -125,83 +132,108 @@ async def run_resident_main_loop(
     )
     try:
         try:
-            with acquire_profile_lease(options.profile_dir, "resident main worker"):
-                async with async_playwright() as playwright:
-                    browser_context = await launch_persistent_context_async(
-                        playwright,
-                        BrowserRuntimeOptions(
-                            profile_dir=options.profile_dir,
-                            headless=not options.headed_compat,
-                            timeout_seconds=max(
-                                options.scan_timeout_seconds,
-                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                            ),
-                        ),
-                    )
-                    try:
-                        browser_context.set_default_timeout(
-                            max(
-                                options.scan_timeout_seconds,
-                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                            )
-                            * 1000
-                        )
-                        browser_context.set_default_navigation_timeout(
-                            max(
-                                options.scan_timeout_seconds,
-                                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                            )
-                            * 1000
-                        )
-                        page_pool = AsyncResidentPagePool(browser_context)
-                        executor = ExecutorWorkerPool(
-                            options=options,
-                            page_pool=page_pool,
-                            target_queue=target_queue,
-                            schedule_planner=schedule_planner,
-                            scan_page=scan_page,
-                            **(
-                                {"scan_comments_target_page": scan_comments_target_page}
-                                if scan_comments_target_page is not None
-                                else {}
+            while (
+                not stop_requested()
+                and (options.max_cycles is None or cycle_index < options.max_cycles)
+            ):
+                runtime_restart_requested = False
+                target_queue = TargetQueue()
+                with acquire_profile_lease(options.profile_dir, "resident main worker"):
+                    async with async_playwright() as playwright:
+                        browser_context = await launch_persistent_context_async(
+                            playwright,
+                            BrowserRuntimeOptions(
+                                profile_dir=options.profile_dir,
+                                headless=not options.headed_compat,
+                                timeout_seconds=max(
+                                    options.scan_timeout_seconds,
+                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                                ),
                             ),
                         )
-                        await executor.start()
                         try:
-                            while (
-                                not stop_requested()
-                                and (
-                                    options.max_cycles is None
-                                    or cycle_index < options.max_cycles
+                            browser_context.set_default_timeout(
+                                max(
+                                    options.scan_timeout_seconds,
+                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
                                 )
-                            ):
-                                cycle_index += 1
-                                summary = await run_resident_main_scheduler_tick(
-                                    options=options,
-                                    browser_context=browser_context,
-                                    page_pool=page_pool,
-                                    target_queue=target_queue,
-                                    executor=executor,
-                                    schedule_planner=schedule_planner,
-                                    cycle_index=cycle_index,
-                                    should_stop=stop_requested,
+                                * 1000
+                            )
+                            browser_context.set_default_navigation_timeout(
+                                max(
+                                    options.scan_timeout_seconds,
+                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
                                 )
-                                summaries.append(summary)
-                                if on_cycle:
-                                    on_cycle(summary)
-                                if (
-                                    options.max_cycles is not None
-                                    and cycle_index >= options.max_cycles
+                                * 1000
+                            )
+                            page_pool = AsyncResidentPagePool(browser_context)
+                            executor = ExecutorWorkerPool(
+                                options=options,
+                                page_pool=page_pool,
+                                target_queue=target_queue,
+                                schedule_planner=schedule_planner,
+                                scan_page=scan_page,
+                                **(
+                                    {"scan_comments_target_page": scan_comments_target_page}
+                                    if scan_comments_target_page is not None
+                                    else {}
+                                ),
+                            )
+                            await executor.start()
+                            try:
+                                while (
+                                    not stop_requested()
+                                    and (
+                                        options.max_cycles is None
+                                        or cycle_index < options.max_cycles
+                                    )
                                 ):
-                                    break
-                                await sleep(max(options.scheduler_tick_seconds, 0))
-                            if not stop_requested():
-                                await target_queue.join()
+                                    if executor.runtime_restart_requested():
+                                        runtime_restart_requested = True
+                                        break
+                                    cycle_index += 1
+                                    summary = await run_resident_main_scheduler_tick(
+                                        options=options,
+                                        browser_context=browser_context,
+                                        page_pool=page_pool,
+                                        target_queue=target_queue,
+                                        executor=executor,
+                                        schedule_planner=schedule_planner,
+                                        cycle_index=cycle_index,
+                                        should_stop=stop_requested,
+                                    )
+                                    summaries.append(summary)
+                                    if on_cycle:
+                                        on_cycle(summary)
+                                    if executor.runtime_restart_requested():
+                                        runtime_restart_requested = True
+                                        break
+                                    if (
+                                        options.max_cycles is not None
+                                        and cycle_index >= options.max_cycles
+                                    ):
+                                        break
+                                    if await _sleep_or_runtime_restart(
+                                        sleep_fn=sleep,
+                                        seconds=max(options.scheduler_tick_seconds, 0),
+                                        executor=executor,
+                                    ):
+                                        runtime_restart_requested = True
+                                        break
+                                if not stop_requested() and not runtime_restart_requested:
+                                    await target_queue.join()
+                            finally:
+                                await executor.stop(
+                                    cancel_running=(
+                                        stop_requested() or runtime_restart_requested
+                                    ),
+                                    runtime_restart=runtime_restart_requested,
+                                )
+                                await page_pool.close_all()
                         finally:
-                            await executor.stop(cancel_running=stop_requested())
-                            await page_pool.close_all()
-                    finally:
-                        await browser_context.close()
+                            await browser_context.close()
+                if not runtime_restart_requested:
+                    break
         except ProfileLeaseError as exc:
             raise WorkerFailure(PROFILE_LOCKED_REASON, str(exc)) from exc
     finally:
@@ -248,24 +280,27 @@ async def run_resident_main_scheduler_tick(
         target_queue=target_queue,
     ).apply(recovery_summary.running_actions)
     notification_dispatch_count = dispatch_pending_notification_outbox(options)
+    run_bounded_retention_maintenance_if_due(options)
     metadata_refresh_count = 0
-    if not stop_requested():
+    if not stop_requested() and not executor.runtime_restart_requested():
         metadata_refresh_count = await refresh_requested_target_metadata(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,
+            request_runtime_restart=executor.request_runtime_restart,
         )
     cover_image_refresh_count = 0
-    if not stop_requested():
+    if not stop_requested() and not executor.runtime_restart_requested():
         cover_image_refresh_count = await refresh_pending_target_cover_images(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,
+            request_runtime_restart=executor.request_runtime_restart,
         )
     active_target_ids = list_active_resident_target_ids(options.db_path)
     closed_page_count = await page_pool.close_inactive(active_target_ids)
     enqueued_count = 0
-    if not stop_requested():
+    if not stop_requested() and not executor.runtime_restart_requested():
         due_targets = schedule_planner.list_due_targets(
             options.db_path,
             default_interval_seconds=options.interval_seconds,
@@ -273,6 +308,9 @@ async def run_resident_main_scheduler_tick(
         )
         enqueued_count = await executor.enqueue_due_targets(due_targets)
     counters = await executor.take_counters()
+    worker_health_ok = (
+        executor.worker_health_ok() and not executor.runtime_restart_requested()
+    )
     queued_count, running_count, queued_ids = await target_queue.snapshot()
     return ResidentCycleSummary(
         cycle_index=cycle_index,
@@ -292,12 +330,12 @@ async def run_resident_main_scheduler_tick(
         queued_target_ids=queued_ids,
         worker_ids=executor.worker_ids,
         page_pool_size=await page_pool.size(),
-        resident_browser_alive=executor.worker_health_ok(),
+        resident_browser_alive=worker_health_ok,
         recovered_runtime_count=recovery_summary.recovered_count,
         metadata_refresh_count=metadata_refresh_count,
         cover_image_refresh_count=cover_image_refresh_count,
         notification_dispatch_count=notification_dispatch_count,
-        worker_health_ok=executor.worker_health_ok(),
+        worker_health_ok=worker_health_ok,
     )
 
 
@@ -314,8 +352,32 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
             return 0
         logger.exception("pending notification outbox dispatch failed")
         return 0
+
+
+def run_bounded_retention_maintenance_if_due(options: ResidentRuntimeOptions) -> int:
+    """週期性清理 bounded retention horizon 外的內部資料。"""
+
+    now = utc_now()
+    last_run = _LAST_RETENTION_MAINTENANCE_BY_DB.get(options.db_path)
+    if (
+        last_run is not None
+        and (now - last_run).total_seconds()
+        < PYTHON_PERSISTENCE_RETENTION_DEFAULTS.maintenance_interval_seconds
+    ):
+        return 0
+    try:
+        with SqliteApplicationContext(options.db_path) as app:
+            result = app.repositories.maintenance.prune_bounded_retention(now=now)
+        _LAST_RETENTION_MAINTENANCE_BY_DB[options.db_path] = now
+        return result.total_deleted
+    except sqlite3.OperationalError as exc:
+        if _is_sqlite_database_locked(exc):
+            logger.warning("bounded retention maintenance skipped: database locked")
+            return 0
+        logger.exception("bounded retention maintenance failed")
+        return 0
     except Exception:
-        logger.exception("pending notification outbox dispatch failed")
+        logger.exception("bounded retention maintenance failed")
         return 0
 
 
@@ -325,11 +387,41 @@ def _is_sqlite_database_locked(exc: sqlite3.OperationalError) -> bool:
     return "locked" in str(exc).lower()
 
 
+async def _sleep_or_runtime_restart(
+    *,
+    sleep_fn: AsyncSleepCallable,
+    seconds: float,
+    executor: ExecutorWorkerPool,
+) -> bool:
+    """等待下一輪排程或 runtime restart request，先到者為準。"""
+
+    if executor.runtime_restart_requested():
+        return True
+    sleep_task = asyncio.create_task(sleep_fn(max(seconds, 0)))
+    restart_task = asyncio.create_task(executor.wait_runtime_restart_requested())
+    try:
+        done, pending = await asyncio.wait(
+            {sleep_task, restart_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if sleep_task in done:
+            await sleep_task
+        if restart_task in done:
+            await restart_task
+        return restart_task in done or executor.runtime_restart_requested()
+    finally:
+        for task in (sleep_task, restart_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(sleep_task, restart_task, return_exceptions=True)
+
+
 async def refresh_requested_target_metadata(
     *,
     options: ResidentRuntimeOptions,
     browser_context: Any | None,
     should_stop: StopCheckCallable | None = None,
+    request_runtime_restart: Callable[[], None] | None = None,
 ) -> int:
     """消化 Web UI request 與 DB pending metadata refresh job。"""
 
@@ -353,6 +445,19 @@ async def refresh_requested_target_metadata(
                     "metadata refresh skipped because scheduler is stopping",
                     extra={"target_id": target_id},
                 )
+                break
+            if _is_scheduler_runtime_refresh_failure(exc):
+                logger.warning(
+                    "metadata refresh requested browser runtime restart",
+                    extra={"target_id": target_id},
+                )
+                recorded_failure = record_refresh_runtime_failure(
+                    options=options,
+                    target_id=target_id,
+                    exc=exc,
+                )
+                if recorded_failure and request_runtime_restart is not None:
+                    request_runtime_restart()
                 break
             logger.exception(
                 "metadata refresh failed",
@@ -380,7 +485,10 @@ def list_metadata_refresh_target_ids(options: ResidentRuntimeOptions) -> tuple[s
                 limit=METADATA_REFRESH_TARGET_LIMIT_PER_TICK,
             )
         )
-    return tuple(dict.fromkeys(target_id for target_id in target_ids if target_id))
+    return filter_maintenance_refresh_target_ids(
+        options,
+        tuple(dict.fromkeys(target_id for target_id in target_ids if target_id)),
+    )
 
 
 async def refresh_pending_target_cover_images(
@@ -388,6 +496,7 @@ async def refresh_pending_target_cover_images(
     options: ResidentRuntimeOptions,
     browser_context: Any | None,
     should_stop: StopCheckCallable | None = None,
+    request_runtime_restart: Callable[[], None] | None = None,
 ) -> int:
     """消化 dashboard 壞圖上報排入的 image-only cover refresh jobs。"""
 
@@ -399,6 +508,7 @@ async def refresh_pending_target_cover_images(
         states = app.services.targets.list_pending_cover_image_refreshes(
             limit=COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK,
         )
+    states = filter_maintenance_cover_refresh_states(options, states)
     for state in states:
         if stop_requested():
             break
@@ -416,6 +526,19 @@ async def refresh_pending_target_cover_images(
                     extra={"target_id": state.target_id},
                 )
                 break
+            if _is_scheduler_runtime_refresh_failure(exc):
+                logger.warning(
+                    "cover image refresh requested browser runtime restart",
+                    extra={"target_id": state.target_id},
+                )
+                recorded_failure = record_refresh_runtime_failure(
+                    options=options,
+                    target_id=state.target_id,
+                    exc=exc,
+                )
+                if recorded_failure and request_runtime_restart is not None:
+                    request_runtime_restart()
+                break
             logger.exception(
                 "cover image refresh failed",
                 extra={"target_id": state.target_id},
@@ -430,6 +553,117 @@ async def refresh_pending_target_cover_images(
     return refreshed_count
 
 
+def filter_maintenance_refresh_target_ids(
+    options: ResidentRuntimeOptions,
+    target_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """避開已有正式掃描工作的 target，避免 maintenance job 擋住 retry。"""
+
+    if not target_ids:
+        return ()
+    with SqliteApplicationContext(options.db_path) as app:
+        runtime_states = app.repositories.runtime_states.list_by_targets(list(target_ids))
+        targets = {
+            target_id: app.repositories.targets.get(target_id)
+            for target_id in target_ids
+        }
+    return tuple(
+        target_id
+        for target_id in target_ids
+        if targets.get(target_id) is not None
+        and _runtime_state_allows_maintenance_refresh(runtime_states.get(target_id))
+    )
+
+
+def filter_maintenance_cover_refresh_states(
+    options: ResidentRuntimeOptions,
+    states: list[TargetCoverImageRefreshState],
+) -> list[TargetCoverImageRefreshState]:
+    """避開已有正式掃描工作的 cover refresh jobs。"""
+
+    if not states:
+        return []
+    target_ids = [state.target_id for state in states]
+    with SqliteApplicationContext(options.db_path) as app:
+        runtime_states = app.repositories.runtime_states.list_by_targets(target_ids)
+        targets = {
+            target_id: app.repositories.targets.get(target_id)
+            for target_id in target_ids
+        }
+    return [
+        state
+        for state in states
+        if targets.get(state.target_id) is not None
+        and _runtime_state_allows_maintenance_refresh(
+            runtime_states.get(state.target_id)
+        )
+    ]
+
+
+def _runtime_state_allows_maintenance_refresh(
+    state: TargetRuntimeState | None,
+) -> bool:
+    """runtime recovery retry 等待期間，maintenance refresh 先讓位。"""
+
+    if state is None:
+        return True
+    if _runtime_state_has_pending_failure_retry(state):
+        return False
+    return state.runtime_status not in {
+        TargetRuntimeStatus.QUEUED,
+        TargetRuntimeStatus.RUNNING,
+        TargetRuntimeStatus.ERROR,
+    }
+
+
+def _runtime_state_has_pending_failure_retry(state: TargetRuntimeState) -> bool:
+    """判斷 target 是否正等待 failure policy 自動重試掃描。"""
+
+    return (
+        state.runtime_status == TargetRuntimeStatus.IDLE
+        and state.scan_requested_at is not None
+        and state.consecutive_failure_count > 0
+    )
+
+
+def record_refresh_runtime_failure(
+    *,
+    options: ResidentRuntimeOptions,
+    target_id: str,
+    exc: Exception,
+) -> bool:
+    """將 maintenance refresh 的 browser runtime failure 接回 scan failure policy。"""
+
+    exception_class, message = _runtime_refresh_failure_detail(exc)
+    decision = record_guarded_scan_failure_for_db(
+        db_path=options.db_path,
+        target_id=target_id,
+        reason=SCHEDULER_RUNTIME_REASON,
+        message=message,
+        source="unknown_exception",
+        worker_path="resident_main",
+        commit_guard=None,
+        exception_class=exception_class,
+    )
+    return decision is not None
+
+
+def _runtime_refresh_failure_detail(exc: Exception) -> tuple[str, str]:
+    """取出最接近 Playwright runtime closed 的 exception 類型與訊息。"""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, Exception) and (
+            classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON
+            or _is_playwright_driver_shutdown_exception(current)
+        ):
+            return current.__class__.__name__, _format_exception_message(current)
+        current = current.__cause__ or current.__context__
+    return exc.__class__.__name__, _format_exception_message(exc)
+
+
 def _should_skip_refresh_failure_for_shutdown(
     exc: Exception,
     should_stop: StopCheckCallable,
@@ -437,6 +671,22 @@ def _should_skip_refresh_failure_for_shutdown(
     """停止流程中 Playwright driver 關閉不應污染 maintenance job 診斷。"""
 
     return should_stop() and _is_playwright_driver_shutdown_exception(exc)
+
+
+def _is_scheduler_runtime_refresh_failure(exc: Exception) -> bool:
+    """判斷 metadata/cover refresh 失敗是否代表 browser runtime 已損壞。"""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, Exception):
+            if classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON:
+                return True
+            if _is_playwright_driver_shutdown_exception(current):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 async def refresh_target_group_cover_image_from_context(
@@ -485,6 +735,8 @@ async def refresh_target_group_cover_image_from_context(
             canonical_url=f"https://www.facebook.com/groups/{group_id}",
         )
     except GroupMetadataError as exc:
+        if _is_scheduler_runtime_refresh_failure(exc):
+            raise
         logger.info(
             "cover image refresh skipped",
             extra={"target_id": target_id},
@@ -591,6 +843,8 @@ async def refresh_target_group_name_from_context(
             canonical_url=f"https://www.facebook.com/groups/{group_id}",
         )
     except GroupMetadataError as exc:
+        if _is_scheduler_runtime_refresh_failure(exc):
+            raise
         logger.info(
             "metadata refresh skipped",
             extra={"target_id": target_id},

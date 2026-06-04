@@ -16,6 +16,7 @@ from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
 
@@ -442,6 +443,69 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
     assert latest_items == []
     assert history == []
     assert notifications == []
+
+
+def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """comments 排序未確認連續三輪後，升級交給 scan failure policy。"""
+
+    db_path = tmp_path / "app.db"
+    page = UnconfirmedCommentSortPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=(
+                    "https://www.facebook.com/groups/222518561920110/posts/"
+                    "2187454285426518"
+                ),
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        scan_comments_target_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+        scan_comments_target_page(
+            page=page,
+            app=app,
+            target=target,
+            config=config,
+            scroll_rounds=3,
+            scroll_wait_ms=0,
+        )
+
+        with pytest.raises(WorkerFailure) as excinfo:
+            scan_comments_target_page(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=3,
+                scroll_wait_ms=0,
+            )
+
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert excinfo.value.reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["skip_streak"] == 2
+    assert scan_count == 2
 
 
 def test_scan_comments_target_page_skips_when_sort_control_is_missing(

@@ -20,6 +20,7 @@ from facebook_monitor.notifications.outbox_service import (
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
+from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_run_message
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,14 @@ def _record_stale_running_failure(
         runtime_action=recovery.decision.runtime_action,
         retry_streak=recovery.decision.retry_streak,
         retry_limit=recovery.decision.retry_limit,
+        auto_restart=recovery.decision.auto_restart,
+        recovery_action=recovery.decision.recovery_action,
         force_record=recovery.decision.counts_toward_streak,
+        error_message_override=format_scan_failure_run_message(
+            reason=STALE_RUNNING_REASON,
+            message=detail,
+            decision=recovery.decision,
+        ),
     )
     if recovery.decision.terminal and scan_run_id > 0:
         config = app.services.targets.get_config_for_target(target)
@@ -153,7 +161,7 @@ def _record_stale_running_failure(
             config=config,
             scan_run_id=scan_run_id,
             reason=recovery.decision.reason,
-            failure_count=max(recovery.decision.retry_streak, 1),
+            failure_count=recovery.decision.notification_failure_count,
             error_message=recovery.state.last_error,
         )
     return RunningRecoveryAction(

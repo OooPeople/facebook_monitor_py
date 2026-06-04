@@ -77,6 +77,15 @@ class NotificationOutboxStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class NotificationDedupeStatus(StrEnum):
+    """通知 dedupe ledger 狀態。"""
+
+    QUEUED = "queued"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class TargetDesiredState(StrEnum):
     """target 在 scheduler 中期望維持的狀態。"""
 
@@ -415,6 +424,8 @@ class TargetRuntimeState:
     display_next_due_at: datetime | None = None
     consecutive_failure_reason: str = ""
     consecutive_failure_count: int = 0
+    consecutive_scan_skip_reason: str = ""
+    consecutive_scan_skip_count: int = 0
     updated_at: datetime = field(default_factory=utc_now)
 
     @property
@@ -441,6 +452,16 @@ class SeenItem:
     comment_id: str = ""
     first_seen_at: datetime = field(default_factory=utc_now)
     last_seen_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True)
+class SeenAliasMarkResult:
+    """保存 logical item alias 去重寫入結果。"""
+
+    is_new: bool
+    logical_item_id: int
+    canonical_item_key: str
+    alias_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -540,6 +561,7 @@ class NotificationOutboxEntry:
     attempts: int = 0
     last_error: str = ""
     notification_event_id: int | None = None
+    dedupe_id: int | None = None
     id: int | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)

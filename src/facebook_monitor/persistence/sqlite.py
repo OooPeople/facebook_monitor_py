@@ -10,8 +10,13 @@ from facebook_monitor.persistence.repositories.global_notification_settings impo
     GlobalNotificationSettingsRepository,
 )
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
+from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import (
+    NotificationDedupeRepository,
+)
 from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
@@ -40,8 +45,11 @@ from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 __all__ = [
     "GlobalNotificationSettingsRepository",
     "AppSettingsRepository",
+    "DedupeStateRepository",
     "LatestScanItemRepository",
+    "LogicalItemRepository",
     "MatchHistoryRepository",
+    "NotificationDedupeRepository",
     "NotificationEventRepository",
     "NotificationOutboxRepository",
     "SCHEMA_VERSION",

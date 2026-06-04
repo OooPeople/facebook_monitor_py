@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
 from facebook_monitor.core.keyword_rules import KeywordEvaluation
 from facebook_monitor.core.keyword_rules import KeywordGroupMatchResult
 from facebook_monitor.core.keyword_rules import compile_keyword_matcher
@@ -29,6 +31,8 @@ from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
@@ -76,6 +80,7 @@ class ScanMatchResult:
     matched_keywords: tuple[str, ...] = ()
     matched_keyword_groups: tuple[KeywordGroupMatch, ...] = ()
     include_group_results: tuple[KeywordGroupMatchResult, ...] = ()
+    logical_item_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,7 @@ class MatchNotificationPayload:
     """保存 shared finalize 層準備送出的 match 通知資料。"""
 
     item_key: str
+    logical_item_id: int | None
     item_kind: ItemKind
     author: str
     text: str
@@ -135,7 +141,7 @@ UNGUARDED_SCAN_COMMIT: ScanCommitGuard | None = None
 """明確標示 debug / one-shot 入口允許不綁定 runtime admission identity。"""
 
 SORT_ADJUST_UNCONFIRMED_STOP_REASON = "sort_adjust_unconfirmed_skip"
-SORT_ADJUST_UNCONFIRMED_SKIP_REASON = "sort_adjust_unconfirmed"
+SORT_ADJUST_UNCONFIRMED_SKIP_REASON = SORT_ADJUST_UNCONFIRMED_REASON
 
 
 def scan_commit_guard_from_runtime_state(
@@ -159,16 +165,34 @@ def record_skipped_scan(
     metadata: dict[str, Any],
     commit_guard: ScanCommitGuard | None = None,
 ) -> ScanFinalizeResult:
-    """記錄保護性跳過的 scan run，且清空本輪 latest scan 快照。"""
+    """記錄保護性 skipped scan；達門檻時升級為 worker failure。"""
 
     begin_scan_commit_transaction(app)
     ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
+    skip_reason = str(
+        metadata.get("skip_reason") or SORT_ADJUST_UNCONFIRMED_SKIP_REASON
+    )
+    skip_decision = app.services.targets.decide_scan_skip(
+        target.id,
+        skip_reason,
+        skip_limit=PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_skip_limit,
+    )
+    if skip_decision.escalate:
+        raise WorkerFailure(
+            skip_decision.reason,
+            (
+                "protective scan skip reached "
+                f"{skip_decision.skip_streak}/{skip_decision.skip_limit}"
+            ),
+        )
     scan_metadata = dict(metadata)
     scan_metadata.setdefault("scan_skipped", True)
-    scan_metadata.setdefault("skip_reason", SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
+    scan_metadata.setdefault("skip_reason", skip_decision.reason)
     scan_metadata.setdefault("stop_reason", SORT_ADJUST_UNCONFIRMED_STOP_REASON)
     scan_metadata.setdefault("new_count", 0)
     scan_metadata.setdefault("matched_count", 0)
+    scan_metadata.setdefault("skip_streak", skip_decision.skip_streak)
+    scan_metadata.setdefault("skip_limit", skip_decision.skip_limit)
     scan_run_id = app.services.scans.record_scan(
         RecordScanRequest(
             target_id=target.id,
@@ -179,6 +203,21 @@ def record_skipped_scan(
         )
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, [])
+    if commit_guard is None:
+        app.services.targets.apply_scan_skip_decision(target.id, skip_decision)
+    else:
+        updated_state = app.services.targets.apply_scan_skip_decision_if_owner(
+            target.id,
+            skip_decision,
+            worker_id=commit_guard.worker_id,
+            started_at=commit_guard.started_at,
+            page_id=commit_guard.page_id,
+        )
+        if updated_state is None:
+            raise WorkerFailure(
+                TARGET_STOPPED_REASON,
+                "target stopped before skipped scan finalize",
+            )
     return ScanFinalizeResult(
         scan_run_id=scan_run_id,
         new_items=(),
@@ -255,22 +294,37 @@ def finalize_scan_items(
     baseline_mode = not app.repositories.scan_scope_state.is_initialized(target.scope_id)
 
     for item in items:
-        is_new = app.repositories.seen_items.mark_seen_aliases(
-            SeenItem(
-                scope_id=target.scope_id,
-                item_key=item.item_key,
-                item_kind=item.item_kind,
-                parent_post_id=item.parent_post_id,
-                comment_id=item.comment_id,
+        seen_item = SeenItem(
+            scope_id=target.scope_id,
+            item_key=item.item_key,
+            item_kind=item.item_kind,
+            parent_post_id=item.parent_post_id,
+            comment_id=item.comment_id,
+        )
+        logical_seen = app.repositories.logical_items.mark_seen_aliases(
+            target_id=target.id,
+            item=seen_item,
+            item_keys=item.alias_keys,
+        )
+        legacy_seen_within_horizon = app.repositories.seen_items.has_seen_any_since(
+            target.scope_id,
+            item.alias_keys,
+            utc_now()
+            - timedelta(
+                days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days
             ),
+        )
+        app.repositories.seen_items.mark_seen_aliases(
+            seen_item,
             item.alias_keys,
         )
         keyword_evaluation = keyword_matcher.evaluate(item.text)
         result = build_scan_match_result(
             item=item,
-            is_new=is_new,
+            is_new=logical_seen.is_new and not legacy_seen_within_horizon,
             keyword_evaluation=keyword_evaluation,
             baseline_mode=baseline_mode,
+            logical_item_id=logical_seen.logical_item_id,
         )
         match_results.append(result)
         if result.is_new:
@@ -304,6 +358,7 @@ def finalize_scan_items(
 
         notification_payload = MatchNotificationPayload(
             item_key=item.item_key,
+            logical_item_id=logical_seen.logical_item_id,
             item_kind=item.item_kind,
             author=item.author,
             text=item.text,
@@ -315,6 +370,7 @@ def finalize_scan_items(
             target=target,
             config=config,
             item_key=notification_payload.item_key,
+            logical_item_id=notification_payload.logical_item_id,
             author=notification_payload.author,
             item_text=notification_payload.text,
             permalink=notification_payload.permalink,
@@ -478,6 +534,7 @@ def build_scan_match_result(
     is_new: bool,
     keyword_evaluation: KeywordEvaluation,
     baseline_mode: bool = False,
+    logical_item_id: int | None = None,
 ) -> ScanMatchResult:
     """建立單一 item 的 shared classification 結果。"""
 
@@ -495,6 +552,7 @@ def build_scan_match_result(
             keyword_evaluation.include_group_matches if keyword_evaluation.eligible else ()
         ),
         include_group_results=keyword_evaluation.include_group_results,
+        logical_item_id=logical_item_id,
     )
 
 

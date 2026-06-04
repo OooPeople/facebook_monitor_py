@@ -9,6 +9,7 @@ from datetime import timedelta
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_QUERY_DEFAULTS
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxSummary
+from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.row_mappers import notification_outbox_from_row
@@ -41,15 +42,16 @@ class NotificationOutboxRepository:
         self.connection.execute(
             """
             INSERT OR IGNORE INTO notification_outbox (
-                idempotency_key, target_id, item_key, item_kind, channel, status,
+                idempotency_key, dedupe_id, target_id, item_key, item_kind, channel, status,
                 title, message, endpoint, permalink, event_kind, source_scan_run_id,
                 failure_reason, failure_count, attempts, last_error, notification_event_id,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.idempotency_key,
+                entry.dedupe_id,
                 entry.target_id,
                 entry.item_key,
                 entry.item_kind.value,
@@ -294,6 +296,53 @@ class NotificationOutboxRepository:
                 entry_id,
             ),
         )
+        if status in {
+            NotificationOutboxStatus.SENT,
+            NotificationOutboxStatus.FAILED,
+            NotificationOutboxStatus.SKIPPED,
+        }:
+            self._mark_dedupe_result(
+                entry_id=entry_id,
+                status=status,
+                message=message,
+                notification_event_id=notification_event_id,
+            )
+
+    def _mark_dedupe_result(
+        self,
+        *,
+        entry_id: int,
+        status: NotificationOutboxStatus,
+        message: str,
+        notification_event_id: int | None,
+    ) -> None:
+        """同步更新 outbox 綁定的 notification dedupe ledger。"""
+
+        dedupe_status = _dedupe_status_for_outbox_status(status)
+        self.connection.execute(
+            """
+            UPDATE notification_dedupe
+            SET status = ?,
+                notification_event_id = COALESCE(?, notification_event_id),
+                failure_reason = CASE WHEN ? = 'failed' THEN ? ELSE failure_reason END,
+                last_deduped_at = ?,
+                updated_at = ?
+            WHERE id = (
+                SELECT dedupe_id
+                FROM notification_outbox
+                WHERE id = ?
+            )
+            """,
+            (
+                dedupe_status.value,
+                notification_event_id,
+                dedupe_status.value,
+                message,
+                encode_datetime(utc_now()),
+                encode_datetime(utc_now()),
+                entry_id,
+            ),
+        )
 
     def _claim_status(
         self,
@@ -468,4 +517,16 @@ class NotificationOutboxRepository:
         """還原 repository 對外回傳的 notification endpoint。"""
 
         return replace(entry, endpoint=self.secret_codec.decrypt(entry.endpoint))
+
+
+def _dedupe_status_for_outbox_status(
+    status: NotificationOutboxStatus,
+) -> NotificationDedupeStatus:
+    """將 terminal outbox status 轉成 dedupe ledger status。"""
+
+    if status == NotificationOutboxStatus.SENT:
+        return NotificationDedupeStatus.SENT
+    if status == NotificationOutboxStatus.SKIPPED:
+        return NotificationDedupeStatus.SKIPPED
+    return NotificationDedupeStatus.FAILED
 

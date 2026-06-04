@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Event
 
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.webapp import scheduler_session as scheduler_session_module
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
@@ -185,6 +186,131 @@ def test_background_scheduler_manager_notifies_on_resident_crash(
     assert calls[0]["reason"] == SCHEDULER_RUNTIME_REASON
     assert calls[0]["worker_path"] == "resident_scheduler"
     assert calls[0]["exception_class"] == "RuntimeError"
+
+
+def test_background_scheduler_manager_normalizes_unknown_crash_reason(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """resident 整體 unknown crash 應走 scheduler_runtime 三次重試策略。"""
+
+    calls: list[dict[str, object]] = []
+
+    class UnknownResidentError(RuntimeError):
+        """模擬帶 unknown reason 的 resident top-level 錯誤。"""
+
+        reason = UNKNOWN_REASON
+
+    def failing_resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        _stop_event: Event,
+        _on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        raise UnknownResidentError("unknown top-level resident failure")
+
+    def fake_record_notifications(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 1
+
+    def stop_after_failure(stop_event: Event, _seconds: float) -> bool:
+        stop_event.set()
+        return True
+
+    monkeypatch.setattr(
+        scheduler_session_module,
+        "record_active_targets_runtime_failure_notifications_for_db",
+        fake_record_notifications,
+    )
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=failing_resident_main_runner,
+        wait_fn=stop_after_failure,
+    )
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    assert manager.thread is not None
+    manager.thread.join(timeout=2)
+
+    assert len(calls) == 1
+    assert calls[0]["reason"] == SCHEDULER_RUNTIME_REASON
+
+
+def test_background_scheduler_cycle_recovers_lifecycle_after_crash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """resident crash 後下一輪成功 cycle 會把 lifecycle 從 ERROR 恢復 RUNNING。"""
+
+    calls: list[dict[str, object]] = []
+    run_count = 0
+    cycle_recorded = Event()
+    release_runner = Event()
+
+    def flaky_resident_main_runner(
+        _options: ResidentRuntimeOptions,
+        stop_event: Event,
+        on_cycle: Callable[[ResidentCycleSummary], None],
+        _sleep_fn: Callable[[float], object] | None = None,
+    ) -> object:
+        nonlocal run_count
+        run_count += 1
+        if run_count == 1:
+            raise RuntimeError("Target page, context or browser has been closed")
+        on_cycle(
+            ResidentCycleSummary(
+                cycle_index=2,
+                selected_count=0,
+                success_count=0,
+                failure_count=0,
+                skipped_count=0,
+                opened_page_count=0,
+                reused_page_count=0,
+                closed_page_count=0,
+                resident_browser_alive=True,
+            )
+        )
+        cycle_recorded.set()
+        release_runner.wait(timeout=2)
+        return object()
+
+    def fake_record_notifications(**kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    def continue_after_first_failure(_stop_event: Event, _seconds: float) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        scheduler_session_module,
+        "record_active_targets_runtime_failure_notifications_for_db",
+        fake_record_notifications,
+    )
+    manager = BackgroundSchedulerManager(
+        resident_main_runner=flaky_resident_main_runner,
+        wait_fn=continue_after_first_failure,
+    )
+    manager.start(
+        SchedulerSessionOptions(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+        )
+    )
+    assert manager.thread is not None
+    assert cycle_recorded.wait(timeout=2)
+    state = manager.state()
+
+    assert run_count == 2
+    assert len(calls) == 1
+    assert state.lifecycle_state == SchedulerLifecycleState.RUNNING
+    assert not state.last_error
+    assert state.resident_browser_alive is True
+
+    release_runner.set()
+    manager.stop(timeout_seconds=2)
 
 
 def test_background_scheduler_stop_timeout_keeps_stopping_state(tmp_path: Path) -> None:

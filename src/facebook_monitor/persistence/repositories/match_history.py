@@ -227,6 +227,7 @@ class MatchHistoryRepository:
                                    ELSE 0
                                END,
                                latest_scan_items.item_index ASC,
+                               match_history.notified_at DESC,
                                match_history.id DESC
                        ) AS row_number
                 FROM match_history

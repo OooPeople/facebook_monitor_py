@@ -133,6 +133,20 @@ V12_TO_13_COLUMNS = (
 )
 
 
+V32_TO_33_COLUMNS = (
+    MigrationColumn(
+        "target_runtime_state",
+        "consecutive_scan_skip_reason",
+        "TEXT NOT NULL DEFAULT ''",
+    ),
+    MigrationColumn(
+        "target_runtime_state",
+        "consecutive_scan_skip_count",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_scan_skip_count >= 0)",
+    ),
+)
+
+
 def migrate_10_to_11(connection: sqlite3.Connection) -> None:
     """將舊 target-scoped config 搬到 group-scoped config。"""
 
@@ -304,6 +318,7 @@ def migrate_13_to_14(connection: sqlite3.Connection) -> None:
             defaults.discord_webhook,
         ),
     )
+    connection.execute("DROP TABLE IF EXISTS group_configs")
 
 
 def migrate_14_to_15(connection: sqlite3.Connection) -> None:
@@ -714,6 +729,443 @@ def migrate_30_to_31(connection: sqlite3.Connection) -> None:
         add_column_if_missing(connection, column)
 
 
+def migrate_31_to_32(connection: sqlite3.Connection) -> None:
+    """新增 logical item / notification dedupe shadow tables 並回填既有狀態。"""
+
+    ensure_v32_logical_dedupe_schema(connection)
+    add_column_if_missing(
+        connection,
+        MigrationColumn(
+            "notification_outbox",
+            "dedupe_id",
+            "INTEGER REFERENCES notification_dedupe(id) ON DELETE SET NULL",
+        ),
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_notification_outbox_dedupe
+            ON notification_outbox(dedupe_id)
+        """
+    )
+    _backfill_target_dedupe_state(connection)
+    _backfill_logical_items_from_seen_items(connection)
+    _backfill_notification_dedupe_from_outbox(connection)
+
+
+def migrate_32_to_33(connection: sqlite3.Connection) -> None:
+    """新增 skipped scan 連續計數欄位，支援排序未確認升級重試。"""
+
+    for column in V32_TO_33_COLUMNS:
+        add_column_if_missing(connection, column)
+
+
+def migrate_33_to_34(connection: sqlite3.Connection) -> None:
+    """移除 legacy group_configs，避免舊 webhook secrets 留在正式 DB。"""
+
+    connection.execute("DROP TABLE IF EXISTS group_configs")
+
+
+def ensure_v32_logical_dedupe_schema(connection: sqlite3.Connection) -> None:
+    """建立 v32 logical item 與 notification dedupe tables/indexes。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS target_dedupe_state (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+            dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS logical_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            scope_id TEXT NOT NULL,
+            dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+            item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+            canonical_item_key TEXT NOT NULL,
+            parent_post_id TEXT NOT NULL DEFAULT '',
+            comment_id TEXT NOT NULL DEFAULT '',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS logical_item_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            logical_item_id INTEGER NOT NULL
+                REFERENCES logical_items(id) ON DELETE CASCADE,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            scope_id TEXT NOT NULL,
+            dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+            alias_key TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (target_id, dedupe_epoch, alias_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_dedupe (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+            dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+            event_kind TEXT NOT NULL CHECK (event_kind IN ('match', 'runtime_failure')),
+            channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+            subject_key TEXT NOT NULL,
+            logical_item_id INTEGER REFERENCES logical_items(id) ON DELETE SET NULL,
+            item_key TEXT NOT NULL DEFAULT '',
+            item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+            status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed', 'skipped')),
+            notification_event_id INTEGER,
+            failure_reason TEXT NOT NULL DEFAULT '',
+            failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+            first_queued_at TEXT NOT NULL,
+            last_deduped_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (target_id, dedupe_epoch, event_kind, channel, subject_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_target_dedupe_state_epoch
+            ON target_dedupe_state(target_id, dedupe_epoch);
+        CREATE INDEX IF NOT EXISTS idx_logical_items_target_scope_seen
+            ON logical_items(target_id, scope_id, dedupe_epoch, last_seen_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_logical_items_comment_identity
+            ON logical_items(target_id, dedupe_epoch, item_kind, parent_post_id, comment_id)
+            WHERE item_kind = 'comment' AND comment_id <> '';
+        CREATE INDEX IF NOT EXISTS idx_logical_item_aliases_logical
+            ON logical_item_aliases(logical_item_id);
+        CREATE INDEX IF NOT EXISTS idx_logical_item_aliases_scope_seen
+            ON logical_item_aliases(target_id, scope_id, dedupe_epoch, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_notification_dedupe_target_updated
+            ON notification_dedupe(target_id, dedupe_epoch, last_deduped_at);
+        CREATE INDEX IF NOT EXISTS idx_notification_dedupe_logical
+            ON notification_dedupe(logical_item_id);
+        """
+    )
+
+
+def _backfill_target_dedupe_state(connection: sqlite3.Connection) -> None:
+    """為既有 targets 建立 dedupe epoch 0。"""
+
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO target_dedupe_state (target_id, dedupe_epoch, updated_at)
+        SELECT id, 0, updated_at
+        FROM targets
+        WHERE TRIM(id) <> ''
+        """
+    )
+
+
+def _backfill_logical_items_from_seen_items(connection: sqlite3.Connection) -> None:
+    """將 flat seen alias rows 保守回填成 logical item / alias rows。"""
+
+    if not table_exists(connection, "seen_items"):
+        return
+    rows = connection.execute(
+        """
+        SELECT
+            targets.id AS target_id,
+            seen_items.scope_id AS scope_id,
+            seen_items.item_key AS item_key,
+            seen_items.item_kind AS item_kind,
+            seen_items.parent_post_id AS parent_post_id,
+            seen_items.comment_id AS comment_id,
+            seen_items.first_seen_at AS first_seen_at,
+            seen_items.last_seen_at AS last_seen_at,
+            COALESCE(target_dedupe_state.dedupe_epoch, 0) AS dedupe_epoch
+        FROM seen_items
+        JOIN targets ON targets.scope_id = seen_items.scope_id
+        LEFT JOIN target_dedupe_state ON target_dedupe_state.target_id = targets.id
+        ORDER BY targets.id, seen_items.scope_id, seen_items.item_kind,
+                 seen_items.parent_post_id, seen_items.comment_id, seen_items.item_key
+        """
+    ).fetchall()
+    groups: dict[tuple[str, int, str, str, str, str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        item_kind = str(row["item_kind"])
+        comment_id = str(row["comment_id"] or "")
+        if item_kind == "comment" and comment_id:
+            group_key = (
+                str(row["target_id"]),
+                int(row["dedupe_epoch"]),
+                str(row["scope_id"]),
+                item_kind,
+                str(row["parent_post_id"] or ""),
+                comment_id,
+                "__comment_identity__",
+            )
+        else:
+            group_key = (
+                str(row["target_id"]),
+                int(row["dedupe_epoch"]),
+                str(row["scope_id"]),
+                item_kind,
+                str(row["parent_post_id"] or ""),
+                comment_id,
+                str(row["item_key"]),
+            )
+        groups.setdefault(group_key, []).append(row)
+
+    for group_rows in groups.values():
+        first = group_rows[0]
+        first_seen_at = min(str(row["first_seen_at"]) for row in group_rows)
+        last_seen_at = max(str(row["last_seen_at"]) for row in group_rows)
+        canonical_item_key = str(first["item_key"])
+        connection.execute(
+            """
+            INSERT INTO logical_items (
+                target_id, scope_id, dedupe_epoch, item_kind, canonical_item_key,
+                parent_post_id, comment_id, first_seen_at, last_seen_at,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                first["target_id"],
+                first["scope_id"],
+                int(first["dedupe_epoch"]),
+                first["item_kind"],
+                canonical_item_key,
+                first["parent_post_id"] or "",
+                first["comment_id"] or "",
+                first_seen_at,
+                last_seen_at,
+                first_seen_at,
+                last_seen_at,
+            ),
+        )
+        logical_item_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        for row in group_rows:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO logical_item_aliases (
+                    logical_item_id, target_id, scope_id, dedupe_epoch, alias_key,
+                    first_seen_at, last_seen_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    logical_item_id,
+                    row["target_id"],
+                    row["scope_id"],
+                    int(row["dedupe_epoch"]),
+                    row["item_key"],
+                    row["first_seen_at"],
+                    row["last_seen_at"],
+                    row["first_seen_at"],
+                    row["last_seen_at"],
+                ),
+            )
+
+
+def _backfill_notification_dedupe_from_outbox(connection: sqlite3.Connection) -> None:
+    """將既有 outbox idempotency rows 回填為 notification dedupe ledger。"""
+
+    if not table_exists(connection, "notification_outbox"):
+        return
+    rows = connection.execute(
+        """
+        SELECT
+            notification_outbox.id AS outbox_id,
+            notification_outbox.target_id AS target_id,
+            notification_outbox.item_key AS item_key,
+            notification_outbox.item_kind AS item_kind,
+            notification_outbox.channel AS channel,
+            notification_outbox.status AS outbox_status,
+            notification_outbox.event_kind AS event_kind,
+            notification_outbox.source_scan_run_id AS source_scan_run_id,
+            notification_outbox.failure_reason AS failure_reason,
+            notification_outbox.failure_count AS failure_count,
+            notification_outbox.notification_event_id AS notification_event_id,
+            notification_outbox.created_at AS created_at,
+            notification_outbox.updated_at AS updated_at,
+            targets.scope_id AS target_scope_id,
+            COALESCE(target_dedupe_state.dedupe_epoch, 0) AS dedupe_epoch,
+            logical_item_aliases.logical_item_id AS logical_item_id
+        FROM notification_outbox
+        LEFT JOIN targets
+            ON targets.id = notification_outbox.target_id
+        LEFT JOIN target_dedupe_state
+            ON target_dedupe_state.target_id = notification_outbox.target_id
+        LEFT JOIN logical_item_aliases
+            ON logical_item_aliases.target_id = notification_outbox.target_id
+           AND logical_item_aliases.dedupe_epoch = COALESCE(
+               target_dedupe_state.dedupe_epoch,
+               0
+           )
+           AND logical_item_aliases.alias_key = notification_outbox.item_key
+        ORDER BY notification_outbox.id
+        """
+    ).fetchall()
+    for row in rows:
+        logical_item_id = (
+            int(row["logical_item_id"]) if row["logical_item_id"] is not None else None
+        )
+        if str(row["event_kind"] or "match") == "match" and logical_item_id is None:
+            logical_item_id = _create_logical_item_for_outbox_row(connection, row)
+        subject_key = _notification_dedupe_subject_key(
+            event_kind=str(row["event_kind"] or "match"),
+            item_key=str(row["item_key"]),
+            logical_item_id=logical_item_id,
+            source_scan_run_id=row["source_scan_run_id"],
+        )
+        status = _notification_dedupe_status_from_outbox(str(row["outbox_status"]))
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO notification_dedupe (
+                target_id, dedupe_epoch, event_kind, channel, subject_key,
+                logical_item_id, item_key, item_kind, status, notification_event_id,
+                failure_reason, failure_count, first_queued_at, last_deduped_at,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["target_id"],
+                int(row["dedupe_epoch"]),
+                row["event_kind"] or "match",
+                row["channel"],
+                subject_key,
+                logical_item_id,
+                row["item_key"],
+                row["item_kind"],
+                status,
+                row["notification_event_id"],
+                row["failure_reason"] or "",
+                int(row["failure_count"] or 0),
+                row["created_at"],
+                row["updated_at"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+        dedupe_row = connection.execute(
+            """
+            SELECT id
+            FROM notification_dedupe
+            WHERE target_id = ?
+              AND dedupe_epoch = ?
+              AND event_kind = ?
+              AND channel = ?
+              AND subject_key = ?
+            """,
+            (
+                row["target_id"],
+                int(row["dedupe_epoch"]),
+                row["event_kind"] or "match",
+                row["channel"],
+                subject_key,
+            ),
+        ).fetchone()
+        if dedupe_row is not None:
+            connection.execute(
+                "UPDATE notification_outbox SET dedupe_id = ? WHERE id = ?",
+                (int(dedupe_row["id"]), int(row["outbox_id"])),
+            )
+
+
+def _create_logical_item_for_outbox_row(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> int | None:
+    """為缺少 seen alias 的既有 match outbox 建立保守 logical item。"""
+
+    item_key = str(row["item_key"] or "").strip()
+    target_id = str(row["target_id"] or "").strip()
+    scope_id = str(row["target_scope_id"] or "").strip()
+    if not item_key or not target_id or not scope_id:
+        return None
+    existing_alias = connection.execute(
+        """
+        SELECT logical_item_id
+        FROM logical_item_aliases
+        WHERE target_id = ?
+          AND dedupe_epoch = ?
+          AND alias_key = ?
+        ORDER BY id
+        LIMIT 1
+        """,
+        (target_id, int(row["dedupe_epoch"]), item_key),
+    ).fetchone()
+    if existing_alias is not None:
+        return int(existing_alias["logical_item_id"])
+    connection.execute(
+        """
+        INSERT INTO logical_items (
+            target_id, scope_id, dedupe_epoch, item_kind, canonical_item_key,
+            parent_post_id, comment_id, first_seen_at, last_seen_at,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)
+        """,
+        (
+            target_id,
+            scope_id,
+            int(row["dedupe_epoch"]),
+            row["item_kind"],
+            item_key,
+            row["created_at"],
+            row["updated_at"],
+            row["created_at"],
+            row["updated_at"],
+        ),
+    )
+    logical_item_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO logical_item_aliases (
+            logical_item_id, target_id, scope_id, dedupe_epoch, alias_key,
+            first_seen_at, last_seen_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            logical_item_id,
+            target_id,
+            scope_id,
+            int(row["dedupe_epoch"]),
+            item_key,
+            row["created_at"],
+            row["updated_at"],
+            row["created_at"],
+            row["updated_at"],
+        ),
+    )
+    return logical_item_id
+
+
+def _notification_dedupe_subject_key(
+    *,
+    event_kind: str,
+    item_key: str,
+    logical_item_id: int | None,
+    source_scan_run_id: object,
+) -> str:
+    """建立 migration 使用的 notification dedupe subject key。"""
+
+    if event_kind == "match" and logical_item_id is not None:
+        return f"logical:{logical_item_id}"
+    if event_kind == "runtime_failure":
+        scan_run_id = str(source_scan_run_id or "").strip()
+        return f"runtime-failure:{scan_run_id or item_key}"
+    return f"legacy:{item_key}"
+
+
+def _notification_dedupe_status_from_outbox(status: str) -> str:
+    """將 outbox status 映射到 dedupe ledger status。"""
+
+    if status == "sent":
+        return "sent"
+    if status == "skipped":
+        return "skipped"
+    if status in {"failed", "processing_failed"}:
+        return "failed"
+    return "queued"
+
+
 V29_TO_V30_CHECKED_TABLES: tuple[CheckedTableRebuild, ...] = (
     CheckedTableRebuild(
         "target_configs",
@@ -1090,6 +1542,9 @@ MIGRATIONS: dict[int, Migration] = {
     28: migrate_28_to_29,
     29: migrate_29_to_30,
     30: migrate_30_to_31,
+    31: migrate_31_to_32,
+    32: migrate_32_to_33,
+    33: migrate_33_to_34,
 }
 
 
@@ -1275,6 +1730,10 @@ __all__ = [
     "migrate_27_to_28",
     "migrate_28_to_29",
     "migrate_29_to_30",
+    "migrate_30_to_31",
+    "migrate_31_to_32",
+    "migrate_32_to_33",
+    "migrate_33_to_34",
     "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

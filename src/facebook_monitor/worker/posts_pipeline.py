@@ -8,13 +8,16 @@ shared scan finalize layer，避免 posts/comments 後處理語義漂移。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
 from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
@@ -65,6 +68,7 @@ class PostsScanSummary:
     matched_count: int
     scan_run_id: int
     round_stats: tuple[ExtractRoundStats, ...]
+    scan_skipped: bool = False
 
 
 class NotificationSender(NtfySender, Protocol):
@@ -251,6 +255,7 @@ def scan_posts_page(
             matched_count=0,
             scan_run_id=finalize_result.scan_run_id,
             round_stats=(),
+            scan_skipped=True,
         )
     items, round_stats, collection_meta = collect_items_with_diagnostics(
         page=page,
@@ -338,6 +343,7 @@ async def scan_posts_page_async(
             matched_count=0,
             scan_run_id=finalize_result.scan_run_id,
             round_stats=(),
+            scan_skipped=True,
         )
     items, round_stats, collection_meta = await collect_items_with_diagnostics_async(
         page=page,
@@ -449,7 +455,18 @@ def build_feed_seen_stop_predicate(
         return None
 
     def has_seen_item(item_aliases: tuple[str, ...]) -> bool:
-        return app.repositories.seen_items.has_seen_any(target.scope_id, item_aliases)
+        legacy_cutoff = utc_now() - timedelta(
+            days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days
+        )
+        return app.repositories.logical_items.has_seen_any(
+            target_id=target.id,
+            scope_id=target.scope_id,
+            item_keys=item_aliases,
+        ) or app.repositories.seen_items.has_seen_any_since(
+            target.scope_id,
+            item_aliases,
+            legacy_cutoff,
+        )
 
     return has_seen_item
 

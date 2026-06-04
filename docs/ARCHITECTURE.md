@@ -43,7 +43,7 @@
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
 - keyword、include keyword groups、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
 - seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
-- 使用者按下「開始」只恢復監看並要求立即掃描；seen、notification outbox 去重狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows 與同一 scan scope 的 `seen_items`，但保留 `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
+- 使用者按下「開始」只恢復監看並要求立即掃描；seen、logical item aliases、notification dedupe/outbox 狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows 與同一 scan scope 的 `seen_items`，並推進 target-scoped dedupe epoch，但保留 `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源。
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
@@ -58,13 +58,13 @@
 - resident 啟動前會回收 stale runtime state，避免重啟後 target 永遠卡在 queued/running。
 - scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；先建立 target，再由 resident metadata refresh 補齊名稱。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
-- shared finalize 集中處理 seen aliases、keyword classification、match history、notification outbox、latest scan snapshot 與 scan run commit。
+- shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、keyword classification、match history、notification dedupe/outbox、latest scan snapshot 與 scan run commit。
 - 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；include keyword groups 採組內 OR、組間 AND，不展開笛卡兒積；通知沿用 `matched_keyword` 顯示成立的 include rules，group 診斷保留在 history、latest scan、diagnostics 與 UI highlight 資料中。
 - runtime status 只描述 executor 狀態；使用者停止語義由 `Target.paused` 與 `TargetDesiredState.STOPPED` 表示。
 
 ## Notification 與 Secret
 
-- Notification 採 outbox boundary：scan transaction 先寫 match data 與 outbox，commit 成功後才做外部 I/O。
+- Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
 - ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
@@ -99,16 +99,18 @@
 - 新欄位或資料轉換必須進 `persistence/migrations.py`，不得把既有 DB repair 塞回 current schema bootstrap。
 - dashboard revision 使用單列 revision table + SQLite triggers，支援 Web UI partial update。
 - Web UI theme 是 app-level preference，正式來源是 `app_settings['theme']`；尚未保存偏好時預設為 `dark`。
-- Runtime data maintenance 只清可重建 scan/debug 資料與可選的 `seen_items`；不得清除 `notification_outbox`。
+- Runtime data maintenance 只清可重建 scan/debug 資料與可選的 legacy `seen_items` mirror；不得把 `notification_outbox` 當作一般 runtime/debug 資料清掉。bounded retention 另行清理 60 天外 logical/dedupe state 與短期 terminal outbox rows。
+- Local dedupe 採 60 天 bounded horizon：`logical_items` / `logical_item_aliases` 以 `last_seen_at` 保留 60 天，`notification_dedupe` 以 `last_deduped_at` 保留 60 天；超過 horizon 的舊 item 若再次出現，可能被視為新的可通知項目。
+- bounded retention 會短留 terminal outbox rows：`sent` / `skipped` 預設保留 7 天，`failed` / `processing_failed` 預設保留 14 天供診斷；`pending` / `processing_pending`、latest scan 仍引用的 logical item 與 active notification dedupe references 會被保護。
 
 ## Web UI 語義
 
 - target 卡片的「開始 / 停止」是日常使用主開關。
 - Web UI 啟動時預設停止 targets，不自動恢復上次 active targets。
 - Web UI 不註冊全域 scheduler start/stop 日常 route。
-- 「開始」會保留 seen scope 與 notification outbox 去重 rows，只要求立即掃描並喚醒 scheduler。
+- 「開始」會保留 seen scope、logical item aliases、notification dedupe 與 notification outbox rows，只要求立即掃描並喚醒 scheduler。
 - 「停止」只暫停排程，保留 seen/history。
-- 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的去重紀錄）與同一 scan scope 的 seen items。它不清 `scan_scope_state`、match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
+- 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的投遞狀態）與同一 scan scope 的 legacy seen items，並推進 target-scoped dedupe epoch。它不清 `scan_scope_state`、match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
 - 社團縮圖載入失敗時，UI 會立即退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次。這個上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。

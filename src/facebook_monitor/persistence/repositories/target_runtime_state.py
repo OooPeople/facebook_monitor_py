@@ -28,9 +28,10 @@ class TargetRuntimeStateRepository:
                 last_started_at, last_finished_at, last_heartbeat_at, last_error,
                 last_skip_reason, enqueue_reason, active_worker_id, active_page_id,
                 last_page_reloaded_at, scan_guard_count, display_next_due_at,
-                consecutive_failure_reason, consecutive_failure_count, updated_at
+                consecutive_failure_reason, consecutive_failure_count,
+                consecutive_scan_skip_reason, consecutive_scan_skip_count, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(target_id) DO UPDATE SET
                 desired_state=excluded.desired_state,
                 runtime_status=excluded.runtime_status,
@@ -49,6 +50,8 @@ class TargetRuntimeStateRepository:
                 display_next_due_at=excluded.display_next_due_at,
                 consecutive_failure_reason=excluded.consecutive_failure_reason,
                 consecutive_failure_count=excluded.consecutive_failure_count,
+                consecutive_scan_skip_reason=excluded.consecutive_scan_skip_reason,
+                consecutive_scan_skip_count=excluded.consecutive_scan_skip_count,
                 updated_at=excluded.updated_at
             """,
             (
@@ -70,6 +73,8 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.display_next_due_at),
                 state.consecutive_failure_reason,
                 state.consecutive_failure_count,
+                state.consecutive_scan_skip_reason,
+                state.consecutive_scan_skip_count,
                 encode_datetime(state.updated_at),
             ),
         )
@@ -149,6 +154,8 @@ class TargetRuntimeStateRepository:
                 display_next_due_at = ?,
                 consecutive_failure_reason = ?,
                 consecutive_failure_count = ?,
+                consecutive_scan_skip_reason = ?,
+                consecutive_scan_skip_count = ?,
                 updated_at = ?
             WHERE target_id = ?
               AND runtime_status = ?
@@ -174,6 +181,8 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.display_next_due_at),
                 state.consecutive_failure_reason,
                 state.consecutive_failure_count,
+                state.consecutive_scan_skip_reason,
+                state.consecutive_scan_skip_count,
                 encode_datetime(state.updated_at),
                 state.target_id,
                 TargetRuntimeStatus.RUNNING.value,
@@ -308,6 +317,8 @@ class TargetRuntimeStateRepository:
                 display_next_due_at = ?,
                 consecutive_failure_reason = ?,
                 consecutive_failure_count = ?,
+                consecutive_scan_skip_reason = ?,
+                consecutive_scan_skip_count = ?,
                 updated_at = ?
             WHERE target_id = ?
               AND runtime_status = ?
@@ -334,6 +345,8 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.display_next_due_at),
                 state.consecutive_failure_reason,
                 state.consecutive_failure_count,
+                state.consecutive_scan_skip_reason,
+                state.consecutive_scan_skip_count,
                 encode_datetime(state.updated_at),
                 state.target_id,
                 TargetRuntimeStatus.RUNNING.value,

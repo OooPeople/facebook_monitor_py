@@ -19,6 +19,11 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
+from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import (
+    NotificationDedupeRepository,
+)
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import (
@@ -49,8 +54,11 @@ class TargetMonitoringCommands:
         *,
         targets: TargetRepository,
         runtime_states: TargetRuntimeStateRepository,
+        dedupe_state: DedupeStateRepository,
         seen_items: SeenItemRepository,
+        logical_items: LogicalItemRepository,
         scan_scope_state: ScanScopeStateRepository,
+        notification_dedupe: NotificationDedupeRepository,
         notification_outbox: NotificationOutboxRepository,
         registry: TargetRegistryService,
         configs: TargetConfigService,
@@ -58,8 +66,11 @@ class TargetMonitoringCommands:
     ) -> None:
         self.targets = targets
         self.runtime_states = runtime_states
+        self.dedupe_state = dedupe_state
         self.seen_items = seen_items
+        self.logical_items = logical_items
         self.scan_scope_state = scan_scope_state
+        self.notification_dedupe = notification_dedupe
         self.notification_outbox = notification_outbox
         self.registry = registry
         self.configs = configs
@@ -118,6 +129,11 @@ class TargetMonitoringCommands:
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
+        self.logical_items.clear_target_scope_current_epoch(
+            target_id=target.id,
+            scope_id=target.scope_id,
+        )
+        self.dedupe_state.advance_epoch(target.id)
         return ResetTargetNotificationStateResult(
             notification_outbox_rows=self.notification_outbox.clear_by_target(target.id),
             seen_items=self.seen_items.clear_scope(target.scope_id),

@@ -1,6 +1,6 @@
 [project]
 name = "facebook-monitor-py"
-version = "0.5.1"
+version = "0.5.2"
 description = "Python + Playwright Facebook posts and comments monitor."
 requires-python = ">=3.13,<3.14"
 dependencies = [

@@ -65,6 +65,41 @@ CREATE TABLE IF NOT EXISTS seen_items (
     PRIMARY KEY (scope_id, item_key)
 );
 
+CREATE TABLE IF NOT EXISTS target_dedupe_state (
+    target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+    dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS logical_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    scope_id TEXT NOT NULL,
+    dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+    canonical_item_key TEXT NOT NULL,
+    parent_post_id TEXT NOT NULL DEFAULT '',
+    comment_id TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS logical_item_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    logical_item_id INTEGER NOT NULL REFERENCES logical_items(id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    scope_id TEXT NOT NULL,
+    dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+    alias_key TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (target_id, dedupe_epoch, alias_key)
+);
+
 CREATE TABLE IF NOT EXISTS scan_scope_state (
     scope_id TEXT PRIMARY KEY,
     initialized INTEGER NOT NULL CHECK (initialized IN (0, 1)),
@@ -154,9 +189,31 @@ CREATE TABLE IF NOT EXISTS notification_events (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS notification_dedupe (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+    event_kind TEXT NOT NULL CHECK (event_kind IN ('match', 'runtime_failure')),
+    channel TEXT NOT NULL CHECK (channel IN ('desktop', 'ntfy', 'discord')),
+    subject_key TEXT NOT NULL,
+    logical_item_id INTEGER REFERENCES logical_items(id) ON DELETE SET NULL,
+    item_key TEXT NOT NULL DEFAULT '',
+    item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'sent', 'failed', 'skipped')),
+    notification_event_id INTEGER,
+    failure_reason TEXT NOT NULL DEFAULT '',
+    failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+    first_queued_at TEXT NOT NULL,
+    last_deduped_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (target_id, dedupe_epoch, event_kind, channel, subject_key)
+);
+
 CREATE TABLE IF NOT EXISTS notification_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     idempotency_key TEXT NOT NULL UNIQUE,
+    dedupe_id INTEGER REFERENCES notification_dedupe(id) ON DELETE SET NULL,
     target_id TEXT NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     item_key TEXT NOT NULL,
     item_kind TEXT NOT NULL CHECK (item_kind IN ('post', 'comment')),
@@ -196,6 +253,8 @@ CREATE TABLE IF NOT EXISTS target_runtime_state (
     display_next_due_at TEXT NOT NULL DEFAULT '',
     consecutive_failure_reason TEXT NOT NULL DEFAULT '',
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failure_count >= 0),
+    consecutive_scan_skip_reason TEXT NOT NULL DEFAULT '',
+    consecutive_scan_skip_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_scan_skip_count >= 0),
     updated_at TEXT NOT NULL
 );
 
@@ -288,6 +347,21 @@ CREATE INDEX IF NOT EXISTS idx_notification_events_target_id_desc
     ON notification_events(target_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_events_target_channel_id_desc
     ON notification_events(target_id, channel, id DESC);
+CREATE INDEX IF NOT EXISTS idx_target_dedupe_state_epoch
+    ON target_dedupe_state(target_id, dedupe_epoch);
+CREATE INDEX IF NOT EXISTS idx_logical_items_target_scope_seen
+    ON logical_items(target_id, scope_id, dedupe_epoch, last_seen_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_logical_items_comment_identity
+    ON logical_items(target_id, dedupe_epoch, item_kind, parent_post_id, comment_id)
+    WHERE item_kind = 'comment' AND comment_id <> '';
+CREATE INDEX IF NOT EXISTS idx_logical_item_aliases_logical
+    ON logical_item_aliases(logical_item_id);
+CREATE INDEX IF NOT EXISTS idx_logical_item_aliases_scope_seen
+    ON logical_item_aliases(target_id, scope_id, dedupe_epoch, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_notification_dedupe_target_updated
+    ON notification_dedupe(target_id, dedupe_epoch, last_deduped_at);
+CREATE INDEX IF NOT EXISTS idx_notification_dedupe_logical
+    ON notification_dedupe(logical_item_id);
 CREATE INDEX IF NOT EXISTS idx_latest_scan_items_target_index
     ON latest_scan_items(target_id, item_index);
 CREATE INDEX IF NOT EXISTS idx_latest_scan_item_matches_target_item

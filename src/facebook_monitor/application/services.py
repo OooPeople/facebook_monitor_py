@@ -27,6 +27,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
+from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
@@ -44,6 +45,11 @@ from facebook_monitor.persistence.repositories.scan_scope_state import ScanScope
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.target_cover_image_refresh import (
     TargetCoverImageRefreshRepository,
+)
+from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import (
+    NotificationDedupeRepository,
 )
 from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
@@ -69,16 +75,22 @@ class TargetApplicationService:
         configs: TargetConfigRepository,
         cover_image_refreshes: TargetCoverImageRefreshRepository,
         runtime_states: TargetRuntimeStateRepository,
+        dedupe_state: DedupeStateRepository,
         seen_items: SeenItemRepository,
+        logical_items: LogicalItemRepository,
         scan_scope_state: ScanScopeStateRepository,
+        notification_dedupe: NotificationDedupeRepository,
         notification_outbox: NotificationOutboxRepository,
     ) -> None:
         self.targets = targets
         self.configs = configs
         self.cover_image_refreshes = cover_image_refreshes
         self.runtime_states = runtime_states
+        self.dedupe_state = dedupe_state
         self.seen_items = seen_items
+        self.logical_items = logical_items
         self.scan_scope_state = scan_scope_state
+        self.notification_dedupe = notification_dedupe
         self.notification_outbox = notification_outbox
         self.config_service = TargetConfigService(targets=targets, configs=configs)
         self.runtime_service = TargetRuntimeService(
@@ -93,8 +105,11 @@ class TargetApplicationService:
         self.monitoring_commands = TargetMonitoringCommands(
             targets=targets,
             runtime_states=runtime_states,
+            dedupe_state=dedupe_state,
             seen_items=seen_items,
+            logical_items=logical_items,
             scan_scope_state=scan_scope_state,
+            notification_dedupe=notification_dedupe,
             notification_outbox=notification_outbox,
             registry=self.registry_service,
             configs=self.config_service,
@@ -454,6 +469,49 @@ class TargetApplicationService:
             page_id=page_id,
         )
 
+    def decide_scan_skip(
+        self,
+        target_id: str,
+        reason: str,
+        *,
+        skip_limit: int,
+    ) -> ScanSkipDecision:
+        """依目前 skipped scan streak 決定是否升級為 failure。"""
+
+        return self.runtime_service.decide_scan_skip(
+            target_id,
+            reason,
+            skip_limit=skip_limit,
+        )
+
+    def apply_scan_skip_decision(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+    ) -> TargetRuntimeState:
+        """記錄保護性 skipped scan 並回 idle。"""
+
+        return self.runtime_service.apply_scan_skip_decision(target_id, decision)
+
+    def apply_scan_skip_decision_if_owner(
+        self,
+        target_id: str,
+        decision: ScanSkipDecision,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只有目前 running owner 相同時，才記錄 skipped scan state。"""
+
+        return self.runtime_service.apply_scan_skip_decision_if_owner(
+            target_id,
+            decision,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
     def mark_target_error(
         self,
         target_id: str,
@@ -566,18 +624,6 @@ class TargetApplicationService:
         """要求 scheduler 下一輪立即掃描 target，不修改 seen 狀態。"""
 
         return self.runtime_service.request_target_scan(target_id)
-
-    def request_target_retry_after_runtime_failure(
-        self,
-        target_id: str,
-        reason: str,
-    ) -> TargetRuntimeState:
-        """背景 runtime 整體失敗後要求 target 下一輪立即重掃。"""
-
-        return self.runtime_service.request_target_retry_after_runtime_failure(
-            target_id,
-            reason,
-        )
 
     def clear_target_scan_request(self, target_id: str) -> TargetRuntimeState:
         """清除已被 scheduler 消化的立即掃描要求。"""

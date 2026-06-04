@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import Callable
 from collections.abc import Coroutine
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 from typing import Protocol
@@ -21,9 +22,14 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
+from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
@@ -48,8 +54,6 @@ from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_fa
 
 
 AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
-
-
 class AsyncResidentPageLike(Protocol):
     """resident executor page preparation 需要的 async Playwright page 能力。"""
 
@@ -117,6 +121,7 @@ class ExecutorWorkerPool:
         self._active_scan_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
         self._active_attempt_lock = asyncio.Lock()
         self._active_attempt_tasks: dict[str, tuple[str, asyncio.Task[Any]]] = {}
+        self._runtime_restart_requested = asyncio.Event()
 
     async def start(self) -> None:
         """啟動固定數量的 executor worker slots。"""
@@ -126,16 +131,28 @@ class ExecutorWorkerPool:
             for worker_id in self.worker_ids
         ]
 
-    async def stop(self, *, cancel_running: bool = False) -> None:
+    async def stop(
+        self,
+        *,
+        cancel_running: bool = False,
+        runtime_restart: bool = False,
+    ) -> None:
         """停止 worker slots；必要時取消尚未完成的長掃描。"""
 
+        if runtime_restart:
+            self.request_runtime_restart()
         if cancel_running:
             for target_id in await self.target_queue.cancel_pending():
-                mark_resident_target_idle(self.options.db_path, target_id)
+                if runtime_restart:
+                    self._request_target_retry_after_runtime_restart(target_id)
+                else:
+                    mark_resident_target_idle(self.options.db_path, target_id)
+        if cancel_running and runtime_restart:
+            await self._cancel_active_attempts_for_runtime_restart()
 
         for _worker_id in self.worker_ids:
             await self.target_queue.stop_worker()
-        if cancel_running:
+        if cancel_running and not runtime_restart:
             for task in self.worker_tasks:
                 if not task.done():
                     task.cancel()
@@ -146,6 +163,55 @@ class ExecutorWorkerPool:
         """回傳 worker tasks 是否仍健康存活。"""
 
         return all(not task.done() or task.cancelled() for task in self.worker_tasks)
+
+    def runtime_restart_requested(self) -> bool:
+        """回傳目前 browser runtime 是否需要關閉並重建。"""
+
+        return self._runtime_restart_requested.is_set()
+
+    def request_runtime_restart(self) -> None:
+        """要求外層 resident loop 關閉並重建 browser runtime。"""
+
+        self._runtime_restart_requested.set()
+
+    async def wait_runtime_restart_requested(self) -> None:
+        """等待 browser runtime restart request 被觸發。"""
+
+        await self._runtime_restart_requested.wait()
+
+    async def _cancel_active_attempts_for_runtime_restart(self) -> None:
+        """取消正在使用壞掉 browser runtime 的 target attempts 並等待寫回。"""
+
+        async with self._active_attempt_lock:
+            attempt_tasks = tuple(
+                task
+                for _owner_key, task in self._active_attempt_tasks.values()
+                if not task.done()
+            )
+        for task in attempt_tasks:
+            task.cancel()
+        if attempt_tasks:
+            await asyncio.gather(*attempt_tasks, return_exceptions=True)
+
+    def _request_target_retry_after_runtime_restart(self, target_id: str) -> None:
+        """讓尚未開始的 queued target 在新 runtime 建立後立即補掃。"""
+
+        with SqliteApplicationContext(self.options.db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return
+            state = app.services.targets.ensure_runtime_state(target_id)
+            now = utc_now()
+            app.repositories.runtime_states.save(
+                replace(
+                    state,
+                    runtime_status=TargetRuntimeStatus.IDLE,
+                    scan_requested_at=now,
+                    enqueue_reason="",
+                    active_worker_id="",
+                    active_page_id="",
+                    updated_at=now,
+                )
+            )
 
     async def enqueue_due_targets(self, due_targets: tuple[DueTarget, ...]) -> int:
         """把 due targets 放入 queue；成功 enqueue 時同步 runtime state。"""
@@ -284,7 +350,11 @@ class ExecutorWorkerPool:
             await prepare_resident_main_page(
                 page=page,
                 target=resident_target,
-                timeout_ms=max(self.options.scan_timeout_seconds, 10) * 1000,
+                timeout_ms=max(
+                    self.options.scan_timeout_seconds,
+                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+                )
+                * 1000,
             )
             reloaded_at = await self.page_pool.mark_reloaded_if_page_id(
                 target_id,
@@ -346,6 +416,8 @@ class ExecutorWorkerPool:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
+            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
+                self.request_runtime_restart()
             return AsyncTargetScanResult(
                 target_id=target_id,
                 failure=True,
@@ -353,10 +425,27 @@ class ExecutorWorkerPool:
                 reused_page=not opened and bool(page_id),
             )
         except asyncio.CancelledError:
+            if self.runtime_restart_requested():
+                decision = record_guarded_scan_failure_for_db(
+                    db_path=self.options.db_path,
+                    target_id=target_id,
+                    reason=SCHEDULER_RUNTIME_REASON,
+                    message="browser runtime restart requested",
+                    source="unknown_exception",
+                    worker_path="resident_main",
+                    commit_guard=commit_guard,
+                    exception_class="CancelledError",
+                    page_reused=acquired_page and not opened,
+                )
+                if decision is None:
+                    return AsyncTargetScanResult(target_id=target_id, skipped=True)
+                if decision.discard_page:
+                    await self.page_pool.discard(target_id)
+                return AsyncTargetScanResult(target_id=target_id, failure=True)
             record_guarded_scan_failure_for_db(
                 db_path=self.options.db_path,
                 target_id=target_id,
-                reason="scheduler_stopping",
+                reason=SCHEDULER_STOPPING_REASON,
                 message="resident scheduler is stopping",
                 source="scheduler_cancel",
                 worker_path="resident_main",
@@ -382,6 +471,8 @@ class ExecutorWorkerPool:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
+            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
+                self.request_runtime_restart()
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         except Exception as exc:
             decision = record_guarded_scan_failure_for_db(
@@ -399,6 +490,8 @@ class ExecutorWorkerPool:
                 return AsyncTargetScanResult(target_id=target_id, skipped=True)
             if decision.discard_page:
                 await self.page_pool.discard(target_id)
+            if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
+                self.request_runtime_restart()
             return AsyncTargetScanResult(target_id=target_id, failure=True)
         finally:
             await self._unregister_active_attempt(target_id, owner_key)

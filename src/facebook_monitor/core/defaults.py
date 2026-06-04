@@ -56,6 +56,10 @@ class SchedulerRuntimeDefaults:
     cover_image_load_failure_min_interval_seconds: int = 21600
     page_load_timeout_failure_limit: int = 3
     stale_running_failure_limit: int = 3
+    scheduler_runtime_failure_limit: int = 3
+    sort_adjust_unconfirmed_skip_limit: int = 3
+    sort_adjust_unconfirmed_failure_limit: int = 3
+    recoverable_failure_limit: int = 3
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,16 @@ class PersistenceQueryDefaults:
     list_limit_per_target: int = 50
 
 
+@dataclass(frozen=True)
+class PersistenceRetentionDefaults:
+    """保存本機 DB bounded retention 的 Python 版預設值。"""
+
+    logical_dedupe_horizon_days: int = 60
+    terminal_outbox_retention_days: int = 7
+    failed_outbox_retention_days: int = 14
+    maintenance_interval_seconds: int = 3600
+
+
 PYTHON_TARGET_CONFIG_DEFAULTS = TargetConfigDefaults()
 PYTHON_SCHEDULER_RUNTIME_DEFAULTS = SchedulerRuntimeDefaults()
 PYTHON_BROWSER_RUNTIME_DEFAULTS = BrowserRuntimeDefaults()
@@ -135,3 +149,4 @@ PYTHON_PROFILE_LOGIN_DEFAULTS = ProfileLoginDefaults()
 PYTHON_UPDATER_RUNTIME_DEFAULTS = UpdaterRuntimeDefaults()
 PYTHON_NOTIFICATION_RUNTIME_DEFAULTS = NotificationRuntimeDefaults()
 PYTHON_PERSISTENCE_QUERY_DEFAULTS = PersistenceQueryDefaults()
+PYTHON_PERSISTENCE_RETENTION_DEFAULTS = PersistenceRetentionDefaults()

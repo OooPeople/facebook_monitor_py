@@ -20,6 +20,7 @@ from typing import Protocol
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
 from facebook_monitor.worker.scan_failure_finalize import (
     record_active_targets_runtime_failure_notifications_for_db,
@@ -342,6 +343,8 @@ class BackgroundSchedulerManager:
         with self._lock:
             self.last_cycle_at = utc_now().isoformat(timespec="seconds")
             self.last_error = ""
+            if self.lifecycle_state == SchedulerLifecycleState.ERROR:
+                self.lifecycle_state = SchedulerLifecycleState.RUNNING
             self.current_running_count = summary.running_count
             self.current_queued_count = summary.queued_count
             self.queue_length = summary.queue_length
@@ -418,7 +421,9 @@ def _scheduler_failure_reason(exc: Exception) -> str:
     """將 resident main 全域例外轉成可通知的 failure reason。"""
 
     reason = str(getattr(exc, "reason", "") or "").strip()
-    return reason or SCHEDULER_RUNTIME_REASON
+    if not reason or reason == UNKNOWN_REASON:
+        return SCHEDULER_RUNTIME_REASON
+    return reason
 
 
 def _wait_for_stop(stop_event: Event, seconds: float) -> bool:

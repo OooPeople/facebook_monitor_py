@@ -18,6 +18,7 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
@@ -95,6 +96,8 @@ def list_active_resident_target_ids(db_path: Path) -> set[str]:
                 continue
             runtime_state = app.services.targets.ensure_runtime_state(target.id)
             if runtime_state.desired_state == TargetDesiredState.ACTIVE:
+                if runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
+                    continue
                 target_ids.add(target.id)
         return target_ids
 

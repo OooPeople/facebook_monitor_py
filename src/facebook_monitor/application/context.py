@@ -18,11 +18,16 @@ from facebook_monitor.application.sidebar_layout_service import SidebarLayoutSer
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
+from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
 from facebook_monitor.persistence.repositories.global_notification_settings import (
     GlobalNotificationSettingsRepository,
 )
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import (
+    NotificationDedupeRepository,
+)
 from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
@@ -58,12 +63,15 @@ class RepositoryBundle:
     configs: TargetConfigRepository
     cover_image_refreshes: TargetCoverImageRefreshRepository
     runtime_states: TargetRuntimeStateRepository
+    dedupe_state: DedupeStateRepository
     seen_items: SeenItemRepository
+    logical_items: LogicalItemRepository
     match_history: MatchHistoryRepository
     latest_scan_items: LatestScanItemRepository
     scan_runs: ScanRunRepository
     scan_scope_state: ScanScopeStateRepository
     notification_events: NotificationEventRepository
+    notification_dedupe: NotificationDedupeRepository
     notification_outbox: NotificationOutboxRepository
     global_notification_settings: GlobalNotificationSettingsRepository
     app_settings: AppSettingsRepository
@@ -120,12 +128,15 @@ def build_repositories(
         configs=TargetConfigRepository(connection, secret_codec=secret_codec),
         cover_image_refreshes=TargetCoverImageRefreshRepository(connection),
         runtime_states=TargetRuntimeStateRepository(connection),
+        dedupe_state=DedupeStateRepository(connection),
         seen_items=SeenItemRepository(connection),
+        logical_items=LogicalItemRepository(connection),
         match_history=MatchHistoryRepository(connection),
         latest_scan_items=LatestScanItemRepository(connection),
         scan_runs=ScanRunRepository(connection),
         scan_scope_state=ScanScopeStateRepository(connection),
         notification_events=NotificationEventRepository(connection),
+        notification_dedupe=NotificationDedupeRepository(connection),
         notification_outbox=NotificationOutboxRepository(
             connection,
             secret_codec=secret_codec,
@@ -153,8 +164,11 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
             configs=repositories.configs,
             cover_image_refreshes=repositories.cover_image_refreshes,
             runtime_states=repositories.runtime_states,
+            dedupe_state=repositories.dedupe_state,
             seen_items=repositories.seen_items,
+            logical_items=repositories.logical_items,
             scan_scope_state=repositories.scan_scope_state,
+            notification_dedupe=repositories.notification_dedupe,
             notification_outbox=repositories.notification_outbox,
         ),
         scans=ScanApplicationService(scan_runs=repositories.scan_runs),

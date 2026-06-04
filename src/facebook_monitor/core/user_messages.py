@@ -17,8 +17,10 @@ from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
 from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
@@ -43,7 +45,8 @@ _FAILURE_REASON_LABELS = {
     EXTRACTOR_EMPTY_REASON: "未抽取到可用項目",
     SCAN_TIMEOUT_REASON: "掃描逾時",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入逾時",
-    "scheduler_stopping": "背景掃描正在停止",
+    SORT_ADJUST_UNCONFIRMED_REASON: "調整排序失敗",
+    SCHEDULER_STOPPING_REASON: "背景掃描正在停止",
     TARGET_STOPPED_REASON: "監視項目已停止",
     TARGET_MISSING_REASON: "找不到監視項目",
     TARGET_INVALID_REASON: "監視項目設定無效",
@@ -61,18 +64,19 @@ _FAILURE_REASON_DETAILS = {
     SESSION_INVALID_REASON: "Facebook 工作階段已失效，請重新登入後再掃描。",
     PROFILE_LOCKED_REASON: "瀏覽器設定檔目前被其他視窗或程序使用中，請關閉其他自動化瀏覽器或登入視窗後再試。",
     PROFILE_MISSING_REASON: "找不到自動化瀏覽器設定檔，請先到設定頁開啟 Facebook 登入視窗。",
-    SCHEDULER_RUNTIME_REASON: "背景掃描程序或瀏覽器 context 發生錯誤，本輪監視無法繼續。",
-    EXTRACTOR_EMPTY_REASON: "頁面載入完成但沒有抽取到可辨識的貼文或留言，請稍後重試或檢查頁面權限。",
-    SCAN_TIMEOUT_REASON: "本輪掃描超過設定時間，已中止並等待下一次排程。",
+    SCHEDULER_RUNTIME_REASON: "背景掃描程序或瀏覽器 context 發生錯誤，系統會重啟執行環境並重試。",
+    EXTRACTOR_EMPTY_REASON: "頁面載入完成但沒有抽取到可辨識的貼文或留言，系統會重啟頁面並重試。",
+    SCAN_TIMEOUT_REASON: "本輪掃描超過設定時間，系統已中止本輪並會重啟頁面重試。",
     PAGE_LOAD_TIMEOUT_REASON: "頁面載入、重新導向或重新整理時中斷，掃描中的頁面內容已失效；請稍後重試。",
-    "scheduler_stopping": "背景掃描服務正在停止，本輪掃描已取消。",
+    SORT_ADJUST_UNCONFIRMED_REASON: "連續多輪未能確認 Facebook 排序已切到最新，系統會重啟頁面並重試。",
+    SCHEDULER_STOPPING_REASON: "背景掃描服務正在停止，本輪掃描已取消。",
     TARGET_STOPPED_REASON: "監視項目在掃描期間被停止，本輪掃描已取消。",
     TARGET_MISSING_REASON: "掃描前找不到這個監視項目，可能已被刪除。",
     TARGET_INVALID_REASON: "監視項目設定不完整或與目前頁面不一致，請重新確認設定。",
     TARGET_KIND_UNSUPPORTED_REASON: "目前背景掃描不支援這個監視項目類型。",
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數互相衝突，請只指定一種監視項目。",
     UNKNOWN_REASON: "發生未分類錯誤，請查看 log 或稍後重試。",
-    STALE_RUNNING_REASON: "背景掃描心跳已逾時，系統已將本輪掃描標記為錯誤。",
+    STALE_RUNNING_REASON: "背景掃描心跳已逾時，系統已記錄本輪失敗並會重啟頁面重試。",
     "stale_queued_recovered": "監視項目排隊等待過久，系統已將它回復為可再次排程。",
 }
 

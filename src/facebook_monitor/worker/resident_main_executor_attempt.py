@@ -17,6 +17,7 @@ from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
+from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.errors import WorkerFailure
@@ -463,7 +464,9 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
         return AsyncTargetScanResult(target_id=target_id, failure=True)
     except Exception as exc:
         reason = classify_wrapped_playwright_exception(exc)
-        source = "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
+        source: ScanFailureSource = (
+            "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
+        )
         decision = await record_guarded_scan_failure_for_db_async(
             db_path=pool.options.db_path,
             target_id=target_id,

@@ -240,12 +240,6 @@
   min-width: 0;
 }
 
-.hit-record-content span {
-  color: var(--text-soft);
-  font-size: 14px;
-  font-weight: 600;
-}
-
 .hit-record-row p {
   color: var(--text);
   font-size: 14px;

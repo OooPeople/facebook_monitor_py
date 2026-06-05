@@ -361,6 +361,9 @@ def test_hit_records_modal_renders_keyword_segments_without_inner_html() -> None
     assert "keyword-highlight" in hit_records_js
     assert "item.content_segments" in hit_records_js
     assert "content.innerHTML" not in hit_records_js
+    assert "contentLabel" not in hit_records_js
+    assert "內容：" not in hit_records_js
+    assert ".hit-record-content span" not in modals_css
     content_rule = _css_rule_body(modals_css, ".hit-record-content p")
     assert "white-space: pre-line;" in content_rule
 

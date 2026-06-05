@@ -127,11 +127,8 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
     appendHitRecordField(fields, "記錄時間", item.recorded_at || item.notified_at);
     const contentBlock = document.createElement("div");
     contentBlock.className = "hit-record-content";
-    const contentLabel = document.createElement("span");
-    contentLabel.textContent = "內容：";
     const content = document.createElement("p");
     appendTextSegments(content, item.content, item.content_segments);
-    contentBlock.appendChild(contentLabel);
     contentBlock.appendChild(content);
     const actions = document.createElement("div");
     actions.className = "hit-record-actions";

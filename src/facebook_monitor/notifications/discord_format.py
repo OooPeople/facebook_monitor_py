@@ -14,6 +14,7 @@ from facebook_monitor.notifications.payload import normalize_notification_fields
 ANSI_ESCAPE_CHAR = "\x1b"
 ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DISCORD_MARKDOWN_SPECIAL_CHARS = "\\`*_~|[]()<>"
+DISCORD_MATCH_HEADING = "# Facebook keyword match"
 
 
 def build_discord_match_notification_payload(
@@ -28,6 +29,7 @@ def build_discord_match_notification_payload(
         else "Facebook group match"
     )
     lines = [
+        DISCORD_MATCH_HEADING,
         f"社團：{normalize_discord_single_line(normalized.group_name)}",
         f"類型：{normalize_discord_single_line(item_kind_label(normalized.item_kind))}",
         f"作者：{normalize_discord_single_line(normalized.author)}",
@@ -101,6 +103,14 @@ def strip_ansi_escape_sequences(value: object) -> str:
 
 
 def format_discord_link_url(value: object) -> str:
-    """整理 Discord content 中直接顯示的連結。"""
+    """整理 Discord content 中直接顯示且不展開預覽的連結。"""
 
-    return str(value or "").replace("\\", "%5C").replace(")", "%29").replace(" ", "%20")
+    url = (
+        str(value or "")
+        .replace("\\", "%5C")
+        .replace(")", "%29")
+        .replace(" ", "%20")
+        .replace("<", "%3C")
+        .replace(">", "%3E")
+    )
+    return f"<{url}>"

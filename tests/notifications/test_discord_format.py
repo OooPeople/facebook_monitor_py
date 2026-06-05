@@ -25,6 +25,7 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
 
     assert title == "Facebook group match"
     assert message.splitlines() == [
+        "# Facebook keyword match",
         "社團：中信兄弟商品及門票 代購轉售",
         "類型：貼文",
         "作者：陳建宇",
@@ -32,7 +33,7 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
         "",
         "#售票文 售**6/3**內野**118**區25排15到18號有4張連號",
         "",
-        "https://www.facebook.com/groups/1/posts/2",
+        "<https://www.facebook.com/groups/1/posts/2>",
     ]
     assert "社團:" not in message
     assert "類型:" not in message
@@ -45,10 +46,11 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
     assert "[開啟連結]" not in message
     assert "```" not in message
     assert "\x1b" not in message
+    assert message.startswith("# Facebook keyword match\n社團：")
     assert "命中：6/3  ,  118\n\n#售票文" in message
     assert (
         "#售票文 售**6/3**內野**118**區25排15到18號有4張連號"
-        "\n\nhttps://www.facebook.com/groups/1/posts/2"
+        "\n\n<https://www.facebook.com/groups/1/posts/2>"
     ) in message
     assert "━" not in message
 
@@ -169,10 +171,10 @@ def test_strip_ansi_escape_sequences_removes_source_esc() -> None:
     assert strip_ansi_escape_sequences("a\x1b[31mb\x1bc") == "abc"
 
 
-def test_format_discord_link_url_preserves_direct_link_text() -> None:
-    """Discord link 直接顯示 URL，並整理空白與右括號。"""
+def test_format_discord_link_url_suppresses_embed_preview() -> None:
+    """Discord link 使用 angle wrapper 取消預覽，並整理會破壞語法的字元。"""
 
     assert (
-        format_discord_link_url("https://example.com/a b)c")
-        == "https://example.com/a%20b%29c"
+        format_discord_link_url("https://example.com/a b)c<d>")
+        == "<https://example.com/a%20b%29c%3Cd%3E>"
     )

@@ -14,7 +14,7 @@ from facebook_monitor.notifications.payload import normalize_notification_fields
 ANSI_ESCAPE_CHAR = "\x1b"
 ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DISCORD_MARKDOWN_SPECIAL_CHARS = "\\`*_~|[]()<>"
-DISCORD_MATCH_HEADING = "# Facebook keyword match"
+DISCORD_MATCH_HEADING = "# * Facebook keyword match"
 
 
 def build_discord_match_notification_payload(

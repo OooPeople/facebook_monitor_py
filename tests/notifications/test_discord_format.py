@@ -25,7 +25,7 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
 
     assert title == "Facebook group match"
     assert message.splitlines() == [
-        "# Facebook keyword match",
+        "# * Facebook keyword match",
         "社團：中信兄弟商品及門票 代購轉售",
         "類型：貼文",
         "作者：陳建宇",
@@ -46,7 +46,7 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
     assert "[開啟連結]" not in message
     assert "```" not in message
     assert "\x1b" not in message
-    assert message.startswith("# Facebook keyword match\n社團：")
+    assert message.startswith("# * Facebook keyword match\n社團：")
     assert "命中：6/3  ,  118\n\n#售票文" in message
     assert (
         "#售票文 售**6/3**內野**118**區25排15到18號有4張連號"

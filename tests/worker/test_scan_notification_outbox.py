@@ -603,7 +603,7 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
         assert "第一行**票券**\n第二行座位" in entry.message
         assert "內容:" not in entry.message
         assert "命中:" not in entry.message
-        assert "```" not in entry.message
+        assert entry.message.endswith("\n```\n \n```")
         assert "\x1b" not in entry.message
         assert "━" not in entry.message
 
@@ -612,7 +612,7 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
     assert "第一行**票券**\n第二行座位" in sent_discord[0][2]
     assert "內容:" not in sent_discord[0][2]
     assert "命中:" not in sent_discord[0][2]
-    assert "```" not in sent_discord[0][2]
+    assert sent_discord[0][2].endswith("\n```\n \n```")
     assert "\x1b" not in sent_discord[0][2]
     assert "━" not in sent_discord[0][2]
 

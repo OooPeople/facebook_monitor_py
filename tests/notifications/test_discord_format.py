@@ -29,11 +29,14 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
         "社團：中信兄弟商品及門票 代購轉售",
         "類型：貼文",
         "作者：陳建宇",
-        "命中：6/3  ,  118",
+        "命中：6/3 ,  118",
         "",
         "#售票文 售**6/3**內野**118**區25排15到18號有4張連號",
         "",
         "<https://www.facebook.com/groups/1/posts/2>",
+        "```",
+        " ",
+        "```",
     ]
     assert "社團:" not in message
     assert "類型:" not in message
@@ -44,10 +47,10 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
     assert "連結:" not in message
     assert "開啟連結：" not in message
     assert "[開啟連結]" not in message
-    assert "```" not in message
     assert "\x1b" not in message
     assert message.startswith("# * Facebook keyword match\n社團：")
-    assert "命中：6/3  ,  118\n\n#售票文" in message
+    assert message.endswith("\n```\n \n```")
+    assert "命中：6/3 ,  118\n\n#售票文" in message
     assert (
         "#售票文 售**6/3**內野**118**區25排15到18號有4張連號"
         "\n\n<https://www.facebook.com/groups/1/posts/2>"
@@ -73,8 +76,8 @@ def test_discord_match_payload_preserves_content_newlines() -> None:
         )
     )
 
-    assert "命中：6/5  ,  110  ,  114" in message
-    assert "命中：6/5  ,  110  ,  114\n\n**6/5**" in message
+    assert "命中：6/5 ,  110 ,  114" in message
+    assert "命中：6/5 ,  110 ,  114\n\n**6/5**" in message
     assert (
         "**6/5** **110** 12排小號 電子票 1080\n"
         "以下位置不含開場舞時間 需自行補票\n"
@@ -83,6 +86,7 @@ def test_discord_match_payload_preserves_content_newlines() -> None:
     ) in message
     assert "內容:" not in message
     assert "\x1b" not in message
+    assert message.endswith("\n```\n \n```")
 
 
 def test_discord_match_payload_escapes_markdown_around_content_highlight() -> None:
@@ -100,7 +104,7 @@ def test_discord_match_payload_escapes_markdown_around_content_highlight() -> No
 
     assert "社團：測試\\_社團" in message
     assert "作者：A\\*B" in message
-    assert "命中：6/3  ,  118  ,  \\[票券\\]\\(evil\\)" in message
+    assert "命中：6/3 ,  118 ,  \\[票券\\]\\(evil\\)" in message
     assert "售**6/3**\\_內野**118**\\*區 \\[測試\\]\\(x\\)" in message
     assert "內容:" not in message
 
@@ -135,7 +139,8 @@ def test_discord_match_payload_escapes_body_backticks() -> None:
         )
     )
 
-    assert "```" not in message
+    assert message.count("```") == 2
+    assert message.endswith("\n```\n \n```")
     assert "第一行\\`\\`\\`**票券**" in message
     assert "第二行\\`\\`\\`\\`座位" in message
 

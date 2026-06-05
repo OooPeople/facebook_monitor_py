@@ -15,6 +15,7 @@ ANSI_ESCAPE_CHAR = "\x1b"
 ANSI_ESCAPE_SEQUENCE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 DISCORD_MARKDOWN_SPECIAL_CHARS = "\\`*_~|[]()<>"
 DISCORD_MATCH_HEADING = "# * Facebook keyword match"
+DISCORD_TRAILING_SEPARATOR_LINES = ("```", " ", "```")
 
 
 def build_discord_match_notification_payload(
@@ -40,6 +41,7 @@ def build_discord_match_notification_payload(
     if normalized.permalink:
         lines.append("")
         lines.append(format_discord_link_url(normalized.permalink))
+    lines.extend(DISCORD_TRAILING_SEPARATOR_LINES)
     return title, "\n".join(lines)
 
 
@@ -56,7 +58,7 @@ def format_discord_matched_rule_label(matched_rule: str) -> str:
 
     rules = split_keyword_rule_text(matched_rule)
     if rules:
-        return "  ,  ".join(normalize_discord_single_line(rule) for rule in rules)
+        return " ,  ".join(normalize_discord_single_line(rule) for rule in rules)
     return normalize_discord_single_line(matched_rule)
 
 

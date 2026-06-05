@@ -7,7 +7,9 @@ from playwright.async_api import Error as AsyncPlaywrightError
 from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.worker.errors import classify_playwright_exception
+from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 
 
 def test_classify_playwright_browser_context_closed_as_scheduler_runtime() -> None:
@@ -28,6 +30,33 @@ def test_classify_playwright_driver_closed_as_scheduler_runtime() -> None:
     )
 
     assert reason == SCHEDULER_RUNTIME_REASON
+
+
+def test_classify_wrapped_playwright_driver_closed_as_scheduler_runtime() -> None:
+    """被一般 Exception 包住的 driver 斷線仍應歸 browser runtime failure。"""
+
+    messages = (
+        "Connection closed while reading from the driver",
+        "Page.evaluate: Connection closed while reading from the driver",
+        "BrowserContext.new_page: Connection closed while reading from the driver",
+    )
+
+    for message in messages:
+        reason = classify_wrapped_playwright_exception(Exception(message))
+
+        assert reason == SCHEDULER_RUNTIME_REASON
+
+
+def test_classify_wrapped_non_playwright_timeout_stays_unknown() -> None:
+    """一般內部 timeout 不應因字面文字被誤歸 Playwright page load。"""
+
+    reason = classify_wrapped_playwright_exception(Exception("internal timeout"))
+
+    assert reason == UNKNOWN_REASON
+    assert (
+        classify_wrapped_playwright_exception(Exception("page.render timeout"))
+        == UNKNOWN_REASON
+    )
 
 
 def test_classify_playwright_navigation_error_as_page_load_timeout() -> None:

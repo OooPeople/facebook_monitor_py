@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
@@ -285,6 +287,74 @@ def test_resident_main_browser_context_closed_retries_until_third_failure(
     assert latest_scan.metadata["runtime_action"] == "error"
     assert latest_scan.metadata["retry_streak"] == 3
     assert latest_scan.metadata["retry_limit"] == 3
+
+
+def test_resident_main_wrapped_driver_closed_requests_runtime_restart(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    """一般 Exception 若包住 Playwright driver 斷線，也要重建 browser runtime。"""
+
+    caplog.set_level(
+        logging.WARNING,
+        logger="facebook_monitor.worker.resident_main_executor_attempt",
+    )
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def failing_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise Exception("Page.evaluate: Connection closed while reading from the driver")
+
+    async def run_test() -> None:
+        context = FakeAsyncBrowserContext()
+        page_pool = AsyncResidentPagePool(context)
+        summary = await run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=page_pool,
+            scan_page=failing_scan_page,
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+        assert summary.failure_count == 1
+        assert summary.resident_browser_alive is False
+        assert context.pages[-1].closed is True
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.consecutive_failure_reason == SCHEDULER_RUNTIME_REASON
+    assert state.consecutive_failure_count == 1
+    assert state.scan_requested_at is not None
+    assert latest_scan is not None
+    assert latest_scan.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert latest_scan.metadata["runtime_action"] == "will_retry"
+    assert latest_scan.metadata["recovery_action"] == SCHEDULER_RUNTIME_RESTART_ACTION
+    assert latest_scan.metadata["retryable"] is True
+    assert (
+        latest_scan.metadata["raw_failure_detail"]
+        == "Page.evaluate: Connection closed while reading from the driver"
+    )
+    assert (
+        "reason=scheduler_runtime runtime_action=will_retry "
+        f"recovery_action={SCHEDULER_RUNTIME_RESTART_ACTION}"
+    ) in caplog.text
+    assert "reason=scheduler_runtime runtime_action=idle" not in caplog.text
 
 
 def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> None:

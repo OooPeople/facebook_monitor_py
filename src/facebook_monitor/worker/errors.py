@@ -40,6 +40,33 @@ def classify_playwright_exception(error: Exception) -> str:
     return UNKNOWN_REASON
 
 
+def classify_wrapped_playwright_exception(error: Exception) -> str:
+    """辨識被一般 Exception 包住的 Playwright 失敗訊息。"""
+
+    message = str(error).lower()
+    if _is_playwright_runtime_closed_message(
+        message
+    ) or _is_playwright_api_error_message(message):
+        return classify_playwright_exception(error)
+    return UNKNOWN_REASON
+
+
+def _is_playwright_api_error_message(message: str) -> bool:
+    """判斷一般 Exception 訊息是否仍帶有 Playwright API 來源。"""
+
+    tokens = (
+        "page.evaluate",
+        "page.goto",
+        "page.reload",
+        "page.wait_for",
+        "locator.",
+        "browsercontext.",
+        "browser.new",
+        "execution context was destroyed",
+    )
+    return any(token in message for token in tokens)
+
+
 def _is_extractor_runtime_message(message: str) -> bool:
     """判斷 Playwright evaluate / selector 類錯誤是否來自 DOM extractor。"""
 

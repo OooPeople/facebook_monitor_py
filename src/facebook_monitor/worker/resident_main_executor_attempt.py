@@ -21,6 +21,7 @@ from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
+from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_page_prepare import _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
 from facebook_monitor.worker.resident_main_page_prepare import _set_resident_scan_db_busy_timeout
@@ -306,8 +307,8 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
             worker_id,
             state.page_id,
             "failure",
-            exc.reason,
-            decision.target_action,
+            decision.reason,
+            decision.runtime_action,
             decision.recovery_action,
             decision.retryable,
             decision.retry_streak,
@@ -355,8 +356,8 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
                 worker_id,
                 state.page_id,
                 "failure",
-                SCHEDULER_RUNTIME_REASON,
-                decision.target_action,
+                decision.reason,
+                decision.runtime_action,
                 decision.recovery_action,
                 decision.retryable,
                 decision.retry_streak,
@@ -448,8 +449,8 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
             worker_id,
             state.page_id,
             "failure",
-            reason,
-            decision.target_action,
+            decision.reason,
+            decision.runtime_action,
             decision.recovery_action,
             decision.retryable,
             decision.retry_streak,
@@ -461,12 +462,14 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
         )
         return AsyncTargetScanResult(target_id=target_id, failure=True)
     except Exception as exc:
+        reason = classify_wrapped_playwright_exception(exc)
+        source = "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
         decision = await record_guarded_scan_failure_for_db_async(
             db_path=pool.options.db_path,
             target_id=target_id,
-            reason=UNKNOWN_REASON,
+            reason=reason,
             message=str(exc),
-            source="unknown_exception",
+            source=source,
             worker_path="resident_main",
             commit_guard=state.commit_guard,
             exception_class=exc.__class__.__name__,
@@ -494,8 +497,8 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
             worker_id,
             state.page_id,
             "failure",
-            UNKNOWN_REASON,
-            decision.target_action,
+            decision.reason,
+            decision.runtime_action,
             decision.recovery_action,
             decision.retryable,
             decision.retry_streak,

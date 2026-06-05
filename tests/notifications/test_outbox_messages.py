@@ -102,11 +102,13 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
     assert "**118**" not in remote_message
     assert discord_message.startswith("# * Facebook keyword match\n社團：")
     assert "命中：6/3 ,  118" in discord_message
-    assert "售**6/3**內野**118**區票券" in discord_message
+    assert "售6/3內野118區票券" in discord_message
+    assert "**6/3**" not in discord_message
+    assert "**118**" not in discord_message
     assert "https://www.facebook.com/groups/222518561920110/posts/1" in (
         discord_message
     )
-    assert "命中：6/3 ,  118\n\n售**6/3**內野**118**區票券" in discord_message
+    assert "命中：6/3 ,  118\n\n售6/3內野118區票券" in discord_message
     assert "票券\n\n<https://www.facebook.com/groups/222518561920110/posts/1>" in (
         discord_message
     )

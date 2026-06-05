@@ -9,8 +9,8 @@ from facebook_monitor.notifications.discord_format import strip_ansi_escape_sequ
 from facebook_monitor.notifications.payload import MatchNotificationFields
 
 
-def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None:
-    """Discord match 使用傳統 content，內容區保留命中高亮。"""
+def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None:
+    """Discord match 使用傳統 content，內容區不再額外高亮命中詞。"""
 
     title, message = build_discord_match_notification_payload(
         MatchNotificationFields(
@@ -31,7 +31,7 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
         "作者：陳建宇",
         "命中：6/3 ,  118",
         "",
-        "#售票文 售**6/3**內野**118**區25排15到18號有4張連號",
+        "#售票文 售6/3內野118區25排15到18號有4張連號",
         "",
         "<https://www.facebook.com/groups/1/posts/2>",
         "```",
@@ -51,8 +51,10 @@ def test_discord_match_payload_uses_text_layout_with_keyword_highlight() -> None
     assert message.startswith("# * Facebook keyword match\n社團：")
     assert message.endswith("\n```\n \n```")
     assert "命中：6/3 ,  118\n\n#售票文" in message
+    assert "**6/3**" not in message
+    assert "**118**" not in message
     assert (
-        "#售票文 售**6/3**內野**118**區25排15到18號有4張連號"
+        "#售票文 售6/3內野118區25排15到18號有4張連號"
         "\n\n<https://www.facebook.com/groups/1/posts/2>"
     ) in message
     assert "━" not in message
@@ -77,20 +79,23 @@ def test_discord_match_payload_preserves_content_newlines() -> None:
     )
 
     assert "命中：6/5 ,  110 ,  114" in message
-    assert "命中：6/5 ,  110 ,  114\n\n**6/5**" in message
+    assert "命中：6/5 ,  110 ,  114\n\n6/5" in message
     assert (
-        "**6/5** **110** 12排小號 電子票 1080\n"
+        "6/5 110 12排小號 電子票 1080\n"
         "以下位置不含開場舞時間 需自行補票\n"
-        "6/6 **114** 7排890\n"
-        "6/7 **114** 9排790"
+        "6/6 114 7排890\n"
+        "6/7 114 9排790"
     ) in message
+    assert "**6/5**" not in message
+    assert "**110**" not in message
+    assert "**114**" not in message
     assert "內容:" not in message
     assert "\x1b" not in message
     assert message.endswith("\n```\n \n```")
 
 
-def test_discord_match_payload_escapes_markdown_around_content_highlight() -> None:
-    """未命中內容仍要 escape Markdown，避免原文誤觸格式。"""
+def test_discord_match_payload_escapes_content_markdown() -> None:
+    """內容仍要 escape Markdown，避免原文誤觸格式。"""
 
     _title, message = build_discord_match_notification_payload(
         MatchNotificationFields(
@@ -105,7 +110,7 @@ def test_discord_match_payload_escapes_markdown_around_content_highlight() -> No
     assert "社團：測試\\_社團" in message
     assert "作者：A\\*B" in message
     assert "命中：6/3 ,  118 ,  \\[票券\\]\\(evil\\)" in message
-    assert "售**6/3**\\_內野**118**\\*區 \\[測試\\]\\(x\\)" in message
+    assert "售6/3\\_內野118\\*區 \\[測試\\]\\(x\\)" in message
     assert "內容:" not in message
 
 
@@ -123,7 +128,8 @@ def test_discord_match_payload_uses_shared_multiline_cleanup() -> None:
     )
 
     assert message.count("第一行") == 1
-    assert "**票券**第一行\n第二行座位" in message
+    assert "票券第一行\n第二行座位" in message
+    assert "**票券**" not in message
 
 
 def test_discord_match_payload_escapes_body_backticks() -> None:
@@ -141,7 +147,7 @@ def test_discord_match_payload_escapes_body_backticks() -> None:
 
     assert message.count("```") == 2
     assert message.endswith("\n```\n \n```")
-    assert "第一行\\`\\`\\`**票券**" in message
+    assert "第一行\\`\\`\\`票券" in message
     assert "第二行\\`\\`\\`\\`座位" in message
 
 
@@ -160,7 +166,8 @@ def test_discord_match_payload_strips_source_ansi_escape_codes() -> None:
 
     assert "\x1b" not in message
     assert "[31m" not in message
-    assert "售**票券** $700元/張" in message
+    assert "售票券 $700元/張" in message
+    assert "**票券**" not in message
     assert "$700元/張" in message
 
 

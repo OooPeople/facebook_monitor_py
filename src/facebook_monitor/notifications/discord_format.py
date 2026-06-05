@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-from facebook_monitor.core.keyword_highlight import build_highlight_segments
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import item_kind_label
@@ -24,6 +23,8 @@ def build_discord_match_notification_payload(
     """建立 Discord match 通知標題與傳統 content 內容。"""
 
     normalized = normalize_discord_notification_fields(fields)
+    # Discord 傳統 content payload 不會顯示 title；保留它是為了通知 outbox
+    # 與 sender 共用的 (title, message) 契約。
     title = (
         "Facebook group comment match"
         if normalized.item_kind.lower() == "comment"
@@ -36,7 +37,7 @@ def build_discord_match_notification_payload(
         f"作者：{normalize_discord_single_line(normalized.author)}",
         f"命中：{format_discord_matched_rule_label(normalized.include_rule)}",
         "",
-        format_discord_highlighted_text_body(normalized.text, normalized.include_rule),
+        format_discord_text_body(normalized.text),
     ]
     if normalized.permalink:
         lines.append("")
@@ -62,21 +63,11 @@ def format_discord_matched_rule_label(matched_rule: str) -> str:
     return normalize_discord_single_line(matched_rule)
 
 
-def format_discord_highlighted_text_body(text: str, matched_rule: str) -> str:
-    """把內容區命中片段轉成 Discord 粗體 Markdown。"""
+def format_discord_text_body(text: str) -> str:
+    """整理 Discord 內容區文字，保留原文但避免 Markdown 誤觸。"""
 
     cleaned_text = strip_ansi_escape_sequences(text)
-    segments = build_highlight_segments(cleaned_text, matched_rule)
-    if not segments:
-        return escape_discord_markdown(cleaned_text)
-    rendered: list[str] = []
-    for segment in segments:
-        escaped_text = escape_discord_markdown(segment.text)
-        if segment.highlighted:
-            rendered.append(f"**{escaped_text}**")
-            continue
-        rendered.append(escaped_text)
-    return "".join(rendered)
+    return escape_discord_markdown(cleaned_text)
 
 
 def normalize_discord_single_line(value: object) -> str:

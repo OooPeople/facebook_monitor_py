@@ -108,10 +108,16 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
     assert "https://www.facebook.com/groups/222518561920110/posts/1" in (
         discord_message
     )
-    assert "命中：6/3 ,  118\n\n售6/3內野118區票券" in discord_message
-    assert "票券\n\n<https://www.facebook.com/groups/222518561920110/posts/1>" in (
-        discord_message
-    )
+    assert (
+        "命中：6/3 ,  118\n"
+        "---------------------------------------------\n"
+        "售6/3內野118區票券"
+    ) in discord_message
+    assert (
+        "票券\n"
+        "---------------------------------------------\n"
+        "<https://www.facebook.com/groups/222518561920110/posts/1>"
+    ) in discord_message
     assert "內容:" not in discord_message
     assert "社團:" not in discord_message
     assert "關鍵字:" not in discord_message
@@ -119,7 +125,10 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
     assert "開啟連結：" not in discord_message
     assert "[開啟連結]" not in discord_message
     assert "━" not in discord_message
-    assert discord_message.endswith("\n```\n \n```")
+    assert "```" not in discord_message
+    assert discord_message.endswith(
+        "<https://www.facebook.com/groups/222518561920110/posts/1>"
+    )
     assert "\x1b" not in remote_message
     assert "\x1b" not in discord_message
 

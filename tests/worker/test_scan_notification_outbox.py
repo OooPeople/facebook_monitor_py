@@ -599,24 +599,99 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
             )
         )
         assert entry is not None
-        assert "命中：票券\n\n第一行票券" in entry.message
+        assert "命中：票券\n---------------------------------------------\n第一行票券" in (
+            entry.message
+        )
         assert "第一行票券\n第二行座位" in entry.message
         assert "**票券**" not in entry.message
         assert "內容:" not in entry.message
         assert "命中:" not in entry.message
-        assert entry.message.endswith("\n```\n \n```")
+        assert "```" not in entry.message
+        assert entry.message.endswith("\n第二行座位")
         assert "\x1b" not in entry.message
         assert "━" not in entry.message
 
     assert len(sent_discord) == 1
-    assert "命中：票券\n\n第一行票券" in sent_discord[0][2]
+    assert "命中：票券\n---------------------------------------------\n第一行票券" in (
+        sent_discord[0][2]
+    )
     assert "第一行票券\n第二行座位" in sent_discord[0][2]
     assert "**票券**" not in sent_discord[0][2]
     assert "內容:" not in sent_discord[0][2]
     assert "命中:" not in sent_discord[0][2]
-    assert sent_discord[0][2].endswith("\n```\n \n```")
+    assert "```" not in sent_discord[0][2]
+    assert sent_discord[0][2].endswith("\n第二行座位")
     assert "\x1b" not in sent_discord[0][2]
     assert "━" not in sent_discord[0][2]
+
+
+def test_discord_outbox_persists_permalink_separator(tmp_path: Path) -> None:
+    """Discord outbox 有 permalink 時保存內容下方分隔線與 angle-wrapped URL。"""
+
+    sent_discord: list[tuple[DiscordConfig, str, str]] = []
+
+    def fake_discord_sender(
+        config: DiscordConfig,
+        title: str,
+        message: str,
+    ) -> DiscordResult:
+        """記錄 Discord payload，避免測試送出真實 webhook。"""
+
+        sent_discord.append((config, title, message))
+        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+
+    db_path = tmp_path / "app.db"
+    permalink = "https://www.facebook.com/groups/123/posts/1"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/1234567890/token",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:discord-permalink",
+                    alias_keys=("post:discord-permalink",),
+                    group_id="123",
+                    text="第一行票券",
+                    display_text="第一行票券",
+                    permalink=permalink,
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+            discord_notification_sender=fake_discord_sender,
+        )
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:discord-permalink",
+                channel=NotificationChannel.DISCORD,
+            )
+        )
+        assert entry is not None
+        assert (
+            "第一行票券\n---------------------------------------------\n"
+            "<https://www.facebook.com/groups/123/posts/1>"
+        ) in entry.message
+        assert entry.message.endswith("<https://www.facebook.com/groups/123/posts/1>")
+
+    assert len(sent_discord) == 1
+    assert sent_discord[0][2] == entry.message
 
 
 def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(

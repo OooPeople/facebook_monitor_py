@@ -30,13 +30,10 @@ def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None
         "類型：貼文",
         "作者：陳建宇",
         "命中：6/3 ,  118",
-        "",
+        "---------------------------------------------",
         "#售票文 售6/3內野118區25排15到18號有4張連號",
-        "",
+        "---------------------------------------------",
         "<https://www.facebook.com/groups/1/posts/2>",
-        "```",
-        " ",
-        "```",
     ]
     assert "社團:" not in message
     assert "類型:" not in message
@@ -49,13 +46,19 @@ def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None
     assert "[開啟連結]" not in message
     assert "\x1b" not in message
     assert message.startswith("# * Facebook keyword match\n社團：")
-    assert message.endswith("\n```\n \n```")
-    assert "命中：6/3 ,  118\n\n#售票文" in message
+    assert message.endswith("<https://www.facebook.com/groups/1/posts/2>")
+    assert "```" not in message
+    assert (
+        "命中：6/3 ,  118\n"
+        "---------------------------------------------\n"
+        "#售票文"
+    ) in message
     assert "**6/3**" not in message
     assert "**118**" not in message
     assert (
         "#售票文 售6/3內野118區25排15到18號有4張連號"
-        "\n\n<https://www.facebook.com/groups/1/posts/2>"
+        "\n---------------------------------------------\n"
+        "<https://www.facebook.com/groups/1/posts/2>"
     ) in message
     assert "━" not in message
 
@@ -79,7 +82,11 @@ def test_discord_match_payload_preserves_content_newlines() -> None:
     )
 
     assert "命中：6/5 ,  110 ,  114" in message
-    assert "命中：6/5 ,  110 ,  114\n\n6/5" in message
+    assert (
+        "命中：6/5 ,  110 ,  114\n"
+        "---------------------------------------------\n"
+        "6/5"
+    ) in message
     assert (
         "6/5 110 12排小號 電子票 1080\n"
         "以下位置不含開場舞時間 需自行補票\n"
@@ -91,7 +98,7 @@ def test_discord_match_payload_preserves_content_newlines() -> None:
     assert "**114**" not in message
     assert "內容:" not in message
     assert "\x1b" not in message
-    assert message.endswith("\n```\n \n```")
+    assert message.endswith("\n6/7 114 9排790")
 
 
 def test_discord_match_payload_escapes_content_markdown() -> None:
@@ -112,6 +119,61 @@ def test_discord_match_payload_escapes_content_markdown() -> None:
     assert "命中：6/3 ,  118 ,  \\[票券\\]\\(evil\\)" in message
     assert "售6/3\\_內野118\\*區 \\[測試\\]\\(x\\)" in message
     assert "內容:" not in message
+
+
+def test_discord_match_payload_escapes_line_start_markdown() -> None:
+    """內容行首 heading 與 list Markdown 也要維持純文字。"""
+
+    _title, message = build_discord_match_notification_payload(
+        MatchNotificationFields(
+            group_name="測試社團",
+            item_kind="post",
+            author="測試使用者",
+            include_rule="票券",
+            text=(
+                "# 售票文\n"
+                "-# 小字\n"
+                "- 一張票券\n"
+                "+ 可面交\n"
+                "1. 第一順位\n"
+                "  # 縮排標題\n"
+                "  -# 縮排小字\n"
+                "  - 縮排清單\n"
+                "\t1. tab 縮排清單"
+            ),
+        )
+    )
+
+    assert "\\# 售票文" in message
+    assert "\\-# 小字" in message
+    assert "\\- 一張票券" in message
+    assert "\\+ 可面交" in message
+    assert "1\\. 第一順位" in message
+    assert "\\# 縮排標題" in message
+    assert "\\-# 縮排小字" in message
+    assert "\\- 縮排清單" in message
+    assert "1\\. tab 縮排清單" in message
+    assert escape_discord_markdown("  # 縮排標題\n  -# 縮排小字\n\t1. tab 縮排清單") == (
+        "  \\# 縮排標題\n  \\-# 縮排小字\n\t1\\. tab 縮排清單"
+    )
+
+
+def test_discord_match_payload_escapes_metadata_line_start_markdown() -> None:
+    """metadata 壓成單行後仍要 escape 行首 Markdown 結構。"""
+
+    _title, message = build_discord_match_notification_payload(
+        MatchNotificationFields(
+            group_name="# 測試社團",
+            item_kind="post",
+            author="- 測試使用者",
+            include_rule="# 票券;- 熱區",
+            text="售票券",
+        )
+    )
+
+    assert "社團：\\# 測試社團" in message
+    assert "作者：\\- 測試使用者" in message
+    assert "命中：\\# 票券 ,  \\- 熱區" in message
 
 
 def test_discord_match_payload_uses_shared_multiline_cleanup() -> None:
@@ -145,8 +207,7 @@ def test_discord_match_payload_escapes_body_backticks() -> None:
         )
     )
 
-    assert message.count("```") == 2
-    assert message.endswith("\n```\n \n```")
+    assert "```" not in message
     assert "第一行\\`\\`\\`票券" in message
     assert "第二行\\`\\`\\`\\`座位" in message
 
@@ -156,16 +217,32 @@ def test_discord_match_payload_strips_source_ansi_escape_codes() -> None:
 
     _title, message = build_discord_match_notification_payload(
         MatchNotificationFields(
-            group_name="測試社團",
+            group_name="測試\x1b]0;ignored\x07\x9dc1-ignored\x1b\\\x1b(0\x90社團",
             item_kind="post",
-            author="測試使用者",
-            include_rule="票券",
-            text="售\x1b[31m票券\x1b[0m $700元/張",
+            author="測試\x1bPignored\x1b\\\x90c1-ignored\x1b\\\x1b7使用者\x1b8",
+            include_rule="票\x1b[33m\x9b32m\x1b(B券",
+            text=(
+                "售\x07\x1b]0;ignored\x07\x9dc1-ignored\x1b\\"
+                "票\x9b31m\x1b(0券\x1b[0m\x9d $700元/張"
+            ),
         )
     )
 
     assert "\x1b" not in message
+    assert "\x07" not in message
+    assert "\x90" not in message
+    assert "\x9b" not in message
+    assert "\x9c" not in message
+    assert "\x9d" not in message
     assert "[31m" not in message
+    assert "[33m" not in message
+    assert "(0" not in message
+    assert "(B" not in message
+    assert "ignored" not in message
+    assert "c1-ignored" not in message
+    assert "社團：測試社團" in message
+    assert "作者：測試使用者" in message
+    assert "命中：票券" in message
     assert "售票券 $700元/張" in message
     assert "**票券**" not in message
     assert "$700元/張" in message
@@ -187,6 +264,6 @@ def test_format_discord_link_url_suppresses_embed_preview() -> None:
     """Discord link 使用 angle wrapper 取消預覽，並整理會破壞語法的字元。"""
 
     assert (
-        format_discord_link_url("https://example.com/a b)c<d>")
-        == "<https://example.com/a%20b%29c%3Cd%3E>"
+        format_discord_link_url("https://example.com/a b)c<d>\n\t\x1f\x7f\x81")
+        == "<https://example.com/a%20b%29c%3Cd%3E%0A%09%1F%7F%C2%81>"
     )

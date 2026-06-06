@@ -328,6 +328,24 @@ def test_dashboard_modals_use_shared_dismiss_helper() -> None:
     assert "bindDialogDismiss({" in hit_records_js
 
 
+def test_hit_records_modal_initial_focus_uses_safe_close_button() -> None:
+    """查看紀錄 modal 開啟後不可讓清空紀錄成為初始 focus。"""
+
+    hit_records_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/hit_records.js"
+    ).read_text(encoding="utf-8")
+    hit_records_template = Path(
+        "src/facebook_monitor/webapp/templates/_hit_records_modal.html"
+    ).read_text(encoding="utf-8")
+
+    assert "const focusHitRecordsInitialControl" in hit_records_js
+    assert 'modal.querySelector("[data-close-hit-records]")?.focus' in hit_records_js
+    assert "preventScroll: true" in hit_records_js
+    assert "openDialog(modal);\n      focusHitRecordsInitialControl(modal);" in hit_records_js
+    assert "data-clear-hit-records autofocus" not in hit_records_template
+    assert "autofocus data-clear-hit-records" not in hit_records_template
+
+
 def test_dashboard_scroll_restore_runs_before_dashboard_module_graph() -> None:
     """提交後 scroll restore 必須早於 dashboard module graph，避免頁面載入後跳動。"""
 

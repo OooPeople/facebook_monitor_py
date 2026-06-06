@@ -66,6 +66,10 @@ const appendTextSegments = (container, fallbackText, segments) => {
   });
 };
 
+const focusHitRecordsInitialControl = (modal) => {
+  modal.querySelector("[data-close-hit-records]")?.focus({ preventScroll: true });
+};
+
 const updateHitCount = (targetId, totalCount) => {
   document.querySelectorAll(`[data-hit-count="${targetId}"]`).forEach((node) => {
     node.textContent = String(totalCount);
@@ -183,6 +187,7 @@ export const setupHitRecords = ({ showToast }) => {
       const modal = document.querySelector(`[data-hit-records-modal="${targetId}"]`);
       if (!modal) return;
       openDialog(modal);
+      focusHitRecordsInitialControl(modal);
       loadHitRecords(modal, targetId).catch((error) => {
         showToast(formatClientErrorMessage(error, "命中紀錄載入失敗"), "error");
       });

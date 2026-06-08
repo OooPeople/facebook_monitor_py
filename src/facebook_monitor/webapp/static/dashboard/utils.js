@@ -76,17 +76,30 @@ export const readJsonScript = (id, fallback) => {
   return JSON.parse(text || JSON.stringify(fallback));
 };
 
-export const showInlineStatus = (node, text, kind, timeoutMs = 0) => {
+const inlineStatusTimers = new WeakMap();
+
+export const showInlineStatus = (node, text, kind, optionsOrTimeoutMs = 0) => {
   if (!node) return;
+  const previousTimer = inlineStatusTimers.get(node);
+  if (previousTimer) {
+    window.clearTimeout(previousTimer);
+    inlineStatusTimers.delete(node);
+  }
+  const options = typeof optionsOrTimeoutMs === "object"
+    ? optionsOrTimeoutMs || {}
+    : { timeoutMs: optionsOrTimeoutMs };
+  const timeoutMs = Number(options.timeoutMs || 0);
   node.textContent = text;
   node.dataset.statusKind = kind;
   node.classList.add("is-visible");
   if (timeoutMs > 0) {
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       if (document.body.contains(node) && node.dataset.statusKind === kind) {
         node.classList.remove("is-visible");
       }
+      inlineStatusTimers.delete(node);
     }, timeoutMs);
+    inlineStatusTimers.set(node, timer);
   }
 };
 

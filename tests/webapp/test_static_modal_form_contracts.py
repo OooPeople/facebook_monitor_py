@@ -80,13 +80,23 @@ def test_target_settings_modal_uses_scroll_body_and_right_footer_actions() -> No
     assert 'data-notification-test-form-id="{{ notification_test_form_id }}"' in (
         notification_test_button
     )
-    assert notification_test_button.index("data-notification-test-status") < (
-        notification_test_button.index("data-notification-test\n")
+    assert notification_test_button.index("data-notification-test\n") < (
+        notification_test_button.index("data-notification-test-status")
     )
+    assert "notification-test-actions" in notification_test_button
     assert "data-notification-test" in notification_test_button
     assert "data-notification-test-status" in notification_test_button
     assert "測試通知" in notification_test_button
     assert ".notification-test-button" in modals_css
+    assert "flex-wrap: wrap;" in _css_rule_body(modals_css, ".modal-section-header")
+    notification_status_rule = _css_rule_body(modals_css, ".notification-test-status")
+    assert "flex-basis: 100%;" in notification_status_rule
+    assert "min-width: 0;" in notification_status_rule
+    hidden_status_rule = _css_rule_body(
+        modals_css,
+        ".notification-test-status:not(.is-visible)",
+    )
+    assert "display: none;" in hidden_status_rule
 
 
 def test_target_settings_modal_attaches_controls_to_config_form() -> None:

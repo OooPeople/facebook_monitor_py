@@ -63,9 +63,19 @@ def test_notification_event_message_is_localized() -> None:
     """通知事件內部代碼顯示時必須轉成中文摘要。"""
 
     assert format_notification_event_message("discord_sent") == "Discord 通知已送出"
+    assert "系統設定" in format_notification_event_message(
+        "desktop_failed:macos_permission_denied"
+    )
+    assert "Facebook Monitor" in format_notification_event_message(
+        "desktop_failed:macos_permission_denied"
+    )
     assert (
         format_notification_event_message("notification_test_failed:RuntimeError")
         == "通知測試發生錯誤"
+    )
+    assert (
+        format_notification_event_message("ntfy_failed: unexpected status code: 401")
+        == "ntfy 發送失敗，狀態碼 401"
     )
 
 

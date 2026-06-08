@@ -238,6 +238,7 @@ def test_notification_test_uses_async_route_without_reloading_dashboard() -> Non
     dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
     notification_test_js = (dashboard_dir / "notification_test.js").read_text(encoding="utf-8")
     main_js = (dashboard_dir / "main.js").read_text(encoding="utf-8")
+    utils_js = (dashboard_dir / "utils.js").read_text(encoding="utf-8")
     route = Path("src/facebook_monitor/webapp/routes/target_notifications.py").read_text(
         encoding="utf-8"
     )
@@ -249,12 +250,25 @@ def test_notification_test_uses_async_route_without_reloading_dashboard() -> Non
     assert 'document.addEventListener("click"' in notification_test_js
     assert "document.getElementById(button.dataset.notificationTestFormId" in (notification_test_js)
     assert "button.dataset.notificationTestAction" in notification_test_js
+    assert 'button.closest(".notification-test-actions")' in notification_test_js
+    assert "?.parentElement" in notification_test_js
     assert "new FormData(form)" in notification_test_js
     assert 'Accept: "application/json"' in notification_test_js
+    assert "payload?.timeout_ms" in notification_test_js
+    assert "payload?.all_ok" in notification_test_js
+    assert "payload?.sticky === true" in notification_test_js
+    assert "payload?.message || payload?.error" in notification_test_js
+    assert "notificationTestStatusKind" in notification_test_js
+    assert "notificationTestTimeoutMs" in notification_test_js
+    assert "notificationTestMessage" in notification_test_js
+    assert "payload.ok === false" in notification_test_js
+    assert "inlineStatusTimers" in utils_js
+    assert "window.clearTimeout(previousTimer)" in utils_js
     assert '"/static/dashboard/notification_test.js"' in main_js
     assert "setupNotificationTest();" in main_js
     assert "def _wants_json_response" in route
-    assert 'JSONResponse({"ok": True' in route
+    assert "build_notification_test_feedback" in route
+    assert "feedback.to_payload()" in route
 
 
 def test_unsafe_dashboard_fetches_use_shared_csrf_helper() -> None:

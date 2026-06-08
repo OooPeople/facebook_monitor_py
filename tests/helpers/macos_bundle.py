@@ -10,6 +10,8 @@ import struct
 import zipfile
 
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_ICON
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_CODE_SIGNATURE
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_IDENTIFIER
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.validation import has_posix_executable_bit
@@ -39,6 +41,7 @@ def macos_app_plist(
     values: dict[str, object] = {
         "CFBundleExecutable": Path(MACOS_APP_BUNDLE_LAUNCHER).name,
         "CFBundleIconFile": "facebook-monitor",
+        "CFBundleIdentifier": MACOS_APP_BUNDLE_IDENTIFIER,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
@@ -61,11 +64,14 @@ def write_macos_app_bundle(
 
     launcher = root / MACOS_APP_BUNDLE_LAUNCHER
     icon = root / MACOS_APP_BUNDLE_ICON
+    code_signature = root / MACOS_APP_BUNDLE_CODE_SIGNATURE
     launcher.parent.mkdir(parents=True, exist_ok=True)
     icon.parent.mkdir(parents=True, exist_ok=True)
+    code_signature.parent.mkdir(parents=True, exist_ok=True)
     launcher.write_bytes(launcher_content)
     launcher.chmod(0o755)
     icon.write_text("icon", encoding="utf-8")
+    code_signature.write_text("signature", encoding="utf-8")
     (root / MACOS_APP_BUNDLE_INFO_PLIST).write_bytes(
         macos_app_plist(version=version, extra_values=extra_plist_values)
     )
@@ -92,6 +98,7 @@ def write_macos_app_bundle_to_zip(
         0o755,
     )
     archive.writestr(f"{root_prefix}/{MACOS_APP_BUNDLE_ICON}", "icon")
+    archive.writestr(f"{root_prefix}/{MACOS_APP_BUNDLE_CODE_SIGNATURE}", "signature")
 
 
 def assert_posix_executable_when_supported(path: Path) -> None:

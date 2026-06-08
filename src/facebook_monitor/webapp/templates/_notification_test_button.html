@@ -2,7 +2,6 @@
 {% set notification_test_form_id = notification_test_form_id|default(notification_form_id|default("")) %}
 {% if notification_test_action and notification_test_form_id %}
 <div class="notification-test-actions">
-  <span class="inline-feedback form-status notification-test-status" data-notification-test-status aria-live="polite"></span>
   <button
     class="button notification-test-button"
     type="button"
@@ -11,4 +10,5 @@
     data-notification-test-form-id="{{ notification_test_form_id }}"
   >測試通知</button>
 </div>
+<span class="inline-feedback form-status notification-test-status" data-notification-test-status aria-live="polite"></span>
 {% endif %}

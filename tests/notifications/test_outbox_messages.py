@@ -43,6 +43,7 @@ def test_match_notification_uses_user_facing_target_name() -> None:
     assert "社團: 測試社團" not in message
     assert "社團: 我的自訂名稱" in compact
     assert "社團: 測試社團" not in compact
+    assert "命中: 票券" in compact
 
 
 def test_comment_match_notification_preserves_comment_target_display_scope() -> None:
@@ -158,8 +159,11 @@ def test_match_notification_message_preserves_remote_content_newlines() -> None:
     )
 
     assert "內容:\n第一行票券\n第二行座位" in message
-    assert "\n" not in compact
-    assert "內容: 第一行票券 第二行座位" in compact
+    assert compact.splitlines() == [
+        "社團: 測試社團",
+        "類型: 貼文",
+        "命中: 票券",
+    ]
 
 
 def test_runtime_failure_notification_uses_clean_target_display_name() -> None:

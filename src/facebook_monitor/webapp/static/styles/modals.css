@@ -280,6 +280,7 @@
 .modal-section-header {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
 }
@@ -450,7 +451,12 @@
 }
 
 .notification-test-status {
+  flex-basis: 100%;
   min-width: 0;
+}
+
+.notification-test-status:not(.is-visible) {
+  display: none;
 }
 
 .actions {
@@ -466,4 +472,3 @@
     grid-template-columns: 1fr;
   }
 }
-

@@ -1197,6 +1197,53 @@ def test_validate_release_artifacts_rejects_macos_stale_app_bundle_version(
     assert any("bundle version" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_macos_bundle_identifier_mismatch(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` bundle id 必須維持通知權限使用的主 app identity。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(
+            archive,
+            extra_plist_values={"CFBundleIdentifier": "com.example.other"},
+        )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("bundle identifier" in message for message in result.messages)
+
+
 def test_validate_release_artifacts_rejects_macos_string_hidden_dock_plist(
     tmp_path: Path,
 ) -> None:

@@ -17,6 +17,7 @@ WINDOWS_UPDATER_ENTRY = "facebook-monitor-updater.exe"
 MACOS_APP_ENTRY = "facebook-monitor"
 MACOS_UPDATER_ENTRY = "facebook-monitor-updater"
 MACOS_APP_BUNDLE_NAME = "Facebook Monitor.app"
+MACOS_APP_BUNDLE_IDENTIFIER = "com.ooopeople.facebook-monitor"
 MACOS_APP_BUNDLE_INFO_PLIST = f"{MACOS_APP_BUNDLE_NAME}/Contents/Info.plist"
 MACOS_APP_BUNDLE_LAUNCHER = (
     f"{MACOS_APP_BUNDLE_NAME}/Contents/MacOS/facebook-monitor-launcher"
@@ -24,8 +25,13 @@ MACOS_APP_BUNDLE_LAUNCHER = (
 MACOS_APP_BUNDLE_ICON = (
     f"{MACOS_APP_BUNDLE_NAME}/Contents/Resources/facebook-monitor.icns"
 )
+MACOS_APP_BUNDLE_CODE_SIGNATURE = (
+    f"{MACOS_APP_BUNDLE_NAME}/Contents/_CodeSignature/CodeResources"
+)
 MACOS_APP_BUNDLE_LAUNCHER_ENV = "FACEBOOK_MONITOR_MACOS_APP_LAUNCHER"
 MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE = "1"
+MACOS_APP_BUNDLE_NOTIFICATION_SEND_FLAG = "--facebook-monitor-notify"
+MACOS_APP_BUNDLE_NOTIFICATION_SOCKET_ENV = "FACEBOOK_MONITOR_MACOS_NOTIFICATION_SOCKET"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,7 @@ MACOS_ARM64_LAYOUT_POLICY = UpdaterLayoutPolicy(
         MACOS_APP_BUNDLE_INFO_PLIST,
         MACOS_APP_BUNDLE_LAUNCHER,
         MACOS_APP_BUNDLE_ICON,
+        MACOS_APP_BUNDLE_CODE_SIGNATURE,
     ),
     required_current_paths=(
         MACOS_APP_ENTRY,

@@ -6,6 +6,8 @@ import re
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -20,6 +22,7 @@ from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
+from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.runtime.paths import resolve_runtime_paths
 from tests.helpers.webapp import FakeProfileManager
 from tests.helpers.webapp import FakeSchedulerManager
@@ -150,8 +153,29 @@ def test_target_settings_modal_can_test_notifications_without_saving(
         == "測試通知結果：桌面通知已送出 / ntfy 通知已送出 / Discord 通知已送出"
     )
     assert json_test_response.status_code == 200
-    assert json_test_response.json()["ok"] is True
-    assert json_test_response.json()["results"] == ["桌面通知已送出", "ntfy 通知已送出"]
+    json_payload = json_test_response.json()
+    assert json_payload["ok"] is True
+    assert json_payload["all_ok"] is True
+    assert json_payload["sticky"] is False
+    assert json_payload["timeout_ms"] == 3500
+    assert json_payload["tone"] == "success"
+    assert json_payload["results"] == ["桌面通知已送出", "ntfy 通知已送出"]
+    assert json_payload["result_details"] == [
+        {
+            "channel": "desktop",
+            "code": "desktop_sent",
+            "message": "桌面通知已送出",
+            "severity": "success",
+            "sticky": False,
+        },
+        {
+            "channel": "ntfy",
+            "code": "ntfy_sent",
+            "message": "ntfy 通知已送出",
+            "severity": "success",
+            "sticky": False,
+        },
+    ]
     assert any(item.startswith("desktop:") for item in notifications.sent)
     assert any(item.startswith("ntfy:modal-topic:") for item in notifications.sent)
     assert any(
@@ -166,6 +190,134 @@ def test_target_settings_modal_can_test_notifications_without_saving(
     assert config.ntfy_topic == ""
     assert not config.enable_discord_notification
     assert config.discord_webhook == ""
+
+
+def test_target_notification_test_json_marks_desktop_permission_failure_sticky(
+    tmp_path: Path,
+) -> None:
+    """channel 層級失敗需保留 route 成功，但讓 UI 常駐可行動提示。"""
+
+    db_path = tmp_path / "app.db"
+
+    def permission_denied_sender(
+        _title: str,
+        _message: str,
+    ) -> DesktopNotificationResult:
+        """模擬 macOS 未允許 app 發送通知。"""
+
+        return DesktopNotificationResult(
+            ok=False,
+            status_code=None,
+            message="desktop_failed:macos_permission_denied",
+        )
+
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            desktop_sender=permission_denied_sender,
+        )
+    )
+
+    response = client.post(
+        f"/targets/{target.id}/notifications/test",
+        data={"enable_desktop_notification": "on"},
+        headers={"Accept": "application/json"},
+    )
+    fallback_response = client.post(
+        f"/targets/{target.id}/notifications/test",
+        data={"enable_desktop_notification": "on"},
+        follow_redirects=False,
+    )
+    payload = response.json()
+    fallback_query = parse_qs(urlsplit(fallback_response.headers["location"]).query)
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert payload["all_ok"] is False
+    assert payload["sticky"] is True
+    assert payload["timeout_ms"] == 0
+    assert payload["tone"] == "warning"
+    assert "系統設定" in payload["message"]
+    assert "允許通知" in payload["message"]
+    assert payload["results"] == [
+        (
+            "macOS 未允許 Facebook Monitor 發送通知。"
+            "請到「系統設定」→「通知」找到 Facebook Monitor，"
+            "開啟「允許通知」後再重新測試。"
+        )
+    ]
+    assert payload["result_details"] == [
+        {
+            "channel": "desktop",
+            "code": "desktop_failed:macos_permission_denied",
+            "message": (
+                "macOS 未允許 Facebook Monitor 發送通知。"
+                "請到「系統設定」→「通知」找到 Facebook Monitor，"
+                "開啟「允許通知」後再重新測試。"
+            ),
+            "severity": "warning",
+            "sticky": True,
+        }
+    ]
+    assert fallback_response.status_code == 303
+    assert "error" in fallback_query
+    assert "message" not in fallback_query
+    assert "系統設定" in fallback_query["error"][0]
+
+
+def test_target_notification_test_json_marks_validation_errors_sticky(
+    tmp_path: Path,
+) -> None:
+    """表單驗證錯誤也回傳同一份 sticky metadata，不落回前端固定秒數。"""
+
+    db_path = tmp_path / "app.db"
+
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.post(
+        f"/targets/{target.id}/notifications/test",
+        data={
+            "enable_discord_notification": "on",
+            "discord_webhook": "http://example.com/not-discord",
+        },
+        headers={"Accept": "application/json"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 400
+    assert payload["ok"] is False
+    assert payload["all_ok"] is False
+    assert payload["sticky"] is True
+    assert payload["timeout_ms"] == 0
+    assert payload["tone"] == "warning"
+    assert payload["error"] == "測試通知失敗: Discord webhook 必須使用 HTTPS"
+    assert payload["message"] == "測試通知失敗: Discord webhook 必須使用 HTTPS"
+    assert payload["result_details"] == [
+        {
+            "channel": "discord",
+            "code": "discord_webhook_must_be_https",
+            "message": "測試通知失敗: Discord webhook 必須使用 HTTPS",
+            "severity": "warning",
+            "sticky": True,
+        }
+    ]
 
 
 def test_target_notification_test_errors_are_sanitized(tmp_path: Path) -> None:

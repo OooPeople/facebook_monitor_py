@@ -131,7 +131,7 @@ target 可啟用：
 
 日常通知由 scan commit 後的 notification outbox 發送；Web UI 不提供 direct dispatch 作為一般操作入口。
 
-desktop notification 目前偏 Windows 使用情境。在不支援的平台上，sender 會回傳結構化失敗結果，而不是讓 scan crash。
+desktop notification 的摘要內容會維持三行：`社團`、`類型`、`命中`。Windows frozen / source mode 走 PowerShell balloon tip。macOS frozen `.app` 由執行中的 `Facebook Monitor.app` 母程序用 UserNotifications 送出，使用 app 圖示與系統預設通知音效；如果 macOS 拒絕 `Facebook Monitor` 的通知身分，測試或正式發送會回報 macOS 權限失敗，使用者需到系統通知設定允許 `Facebook Monitor`。Focus / Notification Center 設定關閉 banner 或聲音時，scan 不會 crash，但實際 banner / 聲音仍由 macOS 設定決定。macOS source mode 沒有 `.app` bundle 時，會 fallback 到 `osascript`，此時圖示與聲音依系統對腳本通知的呈現而定。
 
 Discord 通知會以傳統 content 多行訊息送出，保留內容換行，並以粗體標示本文中的命中關鍵字；`命中：` 欄位仍會列出符合的規則。Facebook 連結會直接顯示 URL。這個格式刻意不用 Components V2，因為 Components V2 雖能提供較好的頻道內分隔排版，但手機通知 preview 可能無法顯示訊息摘要。
 

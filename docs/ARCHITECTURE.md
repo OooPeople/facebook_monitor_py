@@ -67,6 +67,7 @@
 - Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
+- desktop notification 是 target-scoped compact message，正式摘要只包含 `社團`、`類型`、`命中` 三行。Windows 走 PowerShell balloon tip；macOS frozen `.app` 的正式主路徑由 `Facebook Monitor.app` 母程序提供 AF_UNIX socket，worker 以 UTF-8 JSON 傳 title/body/identifier，再由母程序用 UserNotifications、app icon 與系統預設通知音效送出。若 macOS 拒絕主 app UserNotifications identity，sender 會保留 `desktop_failed:macos_permission_denied`，提示使用者允許 `Facebook Monitor` 通知，不改走第二個 app identity。直接呼叫 launcher 的 `--facebook-monitor-notify` 只保留為沒有母程序 socket 時的 frozen fallback / debug path。macOS source mode 沒有 bundle 時保留 `osascript` fallback；不支援的平台回傳結構化失敗，不讓 scan pipeline crash。
 - Discord webhook 使用傳統 `content` payload 與 `allowed_mentions.parse=[]`；內容本文保留多行格式，並用 Discord 粗體 Markdown 標示命中關鍵字，`命中：` 欄位保留作為可靠摘要，Facebook 連結直接顯示 URL。Components V2 曾是較理想的頻道內排版選項，但手機通知 preview 無法穩定顯示必要摘要，因此正式路徑不使用 Components V2。
 - ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
 - SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存；application、worker 與 Web UI 的 domain model 維持明文。
@@ -79,7 +80,7 @@
 
 - 目前正式更新目標支援 Windows PyInstaller onedir portable zip 與 macOS Apple Silicon onedir zip；source mode 只提供 GitHub Release 檢查，不把原始碼更新包裝成正式功能。
 - App version 的唯一產品來源是 `pyproject.toml` 的 project version；release asset 檔名、GitHub tag 對齊、PyInstaller version resource 與 Web asset cache key 都應由此派生或被 release validation 檢查。`src/facebook_monitor/webapp/assets.py` 的 `ASSET_VERSION` 由 `APP_VERSION` 派生，不是第二個手動維護版本來源。
-- macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；它啟動同一個 onedir 內的正式 `facebook-monitor` executable，並留在 Dock 作為可 Quit 的母程序。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版 binary 會自動轉交給 `.app` launcher，updater 仍以 onedir 根目錄作為 app base dir。
+- macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；它啟動同一個 onedir 內的正式 `facebook-monitor` executable，並留在 Dock 作為可 Quit 的母程序與唯一 native notification owner。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版 binary 會自動轉交給 `.app` launcher，updater 仍以 onedir 根目錄作為 app base dir。
 - 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
 - Release asset 檔名必須精確對齊 GitHub tag version：Windows 使用 `facebook-monitor-{version}-windows-portable.zip`，macOS arm64 使用 `facebook-monitor-{version}-macos-arm64-onedir.zip`，兩者都必須有同名 `.sha256`；同一個 release 還必須包含 `facebook-monitor-{version}-manifest.json` 與 detached signature。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
 - Web UI 只負責下載、驗證 Ed25519 signed manifest、交叉檢查 release zip 的 SHA256 / size、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。

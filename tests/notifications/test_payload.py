@@ -97,8 +97,8 @@ def test_build_match_notification_payload_preserves_content_newlines() -> None:
     ]
 
 
-def test_build_compact_notification_body_uses_single_line_segments() -> None:
-    """桌面通知 body 維持 compact notification 語義。"""
+def test_build_compact_notification_body_uses_desktop_summary_lines() -> None:
+    """桌面通知 body 只保留社團、類型與命中摘要。"""
 
     body = build_compact_notification_body(
         MatchNotificationFields(
@@ -111,11 +111,15 @@ def test_build_compact_notification_body_uses_single_line_segments() -> None:
         )
     )
 
-    assert body == "社團: 測試社團 | 作者: 王小明 | 關鍵字: 票券 | 內容: 這是一篇有票券關鍵字的貼文"
+    assert body.splitlines() == [
+        "社團: 測試社團",
+        "類型: 貼文",
+        "命中: 票券",
+    ]
 
 
-def test_build_compact_notification_body_collapses_content_newlines() -> None:
-    """桌面 compact 通知不因顯示文字換行而變成多行。"""
+def test_build_compact_notification_body_ignores_content_newlines() -> None:
+    """桌面摘要不放正文內容，避免長貼文擠壓 banner。"""
 
     body = build_compact_notification_body(
         MatchNotificationFields(
@@ -127,5 +131,8 @@ def test_build_compact_notification_body_collapses_content_newlines() -> None:
         )
     )
 
-    assert "\n" not in body
-    assert body.endswith("內容: 第一行票券 第二行座位")
+    assert body.splitlines() == [
+        "社團: 測試社團",
+        "類型: 貼文",
+        "命中: 票券",
+    ]

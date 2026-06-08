@@ -7,6 +7,7 @@ import os
 import plistlib
 
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_IDENTIFIER
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
@@ -158,13 +159,39 @@ def _validate_macos_app_root(
             raise ValueError(f"staging_executable_bit_missing:{path}")
         if not is_macho_arm64(_read_file_prefix(path)):
             raise ValueError(f"staging_macho_arm64_missing:{path}")
-    plist_path = app_root / MACOS_APP_BUNDLE_INFO_PLIST
+    _validate_macos_launcher_bundle_metadata(
+        app_root,
+        expected_version=expected_version,
+    )
+
+
+def _read_macos_info_plist(plist_path: Path, *, reason: str) -> dict[str, object]:
+    """讀取 macOS bundle Info.plist，失敗時保留 updater reason。"""
+
     try:
-        plist = plistlib.loads(plist_path.read_bytes())
+        value = plistlib.loads(plist_path.read_bytes())
     except (OSError, plistlib.InvalidFileException) as exc:
-        raise ValueError("staging_macos_info_plist_invalid") from exc
+        raise ValueError(reason) from exc
+    if not isinstance(value, dict):
+        raise ValueError(reason)
+    return value
+
+
+def _validate_macos_launcher_bundle_metadata(
+    app_root: Path,
+    *,
+    expected_version: str | None,
+) -> None:
+    """確認主 macOS `.app` metadata 不會破壞 launcher / Dock 語義。"""
+
+    plist = _read_macos_info_plist(
+        app_root / MACOS_APP_BUNDLE_INFO_PLIST,
+        reason="staging_macos_info_plist_invalid",
+    )
     if plist.get("CFBundleExecutable") != Path(MACOS_APP_BUNDLE_LAUNCHER).name:
         raise ValueError("staging_macos_bundle_executable_mismatch")
+    if plist.get("CFBundleIdentifier") != MACOS_APP_BUNDLE_IDENTIFIER:
+        raise ValueError("staging_macos_bundle_identifier_mismatch")
     if plist_value_is_true(plist.get("LSUIElement")) or plist_value_is_true(
         plist.get("LSBackgroundOnly")
     ):

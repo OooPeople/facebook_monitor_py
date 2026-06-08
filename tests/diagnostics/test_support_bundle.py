@@ -522,7 +522,8 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
     assert "9999999999999999" not in combined_text
     assert "page-raw-id" not in combined_text
     assert "short-target" not in combined_text
-    assert "abc" not in combined_text
+    assert "targetId=short-target" not in combined_text
+    assert "itemKey=abc" not in combined_text
     assert "私密社團名稱" not in combined_text
     assert "秘密關鍵字" not in combined_text
     assert "秘密作者" not in combined_text

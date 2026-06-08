@@ -34,6 +34,7 @@ from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
 from facebook_monitor.updates.platforms import WINDOWS_LAYOUT_POLICY
 from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_IDENTIFIER
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.platforms import MACOS_ARM64_LAYOUT_POLICY
 from facebook_monitor.updates.platforms import macos_app_executable_staging_paths
@@ -371,6 +372,8 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle CFBundlePackageType must be APPL")
     if plist.get("CFBundleExecutable") != MACOS_APP_LAUNCHER_NAME:
         messages.append("macOS app bundle executable does not match launcher")
+    if plist.get("CFBundleIdentifier") != MACOS_APP_BUNDLE_IDENTIFIER:
+        messages.append("macOS app bundle identifier does not match app identity")
     if plist_value_is_true(plist.get("LSUIElement")) or plist_value_is_true(
         plist.get("LSBackgroundOnly")
     ):
@@ -381,6 +384,7 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle short version does not match app version")
     if plist.get("CFBundleVersion") != version:
         messages.append("macOS app bundle version does not match app version")
+
 
 def _zip_member_is_macho_arm64(archive: zipfile.ZipFile, name: str) -> bool:
     """讀取 zip member 前段並確認是 arm64 Mach-O。"""

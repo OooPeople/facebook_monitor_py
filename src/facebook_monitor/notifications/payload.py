@@ -89,16 +89,15 @@ def build_compact_notification_segments(fields: MatchNotificationFields) -> list
     normalized = normalize_notification_fields(fields, preserve_newlines=False)
     return [
         f"社團: {normalized.group_name}",
-        f"作者: {normalized.author}",
-        f"關鍵字: {normalized.include_rule}",
-        f"內容: {normalized.text}",
+        f"類型: {item_kind_label(normalized.item_kind)}",
+        f"命中: {normalized.include_rule}",
     ]
 
 
 def build_compact_notification_body(fields: MatchNotificationFields) -> str:
-    """建立桌面通知使用的單行短內容。"""
+    """建立桌面通知使用的三行短內容。"""
 
-    return truncate_text(" | ".join(build_compact_notification_segments(fields)), 250)
+    return truncate_text("\n".join(build_compact_notification_segments(fields)), 250)
 
 
 def build_match_notification_payload(fields: MatchNotificationFields) -> tuple[str, str]:

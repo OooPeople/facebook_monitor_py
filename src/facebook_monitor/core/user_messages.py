@@ -110,6 +110,18 @@ _NOTIFICATION_MESSAGE_LABELS = {
     "ntfy topic is empty": "ntfy 主題未設定",
     "discord_webhook_invalid": "Discord webhook URL 格式不正確",
     "desktop_failed: unsupported platform": "目前平台不支援桌面通知",
+    "desktop_failed:macos_permission_denied": (
+        "macOS 未允許 Facebook Monitor 發送通知。"
+        "請到「系統設定」→「通知」找到 Facebook Monitor，"
+        "開啟「允許通知」後再重新測試。"
+    ),
+    "desktop_failed:macos_alert_disabled": "macOS 通知橫幅或通知中心顯示未開啟",
+    "desktop_failed:macos_authorization_error": "macOS 通知授權檢查失敗",
+    "desktop_failed:macos_request_error": "macOS 通知建立失敗",
+    "desktop_failed:macos_timeout": "macOS 通知逾時，請檢查通知權限",
+    "desktop_failed:macos_payload_invalid": "macOS 通知資料格式錯誤",
+    "desktop_failed:macos_result_invalid": "macOS 通知結果格式錯誤",
+    "desktop_failed:macos_native_failed": "macOS native 通知發送失敗",
     "failed_result": "通知服務回傳失敗",
     "previous_down": "前次通知失敗",
     "first_down": "首次通知失敗",
@@ -254,6 +266,11 @@ def format_notification_event_message(value: str) -> str:
     if text.startswith("unexpected status code:"):
         status_code = text.removeprefix("unexpected status code:").strip()
         return f"通知服務回傳非預期狀態碼 {status_code}"
+    if text.startswith("ntfy_failed: unexpected status code:"):
+        status_code = text.removeprefix(
+            "ntfy_failed: unexpected status code:"
+        ).strip()
+        return f"ntfy 發送失敗，狀態碼 {status_code}" if status_code else "ntfy 發送失敗"
     if text.startswith("ntfy_failed:"):
         return "ntfy 發送失敗"
     if text.startswith("discord_failed:429"):

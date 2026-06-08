@@ -306,6 +306,49 @@ def test_apply_pending_update_rejects_macos_plist_hidden_string(
     assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
 
 
+def test_apply_pending_update_rejects_macos_bundle_identifier_mismatch(
+    tmp_path: Path,
+) -> None:
+    """macOS `.app` bundle id 是通知權限 identity，staging 不可改掉。"""
+
+    app_root = tmp_path / "app"
+    make_macos_app_root(app_root, app_text="old")
+    data_dir = app_root / "data"
+    data_dir.mkdir()
+    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    source_root = zip_path.parent / "new" / "facebook-monitor"
+    make_macos_app_root(source_root, app_text="new")
+    (source_root / MACOS_APP_BUNDLE_INFO_PLIST).write_bytes(
+        macos_app_plist(
+            version="0.1.0",
+            extra_values={"CFBundleIdentifier": "com.example.other"},
+        )
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for file_path in source_root.rglob("*"):
+            if file_path.is_symlink():
+                writestr_symlink(
+                    archive,
+                    file_path.relative_to(source_root.parent).as_posix(),
+                    file_path.readlink().as_posix(),
+                )
+            elif file_path.is_file():
+                write_path_to_zip_with_mode(
+                    archive,
+                    file_path,
+                    file_path.relative_to(source_root.parent),
+                    _macos_zip_mode(file_path),
+                )
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+    result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
+
+    assert result.status == "failed"
+    assert result.message == "staging_macos_bundle_identifier_mismatch"
+    assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
+
+
 def test_apply_pending_update_rejects_macos_background_only_integer(
     tmp_path: Path,
 ) -> None:

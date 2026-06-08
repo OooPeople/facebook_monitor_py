@@ -68,6 +68,8 @@ def test_create_macos_app_launcher_builds_dock_visible_bundle(
             assert "HandleNotificationClient" in source_text
             assert "parent_usernotifications" in source_text
             assert "AF_UNIX" in source_text
+            assert "SO_NOSIGPIPE" in source_text
+            assert "DisableSigpipeOnSocket(clientFd)" in source_text
             assert "NotificationHelperAppDelegate" not in source_text
             assert "RunNotificationHelper" not in source_text
             assert "removeObjectForKey" in source_text
@@ -168,6 +170,8 @@ def test_create_macos_app_launcher_can_emit_source_for_unit_tests(
     assert "HandleNotificationClient" in launcher_source
     assert "AF_UNIX" in launcher_source
     assert "SOCK_STREAM" in launcher_source
+    assert "SO_NOSIGPIPE" in launcher_source
+    assert "DisableSigpipeOnSocket(clientFd)" in launcher_source
     assert "dispatch_get_main_queue" in launcher_source
     assert "NotificationHelperAppDelegate" not in launcher_source
     assert "RunNotificationHelper" not in launcher_source

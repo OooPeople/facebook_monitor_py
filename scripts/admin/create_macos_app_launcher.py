@@ -508,6 +508,15 @@ static int RunNotificationSendMode(void) {
     return gNotificationSendExitCode;
 }
 
+static void DisableSigpipeOnSocket(int fd) {
+#ifdef SO_NOSIGPIPE
+    int enabled = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
+#else
+    (void)fd;
+#endif
+}
+
 static void WriteDataToFd(int fd, NSData *data) {
     if (data == nil) {
         return;
@@ -555,6 +564,8 @@ static void WriteNotificationResultToFd(int fd, NSDictionary *payload) {
 }
 
 static void HandleNotificationClient(int clientFd) {
+    DisableSigpipeOnSocket(clientFd);
+
     struct timeval timeout;
     timeout.tv_sec = 10;
     timeout.tv_usec = 0;

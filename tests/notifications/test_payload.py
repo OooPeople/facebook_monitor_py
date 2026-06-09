@@ -8,11 +8,11 @@ from facebook_monitor.notifications.payload import format_matched_rule_label
 from facebook_monitor.notifications.payload import normalize_notification_fields
 
 
-def test_build_match_notification_title_uses_item_kind() -> None:
-    """match 標題由共用 helper 依 item kind 決定。"""
+def test_build_match_notification_title_does_not_split_post_and_comment() -> None:
+    """match 標題由共用 helper 固定產生，不依 post/comment 分流。"""
 
-    assert build_match_notification_title("post") == "Facebook group match"
-    assert build_match_notification_title("comment") == "Facebook group comment match"
+    assert build_match_notification_title("post") == "Facebook keyword match"
+    assert build_match_notification_title("comment") == "Facebook keyword match"
 
 
 def test_format_matched_rule_label_splits_stored_rule_text() -> None:

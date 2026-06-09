@@ -23,7 +23,7 @@ def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None
         )
     )
 
-    assert title == "Facebook group match"
+    assert title == "Facebook keyword match"
     assert message.splitlines() == [
         "# * Facebook keyword match",
         "社團：中信兄弟商品及門票 代購轉售",

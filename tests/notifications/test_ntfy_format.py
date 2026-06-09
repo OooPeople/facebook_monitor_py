@@ -20,7 +20,7 @@ def test_ntfy_match_payload_uses_plain_text_layout() -> None:
         )
     )
 
-    assert title == "Facebook group match"
+    assert title == "Facebook keyword match"
     assert message.splitlines() == [
         "社團：測試社團",
         "類型：貼文",
@@ -73,7 +73,7 @@ def test_ntfy_match_payload_uses_fallbacks() -> None:
         )
     )
 
-    assert title == "Facebook group comment match"
+    assert title == "Facebook keyword match"
     assert "社團：(未知)" in message
     assert "類型：留言" in message
     assert "作者：(作者未知)" in message

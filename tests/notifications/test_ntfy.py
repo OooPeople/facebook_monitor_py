@@ -89,7 +89,7 @@ def test_send_ntfy_notification_matches_product_encoding(monkeypatch: Any) -> No
     assert calls[0]["url"].endswith("/%E4%B8%AD%E6%96%87%20topic")
     assert calls[0]["content"] == "社團: 測試社團\n內容: 中文內容".encode("utf-8")
     assert calls[0]["headers"]["Content-Type"] == "text/plain; charset=utf-8"
-    assert calls[0]["headers"]["Title"] == "Facebook group match"
+    assert calls[0]["headers"]["Title"] == "Facebook keyword match"
     assert calls[0]["headers"]["Priority"] == "default"
     assert calls[0]["headers"]["Tags"] == "bell"
     assert calls[0]["headers"]["Click"] == "https://www.facebook.com/groups/1/posts/2"
@@ -98,8 +98,8 @@ def test_send_ntfy_notification_matches_product_encoding(monkeypatch: Any) -> No
 def test_to_ascii_header_value_keeps_ascii_and_falls_back_for_unicode() -> None:
     """HTTP header 只保留 ASCII，避免 httpx 編碼中文 header 失敗。"""
 
-    assert to_ascii_header_value("Facebook group match", fallback="fallback") == (
-        "Facebook group match"
+    assert to_ascii_header_value("Facebook keyword match", fallback="fallback") == (
+        "Facebook keyword match"
     )
     assert to_ascii_header_value("Facebook 監視命中", fallback="fallback") == "fallback"
 
@@ -122,7 +122,7 @@ def test_send_ntfy_notification_sanitizes_http_exception_message(monkeypatch: An
 
     result = send_ntfy_notification(
         NtfyConfig(topic="private-topic"),
-        "Facebook group match",
+        "Facebook keyword match",
         "message",
     )
 
@@ -143,14 +143,14 @@ def test_send_desktop_notification_uses_windows_native_sender(monkeypatch: Any) 
 
     monkeypatch.setattr("sys.platform", "win32")
     result = send_desktop_notification(
-        "Facebook group match",
+        "Facebook keyword match",
         "作者: O'Neil",
         windows_native_sender=fake_native_sender,
     )
 
     assert result.ok
     assert result.message == "desktop_sent"
-    assert calls == [("Facebook group match", "作者: O'Neil")]
+    assert calls == [("Facebook keyword match", "作者: O'Neil")]
 
 
 def test_send_desktop_notification_sanitizes_windows_native_exception(
@@ -166,7 +166,7 @@ def test_send_desktop_notification_sanitizes_windows_native_exception(
     monkeypatch.setattr("sys.platform", "win32")
 
     result = send_desktop_notification(
-        "Facebook group match",
+        "Facebook keyword match",
         "private notification body",
         windows_native_sender=failing_native_sender,
     )
@@ -190,7 +190,7 @@ def test_send_desktop_notification_keeps_legacy_powershell_injected_runner(
 
     monkeypatch.setattr("sys.platform", "win32")
     result = send_desktop_notification(
-        "Facebook group match",
+        "Facebook keyword match",
         "作者: O'Neil",
         command_runner=fake_runner,
     )
@@ -225,7 +225,7 @@ def test_send_desktop_notification_sanitizes_legacy_runner_exception(
     monkeypatch.setattr("sys.platform", "win32")
 
     result = send_desktop_notification(
-        "Facebook group match",
+        "Facebook keyword match",
         "private notification body",
         command_runner=failing_runner,
     )
@@ -717,7 +717,7 @@ def test_send_discord_notification_matches_webhook_payload(
     monkeypatch.setattr(httpx, "post", fake_post)
     result = send_discord_notification(
         DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
-        "Facebook group match",
+        "Facebook keyword match",
         "社團: 測試社團",
     )
 
@@ -765,7 +765,7 @@ def test_send_discord_notification_retries_short_rate_limit(
 
     result = send_discord_notification(
         DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
-        "Facebook group match",
+        "Facebook keyword match",
         "社團: 測試社團",
     )
 
@@ -804,7 +804,7 @@ def test_send_discord_notification_reports_rate_limit_details(
 
     result = send_discord_notification(
         DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/token_value"),
-        "Facebook group match",
+        "Facebook keyword match",
         "社團: 測試社團",
     )
 
@@ -836,7 +836,7 @@ def test_send_discord_notification_sanitizes_http_exception_message(
 
     result = send_discord_notification(
         DiscordConfig(webhook_url="https://discord.com/api/webhooks/1234567890/private-token"),
-        "Facebook group match",
+        "Facebook keyword match",
         "message",
     )
 
@@ -889,7 +889,7 @@ def test_send_discord_notification_does_not_post_invalid_webhook(
 
     result = send_discord_notification(
         DiscordConfig(webhook_url="https://127.0.0.1/api/webhooks/123/token"),
-        "Facebook group match",
+        "Facebook keyword match",
         "message",
     )
 

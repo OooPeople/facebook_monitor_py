@@ -120,7 +120,7 @@ class NotificationRuntimeDefaults:
     events_per_target_limit: int = 500
     ntfy_server: str = "https://ntfy.sh"
     ntfy_timeout_seconds: float = 15.0
-    ntfy_ascii_title_fallback: str = "Facebook group match"
+    ntfy_ascii_title_fallback: str = "Facebook keyword match"
     discord_username: str = "facebook_monitor_py"
     discord_content_limit: int = 1900
     discord_timeout_seconds: float = 15.0

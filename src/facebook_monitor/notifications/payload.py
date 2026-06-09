@@ -44,14 +44,10 @@ def item_kind_label(item_kind: object) -> str:
     return "留言" if str(item_kind or "").lower() == "comment" else "貼文"
 
 
-def build_match_notification_title(item_kind: object) -> str:
-    """依 item 類型建立 match 通知標題。"""
+def build_match_notification_title(_item_kind: object) -> str:
+    """建立所有 match 通知共用標題，不依 post/comment 分流。"""
 
-    return (
-        "Facebook group comment match"
-        if str(item_kind or "").lower() == "comment"
-        else "Facebook group match"
-    )
+    return "Facebook keyword match"
 
 
 def normalize_notification_single_line(value: object) -> str:

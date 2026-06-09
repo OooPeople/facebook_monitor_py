@@ -131,8 +131,55 @@ def test_send_ntfy_notification_sanitizes_http_exception_message(monkeypatch: An
     assert "private-topic" not in result.message
 
 
-def test_send_desktop_notification_uses_powershell_balloon_tip(monkeypatch: Any) -> None:
-    """desktop sender 參考 hotel_price_watch 的 PowerShell balloon tip 作法。"""
+def test_send_desktop_notification_uses_windows_native_sender(monkeypatch: Any) -> None:
+    """Windows desktop sender 預設由目前 process 內的 native backend 發送。"""
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_native_sender(title: str, message: str) -> None:
+        """記錄 native sender 呼叫，避免測試真的發桌面通知。"""
+
+        calls.append((title, message))
+
+    monkeypatch.setattr("sys.platform", "win32")
+    result = send_desktop_notification(
+        "Facebook group match",
+        "作者: O'Neil",
+        windows_native_sender=fake_native_sender,
+    )
+
+    assert result.ok
+    assert result.message == "desktop_sent"
+    assert calls == [("Facebook group match", "作者: O'Neil")]
+
+
+def test_send_desktop_notification_sanitizes_windows_native_exception(
+    monkeypatch: Any,
+) -> None:
+    """Windows native sender 失敗不得把通知內容或 Win32 raw detail 寫進診斷。"""
+
+    def failing_native_sender(title: str, message: str) -> None:
+        """模擬 native sender 例外內含通知內容。"""
+
+        raise RuntimeError(f"failed to show {title}: {message}")
+
+    monkeypatch.setattr("sys.platform", "win32")
+
+    result = send_desktop_notification(
+        "Facebook group match",
+        "private notification body",
+        windows_native_sender=failing_native_sender,
+    )
+
+    assert not result.ok
+    assert result.message == "desktop_failed:windows_native_failed"
+    assert "private notification body" not in result.message
+
+
+def test_send_desktop_notification_keeps_legacy_powershell_injected_runner(
+    monkeypatch: Any,
+) -> None:
+    """legacy command runner injection 仍保留 PowerShell escape contract。"""
 
     calls: list[list[str]] = []
 
@@ -165,8 +212,10 @@ def test_build_desktop_notification_command_escapes_single_quotes() -> None:
     assert "$notify.BalloonTipText = 'C''D';" in command[3]
 
 
-def test_send_desktop_notification_sanitizes_runner_exception(monkeypatch: Any) -> None:
-    """desktop 例外訊息不得把通知內容或 command 寫進診斷。"""
+def test_send_desktop_notification_sanitizes_legacy_runner_exception(
+    monkeypatch: Any,
+) -> None:
+    """legacy command runner 例外訊息不得把通知內容或 command 寫進診斷。"""
 
     def failing_runner(_command: list[str]) -> None:
         """模擬 runner 例外內含通知內容。"""

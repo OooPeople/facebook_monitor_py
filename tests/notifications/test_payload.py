@@ -1,138 +1,71 @@
-"""Notification payload tests。"""
+"""Notification payload shared helper tests。"""
 
 from __future__ import annotations
 
 from facebook_monitor.notifications.payload import MatchNotificationFields
-from facebook_monitor.notifications.payload import build_compact_notification_body
-from facebook_monitor.notifications.payload import build_match_notification_payload
+from facebook_monitor.notifications.payload import build_match_notification_title
+from facebook_monitor.notifications.payload import format_matched_rule_label
+from facebook_monitor.notifications.payload import normalize_notification_fields
 
 
-def test_build_match_notification_payload_uses_remote_lines() -> None:
-    """命中通知會包含社團、類型、作者、關鍵字、內容與連結。"""
+def test_build_match_notification_title_uses_item_kind() -> None:
+    """match 標題由共用 helper 依 item kind 決定。"""
 
-    title, message = build_match_notification_payload(
-        MatchNotificationFields(
-            group_name="測試社團",
-            item_kind="post",
-            author="王小明",
-            include_rule="票券",
-            text="這是一篇有票券關鍵字的貼文",
-            permalink="https://www.facebook.com/groups/1/posts/2",
+    assert build_match_notification_title("post") == "Facebook group match"
+    assert build_match_notification_title("comment") == "Facebook group comment match"
+
+
+def test_format_matched_rule_label_splits_stored_rule_text() -> None:
+    """命中規則顯示使用共用分隔符號，避免各通道分歧。"""
+
+    assert format_matched_rule_label("6/7;108;熱") == "6/7 ,  108 ,  熱"
+
+
+def test_format_matched_rule_label_supports_channel_specific_item_formatter() -> None:
+    """通道可在共用 split 邏輯上套用自己的單項格式化。"""
+
+    assert (
+        format_matched_rule_label(
+            "A_B;C*D",
+            item_formatter=lambda value: value.replace("_", "\\_").replace("*", "\\*"),
         )
+        == "A\\_B ,  C\\*D"
     )
 
-    assert title == "Facebook group match"
-    assert message.splitlines() == [
-        "社團: 測試社團",
-        "類型: 貼文",
-        "作者: 王小明",
-        "關鍵字: 票券",
-        "內容: 這是一篇有票券關鍵字的貼文",
-        "連結: https://www.facebook.com/groups/1/posts/2",
-    ]
 
-
-def test_build_match_notification_payload_uses_fallbacks() -> None:
+def test_normalize_notification_fields_uses_fallbacks() -> None:
     """缺少欄位時會使用明確 fallback。"""
 
-    title, message = build_match_notification_payload(
+    normalized = normalize_notification_fields(
         MatchNotificationFields(
             group_name="",
             item_kind="comment",
             author="",
             include_rule="",
             text="",
-        )
+        ),
+        preserve_newlines=True,
     )
 
-    assert title == "Facebook group comment match"
-    assert "社團: (未知)" in message
-    assert "類型: 留言" in message
-    assert "作者: (作者未知)" in message
-    assert "關鍵字: (未指定)" in message
-    assert "內容: (空白)" in message
+    assert normalized.group_name == "(未知)"
+    assert normalized.item_kind == "comment"
+    assert normalized.author == "(作者未知)"
+    assert normalized.include_rule == "(未指定)"
+    assert normalized.text == "(空白)"
 
 
-def test_build_comment_notification_payload_collapses_repeated_text() -> None:
-    """留言通知會折疊 Facebook DOM 造成的整段相鄰重複文字。"""
+def test_normalize_notification_fields_preserves_content_newlines() -> None:
+    """保留換行時仍套用 Facebook 文字清理與重複段落折疊。"""
 
-    title, message = build_match_notification_payload(
-        MatchNotificationFields(
-            group_name="測試社團",
-            item_kind="comment",
-            author="留言作者",
-            include_rule="票券",
-            text="這是一則有票券關鍵字的留言 這是一則有票券關鍵字的留言",
-            permalink="https://www.facebook.com/groups/1/posts/2/?comment_id=3",
-        )
-    )
-
-    assert title == "Facebook group comment match"
-    assert message.count("這是一則有票券關鍵字的留言") == 1
-
-
-def test_build_match_notification_payload_preserves_content_newlines() -> None:
-    """遠端命中通知保留掃描階段提供的內容換行。"""
-
-    _title, message = build_match_notification_payload(
+    normalized = normalize_notification_fields(
         MatchNotificationFields(
             group_name="測試社團",
             item_kind="post",
             author="王小明",
             include_rule="票券",
-            text="第一行票券\n第二行座位",
-            permalink="https://www.facebook.com/groups/1/posts/2",
-        )
+            text="第一行票券\n第二行座位\n第一行票券\n第二行座位",
+        ),
+        preserve_newlines=True,
     )
 
-    assert message.splitlines() == [
-        "社團: 測試社團",
-        "類型: 貼文",
-        "作者: 王小明",
-        "關鍵字: 票券",
-        "內容:",
-        "第一行票券",
-        "第二行座位",
-        "連結: https://www.facebook.com/groups/1/posts/2",
-    ]
-
-
-def test_build_compact_notification_body_uses_desktop_summary_lines() -> None:
-    """桌面通知 body 只保留社團、類型與命中摘要。"""
-
-    body = build_compact_notification_body(
-        MatchNotificationFields(
-            group_name="測試社團",
-            item_kind="post",
-            author="王小明",
-            include_rule="票券",
-            text="這是一篇有票券關鍵字的貼文",
-            permalink="https://www.facebook.com/groups/1/posts/2",
-        )
-    )
-
-    assert body.splitlines() == [
-        "社團: 測試社團",
-        "類型: 貼文",
-        "命中: 票券",
-    ]
-
-
-def test_build_compact_notification_body_ignores_content_newlines() -> None:
-    """桌面摘要不放正文內容，避免長貼文擠壓 banner。"""
-
-    body = build_compact_notification_body(
-        MatchNotificationFields(
-            group_name="測試社團",
-            item_kind="post",
-            author="王小明",
-            include_rule="票券",
-            text="第一行票券\n第二行座位",
-        )
-    )
-
-    assert body.splitlines() == [
-        "社團: 測試社團",
-        "類型: 貼文",
-        "命中: 票券",
-    ]
+    assert normalized.text == "第一行票券\n第二行座位"

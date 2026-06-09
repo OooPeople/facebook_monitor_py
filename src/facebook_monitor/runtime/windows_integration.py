@@ -77,6 +77,39 @@ def find_windows_tray_icon(paths: object) -> Path | None:
     return None
 
 
+def find_windows_notification_icon() -> Path | None:
+    """尋找 desktop notification 可使用的 bundled / source icon。"""
+
+    candidates: list[Path] = []
+    executable_parent = Path(sys.executable).resolve().parent
+    candidates.extend(_windows_icon_candidates(executable_parent))
+    pyinstaller_base = getattr(sys, "_MEIPASS", "")
+    if pyinstaller_base:
+        candidates.extend(_windows_icon_candidates(Path(str(pyinstaller_base)).resolve()))
+    source_root = Path(__file__).resolve().parents[3]
+    candidates.extend(
+        [
+            source_root / "packaging" / "assets" / "facebook-monitor-tray.ico",
+            source_root / "packaging" / "assets" / "facebook-monitor.ico",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _windows_icon_candidates(base_dir: Path) -> list[Path]:
+    """回傳 Windows onedir 可能放置 icon asset 的路徑。"""
+
+    return [
+        base_dir / "assets" / "facebook-monitor-tray.ico",
+        base_dir / "_internal" / "assets" / "facebook-monitor-tray.ico",
+        base_dir / "assets" / "facebook-monitor.ico",
+        base_dir / "_internal" / "assets" / "facebook-monitor.ico",
+    ]
+
+
 def run_uvicorn_with_windows_tray(
     app: Any,
     *,

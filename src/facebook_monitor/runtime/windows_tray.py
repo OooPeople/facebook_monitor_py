@@ -13,8 +13,12 @@ import logging
 from pathlib import Path
 import sys
 import threading
+import time
 from typing import Any
+from uuid import uuid4
 import webbrowser
+
+from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 
 
 logger = logging.getLogger(__name__)
@@ -32,14 +36,20 @@ WM_LBUTTONDBLCLK = 0x0203
 WM_CONTEXTMENU = 0x007B
 
 NIM_ADD = 0x00000000
+NIM_MODIFY = 0x00000001
 NIM_DELETE = 0x00000002
 NIF_MESSAGE = 0x00000001
 NIF_ICON = 0x00000002
 NIF_TIP = 0x00000004
+NIF_INFO = 0x00000010
+
+NIIF_USER = 0x00000004
+NIIF_LARGE_ICON = 0x00000020
 
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
+NOTIFICATION_ICON_SIZE = 64
 
 MF_STRING = 0x00000000
 MF_SEPARATOR = 0x00000800
@@ -49,6 +59,12 @@ TPM_NONOTIFY = 0x0080
 
 _WinDLL = getattr(ctypes, "WinDLL", ctypes.CDLL)
 _WINFUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+_ACTIVE_TRAY_LOCK = threading.Lock()
+_ACTIVE_TRAY_ICON: WindowsTrayIcon | None = None
+
+
+class WindowsTrayNotificationError(Exception):
+    """表示 Windows tray notification Win32 呼叫失敗。"""
 
 
 def _raise_last_win_error() -> None:
@@ -125,6 +141,8 @@ def _load_user32() -> Any:
     user32.PostMessageW.restype = wintypes.BOOL
     user32.DestroyWindow.argtypes = [wintypes.HWND]
     user32.DestroyWindow.restype = wintypes.BOOL
+    user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    user32.UnregisterClassW.restype = wintypes.BOOL
     user32.PostQuitMessage.argtypes = [ctypes.c_int]
     user32.DefWindowProcW.argtypes = [
         wintypes.HWND,
@@ -225,16 +243,24 @@ class WindowsTrayIcon:
         url: str,
         icon_path: Path | None,
         on_exit: Callable[[], None],
+        register_active: bool = True,
     ) -> None:
         self._url = url
         self._icon_path = icon_path
         self._on_exit = on_exit
+        self._register_active = register_active
         self._ready = threading.Event()
         self._stopped = threading.Event()
         self._hwnd: int | None = None
         self._icon_handle: int | None = None
+        self._notification_icon_handle: int | None = None
         self._notify_data: NOTIFYICONDATAW | None = None
         self._wndproc: Any | None = None
+        self._hinstance: int | None = None
+        self._class_name: str | None = None
+        self._class_registered = False
+        self._stopping = False
+        self._lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run_message_loop,
             name="facebook-monitor-windows-tray",
@@ -250,14 +276,62 @@ class WindowsTrayIcon:
         self._thread.start()
         if not self._ready.wait(timeout=5):
             logger.warning("Windows tray icon did not become ready before timeout")
+            return
+        if self._register_active and self.is_ready:
+            _set_active_tray_icon(self)
 
     def stop(self) -> None:
         """移除 tray icon 並停止 hidden window message loop。"""
 
-        if self._hwnd:
+        _clear_active_tray_icon(self)
+        with self._lock:
+            self._stopping = True
+            hwnd = self._hwnd
+        if hwnd:
             user32 = _load_user32()
-            user32.PostMessageW(wintypes.HWND(self._hwnd), WM_CLOSE, 0, 0)
-        self._thread.join(timeout=5)
+            user32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0)
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+    @property
+    def is_ready(self) -> bool:
+        """回傳 tray icon 是否已成功加入 notification area。"""
+
+        return bool(
+            self._ready.is_set()
+            and not self._stopping
+            and self._hwnd
+            and self._notify_data is not None
+        )
+
+    def show_notification(
+        self,
+        *,
+        title: str,
+        message: str,
+        timeout_ms: int | None = None,
+    ) -> None:
+        """用目前 tray icon owner 發出 Windows shell notification。"""
+
+        if not is_windows_tray_supported():
+            raise WindowsTrayNotificationError("windows tray notification unsupported")
+        with self._lock:
+            if not self.is_ready:
+                raise WindowsTrayNotificationError("windows tray notification icon is not ready")
+            notify_data = build_windows_tray_notification_data(
+                hwnd=int(self._hwnd or 0),
+                icon_handle=int(self._notification_icon_handle or self._icon_handle or 0),
+                title=title,
+                message=message,
+                timeout_ms=(
+                    PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_balloon_tip_milliseconds
+                    if timeout_ms is None
+                    else timeout_ms
+                ),
+            )
+            shell32 = _load_shell32()
+            if not shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(notify_data)):
+                _raise_last_win_error()
 
     def _run_message_loop(self) -> None:
         try:
@@ -271,6 +345,9 @@ class WindowsTrayIcon:
             logger.exception("Windows tray icon failed")
             self._ready.set()
         finally:
+            self._destroy_hidden_window()
+            self._delete_tray_icon()
+            self._unregister_window_class()
             self._stopped.set()
 
     def _create_window_and_icon(self) -> None:
@@ -279,7 +356,9 @@ class WindowsTrayIcon:
         kernel32 = _load_kernel32()
 
         hinstance = kernel32.GetModuleHandleW(None)
-        class_name = "FacebookMonitorTrayWindow"
+        class_name = f"FacebookMonitorTrayWindow{uuid4().hex}"
+        self._hinstance = int(hinstance or 0)
+        self._class_name = class_name
         self._wndproc = WNDPROC(self._window_proc)
         window_class = WNDCLASSW(
             0,
@@ -293,7 +372,9 @@ class WindowsTrayIcon:
             None,
             class_name,
         )
-        user32.RegisterClassW(ctypes.byref(window_class))
+        if not user32.RegisterClassW(ctypes.byref(window_class)):
+            _raise_last_win_error()
+        self._class_registered = True
         hwnd = user32.CreateWindowExW(
             0,
             class_name,
@@ -311,8 +392,13 @@ class WindowsTrayIcon:
         if not hwnd:
             _raise_last_win_error()
         self._hwnd = int(hwnd)
-        icon_handle = self._load_icon_handle(user32)
+        icon_handle = self._load_icon_handle(user32, size=0)
+        notification_icon_handle = self._load_icon_handle(
+            user32,
+            size=NOTIFICATION_ICON_SIZE,
+        )
         self._icon_handle = icon_handle or None
+        self._notification_icon_handle = notification_icon_handle or icon_handle or None
         notify_data = NOTIFYICONDATAW()
         notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
         notify_data.hWnd = hwnd
@@ -326,18 +412,24 @@ class WindowsTrayIcon:
             _raise_last_win_error()
         self._ready.set()
 
-    def _load_icon_handle(self, user32: ctypes.CDLL) -> int:
+    def _load_icon_handle(self, user32: ctypes.CDLL, *, size: int) -> int:
+        """載入 icon handle；size=0 使用系統預設，非 0 用於高解析 notification。"""
+
         if self._icon_path is None:
             return 0
         icon_path = str(self._icon_path)
+        requested_size = max(0, int(size))
+        flags = LR_LOADFROMFILE
+        if requested_size == 0:
+            flags |= LR_DEFAULTSIZE
         return int(
             user32.LoadImageW(
                 None,
                 icon_path,
                 IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
+                requested_size,
+                requested_size,
+                flags,
             )
             or 0
         )
@@ -397,6 +489,8 @@ class WindowsTrayIcon:
             user32.DestroyMenu(menu)
 
     def _open_url(self) -> None:
+        if not self._url:
+            return
         try:
             webbrowser.open(self._url)
         except Exception:
@@ -409,16 +503,115 @@ class WindowsTrayIcon:
             logger.exception("Tray exit callback failed")
         user32.DestroyWindow(hwnd)
 
-    def _delete_tray_icon(self) -> None:
-        if self._notify_data is None:
-            return
-        shell32 = _load_shell32()
-        shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._notify_data))
-        self._notify_data = None
-        if self._icon_handle:
+    def _destroy_hidden_window(self) -> None:
+        """確保建立途中失敗時，hidden window 也會被釋放。"""
+
+        with self._lock:
+            hwnd = self._hwnd
+        if hwnd:
             user32 = _load_user32()
-            user32.DestroyIcon(wintypes.HICON(self._icon_handle))
+            if not user32.DestroyWindow(wintypes.HWND(hwnd)):
+                logger.warning("Failed to destroy Windows tray hidden window")
+
+    def _delete_tray_icon(self) -> None:
+        _clear_active_tray_icon(self)
+        with self._lock:
+            self._stopping = True
+            notify_data = self._notify_data
+            icon_handle = self._icon_handle
+            notification_icon_handle = self._notification_icon_handle
+            self._notify_data = None
             self._icon_handle = None
+            self._notification_icon_handle = None
+            self._hwnd = None
+        user32 = _load_user32()
+        if notify_data is not None:
+            shell32 = _load_shell32()
+            shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(notify_data))
+        if icon_handle:
+            user32.DestroyIcon(wintypes.HICON(icon_handle))
+        if notification_icon_handle and notification_icon_handle != icon_handle:
+            user32.DestroyIcon(wintypes.HICON(notification_icon_handle))
+
+    def _unregister_window_class(self) -> None:
+        """message loop 結束後才解除 window class 註冊。"""
+
+        with self._lock:
+            class_name = self._class_name
+            hinstance = self._hinstance
+            class_registered = self._class_registered
+            self._class_name = None
+            self._hinstance = None
+            self._class_registered = False
+        if not (class_registered and class_name and hinstance):
+            return
+        user32 = _load_user32()
+        if not user32.UnregisterClassW(class_name, wintypes.HINSTANCE(hinstance)):
+            get_last_error = getattr(ctypes, "get_last_error", lambda: 0)
+            logger.warning(
+                "Failed to unregister Windows tray window class: %s",
+                get_last_error(),
+            )
+
+
+def build_windows_tray_notification_data(
+    *,
+    hwnd: int,
+    icon_handle: int,
+    title: str,
+    message: str,
+    timeout_ms: int,
+) -> NOTIFYICONDATAW:
+    """建立 `Shell_NotifyIconW(NIM_MODIFY)` 使用的 notification payload。"""
+
+    notify_data = NOTIFYICONDATAW()
+    notify_data.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+    notify_data.hWnd = wintypes.HWND(hwnd)
+    notify_data.uID = TRAY_ICON_ID
+    notify_data.uFlags = NIF_INFO
+    notify_data.szInfoTitle = _windows_notify_text(title, max_chars=63)
+    notify_data.szInfo = _windows_notify_text(message, max_chars=255)
+    notify_data.uTimeoutOrVersion = max(0, int(timeout_ms))
+    if icon_handle:
+        notify_data.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON
+        notify_data.hBalloonIcon = wintypes.HANDLE(icon_handle)
+    return notify_data
+
+
+def show_windows_tray_notification(
+    *,
+    title: str,
+    message: str,
+    icon_path: Path | None = None,
+    cleanup_sleep_ms: int | None = None,
+) -> None:
+    """由目前 `facebook-monitor.exe` process 送出 Windows tray notification。"""
+
+    active_tray_icon = _get_active_tray_icon()
+    if active_tray_icon is not None:
+        active_tray_icon.show_notification(title=title, message=message)
+        return
+
+    transient_icon = WindowsTrayIcon(
+        url="",
+        icon_path=icon_path,
+        on_exit=lambda: None,
+        register_active=False,
+    )
+    transient_icon.start()
+    try:
+        transient_icon.show_notification(title=title, message=message)
+        time.sleep(
+            max(
+                0,
+                PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_cleanup_sleep_milliseconds
+                if cleanup_sleep_ms is None
+                else cleanup_sleep_ms,
+            )
+            / 1000
+        )
+    finally:
+        transient_icon.stop()
 
 
 def is_windows_tray_supported() -> bool:
@@ -438,3 +631,40 @@ def start_windows_tray_icon(
     tray_icon = WindowsTrayIcon(url=url, icon_path=icon_path, on_exit=on_exit)
     tray_icon.start()
     return tray_icon
+
+
+def _windows_notify_text(value: str, *, max_chars: int) -> str:
+    """限制 Shell notification 文字長度，避免 ctypes 寫入固定 buffer 失敗。"""
+
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3] + "..."
+
+
+def _get_active_tray_icon() -> WindowsTrayIcon | None:
+    """回傳目前 launcher 持有的 tray icon；若已停止則回 None。"""
+
+    with _ACTIVE_TRAY_LOCK:
+        if _ACTIVE_TRAY_ICON is not None and _ACTIVE_TRAY_ICON.is_ready:
+            return _ACTIVE_TRAY_ICON
+    return None
+
+
+def _set_active_tray_icon(tray_icon: WindowsTrayIcon) -> None:
+    """登記目前 process 的正式 tray icon，供 desktop sender 重用。"""
+
+    global _ACTIVE_TRAY_ICON
+    with _ACTIVE_TRAY_LOCK:
+        _ACTIVE_TRAY_ICON = tray_icon
+
+
+def _clear_active_tray_icon(tray_icon: WindowsTrayIcon) -> None:
+    """清除已停止的正式 tray icon 登記。"""
+
+    global _ACTIVE_TRAY_ICON
+    with _ACTIVE_TRAY_LOCK:
+        if _ACTIVE_TRAY_ICON is tray_icon:
+            _ACTIVE_TRAY_ICON = None

@@ -38,12 +38,15 @@ from facebook_monitor.notifications.channel_plan import build_enabled_channel_pl
 from facebook_monitor.notifications.channel_plan import get_channel_endpoint
 from facebook_monitor.notifications.channel_plan import is_channel_enabled_by_config
 from facebook_monitor.notifications.desktop import send_desktop_notification
+from facebook_monitor.notifications.desktop_format import build_compact_notification_body
+from facebook_monitor.notifications.desktop_format import (
+    build_runtime_failure_compact_notification_message,
+)
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.discord_format import build_discord_match_notification_payload
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
+from facebook_monitor.notifications.ntfy_format import build_ntfy_match_notification_payload
 from facebook_monitor.notifications.payload import MatchNotificationFields
-from facebook_monitor.notifications.payload import build_compact_notification_body
-from facebook_monitor.notifications.payload import build_match_notification_payload
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.core.user_messages import format_failure_reason
 
@@ -55,7 +58,7 @@ DEFAULT_DISPATCH_BATCH_LIMIT = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.dispatch_bat
 INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE = "runtime_failure_not_terminal"
 
 
-def build_match_notification_message(
+def build_ntfy_match_notification_message(
     *,
     target: TargetDescriptor,
     author: str,
@@ -64,17 +67,16 @@ def build_match_notification_message(
     matched_keyword: str,
     item_kind: ItemKind = ItemKind.POST,
 ) -> tuple[str, str]:
-    """建立 keyword match 通知標題與內容，供所有通道共用。"""
+    """建立 ntfy / plain-text keyword match 通知標題與內容。"""
 
-    group_name = format_target_display_name(target)
-    return build_match_notification_payload(
-        MatchNotificationFields(
-            group_name=group_name,
-            item_kind=item_kind.value,
+    return build_ntfy_match_notification_payload(
+        build_match_notification_fields(
+            target=target,
+            item_kind=item_kind,
             author=author,
-            include_rule=matched_keyword,
-            text=item_text,
+            item_text=item_text,
             permalink=permalink,
+            matched_keyword=matched_keyword,
         )
     )
 
@@ -90,16 +92,36 @@ def build_match_discord_notification_message(
 ) -> tuple[str, str]:
     """建立 Discord 專用 keyword match 通知標題與內容。"""
 
-    group_name = format_target_display_name(target)
     return build_discord_match_notification_payload(
-        MatchNotificationFields(
-            group_name=group_name,
-            item_kind=item_kind.value,
+        build_match_notification_fields(
+            target=target,
+            item_kind=item_kind,
             author=author,
-            include_rule=matched_keyword,
-            text=item_text,
+            item_text=item_text,
             permalink=permalink,
+            matched_keyword=matched_keyword,
         )
+    )
+
+
+def build_match_notification_fields(
+    *,
+    target: TargetDescriptor,
+    author: str,
+    item_text: str,
+    permalink: str,
+    matched_keyword: str,
+    item_kind: ItemKind = ItemKind.POST,
+) -> MatchNotificationFields:
+    """依 target 顯示語義建立各通道 formatter 共用的 match 欄位。"""
+
+    return MatchNotificationFields(
+        group_name=format_target_display_name(target),
+        item_kind=item_kind.value,
+        author=author,
+        include_rule=matched_keyword,
+        text=item_text,
+        permalink=permalink,
     )
 
 
@@ -242,7 +264,7 @@ def enqueue_match_notifications(
 ) -> tuple[NotificationOutboxEntry, ...]:
     """將 match 通知寫入 outbox；不在 DB transaction 內做外部 I/O。"""
 
-    title, message = build_match_notification_message(
+    title, message = build_ntfy_match_notification_message(
         target=target,
         item_kind=item_kind,
         author=author,
@@ -371,7 +393,11 @@ def enqueue_runtime_failure_notifications(
                     item_kind=item_kind,
                     channel=plan.channel,
                     title=title,
-                    message=message if not plan.use_compact_message else message.replace("\n", " | "),
+                    message=(
+                        build_runtime_failure_compact_notification_message(message)
+                        if plan.use_compact_message
+                        else message
+                    ),
                     endpoint=plan.endpoint,
                     permalink=target.canonical_url,
                     event_kind=NotificationEventKind.RUNTIME_FAILURE,
@@ -511,7 +537,7 @@ def dispatch_notification_outbox_entries(
                 target=target,
                 entry=entry,
             )
-            event_id, status = dispatch_notification_outbox_entry(
+            event_id, status, result_message = dispatch_notification_outbox_entry(
                 app=app,
                 target=target,
                 entry=entry,
@@ -523,6 +549,7 @@ def dispatch_notification_outbox_entries(
                 entry_id=entry_id,
                 status=status,
                 attempts=attempts,
+                message=_outbox_result_message(status, result_message),
                 notification_event_id=event_id,
             )
             app.repositories.notification_outbox.connection.commit()
@@ -548,6 +575,14 @@ def dispatch_notification_outbox_entries(
             )
             app.repositories.notification_outbox.connection.commit()
     return dispatched_count
+
+
+def _outbox_result_message(status: NotificationOutboxStatus, message: str) -> str:
+    """成功通知不佔用 last_error；failed/skipped 保留可診斷 result code。"""
+
+    if status == NotificationOutboxStatus.SENT:
+        return ""
+    return str(message or "").strip()
 
 
 def _runtime_failure_outbox_entry_should_skip(entry: NotificationOutboxEntry) -> bool:
@@ -632,14 +667,13 @@ def build_match_compact_notification_message(
 ) -> str:
     """建立桌面通知使用的短內容。"""
 
-    group_name = format_target_display_name(target)
     return build_compact_notification_body(
-        MatchNotificationFields(
-            group_name=group_name,
-            item_kind=item_kind.value,
+        build_match_notification_fields(
+            target=target,
+            item_kind=item_kind,
             author=author,
-            include_rule=matched_keyword,
-            text=item_text,
+            item_text=item_text,
             permalink=permalink,
+            matched_keyword=matched_keyword,
         )
     )

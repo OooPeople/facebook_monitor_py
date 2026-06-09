@@ -81,10 +81,10 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
             "https://www.facebook.com/groups/222518561920110/posts/1"
         )
         assert sent_payloads[0][1] == "Facebook group match"
-        assert "關鍵字: 票券" in sent_payloads[0][2]
+        assert "命中：票券" in sent_payloads[0][2]
         assert "測試社團" in sent_payloads[0][2]
         assert "(3) 測試社團" not in sent_payloads[0][2]
-        assert "類型: 貼文" in sent_payloads[0][2]
+        assert "類型：貼文" in sent_payloads[0][2]
         assert "王小明" in sent_payloads[0][2]
         assert len(events) == 1
         assert events[0].status == NotificationStatus.SENT

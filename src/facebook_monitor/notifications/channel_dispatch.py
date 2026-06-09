@@ -74,7 +74,7 @@ class NotificationSenders:
 
 NotificationChannelHandler = Callable[
     [ApplicationContext, TargetDescriptor, NotificationOutboxEntry, NotificationSenders],
-    tuple[int, NotificationOutboxStatus],
+    tuple[int, NotificationOutboxStatus, str],
 ]
 
 
@@ -104,7 +104,7 @@ def _record_send_result(
     entry: NotificationOutboxEntry,
     ok: bool,
     message: str,
-) -> tuple[int, NotificationOutboxStatus]:
+) -> tuple[int, NotificationOutboxStatus, str]:
     """寫入 sender result 並回傳 outbox status。"""
 
     event_status, outbox_status = _result_to_status(ok)
@@ -117,7 +117,7 @@ def _record_send_result(
         message=message,
         entry=entry,
     )
-    return event_id, outbox_status
+    return event_id, outbox_status, message
 
 
 def _record_skipped_channel(
@@ -126,7 +126,7 @@ def _record_skipped_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     message: str,
-) -> tuple[int, NotificationOutboxStatus]:
+) -> tuple[int, NotificationOutboxStatus, str]:
     """寫入缺少 endpoint 等 skipped channel result。"""
 
     event_id = record_notification_event(
@@ -138,7 +138,7 @@ def _record_skipped_channel(
         message=message,
         entry=entry,
     )
-    return event_id, NotificationOutboxStatus.SKIPPED
+    return event_id, NotificationOutboxStatus.SKIPPED, message
 
 
 def _dispatch_desktop_channel(
@@ -146,7 +146,7 @@ def _dispatch_desktop_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus]:
+) -> tuple[int, NotificationOutboxStatus, str]:
     result = senders.desktop(entry.title, entry.message)
     return _record_send_result(
         app=app,
@@ -162,7 +162,7 @@ def _dispatch_ntfy_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus]:
+) -> tuple[int, NotificationOutboxStatus, str]:
     if not entry.endpoint.strip():
         return _record_skipped_channel(
             app=app,
@@ -189,7 +189,7 @@ def _dispatch_discord_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus]:
+) -> tuple[int, NotificationOutboxStatus, str]:
     if not entry.endpoint.strip():
         return _record_skipped_channel(
             app=app,
@@ -226,8 +226,8 @@ def dispatch_notification_outbox_entry(
     ntfy_sender: NtfySender,
     desktop_sender: DesktopSender,
     discord_sender: DiscordSender,
-) -> tuple[int, NotificationOutboxStatus]:
-    """發送單筆 outbox event，回傳 notification event id 與 outbox 狀態。"""
+) -> tuple[int, NotificationOutboxStatus, str]:
+    """發送單筆 outbox event，回傳 event id、outbox 狀態與 result message。"""
 
     get_channel_definition(entry.channel)
     handler = NOTIFICATION_CHANNEL_HANDLERS.get(entry.channel)

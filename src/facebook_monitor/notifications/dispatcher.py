@@ -14,7 +14,7 @@ from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_dispatch import is_channel_enabled
 from facebook_monitor.notifications.manual_test import send_manual_test_notification
 from facebook_monitor.notifications.outbox_service import build_match_compact_notification_message
-from facebook_monitor.notifications.outbox_service import build_match_notification_message
+from facebook_monitor.notifications.outbox_service import build_ntfy_match_notification_message
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
 from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
 from facebook_monitor.notifications.outbox_service import dispatch_notification_outbox_entries
@@ -30,7 +30,7 @@ __all__ = [
     "NotificationChannelDefinition",
     "NtfySender",
     "build_match_compact_notification_message",
-    "build_match_notification_message",
+    "build_ntfy_match_notification_message",
     "build_notification_idempotency_key",
     "dispatch_new_pending_notification_outbox",
     "dispatch_notification_outbox_entries",

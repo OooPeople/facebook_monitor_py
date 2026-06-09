@@ -122,6 +122,7 @@ _NOTIFICATION_MESSAGE_LABELS = {
     "desktop_failed:macos_payload_invalid": "macOS 通知資料格式錯誤",
     "desktop_failed:macos_result_invalid": "macOS 通知結果格式錯誤",
     "desktop_failed:macos_native_failed": "macOS native 通知發送失敗",
+    "desktop_failed:windows_native_failed": "Windows 桌面通知發送失敗",
     "failed_result": "通知服務回傳失敗",
     "previous_down": "前次通知失敗",
     "first_down": "首次通知失敗",

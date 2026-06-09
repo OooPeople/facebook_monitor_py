@@ -70,6 +70,10 @@ def test_notification_event_message_is_localized() -> None:
         "desktop_failed:macos_permission_denied"
     )
     assert (
+        format_notification_event_message("desktop_failed:windows_native_failed")
+        == "Windows 桌面通知發送失敗"
+    )
+    assert (
         format_notification_event_message("notification_test_failed:RuntimeError")
         == "通知測試發生錯誤"
     )

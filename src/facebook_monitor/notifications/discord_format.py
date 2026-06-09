@@ -6,8 +6,9 @@ import re
 import unicodedata
 from urllib.parse import quote
 
-from facebook_monitor.core.keyword_rules import split_keyword_rule_text
 from facebook_monitor.notifications.payload import MatchNotificationFields
+from facebook_monitor.notifications.payload import build_match_notification_title
+from facebook_monitor.notifications.payload import format_matched_rule_label
 from facebook_monitor.notifications.payload import item_kind_label
 from facebook_monitor.notifications.payload import normalize_notification_fields
 
@@ -40,11 +41,7 @@ def build_discord_match_notification_payload(
     normalized = normalize_discord_notification_fields(fields)
     # Discord 傳統 content payload 不會顯示 title；保留它是為了通知 outbox
     # 與 sender 共用的 (title, message) 契約。
-    title = (
-        "Facebook group comment match"
-        if normalized.item_kind.lower() == "comment"
-        else "Facebook group match"
-    )
+    title = build_match_notification_title(normalized.item_kind)
     lines = [
         DISCORD_MATCH_HEADING,
         f"社團：{normalize_discord_single_line(normalized.group_name)}",
@@ -71,10 +68,10 @@ def normalize_discord_notification_fields(
 def format_discord_matched_rule_label(matched_rule: str) -> str:
     """把分號儲存格式轉成 Discord 較易掃讀的顯示文字。"""
 
-    rules = split_keyword_rule_text(matched_rule)
-    if rules:
-        return " ,  ".join(normalize_discord_single_line(rule) for rule in rules)
-    return normalize_discord_single_line(matched_rule)
+    return format_matched_rule_label(
+        matched_rule,
+        item_formatter=normalize_discord_single_line,
+    )
 
 
 def format_discord_text_body(text: str) -> str:

@@ -301,11 +301,26 @@ def test_outbox_failed_result_records_one_event_per_entry(
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
         assert stored_target is not None
         events = app.repositories.notification_events.list_by_target(stored_target.id)
+        entries = [
+            app.repositories.notification_outbox.get_by_idempotency_key(
+                build_notification_idempotency_key(
+                    target_id=stored_target.id,
+                    item_key=item_key,
+                    channel=NotificationChannel.NTFY,
+                )
+            )
+            for item_key in ("post:failed-a", "post:failed-b")
+        ]
 
     assert len(calls) == 2
     assert len(events) == 2
     assert all(event.status == NotificationStatus.FAILED for event in events)
     assert all(event.message == "failed_result" for event in events)
+    assert all(entry is not None for entry in entries)
+    assert [entry.last_error for entry in entries if entry is not None] == [
+        "failed_result",
+        "failed_result",
+    ]
 
 
 def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> None:
@@ -469,6 +484,7 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
     assert entry is not None
     assert entry.status.value == "sent"
     assert entry.attempts == 2
+    assert entry.last_error == ""
 
 
 def test_failed_outbox_retry_resends_persisted_multiline_message(
@@ -539,7 +555,7 @@ def test_failed_outbox_retry_resends_persisted_multiline_message(
         retry_failed_notification_outbox(app=app, ntfy_sender=sometimes_failing_sender)
 
     assert sent_messages == [stored_message]
-    assert "內容:\n第一行票券\n第二行座位" in stored_message
+    assert "內容：\n第一行票券\n第二行座位" in stored_message
 
 
 def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
@@ -1097,3 +1113,4 @@ def test_failed_outbox_retry_refreshes_current_target_endpoint(tmp_path: Path) -
     assert updated is not None
     assert updated.endpoint == "new-topic"
     assert updated.status == NotificationOutboxStatus.SENT
+    assert updated.last_error == ""

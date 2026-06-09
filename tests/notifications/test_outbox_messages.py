@@ -8,9 +8,12 @@ from facebook_monitor.notifications.outbox_service import (
     build_match_compact_notification_message,
 )
 from facebook_monitor.notifications.outbox_service import build_match_discord_notification_message
-from facebook_monitor.notifications.outbox_service import build_match_notification_message
+from facebook_monitor.notifications.outbox_service import build_ntfy_match_notification_message
 from facebook_monitor.notifications.outbox_service import (
     build_runtime_failure_notification_message,
+)
+from facebook_monitor.notifications.desktop_format import (
+    build_runtime_failure_compact_notification_message,
 )
 
 
@@ -24,7 +27,7 @@ def test_match_notification_uses_user_facing_target_name() -> None:
         group_name="測試社團",
     )
 
-    _title, message = build_match_notification_message(
+    _title, message = build_ntfy_match_notification_message(
         target=target,
         author="王小明",
         item_text="票券貼文",
@@ -39,11 +42,11 @@ def test_match_notification_uses_user_facing_target_name() -> None:
         matched_keyword="票券",
     )
 
-    assert "社團: 我的自訂名稱" in message
-    assert "社團: 測試社團" not in message
-    assert "社團: 我的自訂名稱" in compact
-    assert "社團: 測試社團" not in compact
-    assert "命中: 票券" in compact
+    assert "社團：我的自訂名稱" in message
+    assert "社團：測試社團" not in message
+    assert "社團：我的自訂名稱" in compact
+    assert "社團：測試社團" not in compact
+    assert "命中：票券" in compact
 
 
 def test_comment_match_notification_preserves_comment_target_display_scope() -> None:
@@ -58,7 +61,7 @@ def test_comment_match_notification_preserves_comment_target_display_scope() -> 
         group_name="(20+) 測試社團 | Facebook",
     )
 
-    _title, message = build_match_notification_message(
+    _title, message = build_ntfy_match_notification_message(
         target=target,
         item_kind=ItemKind.COMMENT,
         author="王小明",
@@ -70,7 +73,7 @@ def test_comment_match_notification_preserves_comment_target_display_scope() -> 
         matched_keyword="票券",
     )
 
-    assert "社團: 測試社團 / post:2187454285426518" in message
+    assert "社團：測試社團 / post:2187454285426518" in message
     assert "(20+)" not in message
 
 
@@ -83,7 +86,7 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
         name="測試社團",
     )
 
-    _remote_title, remote_message = build_match_notification_message(
+    _remote_title, remote_message = build_ntfy_match_notification_message(
         target=target,
         author="王小明",
         item_text="售6/3內野118區票券",
@@ -98,7 +101,7 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
         matched_keyword="6/3;118",
     )
 
-    assert "內容: 售6/3內野118區票券" in remote_message
+    assert "內容：售6/3內野118區票券" in remote_message
     assert "**6/3**" not in remote_message
     assert "**118**" not in remote_message
     assert discord_message.startswith("# * Facebook keyword match\n社團：")
@@ -143,7 +146,7 @@ def test_match_notification_message_preserves_remote_content_newlines() -> None:
         name="測試社團",
     )
 
-    _title, message = build_match_notification_message(
+    _title, message = build_ntfy_match_notification_message(
         target=target,
         author="王小明",
         item_text="第一行票券\n第二行座位",
@@ -158,11 +161,11 @@ def test_match_notification_message_preserves_remote_content_newlines() -> None:
         matched_keyword="票券",
     )
 
-    assert "內容:\n第一行票券\n第二行座位" in message
+    assert "內容：\n第一行票券\n第二行座位" in message
     assert compact.splitlines() == [
-        "社團: 測試社團",
-        "類型: 貼文",
-        "命中: 票券",
+        "社團：測試社團",
+        "類型：貼文",
+        "命中：票券",
     ]
 
 
@@ -186,3 +189,28 @@ def test_runtime_failure_notification_uses_clean_target_display_name() -> None:
     assert "監視項目: 我的自訂名稱" in message
     assert "監視項目: 測試社團" not in message
     assert "(20+)" not in message
+
+
+def test_runtime_failure_desktop_compact_message_has_shared_builder() -> None:
+    """runtime failure 桌面摘要也必須由 outbox 共用 helper 產生。"""
+
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+        name="測試社團",
+    )
+
+    _title, message = build_runtime_failure_notification_message(
+        target=target,
+        reason="unknown",
+        failure_count=3,
+        error_message="背景掃描錯誤",
+    )
+    compact = build_runtime_failure_compact_notification_message(message)
+
+    assert "\n" in message
+    assert "\n" not in compact
+    assert compact == (
+        "監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3 | "
+        "狀態: 背景掃描錯誤 | 系統已停止此監視項目，請開啟 Web UI 檢查。"
+    )

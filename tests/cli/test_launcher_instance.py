@@ -35,6 +35,26 @@ def test_windows_tray_defaults_only_for_frozen_windows(monkeypatch) -> None:
     assert windows_integration.resolve_windows_tray_decision(True).enabled
 
 
+def test_windows_notification_icon_prefers_pyinstaller_assets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Windows notification icon resolver 優先使用 onedir bundled tray icon。"""
+
+    app_root = tmp_path / "facebook-monitor"
+    executable = app_root / "facebook-monitor.exe"
+    tray_icon = app_root / "_internal" / "assets" / "facebook-monitor-tray.ico"
+    main_icon = app_root / "_internal" / "assets" / "facebook-monitor.ico"
+    tray_icon.parent.mkdir(parents=True)
+    executable.write_text("exe", encoding="utf-8")
+    tray_icon.write_text("tray", encoding="utf-8")
+    main_icon.write_text("main", encoding="utf-8")
+    monkeypatch.setattr(windows_integration.sys, "executable", str(executable))
+    monkeypatch.delattr(windows_integration.sys, "_MEIPASS", raising=False)
+
+    assert windows_integration.find_windows_notification_icon() == tray_icon
+
+
 def test_frozen_macos_root_binary_relaunches_via_app_launcher(
     tmp_path: Path,
     monkeypatch,

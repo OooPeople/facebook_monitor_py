@@ -1,8 +1,8 @@
 """跨平台 desktop notification sender。
 
-職責：Windows 使用 PowerShell balloon tip；macOS frozen `.app` 透過母程序或
-同 bundle launcher 的 UserNotifications 身分送出。source mode 則保留 osascript
-fallback。
+職責：Windows 由本 process 內的 Win32 tray owner 發送；macOS frozen `.app`
+透過母程序或同 bundle launcher 的 UserNotifications 身分送出。source mode 則
+保留 osascript fallback。
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from facebook_monitor.updates.platforms import MACOS_APP_ENTRY
 CommandRunner = Callable[[list[str]], None]
 InputCommandRunner = Callable[[list[str], str], str]
 MacOSSocketPayloadSender = Callable[[str, str], str]
+WindowsNativeNotificationSender = Callable[[str, str], None]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def send_desktop_notification(
     command_runner: CommandRunner | None = None,
     input_command_runner: InputCommandRunner | None = None,
     macos_socket_payload_sender: MacOSSocketPayloadSender | None = None,
+    windows_native_sender: WindowsNativeNotificationSender | None = None,
 ) -> DesktopNotificationResult:
     """依目前平台送出一則桌面通知。"""
 
@@ -66,6 +68,7 @@ def send_desktop_notification(
             title=title,
             message=message,
             command_runner=command_runner,
+            native_sender=windows_native_sender,
         )
     if sys.platform == "darwin":
         return _send_macos_desktop_notification(
@@ -87,12 +90,43 @@ def _send_windows_desktop_notification(
     title: str,
     message: str,
     command_runner: CommandRunner | None = None,
+    native_sender: WindowsNativeNotificationSender | None = None,
 ) -> DesktopNotificationResult:
-    """送出 Windows PowerShell balloon tip。"""
+    """送出 Windows process-local native tray notification。"""
 
-    runner = command_runner or _run_command
+    if command_runner is not None:
+        return _send_legacy_windows_desktop_notification_command(
+            title=title,
+            message=message,
+            command_runner=command_runner,
+        )
+    sender = native_sender or _run_windows_native_notification
     try:
-        runner(build_desktop_notification_command(title=title, message=message))
+        sender(title, message)
+    except Exception as exc:
+        _LOGGER.warning(
+            "windows_desktop_notification_failed exception_class=%s",
+            exc.__class__.__name__,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return DesktopNotificationResult(
+            ok=False,
+            status_code=None,
+            message="desktop_failed:windows_native_failed",
+        )
+    return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
+
+
+def _send_legacy_windows_desktop_notification_command(
+    *,
+    title: str,
+    message: str,
+    command_runner: CommandRunner,
+) -> DesktopNotificationResult:
+    """執行舊 PowerShell desktop notification command，供相容測試注入使用。"""
+
+    try:
+        command_runner(build_desktop_notification_command(title=title, message=message))
     except Exception as exc:
         return DesktopNotificationResult(
             ok=False,
@@ -100,6 +134,19 @@ def _send_windows_desktop_notification(
             message=safe_exception_message("desktop_failed", exc),
         )
     return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
+
+
+def _run_windows_native_notification(title: str, message: str) -> None:
+    """用 Windows onedir / source icon 由目前 process 發出 notification。"""
+
+    from facebook_monitor.runtime.windows_integration import find_windows_notification_icon
+    from facebook_monitor.runtime.windows_tray import show_windows_tray_notification
+
+    show_windows_tray_notification(
+        title=title,
+        message=message,
+        icon_path=find_windows_notification_icon(),
+    )
 
 
 def _send_macos_desktop_notification(
@@ -160,7 +207,7 @@ def _send_macos_desktop_notification(
 
 
 def build_desktop_notification_command(*, title: str, message: str) -> list[str]:
-    """建立 PowerShell balloon tip 命令列。"""
+    """建立 legacy PowerShell balloon tip 命令列。"""
 
     escaped_title = _escape_powershell_single_quoted_text(title)
     escaped_body = _escape_powershell_single_quoted_text(message)
@@ -248,7 +295,10 @@ def send_macos_native_notification_payload_to_socket(
 
     chunks: list[bytes] = []
     timeout = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_command_timeout_seconds
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    af_unix = getattr(socket, "AF_UNIX", None)
+    if af_unix is None:
+        raise DesktopNotificationCommandFailed
+    with socket.socket(af_unix, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         sock.connect(socket_path)
         sock.sendall(payload.encode("utf-8"))

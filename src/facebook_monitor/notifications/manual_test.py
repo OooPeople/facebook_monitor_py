@@ -10,14 +10,14 @@ from facebook_monitor.notifications.channel_dispatch import DiscordSender
 from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
 from facebook_monitor.notifications.desktop import send_desktop_notification
+from facebook_monitor.notifications.desktop_format import build_compact_notification_body
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.discord_format import build_discord_match_notification_payload
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
+from facebook_monitor.notifications.ntfy_format import build_ntfy_match_notification_payload
 from facebook_monitor.notifications.payload import MatchNotificationFields
-from facebook_monitor.notifications.payload import build_compact_notification_body
-from facebook_monitor.notifications.payload import build_match_notification_payload
 
 
 def send_manual_test_notification(
@@ -37,7 +37,7 @@ def send_manual_test_notification(
         text="這是 Facebook Monitor 的測試通知。",
         permalink="",
     )
-    title, message = build_match_notification_payload(fields)
+    title, message = build_ntfy_match_notification_payload(fields)
     discord_title, discord_message = build_discord_match_notification_payload(fields)
     compact_message = build_compact_notification_body(fields)
     results: list[str] = []

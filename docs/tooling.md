@@ -28,7 +28,7 @@
 | Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用本機或 CI secret 內的 Ed25519 私鑰輸出 manifest detached signature | 否 |
 | Finalize Release Manifest | `scripts/admin/finalize_release_manifest.py` | Admin packaging | 依 `dist/` 內目前版本的正式平台 zip 建立唯一 signed manifest / `.sig`，並重驗 manifest 與 artifact metadata | 否 |
 | Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release zip、同名 `.sha256`、平台必要 onedir 檔案與私密 runtime data；加 `--require-manifest` 時驗 signed manifest / `.sig`；Windows 可選驗證 Authenticode signer | 否 |
-| Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 用 stdlib AST 輸出超過 complexity / 函式長度門檻的 report；預設不作 CI gate | 否 |
+| Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 用 Lizard 產生 NLOC / CCN / token ranking，再加上 known-large / watchlist 摘要；只作人工審查輔助，不是 CI gate | 否 |
 | Database Invariant Check | `scripts/admin/check_database_invariants.py` | Admin diagnostics | 唯讀檢查正式 SQLite DB 內 enum、boolean、range 與 runtime ownership invariant | 否 |
 | Windows Version Resource Builder | `scripts/admin/windows_version_resource.py` | Admin packaging | 由 `APP_VERSION` 產生 Windows PyInstaller version resource；通常由 Windows spec 自動呼叫 | 否 |
 | Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
@@ -65,7 +65,7 @@
 .\scripts\uv.ps1 run python .\scripts\admin\release_validation.py --skip-sync
 .\scripts\uv.ps1 run python .\scripts\admin\build_windows_release.py --force
 .\scripts\uv.ps1 run python .\scripts\admin\finalize_release_manifest.py --force
-.\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --max-complexity 12 --max-lines 80
+.\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --top 20 --format markdown
 .\scripts\uv.ps1 run python .\scripts\admin\check_database_invariants.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
@@ -90,6 +90,8 @@ git diff --check
 ```
 
 CI 使用 Node 24 對 `src/facebook_monitor/webapp/static/**/*.js` 執行 syntax check，並以目前完整測試可通過的 80% coverage 作為 baseline。這個門檻只防止覆蓋率意外大幅倒退；後續新增測試後再逐步提高，不用為了既有大型模組一次重寫測試。
+
+Complexity Report 是人工審查前置資料，不是 release validation 必跑項，也不會因 CCN / NLOC 排名造成失敗。預設會使用 `docs/maintainability_annotations.json` 將已人工確認合理的大型檔案列到 known-large section，避免它們長期佔住主排行；known-large 不是永久豁免，若相關檔案被修改仍應重新 review。若要查看純排名可加 `--no-annotations`，若要把 known-large 放回主排行可加 `--include-known-large`。
 
 Release tag 前建議執行：
 

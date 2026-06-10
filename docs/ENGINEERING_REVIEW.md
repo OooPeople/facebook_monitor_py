@@ -53,6 +53,7 @@
 
 - 名稱是否準確，抽象是否必要，重複是否合理，未來新增通道 / target kind / platform / status 是否需要到處改。
 - 是否有半套 abstraction、過早 abstraction、過深 call chain 或難以測試的隱式副作用。
+- `scripts/admin/complexity_report.py` 可作為大函式 / 大檔案 / CCN 排名入口，但 report 只提供人工審查線索，不是 pass/fail 規則；是否拆分仍以產品語義、狀態流程、交易邊界與測試風險判斷。
 
 ### 9. 可觀測性與診斷
 

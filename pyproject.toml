@@ -58,6 +58,7 @@ show_missing = true
 [dependency-groups]
 dev = [
     "hypothesis>=6.152.0",
+    "lizard>=1.23.0,<2",
     "mypy>=1.18.0",
     "pip-audit>=2.10.0",
     "pytest>=9.0.3",

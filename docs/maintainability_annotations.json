@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "known_large": [
+    {
+      "path_glob": "src/facebook_monitor/persistence/migrations.py",
+      "category": "migration_history",
+      "reason": "Published migration history is intentionally kept together; do not split only for ranking."
+    },
+    {
+      "path_glob": "src/facebook_monitor/persistence/current_schema.py",
+      "category": "schema_ddl",
+      "reason": "Central SQLite current schema DDL; size alone is not a refactor signal."
+    },
+    {
+      "path_glob": "scripts/admin/create_macos_app_launcher.py",
+      "symbol": "_native_launcher_source",
+      "category": "native_embedded_source",
+      "reason": "Embedded Objective-C launcher source; large text block with low Python control-flow complexity."
+    }
+  ],
+  "watchlist": [
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_main_executor_attempt.py",
+      "symbol": "run_queue_item",
+      "category": "resident_worker_state_machine",
+      "reason": "Formal resident attempt path; review before adding more failure or ownership branches."
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
+      "symbol": "finalize_scan_items",
+      "category": "scan_commit_transaction",
+      "reason": "Shared scan commit path; changes can affect dedupe, history, latest scan, and notifications."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/sort_controls.py",
+      "category": "facebook_sort_behavior",
+      "reason": "auto_adjust_sort behavior spans native click, fallback JS, and diagnostics."
+    }
+  ]
+}

@@ -568,7 +568,8 @@ def test_send_macos_native_notification_payload_to_socket_roundtrips_payload(
 ) -> None:
     """Python socket sender 應送出完整 UTF-8 JSON 並讀回 launcher result。"""
 
-    if not hasattr(socket, "AF_UNIX"):
+    af_unix = getattr(socket, "AF_UNIX", None)
+    if af_unix is None:
         return
 
     del tmp_path
@@ -577,7 +578,7 @@ def test_send_macos_native_notification_payload_to_socket_roundtrips_payload(
     ready = threading.Event()
 
     def socket_server() -> None:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        with socket.socket(af_unix, socket.SOCK_STREAM) as server:
             server.bind(str(socket_path))
             server.listen(1)
             ready.set()

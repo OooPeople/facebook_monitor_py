@@ -267,7 +267,11 @@ def test_finalize_scan_items_persists_display_text_for_visible_results(
     assert latest_items[0].text == "第一行票券 第二行座位"
     assert latest_items[0].display_text == "第一行票券\n第二行座位"
     assert sent_ntfy
-    assert "內容：\n第一行票券\n第二行座位" in sent_ntfy[0][2]
+    assert (
+        "命中：票券\n"
+        "---------------------------------------------\n"
+        "第一行票券\n第二行座位"
+    ) in sent_ntfy[0][2]
 
 
 def test_finalize_scan_items_keyword_ignores_display_only_text(tmp_path: Path) -> None:

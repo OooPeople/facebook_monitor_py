@@ -364,7 +364,7 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
         notifications = app.repositories.notification_events.list_by_target(target.id)
     assert notifications[0].channel == NotificationChannel.NTFY
     assert sent and sent[0][0] == "phase0test"
-    assert sent[0][1] == "Facebook keyword match"
+    assert sent[0][1] == "🎯 Facebook keyword match"
     assert "類型：留言" in sent[0][2]
 
 

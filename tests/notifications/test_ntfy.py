@@ -33,6 +33,7 @@ from facebook_monitor.notifications.discord_url import validate_discord_webhook_
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.ntfy import to_ascii_header_value
+from facebook_monitor.notifications.ntfy import to_ntfy_title_header_value
 
 
 @contextmanager
@@ -57,11 +58,17 @@ def macos_notification_socket_file(path: Path):
 
 
 def test_send_ntfy_notification_matches_product_encoding(monkeypatch: Any) -> None:
-    """ntfy topic 走 URL encode，中文內容放 UTF-8 body，不放進非 ASCII header。"""
+    """ntfy topic 走 URL encode，內容用 UTF-8 body，Title 可送 UTF-8 header。"""
 
     calls: list[dict[str, Any]] = []
 
-    def fake_post(url: str, *, content: bytes, headers: dict[str, str], timeout: int) -> httpx.Response:
+    def fake_post(
+        url: str,
+        *,
+        content: bytes,
+        headers: list[tuple[bytes, bytes]],
+        timeout: int,
+    ) -> httpx.Response:
         """記錄送出參數，避免測試真的呼叫 ntfy。"""
 
         calls.append(
@@ -88,11 +95,12 @@ def test_send_ntfy_notification_matches_product_encoding(monkeypatch: Any) -> No
     assert result.ok
     assert calls[0]["url"].endswith("/%E4%B8%AD%E6%96%87%20topic")
     assert calls[0]["content"] == "社團: 測試社團\n內容: 中文內容".encode("utf-8")
-    assert calls[0]["headers"]["Content-Type"] == "text/plain; charset=utf-8"
-    assert calls[0]["headers"]["Title"] == "Facebook keyword match"
-    assert calls[0]["headers"]["Priority"] == "default"
-    assert calls[0]["headers"]["Tags"] == "bell"
-    assert calls[0]["headers"]["Click"] == "https://www.facebook.com/groups/1/posts/2"
+    header_map = {key.decode("ascii"): value for key, value in calls[0]["headers"]}
+    assert header_map["Content-Type"] == b"text/plain; charset=utf-8"
+    assert header_map["Title"] == "Facebook 監視命中: 票券".encode("utf-8")
+    assert header_map["Priority"] == b"default"
+    assert "Tags" not in header_map
+    assert header_map["Click"] == b"https://www.facebook.com/groups/1/posts/2"
 
 
 def test_to_ascii_header_value_keeps_ascii_and_falls_back_for_unicode() -> None:
@@ -102,6 +110,41 @@ def test_to_ascii_header_value_keeps_ascii_and_falls_back_for_unicode() -> None:
         "Facebook keyword match"
     )
     assert to_ascii_header_value("Facebook 監視命中", fallback="fallback") == "fallback"
+
+
+def test_to_ntfy_title_header_value_encodes_unicode_as_utf8_bytes() -> None:
+    """ntfy Title header 可用 UTF-8 bytes 傳送 emoji / 中文。"""
+
+    assert (
+        to_ntfy_title_header_value("Facebook keyword match", fallback="fallback")
+        == b"Facebook keyword match"
+    )
+    assert to_ntfy_title_header_value(
+        "🎯 Facebook keyword match",
+        fallback="fallback",
+    ) == "🎯 Facebook keyword match".encode("utf-8")
+    assert to_ntfy_title_header_value("", fallback="fallback") == b"fallback"
+
+
+def test_ntfy_utf8_title_header_is_accepted_by_httpx_request() -> None:
+    """httpx raw headers 會保留 ntfy emoji Title 的 UTF-8 bytes。"""
+
+    request = httpx.Request(
+        "POST",
+        "https://ntfy.sh/test-topic",
+        headers=[
+            (
+                b"Title",
+                to_ntfy_title_header_value(
+                    "🎯 Facebook keyword match",
+                    fallback="fallback",
+                ),
+            )
+        ],
+        content=b"body",
+    )
+
+    assert (b"Title", "🎯 Facebook keyword match".encode("utf-8")) in request.headers.raw
 
 
 def test_send_ntfy_notification_sanitizes_http_exception_message(monkeypatch: Any) -> None:

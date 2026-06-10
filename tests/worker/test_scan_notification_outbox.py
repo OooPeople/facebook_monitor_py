@@ -555,7 +555,11 @@ def test_failed_outbox_retry_resends_persisted_multiline_message(
         retry_failed_notification_outbox(app=app, ntfy_sender=sometimes_failing_sender)
 
     assert sent_messages == [stored_message]
-    assert "內容：\n第一行票券\n第二行座位" in stored_message
+    assert (
+        "命中：票券\n"
+        "---------------------------------------------\n"
+        "第一行票券\n第二行座位"
+    ) in stored_message
 
 
 def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:

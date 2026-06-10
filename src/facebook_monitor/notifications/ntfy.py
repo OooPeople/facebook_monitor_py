@@ -44,18 +44,20 @@ def send_ntfy_notification(config: NtfyConfig, title: str, message: str) -> Ntfy
         or PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_server
     )
     url = f"{server}/{quote(topic, safe='')}"
-    headers = {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Title": to_ascii_header_value(
-            title,
-            fallback=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_ascii_title_fallback,
+    headers = [
+        (b"Content-Type", b"text/plain; charset=utf-8"),
+        (
+            b"Title",
+            to_ntfy_title_header_value(
+                title,
+                fallback=PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.ntfy_ascii_title_fallback,
+            ),
         ),
-        "Priority": "default",
-        "Tags": "bell",
-    }
+        (b"Priority", b"default"),
+    ]
     click_url = to_ascii_header_value(config.click_url, fallback="")
     if click_url:
-        headers["Click"] = click_url
+        headers.append((b"Click", click_url.encode("ascii")))
     try:
         response = httpx.post(
             url,
@@ -84,8 +86,20 @@ def send_ntfy_notification(config: NtfyConfig, title: str, message: str) -> Ntfy
         )
 
 
+def to_ntfy_title_header_value(value: str, *, fallback: str) -> bytes:
+    """回傳 ntfy Title header 值；非 ASCII 以 UTF-8 bytes 送出。"""
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return fallback.encode("ascii")
+    try:
+        return text.encode("ascii")
+    except UnicodeEncodeError:
+        return text.encode("utf-8")
+
+
 def to_ascii_header_value(value: str, *, fallback: str) -> str:
-    """回傳可安全放入 HTTP header 的 ASCII 值，中文內容保留在 body。"""
+    """回傳可安全放入 HTTP header 的 ASCII 值，供 URL 類 header 使用。"""
 
     text = " ".join(str(value or "").split())
     if not text:

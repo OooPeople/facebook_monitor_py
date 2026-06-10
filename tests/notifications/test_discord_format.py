@@ -25,7 +25,7 @@ def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None
 
     assert title == "Facebook keyword match"
     assert message.splitlines() == [
-        "# * Facebook keyword match",
+        "# 🎯 Facebook keyword match",
         "社團：中信兄弟商品及門票 代購轉售",
         "類型：貼文",
         "作者：陳建宇",
@@ -45,7 +45,7 @@ def test_discord_match_payload_uses_text_layout_without_body_highlight() -> None
     assert "開啟連結：" not in message
     assert "[開啟連結]" not in message
     assert "\x1b" not in message
-    assert message.startswith("# * Facebook keyword match\n社團：")
+    assert message.startswith("# 🎯 Facebook keyword match\n社團：")
     assert message.endswith("<https://www.facebook.com/groups/1/posts/2>")
     assert "```" not in message
     assert (

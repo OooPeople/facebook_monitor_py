@@ -78,7 +78,7 @@ def test_comment_match_notification_preserves_comment_target_display_scope() -> 
 
 
 def test_discord_match_notification_uses_channel_specific_content_format() -> None:
-    """Discord match message 有專用 content 格式，不污染共用 remote payload。"""
+    """Discord match message 有專用 content 格式，不污染 ntfy payload。"""
 
     target = TargetDescriptor.for_group_posts(
         group_id="222518561920110",
@@ -86,7 +86,7 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
         name="測試社團",
     )
 
-    _remote_title, remote_message = build_ntfy_match_notification_message(
+    _ntfy_title, ntfy_message = build_ntfy_match_notification_message(
         target=target,
         author="王小明",
         item_text="售6/3內野118區票券",
@@ -101,10 +101,21 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
         matched_keyword="6/3;118",
     )
 
-    assert "內容：售6/3內野118區票券" in remote_message
-    assert "**6/3**" not in remote_message
-    assert "**118**" not in remote_message
-    assert discord_message.startswith("# * Facebook keyword match\n社團：")
+    assert (
+        "命中：6/3 ,  118\n"
+        "---------------------------------------------\n"
+        "售6/3內野118區票券\n"
+        "---------------------------------------------\n"
+        "https://www.facebook.com/groups/222518561920110/posts/1"
+    ) in ntfy_message
+    assert "內容：" not in ntfy_message
+    assert "連結：" not in ntfy_message
+    assert "<https://www.facebook.com/groups/222518561920110/posts/1>" not in (
+        ntfy_message
+    )
+    assert "**6/3**" not in ntfy_message
+    assert "**118**" not in ntfy_message
+    assert discord_message.startswith("# 🎯 Facebook keyword match\n社團：")
     assert "命中：6/3 ,  118" in discord_message
     assert "售6/3內野118區票券" in discord_message
     assert "**6/3**" not in discord_message
@@ -133,12 +144,12 @@ def test_discord_match_notification_uses_channel_specific_content_format() -> No
     assert discord_message.endswith(
         "<https://www.facebook.com/groups/222518561920110/posts/1>"
     )
-    assert "\x1b" not in remote_message
+    assert "\x1b" not in ntfy_message
     assert "\x1b" not in discord_message
 
 
-def test_match_notification_message_preserves_remote_content_newlines() -> None:
-    """共用遠端 match message 使用掃描提供的多行顯示文字。"""
+def test_ntfy_match_notification_message_preserves_content_newlines() -> None:
+    """ntfy match message 使用掃描提供的多行顯示文字。"""
 
     target = TargetDescriptor.for_group_posts(
         group_id="222518561920110",
@@ -161,7 +172,14 @@ def test_match_notification_message_preserves_remote_content_newlines() -> None:
         matched_keyword="票券",
     )
 
-    assert "內容：\n第一行票券\n第二行座位" in message
+    assert (
+        "命中：票券\n"
+        "---------------------------------------------\n"
+        "第一行票券\n"
+        "第二行座位\n"
+        "---------------------------------------------\n"
+        "https://www.facebook.com/groups/222518561920110/posts/1"
+    ) in message
     assert compact.splitlines() == [
         "社團：測試社團",
         "類型：貼文",

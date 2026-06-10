@@ -29,7 +29,7 @@ DISCORD_MARKDOWN_SPECIAL_CHARS = "\\`*_~|[]()<>"
 DISCORD_LINE_START_MARKDOWN_PATTERN = re.compile(
     r"(?m)^([ \t]*)(?:(-#)(?=\s)|(#+)(?=\s)|([-+])(?=\s)|(\d+)(\.)(?=\s))"
 )
-DISCORD_MATCH_HEADING = "# * Facebook keyword match"
+DISCORD_MATCH_HEADING = "# 🎯 Facebook keyword match"
 DISCORD_CONTENT_SEPARATOR = "---------------------------------------------"
 
 

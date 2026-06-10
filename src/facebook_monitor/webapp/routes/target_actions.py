@@ -49,10 +49,10 @@ async def _run_target_action_redirect(
         )
         if not outcome.ok:
             return redirect_with_error(outcome.message, return_to=return_to)
-        if outcome.wake_scheduler:
-            get_scheduler_manager(request).wake()
         if outcome.start_scheduler:
             start_resident_scheduler_if_needed(request)
+        elif outcome.wake_scheduler:
+            get_scheduler_manager(request).wake()
     except Exception as exc:
         if log_exception_message:
             logger.exception(log_exception_message, extra={"target_id": target_id})

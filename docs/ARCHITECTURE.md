@@ -1,6 +1,6 @@
 # 架構說明
 
-本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`。本機進度與交接筆記屬於 `docs/local/`，不追蹤到 GitHub。
+本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`。本機進度與交接筆記屬於 `docs/local/`，不追蹤到 GitHub。
 
 ## 核心原則
 
@@ -109,43 +109,30 @@
 
 ## Web UI 語義
 
-- target 卡片的「開始 / 停止」是日常使用主開關。
+- target 卡片的「開始 / 停止」是日常使用主開關；Web UI 不註冊全域 scheduler start/stop 日常 route，也不把 scheduler 做成使用者第二個主開關。
 - Web UI 啟動時預設停止 targets，不自動恢復上次 active targets。
 - Web UI 啟動時的 runtime data cleanup 只清可重建的 scan/debug snapshot（`scan_runs`、`latest_scan_items`、`notification_events`），不得清 `seen_items`、logical item aliases、notification dedupe/outbox、`match_history` 或 `scan_scope_state`；否則啟動後第一輪掃描會被誤判成 baseline suppressed scan，造成新命中不通知。
-- Web UI 不註冊全域 scheduler start/stop 日常 route。
-- 「開始」會保留 seen scope、logical item aliases、notification dedupe 與 notification outbox rows，只要求立即掃描並喚醒 scheduler。
-- 「停止」只暫停排程，保留 seen/history。
+- 「開始」沿用 target start 語義：保留 seen scope、logical item aliases、notification dedupe/outbox 與 history，只恢復監看並要求立即掃描。
+- 「停止」沿用 target stop 語義：只暫停排程，保留 seen、history、dedupe 與 outbox。
 - 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的投遞狀態）、同一 scan scope 的 legacy seen items 與目前 epoch 的 logical item aliases，並推進 target-scoped dedupe epoch。它會保留或建立 initialized `scan_scope_state`，但不清 match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
-- target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
-- 社團縮圖載入失敗時，UI 會立即退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次。這個上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
+- 社團縮圖載入失敗時，UI 上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
-- 貼文 / 留言模式 chip 是 target kind 分類標籤，不是執行狀態 badge，也不得與 `已啟用` / `已停止` 混淆。
-- 右側結果 panel header 可顯示最近一輪 scan cycle result；這是掃描結果摘要，不是錯誤或使用者停止狀態。
-- 最近通知摘要不放在 target card header；通知狀態由 notification events、outbox diagnostics 與相關 read model 承接。
-- dashboard partial update 以 revision change detection 觸發，再用 batch payload 更新 sidebar 與 target cards。
+- dashboard revision 是 partial update 的觸發來源；Web UI 以 batch payload 更新 sidebar 與 target cards。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API 暫留 `notified_at` legacy key 作相容。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
+- target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
 
 ## Sidebar Layout 與 Group Template
 
-- Sidebar layout 是 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
-- Sidebar group、target placement 與 group template 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
-- 排序保存必須用單一 layout command 同時更新 group order 與 target placements，避免只保存一半狀態。
-- Dashboard read model 可以依 placement 排列 rows，但不得為缺失 placement 寫入 DB；缺失 placement 採 lazy fallback 顯示在未分組區，補寫只可由明確排序保存 command 或 migration 進行。
+- Sidebar layout 只影響 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
+- Sidebar group、target placement 與 group template write 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
+- 排序保存必須用單一 layout command 同時更新 group order 與 target placements；dashboard read model 可 lazy fallback 顯示缺失 placement，但不得為缺失 placement 寫入 DB。
 - 舊平面 target order API 只能用在沒有 grouped placement 的相容情境；已有 grouped placement 時不得打平 sidebar 狀態。
 - Group template 只是批次套用工具，不是 config fallback owner；正式 target config 仍只讀寫 `target_configs[target_id]`。
 - 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；通知設定使用系統預設，不自動繼承全域通知或任一 target，既有 group template 不跟著全域設定靜默覆蓋。
 - Group template 套用是破壞性批次覆蓋操作，必須經使用者確認並在 application transaction 內完成。
 - Sidebar group 開始 / 停止只批次套用各 target 的開始 / 停止語義；不另定義 group-scoped runtime state，也不清 seen、match history 或 notification outbox。
-
-## Web UI 共用互動元件
-
-- 會改狀態的 dashboard JSON fetch 走共用 CSRF helper。
-- 確認與輸入類彈窗走共用 dynamic dialog module，不使用瀏覽器原生 `confirm/prompt/alert`。
-- 內容型 modal 可以保留 Jinja `<dialog>`，但關閉/backdrop 行為走共用 helper。
-- Modal 關閉入口遵守單一可見 dismiss pattern：read-only modal 用右上角關閉；form/action/confirm/prompt modal 用底部取消或取消按鈕，不同時顯示兩套。
-- Web UI icon 使用 inline SVG，避免文字 glyph 造成跨字型對齊差異。
-- Button 以共用 `button, .button` 與 modifier class 為基礎；局部 class 只保留尺寸、位置或狀態差異。
+- Sidebar 排序、placement、group template UI 與共用互動元件契約看 `docs/WEB_UI_CONTRACT.md`。
 
 ## Facebook 行為邊界
 

@@ -392,6 +392,29 @@ def test_download_and_verify_update_requires_sha256_url(tmp_path: Path) -> None:
     assert not (tmp_path / "updates").exists()
 
 
+def test_download_and_verify_update_requires_sha256_asset_name(tmp_path: Path) -> None:
+    """缺 SHA256 asset name 時不下載 zip。"""
+
+    check = replace(
+        update_check(),
+        sha256_asset_name="",
+        sha256_asset_download_url="",
+    )
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=check,
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "sha256_asset_missing"
+    assert not (tmp_path / "updates").exists()
+
+
 def test_download_and_verify_update_requires_signed_manifest(tmp_path: Path) -> None:
     """只有 SHA256 sidecar 沒 signed manifest 時不可下載 zip。"""
 

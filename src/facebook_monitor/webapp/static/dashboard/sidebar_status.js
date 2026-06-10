@@ -2,53 +2,85 @@ const buildStatusSummary = (baseStatus, modeLabel, detail) => (
   [baseStatus, modeLabel, detail].filter(Boolean).join(" · ")
 );
 
-export const renderSidebarStatus = (
+const readStatusValue = (value, storedValue) => value ?? storedValue ?? "";
+
+const readDefaultDetail = (value, storedValue, detail) => (
+  value ?? storedValue ?? detail
+);
+
+const resolveSidebarStatusState = (
+  node,
+  status,
+) => {
+  const detail = readStatusValue(status.statusDetail, node.dataset.sidebarStatusDetail);
+  return {
+    base: readStatusValue(status.baseStatus, node.dataset.sidebarBaseStatus),
+    detail,
+    baseClass: readStatusValue(status.statusClass, node.dataset.sidebarStatusClass),
+    defaultText: readDefaultDetail(
+      status.defaultDetail,
+      node.dataset.sidebarDefaultDetail,
+      detail,
+    ),
+    mode: readStatusValue(status.modeLabel, node.dataset.sidebarModeLabel),
+    modeCssClass: readStatusValue(status.modeClass, node.dataset.sidebarModeClass),
+  };
+};
+
+const storeSidebarStatusState = (
   node,
   {
-    baseStatus,
-    statusClass,
-    statusDetail,
-    defaultDetail,
-    modeLabel,
-    modeClass,
+    base,
+    detail,
+    baseClass,
+    defaultText,
+    mode,
+    modeCssClass,
   },
 ) => {
-  if (!node) return;
-
-  const base = baseStatus ?? node.dataset.sidebarBaseStatus ?? "";
-  const detail = statusDetail ?? node.dataset.sidebarStatusDetail ?? "";
-  const baseClass = statusClass ?? node.dataset.sidebarStatusClass ?? "";
-  const defaultText = defaultDetail ?? node.dataset.sidebarDefaultDetail ?? detail;
-  const mode = modeLabel ?? node.dataset.sidebarModeLabel ?? "";
-  const modeCssClass = modeClass ?? node.dataset.sidebarModeClass ?? "";
-
   node.dataset.sidebarBaseStatus = base;
   node.dataset.sidebarStatusClass = baseClass;
   node.dataset.sidebarStatusDetail = detail;
   node.dataset.sidebarDefaultDetail = defaultText;
   node.dataset.sidebarModeLabel = mode;
   node.dataset.sidebarModeClass = modeCssClass;
-  node.setAttribute("aria-label", buildStatusSummary(base, mode, detail));
+};
+
+const appendStatusToken = (node, className, text) => {
+  const token = document.createElement("span");
+  token.className = className.trim();
+  token.textContent = text;
+  node.appendChild(token);
+};
+
+export const renderSidebarStatus = (
+  node,
+  status,
+) => {
+  if (!node) return;
+
+  const state = resolveSidebarStatusState(node, status);
+
+  storeSidebarStatusState(node, state);
+  node.setAttribute("aria-label", buildStatusSummary(state.base, state.mode, state.detail));
 
   node.replaceChildren();
+  appendStatusToken(
+    node,
+    `sidebar-status-token sidebar-status-pill ${state.baseClass}`,
+    state.base,
+  );
 
-  const pill = document.createElement("span");
-  pill.className = `sidebar-status-token sidebar-status-pill ${baseClass}`.trim();
-  pill.textContent = base;
-  node.appendChild(pill);
-
-  if (mode) {
-    const modeNode = document.createElement("span");
-    modeNode.className = `sidebar-status-token target-mode-chip sidebar-mode-chip ${modeCssClass}`.trim();
-    modeNode.textContent = mode;
-    node.appendChild(modeNode);
+  if (state.mode) {
+    appendStatusToken(
+      node,
+      `sidebar-status-token target-mode-chip sidebar-mode-chip ${state.modeCssClass}`,
+      state.mode,
+    );
   }
 
-  if (detail) {
-    const detailNode = document.createElement("span");
-    detailNode.className = "sidebar-status-detail";
-    detailNode.textContent = detail;
-    node.appendChild(detailNode);
+  if (state.detail) {
+    appendStatusToken(node, "sidebar-status-detail", state.detail);
   }
 };
 

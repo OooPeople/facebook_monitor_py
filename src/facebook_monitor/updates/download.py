@@ -1,9 +1,8 @@
 """更新檔下載、signed manifest 與 SHA256 驗證。
 
 職責：將已知 GitHub Release asset 下載到 runtime data dir 底下，
-先驗 signed manifest，再用 manifest hash 驗證 zip 完整性。SHA256
-sidecar 只作相容與交叉檢查。此模組不解壓、不替換程式檔，也不嘗試
-關閉或重啟主程式。
+先驗 signed manifest 與同名 SHA256 sidecar，再用 manifest hash 驗證 zip
+完整性。此模組不解壓、不替換程式檔，也不嘗試關閉或重啟主程式。
 """
 
 from __future__ import annotations
@@ -191,6 +190,10 @@ def _missing_update_download_reason(update_check: UpdateCheckResult) -> str:
         return "update_not_available"
     if not update_check.asset_download_url:
         return "asset_download_url_missing"
+    if not update_check.sha256_asset_name:
+        return "sha256_asset_missing"
+    if not update_check.sha256_asset_download_url:
+        return "sha256_asset_url_missing"
     if not update_check.manifest_asset_name:
         return "manifest_file_missing"
     if not update_check.manifest_asset_download_url:
@@ -210,11 +213,7 @@ def _build_download_plan(
     """驗證 release metadata 並建立下載路徑 plan；尚不建立檔案。"""
 
     asset_name = sanitize_release_asset_name(update_check.asset_name)
-    sha256_name = (
-        sanitize_release_asset_name(update_check.sha256_asset_name)
-        if update_check.sha256_asset_name
-        else ""
-    )
+    sha256_name = sanitize_release_asset_name(update_check.sha256_asset_name)
     manifest_name = sanitize_release_asset_name(update_check.manifest_asset_name)
     manifest_signature_name = sanitize_release_asset_name(
         update_check.manifest_signature_asset_name
@@ -223,7 +222,7 @@ def _build_download_plan(
     updates_root = Path(updates_dir).expanduser().absolute()
     destination_dir = updates_root / version_dir_name
     file_path = destination_dir / asset_name
-    sha256_path = destination_dir / sha256_name if sha256_name else None
+    sha256_path = destination_dir / sha256_name
     manifest_path = destination_dir / manifest_name
     manifest_signature_path = destination_dir / manifest_signature_name
     validate_initial_release_download_url(
@@ -241,14 +240,11 @@ def _build_download_plan(
         expected_asset_name=manifest_signature_name,
         repository=update_check.repository,
     )
-    if sha256_name:
-        if not update_check.sha256_asset_download_url:
-            raise ValueError("sha256_asset_url_missing")
-        validate_initial_release_download_url(
-            update_check.sha256_asset_download_url,
-            expected_asset_name=sha256_name,
-            repository=update_check.repository,
-        )
+    validate_initial_release_download_url(
+        update_check.sha256_asset_download_url,
+        expected_asset_name=sha256_name,
+        repository=update_check.repository,
+    )
     ensure_child_path(updates_root, destination_dir)
     ensure_safe_download_path(destination_dir, updates_root=updates_root)
     return UpdateDownloadPlan(
@@ -263,7 +259,7 @@ def _build_download_plan(
         manifest_path=manifest_path,
         manifest_signature_path=manifest_signature_path,
         staged_file_path=_staging_destination(file_path),
-        staged_sha256_path=_staging_destination(sha256_path) if sha256_path else None,
+        staged_sha256_path=_staging_destination(sha256_path),
         staged_manifest_path=_staging_destination(manifest_path),
         staged_manifest_signature_path=_staging_destination(manifest_signature_path),
     )

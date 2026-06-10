@@ -30,24 +30,59 @@ def format_target_display_name(
     target_name = clean_target_display_name(raw_target_name)
     group_name = clean_target_display_name(target.group_name)
     if target.target_kind == TargetKind.COMMENTS:
-        has_custom_name = target_name and not is_generated_group_comments_name(
-            target_name,
-            target.group_id,
-            target.parent_post_id,
+        return _format_comments_target_display_name(
+            target,
+            raw_target_name=raw_target_name,
+            target_name=target_name,
+            group_name=group_name,
+            generated_fallback=generated_fallback,
         )
-        if has_custom_name and not is_generated_group_comments_display_name(
-            raw_target_name,
-            parent_post_id=target.parent_post_id,
-        ):
-            return target_name
-        if group_name:
-            return clean_target_display_name(
-                generated_group_comments_display_name(
-                    group_name,
-                    target.parent_post_id,
-                )
+    return _format_posts_target_display_name(
+        target,
+        target_name=target_name,
+        group_name=group_name,
+        generated_fallback=generated_fallback,
+    )
+
+
+def _format_comments_target_display_name(
+    target: TargetDescriptor,
+    *,
+    raw_target_name: str,
+    target_name: str,
+    group_name: str,
+    generated_fallback: str,
+) -> str:
+    """整理 comments target 顯示名稱。"""
+
+    has_custom_name = target_name and not is_generated_group_comments_name(
+        target_name,
+        target.group_id,
+        target.parent_post_id,
+    )
+    if has_custom_name and not is_generated_group_comments_display_name(
+        raw_target_name,
+        parent_post_id=target.parent_post_id,
+    ):
+        return target_name
+    if group_name:
+        return clean_target_display_name(
+            generated_group_comments_display_name(
+                group_name,
+                target.parent_post_id,
             )
-        return generated_fallback or target_name or target.scope_id or target.id
+        )
+    return generated_fallback or target_name or target.scope_id or target.id
+
+
+def _format_posts_target_display_name(
+    target: TargetDescriptor,
+    *,
+    target_name: str,
+    group_name: str,
+    generated_fallback: str,
+) -> str:
+    """整理 posts target 顯示名稱。"""
 
     if target_name and not is_generated_group_posts_name(target_name, target.group_id):
         return target_name

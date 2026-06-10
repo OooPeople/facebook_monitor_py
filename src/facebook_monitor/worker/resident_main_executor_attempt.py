@@ -16,6 +16,7 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
@@ -258,114 +259,33 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
                 "scan_commit_guard_mismatch",
             )
             return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        logger.info(
-            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-            "result=%s opened_page=%s reused_page=%s",
-            target_id,
-            worker_id,
-            state.page_id,
-            "success",
-            state.opened,
-            not state.opened,
-        )
-        return AsyncTargetScanResult(
-            target_id=target_id,
-            success=True,
-            opened_page=state.opened,
-            reused_page=not state.opened,
-        )
+        return _successful_attempt_result(worker_id=worker_id, state=state)
     except WorkerFailure as exc:
-        decision = await record_guarded_scan_failure_for_db_async(
-            db_path=pool.options.db_path,
-            target_id=target_id,
+        return await _record_failure_and_finish(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
             reason=exc.reason,
             message=str(exc),
             source="worker_failure",
-            worker_path="resident_main",
-            commit_guard=state.commit_guard,
             exception_class=exc.__class__.__name__,
-            page_reused=state.acquired_page and not state.opened,
-        )
-        if decision is None:
-            logger.info(
-                "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                "worker_failure_owner_changed",
-            )
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        if decision.discard_page:
-            await pool.page_pool.discard(target_id)
-        if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-            pool.request_runtime_restart()
-        logger.warning(
-            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-            "result=%s reason=%s runtime_action=%s recovery_action=%s "
-            "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-            "opened_page=%s reused_page=%s exception_class=%s",
-            target_id,
-            worker_id,
-            state.page_id,
-            "failure",
-            decision.reason,
-            decision.runtime_action,
-            decision.recovery_action,
-            decision.retryable,
-            decision.retry_streak,
-            decision.retry_limit,
-            decision.discard_page,
-            state.opened,
-            state.acquired_page and not state.opened,
-            exc.__class__.__name__,
-        )
-        return AsyncTargetScanResult(
-            target_id=target_id,
-            failure=True,
-            opened_page=state.opened,
-            reused_page=state.acquired_page and not state.opened,
+            owner_changed_reason="worker_failure_owner_changed",
+            include_page_counts_in_result=True,
         )
     except asyncio.CancelledError:
         if pool.runtime_restart_requested():
-            decision = await record_guarded_scan_failure_for_db_async(
-                db_path=pool.options.db_path,
-                target_id=target_id,
+            return await _record_failure_and_finish(
+                pool=pool,
+                worker_id=worker_id,
+                state=state,
                 reason=SCHEDULER_RUNTIME_REASON,
                 message="browser runtime restart requested",
                 source="unknown_exception",
-                worker_path="resident_main",
-                commit_guard=state.commit_guard,
                 exception_class="CancelledError",
-                page_reused=state.acquired_page and not state.opened,
+                owner_changed_reason="runtime_restart_cancel_owner_changed",
+                request_runtime_restart=False,
+                include_page_counts_in_log=False,
             )
-            if decision is None:
-                logger.info(
-                    "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
-                    target_id,
-                    worker_id,
-                    state.page_id,
-                    "runtime_restart_cancel_owner_changed",
-                )
-                return AsyncTargetScanResult(target_id=target_id, skipped=True)
-            if decision.discard_page:
-                await pool.page_pool.discard(target_id)
-            logger.warning(
-                "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-                "result=%s reason=%s runtime_action=%s recovery_action=%s "
-                "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                "failure",
-                decision.reason,
-                decision.runtime_action,
-                decision.recovery_action,
-                decision.retryable,
-                decision.retry_streak,
-                decision.retry_limit,
-                decision.discard_page,
-            )
-            return AsyncTargetScanResult(target_id=target_id, failure=True)
         await record_guarded_scan_failure_for_db_async(
             db_path=pool.options.db_path,
             target_id=target_id,
@@ -381,137 +301,39 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
     except sqlite3.OperationalError as exc:
         if not is_sqlite_lock_error(exc):
             raise
-        try:
-            await pool._retry_target_after_sqlite_lock(
-                target_id=target_id,
-                commit_guard=state.commit_guard,
-            )
-        except sqlite3.OperationalError as retry_exc:
-            if not is_sqlite_lock_error(retry_exc):
-                raise
-            logger.error(
-                "resident_target_sqlite_lock_retry_state_update_failed "
-                "target_id=%s worker_id=%s page_id=%s exception_class=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                retry_exc.__class__.__name__,
-            )
-        logger.warning(
-            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-            "result=%s reason=%s opened_page=%s reused_page=%s exception_class=%s",
-            target_id,
-            worker_id,
-            state.page_id,
-            "skipped",
-            "database_locked",
-            state.opened,
-            state.acquired_page and not state.opened,
-            exc.__class__.__name__,
-        )
-        return AsyncTargetScanResult(
-            target_id=target_id,
-            skipped=True,
-            opened_page=state.opened,
-            reused_page=state.acquired_page and not state.opened,
+        return await _retry_after_sqlite_lock_and_skip(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
+            exception_class=exc.__class__.__name__,
         )
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
         reason = classify_playwright_exception(exc)
-        decision = await record_guarded_scan_failure_for_db_async(
-            db_path=pool.options.db_path,
-            target_id=target_id,
+        return await _record_failure_and_finish(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
             reason=reason,
             message=str(exc),
             source="playwright",
-            worker_path="resident_main",
-            commit_guard=state.commit_guard,
             exception_class=exc.__class__.__name__,
-            page_reused=state.acquired_page and not state.opened,
+            owner_changed_reason="playwright_failure_owner_changed",
         )
-        if decision is None:
-            logger.info(
-                "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                "playwright_failure_owner_changed",
-            )
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        if decision.discard_page:
-            await pool.page_pool.discard(target_id)
-        if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-            pool.request_runtime_restart()
-        logger.warning(
-            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-            "result=%s reason=%s runtime_action=%s recovery_action=%s "
-            "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-            "opened_page=%s reused_page=%s exception_class=%s",
-            target_id,
-            worker_id,
-            state.page_id,
-            "failure",
-            decision.reason,
-            decision.runtime_action,
-            decision.recovery_action,
-            decision.retryable,
-            decision.retry_streak,
-            decision.retry_limit,
-            decision.discard_page,
-            state.opened,
-            state.acquired_page and not state.opened,
-            exc.__class__.__name__,
-        )
-        return AsyncTargetScanResult(target_id=target_id, failure=True)
     except Exception as exc:
         reason = classify_wrapped_playwright_exception(exc)
         source: ScanFailureSource = (
             "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
         )
-        decision = await record_guarded_scan_failure_for_db_async(
-            db_path=pool.options.db_path,
-            target_id=target_id,
+        return await _record_failure_and_finish(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
             reason=reason,
             message=str(exc),
             source=source,
-            worker_path="resident_main",
-            commit_guard=state.commit_guard,
             exception_class=exc.__class__.__name__,
-            page_reused=state.acquired_page and not state.opened,
+            owner_changed_reason="unknown_failure_owner_changed",
         )
-        if decision is None:
-            logger.info(
-                "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                "unknown_failure_owner_changed",
-            )
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        if decision.discard_page:
-            await pool.page_pool.discard(target_id)
-        if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION:
-            pool.request_runtime_restart()
-        logger.warning(
-            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
-            "result=%s reason=%s runtime_action=%s recovery_action=%s "
-            "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
-            "opened_page=%s reused_page=%s exception_class=%s",
-            target_id,
-            worker_id,
-            state.page_id,
-            "failure",
-            decision.reason,
-            decision.runtime_action,
-            decision.recovery_action,
-            decision.retryable,
-            decision.retry_streak,
-            decision.retry_limit,
-            decision.discard_page,
-            state.opened,
-            state.acquired_page and not state.opened,
-            exc.__class__.__name__,
-        )
-        return AsyncTargetScanResult(target_id=target_id, failure=True)
     finally:
         await pool._unregister_active_attempt(target_id, state.owner_key)
         if state.page_id:
@@ -520,3 +342,189 @@ async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTar
             await pool.page_pool.release(target_id)
         await pool.target_queue.complete(target_id, owner_key=state.owner_key)
         pool.schedule_planner.mark_finished(target_id)
+
+
+def _successful_attempt_result(
+    *,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+) -> AsyncTargetScanResult:
+    """記錄成功完成並建立 executor result。"""
+
+    logger.info(
+        "resident_target_finished target_id=%s worker_id=%s page_id=%s "
+        "result=%s opened_page=%s reused_page=%s",
+        state.target_id,
+        worker_id,
+        state.page_id,
+        "success",
+        state.opened,
+        not state.opened,
+    )
+    return AsyncTargetScanResult(
+        target_id=state.target_id,
+        success=True,
+        opened_page=state.opened,
+        reused_page=not state.opened,
+    )
+
+
+async def _record_failure_and_finish(
+    *,
+    pool: Any,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    reason: str,
+    message: str,
+    source: ScanFailureSource,
+    exception_class: str,
+    owner_changed_reason: str,
+    request_runtime_restart: bool = True,
+    include_page_counts_in_log: bool = True,
+    include_page_counts_in_result: bool = False,
+) -> AsyncTargetScanResult:
+    """記錄 guarded scan failure，並依 recovery decision 完成本輪結果。"""
+
+    decision = await record_guarded_scan_failure_for_db_async(
+        db_path=pool.options.db_path,
+        target_id=state.target_id,
+        reason=reason,
+        message=message,
+        source=source,
+        worker_path="resident_main",
+        commit_guard=state.commit_guard,
+        exception_class=exception_class,
+        page_reused=_attempt_reused_page(state),
+    )
+    if decision is None:
+        logger.info(
+            "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
+            state.target_id,
+            worker_id,
+            state.page_id,
+            owner_changed_reason,
+        )
+        return AsyncTargetScanResult(target_id=state.target_id, skipped=True)
+    if decision.discard_page:
+        await pool.page_pool.discard(state.target_id)
+    if (
+        request_runtime_restart
+        and decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
+    ):
+        pool.request_runtime_restart()
+    _log_failure_decision(
+        worker_id=worker_id,
+        state=state,
+        decision=decision,
+        exception_class=exception_class,
+        include_page_counts=include_page_counts_in_log,
+    )
+    if include_page_counts_in_result:
+        return AsyncTargetScanResult(
+            target_id=state.target_id,
+            failure=True,
+            opened_page=state.opened,
+            reused_page=_attempt_reused_page(state),
+        )
+    return AsyncTargetScanResult(target_id=state.target_id, failure=True)
+
+
+def _log_failure_decision(
+    *,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    decision: ScanFailureDecision,
+    exception_class: str,
+    include_page_counts: bool,
+) -> None:
+    """輸出 resident failure decision log，保持欄位順序穩定。"""
+
+    if not include_page_counts:
+        logger.warning(
+            "resident_target_finished target_id=%s worker_id=%s page_id=%s "
+            "result=%s reason=%s runtime_action=%s recovery_action=%s "
+            "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s",
+            state.target_id,
+            worker_id,
+            state.page_id,
+            "failure",
+            decision.reason,
+            decision.runtime_action,
+            decision.recovery_action,
+            decision.retryable,
+            decision.retry_streak,
+            decision.retry_limit,
+            decision.discard_page,
+        )
+        return
+    logger.warning(
+        "resident_target_finished target_id=%s worker_id=%s page_id=%s "
+        "result=%s reason=%s runtime_action=%s recovery_action=%s "
+        "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
+        "opened_page=%s reused_page=%s exception_class=%s",
+        state.target_id,
+        worker_id,
+        state.page_id,
+        "failure",
+        decision.reason,
+        decision.runtime_action,
+        decision.recovery_action,
+        decision.retryable,
+        decision.retry_streak,
+        decision.retry_limit,
+        decision.discard_page,
+        state.opened,
+        _attempt_reused_page(state),
+        exception_class,
+    )
+
+
+async def _retry_after_sqlite_lock_and_skip(
+    *,
+    pool: Any,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    exception_class: str,
+) -> AsyncTargetScanResult:
+    """SQLite lock 時排回 target 並回傳 skipped result。"""
+
+    try:
+        await pool._retry_target_after_sqlite_lock(
+            target_id=state.target_id,
+            commit_guard=state.commit_guard,
+        )
+    except sqlite3.OperationalError as retry_exc:
+        if not is_sqlite_lock_error(retry_exc):
+            raise
+        logger.error(
+            "resident_target_sqlite_lock_retry_state_update_failed "
+            "target_id=%s worker_id=%s page_id=%s exception_class=%s",
+            state.target_id,
+            worker_id,
+            state.page_id,
+            retry_exc.__class__.__name__,
+        )
+    logger.warning(
+        "resident_target_finished target_id=%s worker_id=%s page_id=%s "
+        "result=%s reason=%s opened_page=%s reused_page=%s exception_class=%s",
+        state.target_id,
+        worker_id,
+        state.page_id,
+        "skipped",
+        "database_locked",
+        state.opened,
+        _attempt_reused_page(state),
+        exception_class,
+    )
+    return AsyncTargetScanResult(
+        target_id=state.target_id,
+        skipped=True,
+        opened_page=state.opened,
+        reused_page=_attempt_reused_page(state),
+    )
+
+
+def _attempt_reused_page(state: ResidentQueueAttemptState) -> bool:
+    """回傳本次 attempt 是否使用既有 page。"""
+
+    return state.acquired_page and not state.opened

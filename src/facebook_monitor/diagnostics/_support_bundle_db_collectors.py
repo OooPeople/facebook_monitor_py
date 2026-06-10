@@ -7,6 +7,7 @@ notification 與 dedupe 摘要；所有 raw text/id 必須經 redaction helpers�
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -45,6 +46,18 @@ from facebook_monitor.diagnostics._support_bundle_utils import _readonly_connect
 from facebook_monitor.diagnostics._support_bundle_utils import _table_columns
 from facebook_monitor.diagnostics._support_bundle_utils import _table_count
 from facebook_monitor.diagnostics._support_bundle_utils import _table_names
+
+
+@dataclass(frozen=True)
+class _ScanRunBundleRow:
+    """scan_runs row 與衍生彙總 key，避免 payload builder 重複解析 metadata。"""
+
+    row: sqlite3.Row
+    metadata: dict[str, object]
+    status: str
+    stop_reason: str
+    failure_reason: str
+
 
 def _database_summary_payload(db_path: Path) -> dict[str, object]:
     """建立只含 counts 與 invariant 結果的 DB 摘要。"""
@@ -254,58 +267,61 @@ def _target_runtime_states_payload(
         rows = connection.execute(
             "SELECT * FROM target_runtime_state ORDER BY updated_at, target_id"
         ).fetchall()
-    status_counts: Counter[str] = Counter()
-    states = []
-    for row in rows:
-        runtime_status = str(row["runtime_status"] or "")
-        status_counts[runtime_status] += 1
-        states.append(
-            {
-                "target": aliases.alias("target", row["target_id"]),
-                "desired_state": str(row["desired_state"] or ""),
-                "runtime_status": runtime_status,
-                "scan_requested_at": str(row["scan_requested_at"] or ""),
-                "last_enqueued_at": str(row["last_enqueued_at"] or ""),
-                "last_started_at": str(row["last_started_at"] or ""),
-                "last_finished_at": str(row["last_finished_at"] or ""),
-                "last_heartbeat_at": str(row["last_heartbeat_at"] or ""),
-                "last_heartbeat_age_seconds": _age_seconds(row["last_heartbeat_at"], now),
-                "last_page_reloaded_at": str(row["last_page_reloaded_at"] or ""),
-                "display_next_due_at": str(row["display_next_due_at"] or ""),
-                "scan_guard_count": int(row["scan_guard_count"] or 0),
-                "active_worker": aliases.alias("worker", row["active_worker_id"]),
-                "active_page": aliases.alias("page", row["active_page_id"]),
-                "enqueue_reason": _freeform_summary(
-                    str(row["enqueue_reason"] or ""),
-                    aliases=aliases,
-                ),
-                "last_skip_reason": _freeform_summary(
-                    str(row["last_skip_reason"] or ""),
-                    aliases=aliases,
-                ),
-                "last_error": _freeform_summary(
-                    str(row["last_error"] or ""),
-                    aliases=aliases,
-                ),
-                "consecutive_failure_reason": _freeform_summary(
-                    str(row["consecutive_failure_reason"] or ""),
-                    aliases=aliases,
-                ),
-                "consecutive_failure_count": int(row["consecutive_failure_count"] or 0),
-                "consecutive_scan_skip_reason": _freeform_summary(
-                    str(row["consecutive_scan_skip_reason"] or ""),
-                    aliases=aliases,
-                ),
-                "consecutive_scan_skip_count": int(
-                    row["consecutive_scan_skip_count"] or 0
-                ),
-                "updated_at": str(row["updated_at"] or ""),
-            }
-        )
     return {
         "available": True,
-        "status_counts": dict(sorted(status_counts.items())),
-        "states": states,
+        "status_counts": dict(sorted(_runtime_status_counts(rows).items())),
+        "states": [
+            _target_runtime_state_payload(row, aliases, now=now)
+            for row in rows
+        ],
+    }
+
+
+def _runtime_status_counts(rows: list[sqlite3.Row]) -> Counter[str]:
+    """彙總 target runtime status，不碰 redaction 或輸出 schema。"""
+
+    return Counter(_row_text(row, "runtime_status") for row in rows)
+
+
+def _target_runtime_state_payload(
+    row: sqlite3.Row,
+    aliases: _SupportBundleAliases,
+    *,
+    now: datetime,
+) -> dict[str, object]:
+    """整理單筆 target_runtime_state row。"""
+
+    return {
+        "target": aliases.alias("target", row["target_id"]),
+        "desired_state": _row_text(row, "desired_state"),
+        "runtime_status": _row_text(row, "runtime_status"),
+        "scan_requested_at": _row_text(row, "scan_requested_at"),
+        "last_enqueued_at": _row_text(row, "last_enqueued_at"),
+        "last_started_at": _row_text(row, "last_started_at"),
+        "last_finished_at": _row_text(row, "last_finished_at"),
+        "last_heartbeat_at": _row_text(row, "last_heartbeat_at"),
+        "last_heartbeat_age_seconds": _age_seconds(row["last_heartbeat_at"], now),
+        "last_page_reloaded_at": _row_text(row, "last_page_reloaded_at"),
+        "display_next_due_at": _row_text(row, "display_next_due_at"),
+        "scan_guard_count": _row_int(row, "scan_guard_count"),
+        "active_worker": aliases.alias("worker", row["active_worker_id"]),
+        "active_page": aliases.alias("page", row["active_page_id"]),
+        "enqueue_reason": _row_freeform_summary(row, "enqueue_reason", aliases),
+        "last_skip_reason": _row_freeform_summary(row, "last_skip_reason", aliases),
+        "last_error": _row_freeform_summary(row, "last_error", aliases),
+        "consecutive_failure_reason": _row_freeform_summary(
+            row,
+            "consecutive_failure_reason",
+            aliases,
+        ),
+        "consecutive_failure_count": _row_int(row, "consecutive_failure_count"),
+        "consecutive_scan_skip_reason": _row_freeform_summary(
+            row,
+            "consecutive_scan_skip_reason",
+            aliases,
+        ),
+        "consecutive_scan_skip_count": _row_int(row, "consecutive_scan_skip_count"),
+        "updated_at": _row_text(row, "updated_at"),
     }
 
 
@@ -336,51 +352,75 @@ def _scan_summaries_payload(
             """,
             (RECENT_SCAN_LIMIT_PER_TARGET,),
         ).fetchall()
-    status_counts: Counter[str] = Counter()
-    stop_reason_counts: Counter[str] = Counter()
-    failure_reason_counts: Counter[str] = Counter()
-    runs = []
-    for row in rows:
-        metadata = _json_dict(row["metadata"])
-        sanitized_metadata = _sanitize_metadata(metadata)
-        status = str(row["status"] or "")
-        stop_reason = _reason_count_bucket(
-            _metadata_text(metadata, "stop_reason")
-            or _metadata_text(metadata, "skip_reason")
-        )
-        failure_reason = _reason_count_bucket(
-            _metadata_text(metadata, "reason")
-            or _failure_reason_from_error(str(row["error_message"] or ""))
-        )
-        status_counts[status] += 1
-        if stop_reason:
-            stop_reason_counts[stop_reason] += 1
-        if failure_reason:
-            failure_reason_counts[failure_reason] += 1
-        runs.append(
-            {
-                "scan_run": aliases.alias("scan_run", row["id"]),
-                "target": aliases.alias("target", row["target_id"]),
-                "started_at": str(row["started_at"] or ""),
-                "finished_at": str(row["finished_at"] or ""),
-                "status": status,
-                "item_count": int(row["item_count"] or 0),
-                "matched_count": int(row["matched_count"] or 0),
-                "worker_mode": str(row["worker_mode"] or ""),
-                "error_message": _freeform_summary(
-                    str(row["error_message"] or ""),
-                    aliases=aliases,
-                ),
-                "metadata": sanitized_metadata,
-            }
-        )
+    scan_rows = [_scan_run_bundle_row(row) for row in rows]
+    status_counts, stop_reason_counts, failure_reason_counts = _scan_run_counts(scan_rows)
     return {
         "available": True,
         "limit_per_target": RECENT_SCAN_LIMIT_PER_TARGET,
         "status_counts": dict(sorted(status_counts.items())),
         "stop_reason_counts": dict(sorted(stop_reason_counts.items())),
         "failure_reason_counts": dict(sorted(failure_reason_counts.items())),
-        "runs": runs,
+        "runs": [
+            _scan_run_payload(scan_row, aliases)
+            for scan_row in scan_rows
+        ],
+    }
+
+
+def _scan_run_bundle_row(row: sqlite3.Row) -> _ScanRunBundleRow:
+    """整理單筆 scan_runs row 與後續 count 需要的 reason bucket。"""
+
+    metadata = _json_dict(row["metadata"])
+    return _ScanRunBundleRow(
+        row=row,
+        metadata=metadata,
+        status=_row_text(row, "status"),
+        stop_reason=_reason_count_bucket(
+            _metadata_text(metadata, "stop_reason")
+            or _metadata_text(metadata, "skip_reason")
+        ),
+        failure_reason=_reason_count_bucket(
+            _metadata_text(metadata, "reason")
+            or _failure_reason_from_error(_row_text(row, "error_message"))
+        ),
+    )
+
+
+def _scan_run_counts(
+    scan_rows: list[_ScanRunBundleRow],
+) -> tuple[Counter[str], Counter[str], Counter[str]]:
+    """彙總最近 scan runs 的狀態、停止原因與失敗原因。"""
+
+    status_counts: Counter[str] = Counter()
+    stop_reason_counts: Counter[str] = Counter()
+    failure_reason_counts: Counter[str] = Counter()
+    for scan_row in scan_rows:
+        status_counts[scan_row.status] += 1
+        if scan_row.stop_reason:
+            stop_reason_counts[scan_row.stop_reason] += 1
+        if scan_row.failure_reason:
+            failure_reason_counts[scan_row.failure_reason] += 1
+    return status_counts, stop_reason_counts, failure_reason_counts
+
+
+def _scan_run_payload(
+    scan_row: _ScanRunBundleRow,
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """整理單筆 scan_runs support bundle payload。"""
+
+    row = scan_row.row
+    return {
+        "scan_run": aliases.alias("scan_run", row["id"]),
+        "target": aliases.alias("target", row["target_id"]),
+        "started_at": _row_text(row, "started_at"),
+        "finished_at": _row_text(row, "finished_at"),
+        "status": scan_row.status,
+        "item_count": _row_int(row, "item_count"),
+        "matched_count": _row_int(row, "matched_count"),
+        "worker_mode": _row_text(row, "worker_mode"),
+        "error_message": _row_freeform_summary(row, "error_message", aliases),
+        "metadata": _sanitize_metadata(scan_row.metadata),
     }
 
 
@@ -428,54 +468,101 @@ def _latest_scan_debug_summary_payload(
             ORDER BY target_id
             """
         ).fetchall()
-    targets: dict[str, dict[str, object]] = {}
-    for row in aggregate_rows:
-        targets[row["target_id"]] = {
-            "target": aliases.alias("target", row["target_id"]),
-            "item_count": int(row["item_count"] or 0),
-            "empty_text_count": int(row["empty_text_count"] or 0),
-            "matched_item_count": int(row["matched_item_count"] or 0),
-            "debug_key_counts": {},
-            "debug_value_counts": {},
-            "samples": [],
-        }
+    targets = _latest_scan_targets_from_aggregates(aggregate_rows, aliases)
     for row in rows:
-        target_payload = targets.setdefault(
-            row["target_id"],
-            {
-                "target": aliases.alias("target", row["target_id"]),
-                "item_count": 0,
-                "empty_text_count": 0,
-                "matched_item_count": 0,
-                "debug_key_counts": {},
-                "debug_value_counts": {},
-                "samples": [],
-            },
-        )
-        metadata = _json_dict(row["debug_metadata"])
-        _merge_debug_metadata_counts(target_payload, metadata)
-        samples = target_payload["samples"]
-        if isinstance(samples, list):
-            samples.append(
-                {
-                    "item": aliases.alias("item", row["item_key"]),
-                    "scan_run": aliases.alias("scan_run", row["scan_run_id"]),
-                    "kind": str(row["item_kind"] or ""),
-                    "item_index": int(row["item_index"] or 0),
-                    "text_length": len(str(row["text"] or "")),
-                    "has_author": bool(str(row["author"] or "")),
-                    "has_permalink": bool(str(row["permalink"] or "")),
-                    "matched": bool(str(row["matched_keyword"] or "").strip()),
-                    "debug_keys": sorted(
-                        _safe_metadata_key_label(key) for key in metadata.keys()
-                    )[:20],
-                    "scanned_at": str(row["scanned_at"] or ""),
-                }
-            )
+        _append_latest_scan_sample(targets, row, aliases)
     return {
         "available": True,
         "sample_limit_per_target": LATEST_ITEM_SAMPLE_LIMIT_PER_TARGET,
         "targets": list(targets.values()),
+    }
+
+
+def _latest_scan_targets_from_aggregates(
+    rows: list[sqlite3.Row],
+    aliases: _SupportBundleAliases,
+) -> dict[str, dict[str, object]]:
+    """依 target 建立 latest scan debug aggregate payload。"""
+
+    return {
+        _row_text(row, "target_id"): _latest_scan_target_payload(row, aliases)
+        for row in rows
+    }
+
+
+def _latest_scan_target_payload(
+    row: sqlite3.Row,
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """整理單一 target 的 latest_scan_items aggregate row。"""
+
+    return {
+        "target": aliases.alias("target", row["target_id"]),
+        "item_count": _row_int(row, "item_count"),
+        "empty_text_count": _row_int(row, "empty_text_count"),
+        "matched_item_count": _row_int(row, "matched_item_count"),
+        "debug_key_counts": {},
+        "debug_value_counts": {},
+        "samples": [],
+    }
+
+
+def _empty_latest_scan_target_payload(
+    target_id: str,
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """建立沒有 aggregate row 時的 latest scan target payload。"""
+
+    return {
+        "target": aliases.alias("target", target_id),
+        "item_count": 0,
+        "empty_text_count": 0,
+        "matched_item_count": 0,
+        "debug_key_counts": {},
+        "debug_value_counts": {},
+        "samples": [],
+    }
+
+
+def _append_latest_scan_sample(
+    targets: dict[str, dict[str, object]],
+    row: sqlite3.Row,
+    aliases: _SupportBundleAliases,
+) -> None:
+    """把單筆 latest_scan_items sample 併入對應 target payload。"""
+
+    target_id = _row_text(row, "target_id")
+    target_payload = targets.setdefault(
+        target_id,
+        _empty_latest_scan_target_payload(target_id, aliases),
+    )
+    metadata = _json_dict(row["debug_metadata"])
+    _merge_debug_metadata_counts(target_payload, metadata)
+    samples = target_payload["samples"]
+    if isinstance(samples, list):
+        samples.append(_latest_scan_sample_payload(row, aliases, metadata))
+
+
+def _latest_scan_sample_payload(
+    row: sqlite3.Row,
+    aliases: _SupportBundleAliases,
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    """整理單筆 latest_scan_items sample，不輸出 raw text/id/url。"""
+
+    return {
+        "item": aliases.alias("item", row["item_key"]),
+        "scan_run": aliases.alias("scan_run", row["scan_run_id"]),
+        "kind": _row_text(row, "item_kind"),
+        "item_index": _row_int(row, "item_index"),
+        "text_length": len(_row_text(row, "text")),
+        "has_author": bool(_row_text(row, "author")),
+        "has_permalink": bool(_row_text(row, "permalink")),
+        "matched": bool(_row_text(row, "matched_keyword").strip()),
+        "debug_keys": sorted(
+            _safe_metadata_key_label(key) for key in metadata.keys()
+        )[:20],
+        "scanned_at": _row_text(row, "scanned_at"),
     }
 
 
@@ -573,6 +660,28 @@ def _database_file_summaries(db_path: Path) -> list[dict[str, object]]:
             summary["error"] = _safe_exception_summary(exc)
         summaries.append(summary)
     return summaries
+
+
+def _row_text(row: sqlite3.Row, column: str) -> str:
+    """從 SQLite row 取出空值安全字串。"""
+
+    return str(row[column] or "")
+
+
+def _row_int(row: sqlite3.Row, column: str) -> int:
+    """從 SQLite row 取出空值安全整數。"""
+
+    return int(row[column] or 0)
+
+
+def _row_freeform_summary(
+    row: sqlite3.Row,
+    column: str,
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """從 SQLite row 取出 freeform 欄位並套用 support bundle 摘要。"""
+
+    return _freeform_summary(_row_text(row, column), aliases=aliases)
 
 
 def _target_config_summary(row: sqlite3.Row) -> dict[str, object]:

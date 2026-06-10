@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from scripts.debug.text_newline_probe import TEXT_NEWLINE_PROBE_SCRIPT
@@ -67,7 +69,10 @@ def _evaluate_probe(html: str, payload: dict[str, Any]) -> dict[str, Any]:
     """用 Playwright Chromium 執行 newline probe 的 DOM payload。"""
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, timeout=10_000)
+        try:
+            browser = playwright.chromium.launch(headless=True, timeout=10_000)
+        except PlaywrightError as exc:
+            pytest.skip(f"chromium browser is not installed: {exc}")
         try:
             page = browser.new_page()
             page.set_content(html)

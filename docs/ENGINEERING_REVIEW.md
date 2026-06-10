@@ -8,6 +8,24 @@
 - GitLab Code Review Guidelines：quality、performance、reliability、security、observability、maintainability、backwards compatibility、deployment。
 - OWASP Code Review Guide / Secure Code Review Cheat Sheet：manual security review、trust boundary、input validation、authentication / authorization、data flow、error handling、configuration、dependency risk。
 
+## 標準審查流程
+
+完整工程審查除非使用者明確限定範圍，應先產生 maintainability ranking：
+
+```powershell
+.\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --top 30
+```
+
+這個 report 是審查前置資料，必須用來檢查本次變更是否讓大函式、大檔案或高 CCN 區塊惡化，並在 review / handoff 中摘要是否有值得追蹤的項目。它不是 CI gate，也不是自動拆分規則；看到高排名後仍要回到產品語義、狀態流程、交易邊界、測試風險與既有架構判斷是否應拆。
+
+若 review 需要貼到文件或 PR，可用 Markdown：
+
+```powershell
+.\scripts\uv.ps1 run python .\scripts\admin\complexity_report.py --top 30 --format markdown
+```
+
+`docs/maintainability_annotations.json` 只用來把已人工確認合理的大型檔案標成 known-large / watchlist，避免長期佔住主排行；它不是永久豁免。若本次修改碰到 known-large / watchlist 檔案，仍要重新審查是否維持合理。
+
 ## 預設審查清單
 
 ### 1. 需求與產品語義

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import re
 
 from facebook_monitor.core.redaction import redact_sensitive_text
@@ -264,30 +265,61 @@ def format_notification_event_message(value: str) -> str:
         return ""
     if text in _NOTIFICATION_MESSAGE_LABELS:
         return _NOTIFICATION_MESSAGE_LABELS[text]
-    if text.startswith("unexpected status code:"):
-        status_code = text.removeprefix("unexpected status code:").strip()
-        return f"通知服務回傳非預期狀態碼 {status_code}"
-    if text.startswith("ntfy_failed: unexpected status code:"):
-        status_code = text.removeprefix(
-            "ntfy_failed: unexpected status code:"
-        ).strip()
-        return f"ntfy 發送失敗，狀態碼 {status_code}" if status_code else "ntfy 發送失敗"
-    if text.startswith("ntfy_failed:"):
-        return "ntfy 發送失敗"
-    if text.startswith("discord_failed:429"):
-        return "Discord 發送受限，稍後可重試"
-    if text.startswith("discord_failed:"):
-        status_code = text.removeprefix("discord_failed:").split(maxsplit=1)[0]
-        return f"Discord 發送失敗，狀態碼 {status_code}" if status_code else "Discord 發送失敗"
-    if text.startswith("desktop_failed:"):
-        return "桌面通知發送失敗"
-    if text.startswith("notification_test_failed:"):
-        return "通知測試發生錯誤"
+    prefix_message = _notification_prefix_message(text)
+    if prefix_message:
+        return prefix_message
     if text.endswith("_dispatch_failed:RuntimeError") or "_dispatch_failed:" in text:
         return "通知發送失敗"
     if _looks_like_raw_english(text):
         return "通知處理失敗"
     return redact_sensitive_text(text)
+
+
+def _notification_prefix_message(text: str) -> str:
+    """依 notification event prefix 回傳使用者可見訊息。"""
+
+    for prefix, formatter in _NOTIFICATION_PREFIX_RULES:
+        if text.startswith(prefix):
+            return formatter(text)
+    return ""
+
+
+def _unexpected_status_code_message(text: str) -> str:
+    """格式化通用 notification HTTP 狀態碼。"""
+
+    status_code = text.removeprefix("unexpected status code:").strip()
+    return f"通知服務回傳非預期狀態碼 {status_code}"
+
+
+def _ntfy_unexpected_status_code_message(text: str) -> str:
+    """格式化 ntfy HTTP 狀態碼。"""
+
+    status_code = text.removeprefix("ntfy_failed: unexpected status code:").strip()
+    return f"ntfy 發送失敗，狀態碼 {status_code}" if status_code else "ntfy 發送失敗"
+
+
+def _discord_failed_message(text: str) -> str:
+    """格式化 Discord 發送失敗摘要。"""
+
+    status_code = text.removeprefix("discord_failed:").split(maxsplit=1)[0]
+    return f"Discord 發送失敗，狀態碼 {status_code}" if status_code else "Discord 發送失敗"
+
+
+def _constant_notification_message(message: str) -> Callable[[str], str]:
+    """建立忽略原文的 notification prefix formatter。"""
+
+    return lambda _text: message
+
+
+_NOTIFICATION_PREFIX_RULES: tuple[tuple[str, Callable[[str], str]], ...] = (
+    ("unexpected status code:", _unexpected_status_code_message),
+    ("ntfy_failed: unexpected status code:", _ntfy_unexpected_status_code_message),
+    ("ntfy_failed:", _constant_notification_message("ntfy 發送失敗")),
+    ("discord_failed:429", _constant_notification_message("Discord 發送受限，稍後可重試")),
+    ("discord_failed:", _discord_failed_message),
+    ("desktop_failed:", _constant_notification_message("桌面通知發送失敗")),
+    ("notification_test_failed:", _constant_notification_message("通知測試發生錯誤")),
+)
 
 
 def format_update_reason_message(value: str) -> str:

@@ -16,6 +16,7 @@ from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.dependencies import run_web_db_operation
+from facebook_monitor.webapp.dependencies import start_resident_scheduler_if_needed
 from facebook_monitor.webapp.form_models import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.sidebar_api import grouped_target_ids
@@ -123,7 +124,9 @@ def register_sidebar_routes(app: FastAPI) -> None:
                 lambda: restart_sidebar_group_monitoring_action(db_path, group_id),
                 operation_name="sidebar.start_group_monitoring",
             )
-            if outcome.wake_scheduler:
+            if outcome.start_scheduler:
+                start_resident_scheduler_if_needed(request)
+            elif outcome.wake_scheduler:
                 get_scheduler_manager(request).wake()
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc
@@ -146,7 +149,9 @@ def register_sidebar_routes(app: FastAPI) -> None:
                 lambda: pause_sidebar_group_monitoring_action(db_path, group_id),
                 operation_name="sidebar.stop_group_monitoring",
             )
-            if outcome.wake_scheduler:
+            if outcome.start_scheduler:
+                start_resident_scheduler_if_needed(request)
+            elif outcome.wake_scheduler:
                 get_scheduler_manager(request).wake()
         except ValueError as exc:
             raise _sidebar_bad_request(exc) from exc

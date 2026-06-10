@@ -63,15 +63,24 @@ class DedupeStateRepository:
         normalized_target_id = target_id.strip()
         if not normalized_target_id:
             return 0
-        current_epoch = self.current_epoch(normalized_target_id)
-        next_epoch = current_epoch + 1
         self.connection.execute(
             """
-            UPDATE target_dedupe_state
-            SET dedupe_epoch = ?,
-                updated_at = ?
+            INSERT INTO target_dedupe_state (
+                target_id, dedupe_epoch, updated_at
+            )
+            VALUES (?, 1, ?)
+            ON CONFLICT(target_id) DO UPDATE SET
+                dedupe_epoch = target_dedupe_state.dedupe_epoch + 1,
+                updated_at = excluded.updated_at
+            """,
+            (normalized_target_id, encode_datetime(utc_now())),
+        )
+        row = self.connection.execute(
+            """
+            SELECT dedupe_epoch
+            FROM target_dedupe_state
             WHERE target_id = ?
             """,
-            (next_epoch, encode_datetime(utc_now()), normalized_target_id),
-        )
-        return next_epoch
+            (normalized_target_id,),
+        ).fetchone()
+        return int(row["dedupe_epoch"]) if row is not None else 0

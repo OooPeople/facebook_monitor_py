@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 import json
 from pathlib import Path
+import sqlite3
 
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.validation import is_reparse_or_symlink
@@ -90,29 +91,50 @@ def _maintenance_update_summary_payload(
                 LIMIT 100
                 """
             ).fetchall()
-            status_counts = Counter(str(row["status"] or "") for row in rows)
-            payload["cover_image_refresh"] = {
-                "available": True,
-                "status_counts": dict(sorted(status_counts.items())),
-                "states": [
-                    {
-                        "target": aliases.alias("target", row["target_id"]),
-                        "status": str(row["status"] or ""),
-                        "requested_at": str(row["requested_at"] or ""),
-                        "last_attempted_at": str(row["last_attempted_at"] or ""),
-                        "last_succeeded_at": str(row["last_succeeded_at"] or ""),
-                        "last_failed_at": str(row["last_failed_at"] or ""),
-                        "last_result": str(row["last_result"] or ""),
-                        "changed": bool(row["changed"]),
-                        "error": _freeform_summary(str(row["error"] or "")),
-                        "has_reported_url": bool(str(row["last_reported_url"] or "")),
-                        "has_resolved_url": bool(str(row["last_resolved_url"] or "")),
-                        "updated_at": str(row["updated_at"] or ""),
-                    }
-                    for row in rows
-                ],
-            }
+            payload["cover_image_refresh"] = _cover_image_refresh_payload(
+                rows,
+                aliases,
+            )
     return payload | {"database_available": True}
+
+
+def _cover_image_refresh_payload(
+    rows: list[sqlite3.Row],
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """整理 cover image refresh state 摘要。"""
+
+    status_counts = Counter(_row_text(row, "status") for row in rows)
+    return {
+        "available": True,
+        "status_counts": dict(sorted(status_counts.items())),
+        "states": [
+            _cover_image_refresh_state_payload(row, aliases)
+            for row in rows
+        ],
+    }
+
+
+def _cover_image_refresh_state_payload(
+    row: sqlite3.Row,
+    aliases: _SupportBundleAliases,
+) -> dict[str, object]:
+    """整理單筆 cover image refresh state。"""
+
+    return {
+        "target": aliases.alias("target", row["target_id"]),
+        "status": _row_text(row, "status"),
+        "requested_at": _row_text(row, "requested_at"),
+        "last_attempted_at": _row_text(row, "last_attempted_at"),
+        "last_succeeded_at": _row_text(row, "last_succeeded_at"),
+        "last_failed_at": _row_text(row, "last_failed_at"),
+        "last_result": _row_text(row, "last_result"),
+        "changed": bool(row["changed"]),
+        "error": _freeform_summary(_row_text(row, "error")),
+        "has_reported_url": bool(_row_text(row, "last_reported_url")),
+        "has_resolved_url": bool(_row_text(row, "last_resolved_url")),
+        "updated_at": _row_text(row, "updated_at"),
+    }
 
 
 def _scheduler_state_payload(
@@ -209,12 +231,27 @@ def _pending_update_summary(path: Path) -> dict[str, object]:
     payload: dict[str, object] = {"exists": False}
     if not path.is_file() or is_reparse_or_symlink(path):
         return payload
+    raw = _read_pending_update_payload(path)
+    if isinstance(raw, str):
+        return {"exists": True, "error": raw}
+    return _pending_update_payload_summary(raw)
+
+
+def _read_pending_update_payload(path: Path) -> dict[str, object] | str:
+    """讀取 pending update JSON；失敗時回傳安全錯誤碼。"""
+
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return {"exists": True, "error": _safe_exception_summary(exc)}
+        return _safe_exception_summary(exc)
     if not isinstance(raw, dict):
-        return {"exists": True, "error": "pending_update_not_object"}
+        return "pending_update_not_object"
+    return {str(key): value for key, value in raw.items()}
+
+
+def _pending_update_payload_summary(raw: dict[str, object]) -> dict[str, object]:
+    """整理 pending update handoff 欄位，不輸出完整路徑或 hash。"""
+
     expected_sha256 = str(raw.get("expected_sha256") or "")
     actual_sha256 = str(raw.get("actual_sha256") or "")
     legacy_sha256 = str(raw.get("sha256") or "")
@@ -237,6 +274,12 @@ def _pending_update_summary(path: Path) -> dict[str, object]:
         "actual_sha256_prefix": _redacted_truncated(actual_sha256[:12]),
         "sha256_match": sha256_match,
     }
+
+
+def _row_text(row: sqlite3.Row, column: str) -> str:
+    """從 SQLite row 取出空值安全字串。"""
+
+    return str(row[column] or "")
 
 
 

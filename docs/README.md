@@ -11,6 +11,7 @@
 | `docs/README.md` | 公開文件職責邊界與更新規則 | 產品功能規格、逐次任務紀錄、最近驗證 |
 | `docs/USAGE.md` | 詳細安裝、啟動、target 操作、通知、資料路徑與疑難排解 | 穩定架構總論、目前進度、工具全索引 |
 | `docs/ARCHITECTURE.md` | 穩定架構事實、正式主路徑、模組邊界、不可回退產品語義、deferred 邊界 | 短期進度、最近驗證、逐次任務紀錄 |
+| `docs/WEB_UI_CONTRACT.md` | Web UI 呈現、互動一致性、sidebar layout 與 route / presenter 邊界 | target state、scheduler、worker、notification、dedupe 或 persistence 語義 |
 | `docs/ENGINEERING_REVIEW.md` | 預設工程審查清單、review 輸出格式與 handoff 要求 | 產品功能規格、短期進度、最近驗證 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、release artifact 細節、功能進度 |
 | `packaging/README.md` | Windows / macOS 打包、release artifact、manifest、frozen smoke checklist | source-mode 日常操作、目前進度 |
@@ -26,6 +27,7 @@
 
 - 目前進度、下一步、風險或最近驗證：若本機有 `docs/local/TASK_BREAKDOWN.md`，只更新該文件並保持摘要層級；不要新增公開追蹤的進度文件。
 - 正式主路徑、資料語義、模組邊界或 deferred 邊界：更新 `docs/ARCHITECTURE.md`，必要時只在 `AGENTS.md` 保留短 guardrail 或文件索引。
+- Web UI 呈現、互動一致性、sidebar layout 或 route / presenter 邊界：更新 `docs/WEB_UI_CONTRACT.md`；若會影響 target state、scheduler、notification、dedupe 或 persistence，主語義仍要更新 `docs/ARCHITECTURE.md`。
 - 工程審查範圍、review 輸出格式或 handoff 要求：更新 `docs/ENGINEERING_REVIEW.md`，必要時只在 `AGENTS.md` 保留短索引。
 - 文件職責邊界或文件索引：更新本文件，並只在 README / AGENTS 保留必要入口。
 - 安裝與日常操作：更新 README 的摘要與 `docs/USAGE.md` 的詳細步驟。

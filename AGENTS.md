@@ -30,6 +30,7 @@
 ## 文件查找規則
 
 - 穩定架構、產品語義、正式入口與不可回退邊界：`docs/ARCHITECTURE.md`
+- Web UI 呈現、互動一致性與 sidebar layout 邊界：`docs/WEB_UI_CONTRACT.md`
 - 使用者操作與疑難排解：`README.md`、`docs/USAGE.md`
 - scripts / CLI 工具角色與常用指令：`docs/tooling.md`
 - 打包、release zip、PyInstaller 與 frozen smoke：`packaging/README.md`

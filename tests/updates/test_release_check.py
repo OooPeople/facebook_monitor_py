@@ -122,8 +122,8 @@ def test_evaluate_release_reports_available_macos_arm64_asset() -> None:
     assert result.sha256_asset_name == "facebook-monitor-0.1.0-macos-arm64-onedir.zip.sha256"
 
 
-def test_evaluate_release_keeps_missing_sha256_non_blocking_with_manifest() -> None:
-    """Signed manifest 已提供 hash 時，缺 SHA256 sidecar 不阻擋更新提示。"""
+def test_evaluate_release_marks_missing_sha256_as_not_installable() -> None:
+    """缺同名 SHA256 sidecar 時不可把 release 顯示成可下載更新。"""
 
     result = evaluate_release(
         current_version="0.1.0-rc1",
@@ -139,9 +139,10 @@ def test_evaluate_release_keeps_missing_sha256_non_blocking_with_manifest() -> N
         ),
     )
 
-    assert result.status == "available"
-    assert result.update_available
-    assert result.failure_reason == ""
+    assert result.status == "sha256_asset_missing"
+    assert not result.update_available
+    assert result.failure_reason == "sha256_asset_missing"
+    assert result.asset_name == "facebook-monitor-0.1.0-windows-portable.zip"
     assert result.sha256_asset_name == ""
 
 

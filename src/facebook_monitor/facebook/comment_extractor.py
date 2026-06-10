@@ -533,34 +533,40 @@ def normalize_comment_extraction_payload(
 ) -> tuple[list[ExtractedItem], CommentCollectionMeta]:
     """整理 DOM extractor payload，並用 comment aliases 去重。"""
 
-    raw_meta: dict[str, Any] = {}
-    raw_items: object = raw_payload
-    if isinstance(raw_payload, Mapping):
-        raw_meta = dict(raw_payload.get("meta") or {})
-        raw_items = raw_payload.get("items") or []
-    if not isinstance(raw_items, list):
-        raw_items = []
+    raw_meta, raw_items = _split_comment_payload(raw_payload)
+    items = _unique_normalized_comment_items(raw_items, max_items=max_items)
+    return items, _comment_payload_meta(
+        raw_meta,
+        raw_items=raw_items,
+        items=items,
+        max_items=max_items,
+    )
+
+
+def _split_comment_payload(raw_payload: object) -> tuple[dict[str, Any], list[object]]:
+    """拆出 DOM extractor payload 的 meta 與 items。"""
+
+    if not isinstance(raw_payload, Mapping):
+        return {}, raw_payload if isinstance(raw_payload, list) else []
+    raw_items = raw_payload.get("items") or []
+    return (
+        dict(raw_payload.get("meta") or {}),
+        raw_items if isinstance(raw_items, list) else [],
+    )
+
+
+def _unique_normalized_comment_items(
+    raw_items: list[object],
+    *,
+    max_items: int,
+) -> list[ExtractedItem]:
+    """將 raw comments 轉成 ExtractedItem 並依 aliases 去重。"""
 
     collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
     for raw_item in raw_items:
         if not isinstance(raw_item, Mapping):
             continue
-        cleaned_text = clean_facebook_text(raw_item.get("text") or "")
-        display_text = clean_facebook_multiline_text(
-            raw_item.get("displayText") or cleaned_text
-        ) or cleaned_text
-        item = ExtractedItem(
-            text=cleaned_text,
-            text_length=len(cleaned_text),
-            permalink=str(raw_item.get("permalink") or ""),
-            link_count=int(raw_item.get("linkCount") or 0),
-            display_text=display_text,
-            author=str(raw_item.get("author") or ""),
-            debug_metadata=normalize_comment_debug_metadata(raw_item),
-            item_kind="comment",
-            parent_post_id=str(raw_item.get("parentPostId") or ""),
-            comment_id=str(raw_item.get("commentId") or ""),
-        )
+        item = _normalized_comment_item(raw_item)
         aliases = make_item_key_aliases(item)
         if not aliases:
             continue
@@ -569,9 +575,40 @@ def normalize_comment_extraction_payload(
         collected.append((aliases, item))
         if len(collected) >= max(max_items, 1):
             break
+    return [item for _aliases, item in collected]
 
-    items = [item for _aliases, item in collected]
-    meta = CommentCollectionMeta(
+
+def _normalized_comment_item(raw_item: Mapping[str, Any]) -> ExtractedItem:
+    """將單筆 comment DOM payload 轉成穩定 item model。"""
+
+    cleaned_text = clean_facebook_text(raw_item.get("text") or "")
+    display_text = clean_facebook_multiline_text(
+        raw_item.get("displayText") or cleaned_text
+    ) or cleaned_text
+    return ExtractedItem(
+        text=cleaned_text,
+        text_length=len(cleaned_text),
+        permalink=str(raw_item.get("permalink") or ""),
+        link_count=int(raw_item.get("linkCount") or 0),
+        display_text=display_text,
+        author=str(raw_item.get("author") or ""),
+        debug_metadata=normalize_comment_debug_metadata(raw_item),
+        item_kind="comment",
+        parent_post_id=str(raw_item.get("parentPostId") or ""),
+        comment_id=str(raw_item.get("commentId") or ""),
+    )
+
+
+def _comment_payload_meta(
+    raw_meta: Mapping[str, Any],
+    *,
+    raw_items: list[object],
+    items: list[ExtractedItem],
+    max_items: int,
+) -> CommentCollectionMeta:
+    """建立單次 visible-window extractor meta。"""
+
+    return CommentCollectionMeta(
         target_count=max(max_items, 1),
         candidate_count=int(raw_meta.get("candidateCount") or len(raw_items)),
         parsed_count=int(raw_meta.get("parsedCount") or len(items)),
@@ -586,7 +623,6 @@ def normalize_comment_extraction_payload(
         current_route_matches_target=bool(raw_meta.get("currentRouteMatchesTarget")),
         stop_reason=str(raw_meta.get("stopReason") or "visible_window_completed"),
     )
-    return items, meta
 
 
 def build_comment_round_stats(
@@ -650,6 +686,7 @@ def build_comment_collection_meta(
 ) -> CommentCollectionMeta:
     """彙整 comments 跨視窗 collected meta。"""
 
+    dom_settle_attempted = any(stat.dom_settle_attempted for stat in round_stats)
     return CommentCollectionMeta(
         target_count=max(int(target_count), 1),
         candidate_count=sum(stat.candidate_count for stat in round_stats),
@@ -676,13 +713,13 @@ def build_comment_collection_meta(
         ),
         guard_reason=guard_reason,
         stop_reason=stop_reason,
-        dom_settle_attempted=any(stat.dom_settle_attempted for stat in round_stats),
+        dom_settle_attempted=dom_settle_attempted,
         dom_settle_stable=all(
             stat.dom_settle_stable
             for stat in round_stats
             if stat.dom_settle_attempted
         )
-        if any(stat.dom_settle_attempted for stat in round_stats)
+        if dom_settle_attempted
         else False,
         dom_settle_observations=sum(stat.dom_settle_observations for stat in round_stats),
         dom_settle_wait_ms=sum(stat.dom_settle_wait_ms for stat in round_stats),

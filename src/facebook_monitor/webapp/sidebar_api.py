@@ -10,6 +10,39 @@ from fastapi import HTTPException
 
 from facebook_monitor.webapp.form_models import format_notification_form_error
 
+_SIDEBAR_SAFE_ECHO_FRAGMENTS = ("不可超過", "最多")
+_SIDEBAR_ERROR_RULES: tuple[tuple[tuple[str, ...], str, bool], ...] = (
+    (("群組名稱不可空白",), "群組名稱不可空白", True),
+    (
+        ("找不到指定的 sidebar 群組", "sidebar group not found"),
+        "找不到指定的 sidebar 群組",
+        True,
+    ),
+    (("群組內仍有 target",), "群組內仍有 target，請先移出後再刪除", True),
+    (("重複群組區塊",), "排序資料不可包含重複群組區塊", True),
+    (("重複群組",), "群組排序不可包含重複群組", True),
+    (
+        ("grouped placement",),
+        "已有群組排序狀態，請使用調整順序後的確認保存",
+        True,
+    ),
+    (
+        ("sidebar group",),
+        "群組排序資料與目前群組不一致，請重新整理後再試",
+        False,
+    ),
+    (("重複 target",), "排序資料不可包含重複 target", True),
+    (
+        ("所有 target", "剛好包含所有 target"),
+        "排序資料與目前 target 清單不一致，請重新整理後再試",
+        True,
+    ),
+    (("id 不可空白",), "排序資料包含空白 id，請重新整理後再試", True),
+    (("至少需要選擇",), "至少需要選擇一個套用區段", True),
+    (("未知的群組模板套用區段",), "未知的群組模板套用區段", True),
+)
+_SIDEBAR_DEFAULT_ERROR_DETAIL = "sidebar 資料無法儲存，請重新整理後再試"
+
 
 def sidebar_error_detail(exc: ValueError) -> str:
     """回傳不含內部路徑、SQL 或 secret 的 sidebar API 錯誤訊息。"""
@@ -18,33 +51,26 @@ def sidebar_error_detail(exc: ValueError) -> str:
     notification_error = format_notification_form_error(exc)
     if notification_error != message:
         return notification_error
-    if "不可超過" in message or "最多" in message:
+    if _contains_any(message, _SIDEBAR_SAFE_ECHO_FRAGMENTS):
         return message
-    if "群組名稱不可空白" in message:
-        return "群組名稱不可空白"
-    if "找不到指定的 sidebar 群組" in message or "sidebar group not found" in message:
-        return "找不到指定的 sidebar 群組"
-    if "群組內仍有 target" in message:
-        return "群組內仍有 target，請先移出後再刪除"
-    if "重複群組區塊" in message:
-        return "排序資料不可包含重複群組區塊"
-    if "重複群組" in message:
-        return "群組排序不可包含重複群組"
-    if "grouped placement" in message:
-        return "已有群組排序狀態，請使用調整順序後的確認保存"
-    if "sidebar group" in message.lower():
-        return "群組排序資料與目前群組不一致，請重新整理後再試"
-    if "重複 target" in message:
-        return "排序資料不可包含重複 target"
-    if "所有 target" in message or "剛好包含所有 target" in message:
-        return "排序資料與目前 target 清單不一致，請重新整理後再試"
-    if "id 不可空白" in message:
-        return "排序資料包含空白 id，請重新整理後再試"
-    if "至少需要選擇" in message:
-        return "至少需要選擇一個套用區段"
-    if "未知的群組模板套用區段" in message:
-        return "未知的群組模板套用區段"
-    return "sidebar 資料無法儲存，請重新整理後再試"
+    return _sidebar_rule_error_detail(message) or _SIDEBAR_DEFAULT_ERROR_DETAIL
+
+
+def _sidebar_rule_error_detail(message: str) -> str:
+    """依 sidebar error fragment 規則回傳安全錯誤訊息。"""
+
+    lower_message = message.lower()
+    for fragments, detail, case_sensitive in _SIDEBAR_ERROR_RULES:
+        haystack = message if case_sensitive else lower_message
+        if _contains_any(haystack, fragments):
+            return detail
+    return ""
+
+
+def _contains_any(message: str, fragments: tuple[str, ...]) -> bool:
+    """判斷訊息是否包含任一 fragment。"""
+
+    return any(fragment in message for fragment in fragments)
 
 
 def string_list(value: object) -> list[str]:

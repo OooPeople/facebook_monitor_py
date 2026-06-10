@@ -292,6 +292,7 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
     assert state.scan_requested_at is not None
     assert has_seen
     assert outbox_entry is not None
+    assert scheduler_manager.started_count == 1
     assert scheduler_manager.woken_count == 2
 
 
@@ -520,6 +521,7 @@ def test_sidebar_group_start_and_stop_routes_update_only_group_targets(
     assert first_outbox is not None
     assert second_outbox is not None
     assert outside_outbox is not None
+    assert scheduler_manager.started_count == 1
 
 
 def test_start_route_supports_comments_target(tmp_path: Path) -> None:
@@ -571,6 +573,7 @@ def test_start_route_supports_comments_target(tmp_path: Path) -> None:
     assert state is not None
     assert state.scan_requested_at is not None
     assert has_seen
+    assert scheduler_manager.started_count == 1
     assert scheduler_manager.woken_count == 1
 
 

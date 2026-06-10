@@ -12,7 +12,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+import pytest
 from playwright.sync_api import Page
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
@@ -422,7 +424,10 @@ def _evaluate_fixture_page(
     """用 Playwright Chromium 執行實際 DOM extractor payload。"""
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, timeout=10_000)
+        try:
+            browser = playwright.chromium.launch(headless=True, timeout=10_000)
+        except PlaywrightError as exc:
+            pytest.skip(f"chromium browser is not installed: {exc}")
         try:
             page = browser.new_page()
             _fulfill_fixture_route(page, url=url, html=html)

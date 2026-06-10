@@ -33,7 +33,7 @@ def restart_target_monitoring_action(db_path: Path, target_id: str) -> TargetAct
         ok=True,
         message="target 已開始",
         feedback="target_started",
-        wake_scheduler=True,
+        start_scheduler=True,
     )
 
 
@@ -132,7 +132,7 @@ def restart_sidebar_group_monitoring_action(
         ok=True,
         message=f"已開始群組內 {count} 個 target" if count else "群組內沒有 target",
         feedback="sidebar_group_started",
-        wake_scheduler=count > 0,
+        start_scheduler=count > 0,
         updated_count=count,
     )
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
+from typing import Any
+from typing import cast
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
@@ -17,6 +20,46 @@ from facebook_monitor.persistence.sqlite import TargetRepository
 from facebook_monitor.persistence.sqlite import initialize_schema
 
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
+
+
+class _PrefetchedRowsCursor:
+    """回傳已預先讀出的 rows，讓測試可插入跨 connection race。"""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[Any]:
+        """回傳預先讀取的 rows。"""
+
+        return self._rows
+
+
+class _RaceLoserConnection:
+    """在 claim 讀到 candidate 後，讓另一個 connection 先 claim 成功。"""
+
+    def __init__(self, connection: Any, on_candidates_selected: Any) -> None:
+        self._connection = connection
+        self._on_candidates_selected = on_candidates_selected
+        self._triggered = False
+
+    def execute(self, sql: str, parameters: object = ()) -> Any:
+        """攔截 candidate SELECT，其餘 SQL 交給原 connection。"""
+
+        if (
+            not self._triggered
+            and "SELECT id FROM notification_outbox" in sql
+            and "WHERE status = ?" in sql
+        ):
+            rows = self._connection.execute(sql, parameters).fetchall()
+            self._triggered = True
+            self._on_candidates_selected()
+            return _PrefetchedRowsCursor(rows)
+        return self._connection.execute(sql, parameters)
+
+    def commit(self) -> None:
+        """提交底層 SQLite transaction。"""
+
+        self._connection.commit()
 
 
 def test_notification_outbox_clear_by_target_only_deletes_target_rows(
@@ -323,6 +366,54 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
     assert loaded is not None
     assert loaded.status == NotificationOutboxStatus.SENT
     assert loaded.attempts == 1
+
+
+def test_notification_outbox_claim_race_loser_closes_transaction(
+    tmp_path: Path,
+) -> None:
+    """candidate 被其他 connection 先 claim 時，loser 不應留下 open transaction。"""
+
+    db_path = tmp_path / "app.db"
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+    )
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        TargetRepository(connection).save(target)
+        notification_outbox_repository(connection).enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-race:ntfy",
+                target_id=target.id,
+                item_key="item-race",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+    with SqliteConnection(db_path) as sqlite_a, SqliteConnection(db_path) as sqlite_b:
+        connection_a = sqlite_a.require_connection()
+        connection_b = sqlite_b.require_connection()
+        initialize_schema(connection_a)
+        initialize_schema(connection_b)
+
+        def claim_from_other_connection() -> None:
+            claimed = notification_outbox_repository(connection_b).claim_pending()
+            assert len(claimed) == 1
+
+        race_connection = _RaceLoserConnection(
+            connection_a,
+            claim_from_other_connection,
+        )
+        claimed = notification_outbox_repository(
+            cast(sqlite3.Connection, race_connection)
+        ).claim_pending()
+
+        assert claimed == []
+        assert not connection_a.in_transaction
 
 
 def test_notification_outbox_recover_stale_processing_skips_write_without_candidates(

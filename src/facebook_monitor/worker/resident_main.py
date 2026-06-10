@@ -13,6 +13,7 @@ from collections.abc import Coroutine
 from concurrent.futures import Future
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -74,6 +75,14 @@ __all__ = (
     "refresh_requested_target_metadata",
     "refresh_target_group_cover_image_from_context",
 )
+
+
+@dataclass(frozen=True)
+class ResidentRuntimeSessionResult:
+    """保存單次 browser runtime session 結束原因與 cycle 進度。"""
+
+    cycle_index: int
+    runtime_restart_requested: bool
 
 
 def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
@@ -143,113 +152,19 @@ async def run_resident_main_loop(
             while not stop_requested() and (
                 options.max_cycles is None or cycle_index < options.max_cycles
             ):
-                runtime_restart_requested = False
-                target_queue = TargetQueue()
-                with acquire_profile_lease(options.profile_dir, "resident main worker"):
-                    async with async_playwright() as playwright:
-                        browser_context = await launch_persistent_context_async(
-                            playwright,
-                            BrowserRuntimeOptions(
-                                profile_dir=options.profile_dir,
-                                headless=not options.headed_compat,
-                                timeout_seconds=max(
-                                    options.scan_timeout_seconds,
-                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                                ),
-                            ),
-                        )
-                        try:
-                            browser_context.set_default_timeout(
-                                max(
-                                    options.scan_timeout_seconds,
-                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                                )
-                                * 1000
-                            )
-                            browser_context.set_default_navigation_timeout(
-                                max(
-                                    options.scan_timeout_seconds,
-                                    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-                                )
-                                * 1000
-                            )
-                            page_pool = AsyncResidentPagePool(browser_context)
-                            executor = ExecutorWorkerPool(
-                                options=options,
-                                page_pool=page_pool,
-                                target_queue=target_queue,
-                                schedule_planner=schedule_planner,
-                                scan_page=scan_page,
-                                **(
-                                    {"scan_comments_target_page": scan_comments_target_page}
-                                    if scan_comments_target_page is not None
-                                    else {}
-                                ),
-                            )
-                            await executor.start()
-                            try:
-                                while not stop_requested() and (
-                                    options.max_cycles is None or cycle_index < options.max_cycles
-                                ):
-                                    if executor.runtime_restart_requested():
-                                        runtime_restart_requested = True
-                                        break
-                                    cycle_index += 1
-                                    summary = await run_resident_main_scheduler_tick(
-                                        options=options,
-                                        browser_context=browser_context,
-                                        page_pool=page_pool,
-                                        target_queue=target_queue,
-                                        executor=executor,
-                                        schedule_planner=schedule_planner,
-                                        cycle_index=cycle_index,
-                                        should_stop=stop_requested,
-                                    )
-                                    summaries.append(summary)
-                                    if on_cycle:
-                                        on_cycle(summary)
-                                    if executor.runtime_restart_requested():
-                                        runtime_restart_requested = True
-                                        break
-                                    if not summary.worker_health_ok:
-                                        logger.warning(
-                                            "resident_main_runtime_restart_requested "
-                                            "reason=%s cycle=%s worker_statuses=%s",
-                                            "worker_pool_unhealthy",
-                                            summary.cycle_index,
-                                            ",".join(summary.worker_statuses),
-                                        )
-                                        executor.request_runtime_restart()
-                                        runtime_restart_requested = True
-                                        break
-                                    if (
-                                        options.max_cycles is not None
-                                        and cycle_index >= options.max_cycles
-                                    ):
-                                        break
-                                    if await _sleep_or_runtime_restart(
-                                        sleep_fn=sleep,
-                                        seconds=max(options.scheduler_tick_seconds, 0),
-                                        executor=executor,
-                                    ):
-                                        runtime_restart_requested = True
-                                        break
-                                if not stop_requested() and not runtime_restart_requested:
-                                    runtime_restart_requested = (
-                                        await _drain_queue_or_runtime_restart(
-                                            target_queue=target_queue,
-                                            executor=executor,
-                                        )
-                                    )
-                            finally:
-                                await executor.stop(
-                                    cancel_running=(stop_requested() or runtime_restart_requested),
-                                    runtime_restart=runtime_restart_requested,
-                                )
-                                await page_pool.close_all()
-                        finally:
-                            await browser_context.close()
-                if not runtime_restart_requested:
+                session_result = await _run_resident_browser_runtime_session(
+                    options=options,
+                    scan_page=scan_page,
+                    scan_comments_target_page=scan_comments_target_page,
+                    schedule_planner=schedule_planner,
+                    stop_requested=stop_requested,
+                    sleep=sleep,
+                    on_cycle=on_cycle,
+                    summaries=summaries,
+                    cycle_index=cycle_index,
+                )
+                cycle_index = session_result.cycle_index
+                if not session_result.runtime_restart_requested:
                     break
         except ProfileLeaseError as exc:
             raise WorkerFailure(PROFILE_LOCKED_REASON, str(exc)) from exc
@@ -257,6 +172,172 @@ async def run_resident_main_loop(
         restore_playwright_exception_handler()
 
     return summaries
+
+
+async def _run_resident_browser_runtime_session(
+    *,
+    options: ResidentRuntimeOptions,
+    scan_page: AsyncScanCallable,
+    scan_comments_target_page: AsyncScanCallable | None,
+    schedule_planner: TargetSchedulePlanner,
+    stop_requested: StopCheckCallable,
+    sleep: AsyncSleepCallable,
+    on_cycle: AsyncCycleObserver | None,
+    summaries: list[ResidentCycleSummary],
+    cycle_index: int,
+) -> ResidentRuntimeSessionResult:
+    """執行單一 Playwright persistent context runtime session。"""
+
+    target_queue = TargetQueue()
+    with acquire_profile_lease(options.profile_dir, "resident main worker"):
+        async with async_playwright() as playwright:
+            browser_context = await launch_persistent_context_async(
+                playwright,
+                BrowserRuntimeOptions(
+                    profile_dir=options.profile_dir,
+                    headless=not options.headed_compat,
+                    timeout_seconds=_browser_runtime_timeout_seconds(options),
+                ),
+            )
+            try:
+                _set_browser_context_timeouts(browser_context, options)
+                page_pool = AsyncResidentPagePool(browser_context)
+                executor = ExecutorWorkerPool(
+                    options=options,
+                    page_pool=page_pool,
+                    target_queue=target_queue,
+                    schedule_planner=schedule_planner,
+                    scan_page=scan_page,
+                    **(
+                        {"scan_comments_target_page": scan_comments_target_page}
+                        if scan_comments_target_page is not None
+                        else {}
+                    ),
+                )
+                await executor.start()
+                try:
+                    return await _run_scheduler_ticks_until_restart(
+                        options=options,
+                        browser_context=browser_context,
+                        page_pool=page_pool,
+                        target_queue=target_queue,
+                        executor=executor,
+                        schedule_planner=schedule_planner,
+                        stop_requested=stop_requested,
+                        sleep=sleep,
+                        on_cycle=on_cycle,
+                        summaries=summaries,
+                        cycle_index=cycle_index,
+                    )
+                finally:
+                    runtime_restart_requested = executor.runtime_restart_requested()
+                    await executor.stop(
+                        cancel_running=(stop_requested() or runtime_restart_requested),
+                        runtime_restart=runtime_restart_requested,
+                    )
+                    await page_pool.close_all()
+            finally:
+                await browser_context.close()
+
+
+async def _run_scheduler_ticks_until_restart(
+    *,
+    options: ResidentRuntimeOptions,
+    browser_context: Any,
+    page_pool: AsyncResidentPagePool,
+    target_queue: TargetQueue,
+    executor: ExecutorWorkerPool,
+    schedule_planner: TargetSchedulePlanner,
+    stop_requested: StopCheckCallable,
+    sleep: AsyncSleepCallable,
+    on_cycle: AsyncCycleObserver | None,
+    summaries: list[ResidentCycleSummary],
+    cycle_index: int,
+) -> ResidentRuntimeSessionResult:
+    """在單一 runtime session 中執行 scheduler ticks 直到停止或 restart。"""
+
+    runtime_restart_requested = False
+    while not stop_requested() and (
+        options.max_cycles is None or cycle_index < options.max_cycles
+    ):
+        if executor.runtime_restart_requested():
+            runtime_restart_requested = True
+            break
+        cycle_index += 1
+        summary = await run_resident_main_scheduler_tick(
+            options=options,
+            browser_context=browser_context,
+            page_pool=page_pool,
+            target_queue=target_queue,
+            executor=executor,
+            schedule_planner=schedule_planner,
+            cycle_index=cycle_index,
+            should_stop=stop_requested,
+        )
+        summaries.append(summary)
+        if on_cycle:
+            on_cycle(summary)
+        if executor.runtime_restart_requested():
+            runtime_restart_requested = True
+            break
+        if not summary.worker_health_ok:
+            _request_restart_for_unhealthy_workers(executor, summary)
+            runtime_restart_requested = True
+            break
+        if options.max_cycles is not None and cycle_index >= options.max_cycles:
+            break
+        if await _sleep_or_runtime_restart(
+            sleep_fn=sleep,
+            seconds=max(options.scheduler_tick_seconds, 0),
+            executor=executor,
+        ):
+            runtime_restart_requested = True
+            break
+    if not stop_requested() and not runtime_restart_requested:
+        runtime_restart_requested = await _drain_queue_or_runtime_restart(
+            target_queue=target_queue,
+            executor=executor,
+        )
+    return ResidentRuntimeSessionResult(
+        cycle_index=cycle_index,
+        runtime_restart_requested=runtime_restart_requested,
+    )
+
+
+def _browser_runtime_timeout_seconds(options: ResidentRuntimeOptions) -> float:
+    """回傳 browser runtime timeout，與 scan timeout 下限保持一致。"""
+
+    return max(
+        options.scan_timeout_seconds,
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+    )
+
+
+def _set_browser_context_timeouts(
+    browser_context: Any,
+    options: ResidentRuntimeOptions,
+) -> None:
+    """設定 Playwright context 的 default timeout 與 navigation timeout。"""
+
+    timeout_ms = _browser_runtime_timeout_seconds(options) * 1000
+    browser_context.set_default_timeout(timeout_ms)
+    browser_context.set_default_navigation_timeout(timeout_ms)
+
+
+def _request_restart_for_unhealthy_workers(
+    executor: ExecutorWorkerPool,
+    summary: ResidentCycleSummary,
+) -> None:
+    """worker pool unhealthy 時記錄原因並要求 runtime restart。"""
+
+    logger.warning(
+        "resident_main_runtime_restart_requested "
+        "reason=%s cycle=%s worker_statuses=%s",
+        "worker_pool_unhealthy",
+        summary.cycle_index,
+        ",".join(summary.worker_statuses),
+    )
+    executor.request_runtime_restart()
 
 
 def _publish_display_next_due_at(

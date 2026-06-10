@@ -386,6 +386,8 @@ class NotificationOutboxRepository:
             if cursor.rowcount == 1:
                 claimed_ids.append(entry_id)
         if not claimed_ids:
+            if rows:
+                self.connection.commit()
             return []
         self.connection.commit()
         placeholders = ",".join("?" for _ in claimed_ids)

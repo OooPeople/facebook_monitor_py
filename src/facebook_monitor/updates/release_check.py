@@ -65,6 +65,16 @@ class UpdateCheckResult:
     manifest_signature_asset_download_url: str = ""
 
 
+@dataclass(frozen=True)
+class ReleaseAssetBundle:
+    """保存單一 release 中與目前平台更新相關的 assets。"""
+
+    portable_asset: ReleaseAsset | None
+    sha256_asset: ReleaseAsset | None
+    manifest_asset: ReleaseAsset | None
+    manifest_signature_asset: ReleaseAsset | None
+
+
 def build_idle_update_check(
     *,
     current_version: str,
@@ -189,131 +199,100 @@ def evaluate_release(
         )
 
     if parsed_latest.sort_key() <= parsed_current.sort_key():
-        return UpdateCheckResult(
-            checked=True,
+        return _checked_release_result(
             status="current",
             channel=channel,
             repository=repository,
             current_version=current_version,
             latest_version=current_version,
-            update_available=False,
             summary="目前已是最新版本",
             detail="" if latest_version == current_version else (
                 f"GitHub 最新 release 是 {latest_version}，不高於目前版本。"
             ),
             release_url=release_url,
-            asset_name="",
-            asset_download_url="",
-            sha256_asset_name="",
-            sha256_asset_download_url="",
             failure_reason="",
         )
     resolved_platform = runtime_platform or current_update_runtime_platform()
     resolved_policy = artifact_policy or resolved_platform.artifact_policy
     if resolved_policy is None:
-        return UpdateCheckResult(
-            checked=True,
+        return _checked_release_result(
             status="platform_unsupported",
             channel=channel,
             repository=repository,
             current_version=current_version,
             latest_version=latest_version,
-            update_available=False,
             summary=f"找到新版 {latest_version}，但目前平台沒有對應更新檔",
             detail=resolved_platform.unsupported_reason
             or "目前平台沒有對應的更新檔，只支援檢查版本資訊。",
             release_url=release_url,
-            asset_name="",
-            asset_download_url="",
-            sha256_asset_name="",
-            sha256_asset_download_url="",
             failure_reason="platform_unsupported",
         )
 
     assets = parse_release_assets(release.get("assets", []))
-    portable_asset = find_portable_asset(
+    asset_bundle = _release_asset_bundle(
         assets,
         latest_version=latest_version,
         policy=resolved_policy,
     )
-    sha256_asset = find_sha256_asset(assets, portable_asset=portable_asset)
-    manifest_asset = find_manifest_asset(assets, latest_version=latest_version)
-    manifest_signature_asset = find_manifest_signature_asset(
-        assets,
-        latest_version=latest_version,
-    )
-    if portable_asset is None:
+    if asset_bundle.portable_asset is None:
         if has_version_mismatched_portable_asset(
             assets,
             latest_version=latest_version,
             policy=resolved_policy,
         ):
-            return UpdateCheckResult(
-                checked=True,
+            return _checked_release_result(
                 status="asset_version_mismatch",
                 channel=channel,
                 repository=repository,
                 current_version=current_version,
                 latest_version=latest_version,
-                update_available=False,
                 summary=f"找到新版，但 {resolved_policy.display_label} zip 版本不符",
                 detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
                 release_url=release_url,
-                asset_name="",
-                asset_download_url="",
-                sha256_asset_name="",
-                sha256_asset_download_url="",
                 failure_reason="asset_version_mismatch",
             )
-        return UpdateCheckResult(
-            checked=True,
+        return _checked_release_result(
             status="asset_missing",
             channel=channel,
             repository=repository,
             current_version=current_version,
             latest_version=latest_version,
-            update_available=False,
             summary=f"找到新版，但沒有 {resolved_policy.display_label} zip",
             detail=f"Release asset 未包含預期的 {resolved_policy.display_label} zip。",
             release_url=release_url,
-            asset_name="",
-            asset_download_url="",
-            sha256_asset_name="",
-            sha256_asset_download_url="",
             failure_reason="asset_missing",
         )
+    if asset_bundle.sha256_asset is None:
+        return _checked_release_result(
+            status="sha256_asset_missing",
+            channel=channel,
+            repository=repository,
+            current_version=current_version,
+            latest_version=latest_version,
+            summary=f"找到新版 {latest_version}，但缺少 SHA256 sidecar",
+            detail="Release 必須包含與更新 zip 同名的 .sha256 檔，才能自動下載或套用更新。",
+            release_url=release_url,
+            failure_reason="sha256_asset_missing",
+            assets=asset_bundle,
+        )
     manifest_failure_reason = _manifest_failure_reason(
-        manifest_asset=manifest_asset,
-        manifest_signature_asset=manifest_signature_asset,
+        manifest_asset=asset_bundle.manifest_asset,
+        manifest_signature_asset=asset_bundle.manifest_signature_asset,
     )
     if manifest_failure_reason:
-        return UpdateCheckResult(
-            checked=True,
+        return _checked_release_result(
             status=manifest_failure_reason,
             channel=channel,
             repository=repository,
             current_version=current_version,
             latest_version=latest_version,
-            update_available=False,
             summary=f"找到新版 {latest_version}，但缺少 signed manifest",
             detail="Release 必須同時包含 signed manifest 與 detached signature 才能自動下載或套用更新。",
             release_url=release_url,
-            asset_name=portable_asset.name,
-            asset_download_url=portable_asset.download_url,
-            sha256_asset_name=sha256_asset.name if sha256_asset else "",
-            sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
             failure_reason=manifest_failure_reason,
-            manifest_asset_name=manifest_asset.name if manifest_asset else "",
-            manifest_asset_download_url=manifest_asset.download_url if manifest_asset else "",
-            manifest_signature_asset_name=manifest_signature_asset.name
-            if manifest_signature_asset
-            else "",
-            manifest_signature_asset_download_url=manifest_signature_asset.download_url
-            if manifest_signature_asset
-            else "",
+            assets=asset_bundle,
         )
-    return UpdateCheckResult(
-        checked=True,
+    return _checked_release_result(
         status="available",
         channel=channel,
         repository=repository,
@@ -323,11 +302,71 @@ def evaluate_release(
         summary=f"有新版 {latest_version}",
         detail="下載與套用能力會依目前 runtime 支援與 signed manifest 狀態決定。",
         release_url=release_url,
-        asset_name=portable_asset.name,
-        asset_download_url=portable_asset.download_url,
+        failure_reason="",
+        assets=asset_bundle,
+    )
+
+
+def _release_asset_bundle(
+    assets: tuple[ReleaseAsset, ...],
+    *,
+    latest_version: str,
+    policy: UpdateArtifactPolicy,
+) -> ReleaseAssetBundle:
+    """集中尋找目前平台需要的 release assets。"""
+
+    portable_asset = find_portable_asset(
+        assets,
+        latest_version=latest_version,
+        policy=policy,
+    )
+    return ReleaseAssetBundle(
+        portable_asset=portable_asset,
+        sha256_asset=find_sha256_asset(assets, portable_asset=portable_asset),
+        manifest_asset=find_manifest_asset(assets, latest_version=latest_version),
+        manifest_signature_asset=find_manifest_signature_asset(
+            assets,
+            latest_version=latest_version,
+        ),
+    )
+
+
+def _checked_release_result(
+    *,
+    status: str,
+    channel: str,
+    repository: str,
+    current_version: str,
+    latest_version: str,
+    summary: str,
+    detail: str,
+    release_url: str,
+    failure_reason: str,
+    update_available: bool = False,
+    assets: ReleaseAssetBundle | None = None,
+) -> UpdateCheckResult:
+    """建立已完成 GitHub metadata 檢查後的結果。"""
+
+    portable_asset = assets.portable_asset if assets else None
+    sha256_asset = assets.sha256_asset if assets else None
+    manifest_asset = assets.manifest_asset if assets else None
+    manifest_signature_asset = assets.manifest_signature_asset if assets else None
+    return UpdateCheckResult(
+        checked=True,
+        status=status,
+        channel=channel,
+        repository=repository,
+        current_version=current_version,
+        latest_version=latest_version,
+        update_available=update_available,
+        summary=summary,
+        detail=detail,
+        release_url=release_url,
+        asset_name=portable_asset.name if portable_asset else "",
+        asset_download_url=portable_asset.download_url if portable_asset else "",
         sha256_asset_name=sha256_asset.name if sha256_asset else "",
         sha256_asset_download_url=sha256_asset.download_url if sha256_asset else "",
-        failure_reason="",
+        failure_reason=failure_reason,
         manifest_asset_name=manifest_asset.name if manifest_asset else "",
         manifest_asset_download_url=manifest_asset.download_url if manifest_asset else "",
         manifest_signature_asset_name=manifest_signature_asset.name

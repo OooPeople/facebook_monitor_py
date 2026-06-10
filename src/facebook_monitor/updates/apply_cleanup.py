@@ -115,13 +115,40 @@ def _cleanup_old_backup_dirs(
         keep_count = 1
     if not backup_root.exists():
         return ()
+    resolved_root, root_warning = _resolve_backup_root(backup_root)
+    if root_warning is not None:
+        return (root_warning,)
+
+    sortable_dirs = _list_managed_backup_dirs(backup_root, warnings=warnings)
+    if sortable_dirs is None:
+        return tuple(warnings)
+    keep = _selected_backup_keep_set(
+        sortable_dirs,
+        keep_count=keep_count,
+        preserve=preserve,
+        resolved_root=resolved_root,
+        warnings=warnings,
+    )
+    _delete_unkept_backup_dirs(
+        sortable_dirs,
+        keep=keep,
+        resolved_root=resolved_root,
+        warnings=warnings,
+    )
+    return tuple(warnings)
+
+
+def _resolve_backup_root(backup_root: Path) -> tuple[Path, str | None]:
+    """確認 backup root 本身安全，並回傳 resolved root。"""
+
     try:
         resolved_root = backup_root.resolve()
         resolved_parent = backup_root.parent.resolve()
     except OSError as exc:
-        return (_cleanup_warning("backup_root_resolve", backup_root, exc),)
+        return backup_root, _cleanup_warning("backup_root_resolve", backup_root, exc)
     if is_reparse_or_symlink(backup_root):
         return (
+            resolved_root,
             _cleanup_warning(
                 "backup_root_unsafe",
                 backup_root,
@@ -130,17 +157,28 @@ def _cleanup_old_backup_dirs(
         )
     if resolved_root == resolved_parent or not resolved_root.is_relative_to(resolved_parent):
         return (
+            resolved_root,
             _cleanup_warning(
                 "backup_root_unsafe",
                 backup_root,
                 OSError("backup root escaped runtime directory"),
             ),
         )
+    return resolved_root, None
+
+
+def _list_managed_backup_dirs(
+    backup_root: Path,
+    *,
+    warnings: list[str],
+) -> list[tuple[float, str, Path]] | None:
+    """列出 updater 管理的 backup dirs；未知命名只警告不刪除。"""
+
     try:
         backup_dirs = [path for path in backup_root.iterdir() if path.is_dir()]
     except OSError as exc:
-        return (_cleanup_warning("backup_list", backup_root, exc),)
-
+        warnings.append(_cleanup_warning("backup_list", backup_root, exc))
+        return None
     sortable_dirs: list[tuple[float, str, Path]] = []
     for backup_dir in backup_dirs:
         timestamp = _backup_timestamp(backup_dir)
@@ -154,6 +192,18 @@ def _cleanup_old_backup_dirs(
             )
             continue
         sortable_dirs.append((timestamp, backup_dir.name, backup_dir))
+    return sortable_dirs
+
+
+def _selected_backup_keep_set(
+    sortable_dirs: list[tuple[float, str, Path]],
+    *,
+    keep_count: int,
+    preserve: Path | None,
+    resolved_root: Path,
+    warnings: list[str],
+) -> set[Path]:
+    """選出需要保留的 backup resolved paths。"""
 
     keep: set[Path] = set()
     if preserve is not None:
@@ -169,6 +219,18 @@ def _cleanup_old_backup_dirs(
         if resolved is None:
             continue
         keep.add(resolved)
+    return keep
+
+
+def _delete_unkept_backup_dirs(
+    sortable_dirs: list[tuple[float, str, Path]],
+    *,
+    keep: set[Path],
+    resolved_root: Path,
+    warnings: list[str],
+) -> None:
+    """刪除不在 keep set 內的 managed backups。"""
+
     for _, _, backup_dir in sortable_dirs:
         resolved = _resolve_safe_backup_dir(
             backup_dir,
@@ -179,20 +241,10 @@ def _cleanup_old_backup_dirs(
             continue
         if resolved in keep:
             continue
-        if (
-            _resolve_safe_backup_dir(
-                backup_dir,
-                resolved_root=resolved_root,
-                warnings=warnings,
-            )
-            is None
-        ):
-            continue
         try:
             shutil.rmtree(backup_dir)
         except OSError as exc:
             warnings.append(_cleanup_warning("backup", backup_dir, exc))
-    return tuple(warnings)
 
 
 def _resolve_safe_backup_dir(

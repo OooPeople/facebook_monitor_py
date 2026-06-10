@@ -319,6 +319,65 @@ def test_scan_request_during_queued_survives_current_scan_finish(
     assert finished_state.scan_requested_at == requested_state.scan_requested_at
 
 
+def test_mark_target_queued_only_updates_active_non_running_state(
+    tmp_path: Path,
+) -> None:
+    """queue patch 只允許 active target，避免 stopped target 短暫顯示 queued。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-queue",
+                canonical_url="https://www.facebook.com/groups/active-queue",
+            )
+        )
+        running_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="running-queue",
+                canonical_url="https://www.facebook.com/groups/running-queue",
+            )
+        )
+        stopped_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stopped-queue",
+                canonical_url="https://www.facebook.com/groups/stopped-queue",
+            )
+        )
+        app.services.targets.restart_target_monitoring(active_target.id)
+        app.services.targets.restart_target_monitoring(running_target.id)
+        running_state = app.services.targets.try_mark_target_running(
+            running_target.id,
+            "worker-running",
+        )
+
+        active_queued = app.services.targets.mark_target_queued(
+            active_target.id,
+            "manual_request",
+        )
+        running_queued = app.services.targets.mark_target_queued(
+            running_target.id,
+            "manual_request",
+        )
+        stopped_queued = app.services.targets.mark_target_queued(
+            stopped_target.id,
+            "manual_request",
+        )
+
+    assert running_state is not None
+    assert active_queued.desired_state == TargetDesiredState.ACTIVE
+    assert active_queued.runtime_status == TargetRuntimeStatus.QUEUED
+    assert active_queued.enqueue_reason == "manual_request"
+
+    assert running_queued.desired_state == TargetDesiredState.ACTIVE
+    assert running_queued.runtime_status == TargetRuntimeStatus.RUNNING
+    assert running_queued.active_worker_id == "worker-running"
+
+    assert stopped_queued.desired_state == TargetDesiredState.STOPPED
+    assert stopped_queued.runtime_status == TargetRuntimeStatus.IDLE
+    assert stopped_queued.enqueue_reason == ""
+
+
 def test_try_mark_target_running_claims_only_active_non_running_state(
     tmp_path: Path,
 ) -> None:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+import uuid
 import zipfile
 
 from facebook_monitor.core.defaults import PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS
@@ -65,144 +66,157 @@ def create_support_bundle(
     bundle_dir = paths.exports_dir / "support-bundles"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = bundle_dir / filename
+    temp_path = bundle_dir / f".{filename}.{uuid.uuid4().hex}.tmp"
     aliases = _SupportBundleAliases()
     sections: list[_BundleSectionStatus] = []
-    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        _write_text(
-            archive,
-            "README.txt",
-            "\n".join(
-                [
-                    "Facebook Monitor support bundle",
-                    "This bundle intentionally excludes the SQLite DB, browser profile, cookies, secrets, full logs, and full post/comment text.",
-                    "It includes bounded redacted log tails, runtime snapshots, scan summaries, notification summaries, and database health checks.",
-                    "Paths, URLs, IDs, errors, and secret-like values are redacted or aliased before writing on a best-effort basis.",
-                    "Please review the extracted files before sharing this bundle.",
-                    "",
-                ]
-            ),
-        )
-        _write_json(
-            archive,
-            "metadata.json",
-            {
-                "generated_at": generated_at.isoformat(),
-                "support_bundle_schema_version": SUPPORT_BUNDLE_SCHEMA_VERSION,
-                **_sanitize_app_metadata(app_metadata),
-            },
-        )
-        _write_text_section(
-            archive,
-            sections,
-            name="runtime_diagnostics",
-            filename="runtime_diagnostics.txt",
-            content=_runtime_diagnostics_text(runtime_diagnostics_text, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="runtime_paths",
-            filename="runtime_paths.json",
-            collect=lambda: _redacted_runtime_paths(paths),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="database_summary",
-            filename="database_summary.json",
-            collect=lambda: _database_summary_payload(paths.db_path),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="database_health",
-            filename="database_health.json",
-            collect=lambda: _database_health_payload(paths),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="target_inventory",
-            filename="target_inventory.json",
-            collect=lambda: _target_inventory_payload(paths.db_path, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="target_runtime_states",
-            filename="target_runtime_states.json",
-            collect=lambda: _target_runtime_states_payload(
-                paths.db_path,
-                aliases,
-                now=generated_at,
-            ),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="scan_summaries",
-            filename="scan_summaries.json",
-            collect=lambda: _scan_summaries_payload(paths.db_path, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="latest_scan_debug_summary",
-            filename="latest_scan_debug_summary.json",
-            collect=lambda: _latest_scan_debug_summary_payload(paths.db_path, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="notification_diagnostics",
-            filename="notification_diagnostics.json",
-            collect=lambda: _notification_diagnostics_payload(paths.db_path, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="dedupe_summary",
-            filename="dedupe_summary.json",
-            collect=lambda: _dedupe_summary_payload(paths.db_path, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="profile_session",
-            filename="profile_session.json",
-            collect=lambda: _profile_session_payload(paths),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="maintenance_update_summary",
-            filename="maintenance_update_summary.json",
-            collect=lambda: _maintenance_update_summary_payload(paths, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="scheduler_state",
-            filename="scheduler_state.json",
-            collect=lambda: _scheduler_state_payload(scheduler_state or {}, aliases),
-        )
-        _write_json_section(
-            archive,
-            sections,
-            name="log_tail",
-            filename="log_tail.json",
-            collect=lambda: _log_tail_payload(paths.logs_dir, aliases),
-        )
-        _write_json(
-            archive,
-            "bundle_manifest.json",
-            {
-                "schema_version": SUPPORT_BUNDLE_SCHEMA_VERSION,
-                "generated_at": generated_at.isoformat(),
-                "sections": [section.to_json() for section in sections],
-                "alias_counts": aliases.aliases_by_namespace(),
-            },
-        )
+    try:
+        with temp_path.open("xb") as raw_archive:
+            with zipfile.ZipFile(raw_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                _write_text(
+                    archive,
+                    "README.txt",
+                    "\n".join(
+                        [
+                            "Facebook Monitor support bundle",
+                            "This bundle intentionally excludes the SQLite DB, browser profile, cookies, secrets, full logs, and full post/comment text.",
+                            "It includes bounded redacted log tails, runtime snapshots, scan summaries, notification summaries, and database health checks.",
+                            "Paths, URLs, IDs, errors, and secret-like values are redacted or aliased before writing on a best-effort basis.",
+                            "Please review the extracted files before sharing this bundle.",
+                            "",
+                        ]
+                    ),
+                )
+                _write_json(
+                    archive,
+                    "metadata.json",
+                    {
+                        "generated_at": generated_at.isoformat(),
+                        "support_bundle_schema_version": SUPPORT_BUNDLE_SCHEMA_VERSION,
+                        **_sanitize_app_metadata(app_metadata),
+                    },
+                )
+                _write_text_section(
+                    archive,
+                    sections,
+                    name="runtime_diagnostics",
+                    filename="runtime_diagnostics.txt",
+                    content=_runtime_diagnostics_text(runtime_diagnostics_text, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="runtime_paths",
+                    filename="runtime_paths.json",
+                    collect=lambda: _redacted_runtime_paths(paths),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="database_summary",
+                    filename="database_summary.json",
+                    collect=lambda: _database_summary_payload(paths.db_path),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="database_health",
+                    filename="database_health.json",
+                    collect=lambda: _database_health_payload(paths),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="target_inventory",
+                    filename="target_inventory.json",
+                    collect=lambda: _target_inventory_payload(paths.db_path, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="target_runtime_states",
+                    filename="target_runtime_states.json",
+                    collect=lambda: _target_runtime_states_payload(
+                        paths.db_path,
+                        aliases,
+                        now=generated_at,
+                    ),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="scan_summaries",
+                    filename="scan_summaries.json",
+                    collect=lambda: _scan_summaries_payload(paths.db_path, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="latest_scan_debug_summary",
+                    filename="latest_scan_debug_summary.json",
+                    collect=lambda: _latest_scan_debug_summary_payload(
+                        paths.db_path,
+                        aliases,
+                    ),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="notification_diagnostics",
+                    filename="notification_diagnostics.json",
+                    collect=lambda: _notification_diagnostics_payload(
+                        paths.db_path,
+                        aliases,
+                    ),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="dedupe_summary",
+                    filename="dedupe_summary.json",
+                    collect=lambda: _dedupe_summary_payload(paths.db_path, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="profile_session",
+                    filename="profile_session.json",
+                    collect=lambda: _profile_session_payload(paths),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="maintenance_update_summary",
+                    filename="maintenance_update_summary.json",
+                    collect=lambda: _maintenance_update_summary_payload(paths, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="scheduler_state",
+                    filename="scheduler_state.json",
+                    collect=lambda: _scheduler_state_payload(scheduler_state or {}, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="log_tail",
+                    filename="log_tail.json",
+                    collect=lambda: _log_tail_payload(paths.logs_dir, aliases),
+                )
+                _write_json(
+                    archive,
+                    "bundle_manifest.json",
+                    {
+                        "schema_version": SUPPORT_BUNDLE_SCHEMA_VERSION,
+                        "generated_at": generated_at.isoformat(),
+                        "sections": [section.to_json() for section in sections],
+                        "alias_counts": aliases.aliases_by_namespace(),
+                    },
+                )
+        temp_path.replace(bundle_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
     prune_old_support_bundles(
         bundle_dir,
         max_age_days=PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS.support_bundle_retention_days,

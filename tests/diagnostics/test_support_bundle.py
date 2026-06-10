@@ -10,6 +10,8 @@ from datetime import timedelta
 from datetime import timezone
 import zipfile
 
+import pytest
+
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
@@ -646,6 +648,35 @@ def test_support_bundle_create_runs_retention_cleanup(
     assert calls[0]["preserve"] == (result.path,)
 
 
+def test_support_bundle_create_does_not_publish_partial_zip(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """支援包建立中途失敗時，不可留下正式 zip 或未清理的 temp 檔。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    def fail_write_json(*_args, **_kwargs) -> None:
+        raise RuntimeError("zip write failed")
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle._write_json",
+        fail_write_json,
+    )
+
+    with pytest.raises(RuntimeError, match="zip write failed"):
+        create_support_bundle(
+            paths=paths,
+            runtime_diagnostics_text="",
+            app_metadata={},
+        )
+
+    bundle_dir = paths.exports_dir / "support-bundles"
+    assert list(bundle_dir.glob("facebook-monitor-support-*.zip")) == []
+    assert list(bundle_dir.glob("*.tmp")) == []
+
+
 def test_prune_old_support_bundles_limits_age_and_file_count(tmp_path: Path) -> None:
     """support bundle retention 只清 allowlisted 舊 bundle 檔案。"""
 
@@ -665,6 +696,8 @@ def test_prune_old_support_bundles_limits_age_and_file_count(tmp_path: Path) -> 
     os.utime(old_path, (old_mtime, old_mtime))
     unrelated_zip = bundle_dir / "other.zip"
     unrelated_zip.write_bytes(b"keep")
+    temp_zip = bundle_dir / ".facebook-monitor-support-20260603-000000.zip.tmp"
+    temp_zip.write_bytes(b"partial")
     matched_directory = bundle_dir / "facebook-monitor-support-directory.zip"
     matched_directory.mkdir()
 
@@ -684,6 +717,7 @@ def test_prune_old_support_bundles_limits_age_and_file_count(tmp_path: Path) -> 
     assert deleted_count == 3
     assert remaining_bundle_names == expected_remaining
     assert unrelated_zip.is_file()
+    assert temp_zip.is_file()
     assert matched_directory.is_dir()
 
 

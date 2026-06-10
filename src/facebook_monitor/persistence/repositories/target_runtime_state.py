@@ -145,6 +145,7 @@ class TargetRuntimeStateRepository:
                 active_page_id = '',
                 updated_at = ?
             WHERE target_id = ?
+              AND desired_state = ?
               AND runtime_status != ?
             """,
             (
@@ -153,6 +154,7 @@ class TargetRuntimeStateRepository:
                 reason,
                 enqueued_at_text,
                 target_id,
+                TargetDesiredState.ACTIVE.value,
                 TargetRuntimeStatus.RUNNING.value,
             ),
         )

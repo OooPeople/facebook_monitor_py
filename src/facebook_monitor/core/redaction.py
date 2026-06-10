@@ -17,12 +17,12 @@ _DISCORD_WEBHOOK_RE = re.compile(
 _URL_RE = re.compile(r"\bhttps?://[^\s\"'<>]+", re.IGNORECASE)
 _WINDOWS_USER_PATH_RE = re.compile(r"\b[A-Za-z]:\\Users\\[^\\\r\n]+")
 _POSIX_HOME_PATH_RE = re.compile(r"(?<!\w)/(?:Users|home)/[^/\r\n]+")
-_AUTH_SCHEME_RE = re.compile(
-    r"(?i)\b(authorization)(\s*[:=]\s*)(bearer|basic)\s+([^\s,;&]+)"
+_AUTH_QUOTED_MAPPING_RE = re.compile(
+    r"(?i)(?P<prefix>['\"]authorization['\"]\s*:\s*)"
+    r"(?P<quote>['\"])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)"
 )
-_AUTH_VALUE_RE = re.compile(
-    r"(?i)\b(authorization)(\s*[:=]\s*)(?!(?:bearer|basic)\b)([^\s,;&]+)"
-)
+_AUTH_HEADER_RE = re.compile(r"(?im)(\bauthorization\s*:\s*)[^\r\n]*")
+_AUTH_ASSIGNMENT_RE = re.compile(r"(?i)\b(authorization)(\s*=\s*)([^&\r\n]+)")
 _COOKIE_HEADER_RE = re.compile(r"(?im)\b(set-cookie|cookie)\s*:\s*([^\r\n]+)")
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(token|secret|password|api[_-]?key)\s*[:=]\s*([^\s,;&]+)"
@@ -50,8 +50,12 @@ def redact_sensitive_text(value: str) -> str:
     if not text:
         return ""
     text = _DISCORD_WEBHOOK_RE.sub(_redact_discord_webhook_match, text)
-    text = _AUTH_SCHEME_RE.sub(_redact_auth_scheme_match, text)
-    text = _AUTH_VALUE_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", text)
+    text = _AUTH_QUOTED_MAPPING_RE.sub(_redact_quoted_auth_mapping_match, text)
+    text = _AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}{REDACTED}", text)
+    text = _AUTH_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        text,
+    )
     text = _COOKIE_HEADER_RE.sub(lambda match: f"{match.group(1)}: {REDACTED}", text)
     text = _URL_RE.sub(lambda match: _redact_url(match.group(0)), text)
     text = _WINDOWS_USER_PATH_RE.sub(r"%USERPROFILE%", text)
@@ -59,16 +63,17 @@ def redact_sensitive_text(value: str) -> str:
     return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}={REDACTED}", text)
 
 
-def _redact_auth_scheme_match(match: re.Match[str]) -> str:
-    """保留 Authorization scheme，遮掉實際 credential。"""
-
-    return f"{match.group(1)}{match.group(2)}{match.group(3)} {REDACTED}"
-
-
 def _redact_discord_webhook_match(match: re.Match[str]) -> str:
     """保留 Discord webhook id 方便辨識，移除實際 token。"""
 
     return f"https://{match.group('host')}/api/webhooks/{match.group('webhook_id')}/{REDACTED}"
+
+
+def _redact_quoted_auth_mapping_match(match: re.Match[str]) -> str:
+    """遮掉 repr / JSON 形式 Authorization mapping 的 value。"""
+
+    quote = match.group("quote")
+    return f"{match.group('prefix')}{quote}{REDACTED}{quote}"
 
 
 def _redact_url(raw_url: str) -> str:

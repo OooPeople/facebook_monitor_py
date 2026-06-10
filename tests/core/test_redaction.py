@@ -54,8 +54,7 @@ def test_redact_sensitive_text_hides_authorization_bearer_token() -> None:
     text = redact_sensitive_text("Authorization: Bearer abc.def.ghi")
 
     assert "abc.def.ghi" not in text
-    assert "Bearer" in text
-    assert "[已隱藏]" in text
+    assert text == "Authorization: [已隱藏]"
 
 
 def test_redact_sensitive_text_hides_authorization_basic_token() -> None:
@@ -64,8 +63,31 @@ def test_redact_sensitive_text_hides_authorization_basic_token() -> None:
     text = redact_sensitive_text("Authorization: Basic dXNlcjpwYXNz")
 
     assert "dXNlcjpwYXNz" not in text
-    assert "Basic" in text
-    assert "[已隱藏]" in text
+    assert text == "Authorization: [已隱藏]"
+
+
+def test_redact_sensitive_text_hides_authorization_header_schemes() -> None:
+    """Authorization header value 應整段遮罩，不依 scheme 留下 credential 片段。"""
+
+    text = redact_sensitive_text(
+        "\n".join(
+            [
+                "Authorization: Token token-secret",
+                "Authorization: ApiKey api-key-secret",
+                'Authorization: Digest username="alice", response="digest-secret"',
+            ]
+        )
+    )
+
+    assert "Token" not in text
+    assert "ApiKey" not in text
+    assert "alice" not in text
+    assert "digest-secret" not in text
+    assert text.splitlines() == [
+        "Authorization: [已隱藏]",
+        "Authorization: [已隱藏]",
+        "Authorization: [已隱藏]",
+    ]
 
 
 def test_redact_sensitive_text_hides_lowercase_authorization_assignment() -> None:
@@ -74,8 +96,35 @@ def test_redact_sensitive_text_hides_lowercase_authorization_assignment() -> Non
     text = redact_sensitive_text("authorization=Bearer secret-token")
 
     assert "secret-token" not in text
-    assert "Bearer" in text
-    assert "[已隱藏]" in text
+    assert text == "authorization=[已隱藏]"
+
+
+def test_redact_sensitive_text_hides_semicolon_authorization_assignment() -> None:
+    """authorization=Digest 形式若用分號分隔 credential，也不可留下後半段。"""
+
+    text = redact_sensitive_text(
+        'authorization=Digest username="alice"; response="digest-secret"'
+    )
+
+    assert "alice" not in text
+    assert "digest-secret" not in text
+    assert text == "authorization=[已隱藏]"
+
+
+def test_redact_sensitive_text_hides_quoted_authorization_mapping_values() -> None:
+    """repr / JSON 形式的 Authorization mapping value 也必須遮罩。"""
+
+    text = redact_sensitive_text(
+        "headers={'Authorization': 'Bearer secret-token', 'Accept': 'json'} "
+        '{"Authorization": "Basic json-secret", "mode": "test"}'
+    )
+
+    assert "secret-token" not in text
+    assert "json-secret" not in text
+    assert "'Accept': 'json'" in text
+    assert '"mode": "test"' in text
+    assert "'Authorization': '[已隱藏]'" in text
+    assert '"Authorization": "[已隱藏]"' in text
 
 
 def test_redact_sensitive_text_hides_cookie_headers() -> None:

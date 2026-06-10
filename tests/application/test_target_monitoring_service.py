@@ -512,6 +512,7 @@ def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) 
                 canonical_url="https://www.facebook.com/groups/111",
             )
         )
+        app.services.targets.restart_target_monitoring(target.id)
         app.services.targets.request_target_scan(target.id)
         queued_state = app.services.targets.mark_target_queued(target.id, "manual_request")
         app.repositories.runtime_states.save(

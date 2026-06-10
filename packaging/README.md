@@ -4,6 +4,12 @@
 
 版本來源只有 `pyproject.toml` 的 `[project].version`。升版時先改 `pyproject.toml`，不要手動改 zip 檔名。
 
+## Dependency / Toolchain Policy
+
+Release build 與 CI 的 Python dependency set 以 `uv.lock` 為準，必須用 `uv sync --locked` 或等價的 locked sync 建環境。變更套件版本時，應在同一個變更中明確更新 `uv.lock` 並跑 release validation；不要讓 release build 自行重新 resolve dependency。
+
+GitHub Actions 目前固定安裝 `uv==0.9.0`，避免 CI 因 uv installer / resolver 行為變動而漂移。這不限制本機 source-mode 開發使用新版 uv；若要升級 CI / release 使用的 uv，應用一個明確 commit 更新 workflow 與本段紀錄，並確認 `uv sync --locked --all-extras --dev` 通過。
+
 ## 打包指令
 
 ### Windows portable

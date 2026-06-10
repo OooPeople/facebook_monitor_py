@@ -61,6 +61,7 @@
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、keyword classification、match history、notification dedupe/outbox、latest scan snapshot 與 scan run commit。
 - 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；include keyword groups 採組內 OR、組間 AND，不展開笛卡兒積；通知沿用 `matched_keyword` 顯示成立的 include rules，group 診斷保留在 history、latest scan、diagnostics 與 UI highlight 資料中。
 - runtime status 只描述 executor 狀態；使用者停止語義由 `Target.paused` 與 `TargetDesiredState.STOPPED` 表示。
+- queue / running claim 的 DB conditional update 只接受 `TargetDesiredState.ACTIVE`；已停止 target 即使遇到舊 scheduler tick 或 scan request，也不得短暫寫成 queued。
 
 ## Notification 與 Secret
 
@@ -126,7 +127,7 @@
 
 - Sidebar layout 只影響 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
 - Sidebar group、target placement 與 group template write 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
-- 排序保存必須用單一 layout command 同時更新 group order 與 target placements；dashboard read model 可 lazy fallback 顯示缺失 placement，但不得為缺失 placement 寫入 DB。
+- 排序保存必須用單一 layout command 同時更新 group order 與 target placements；缺失 placement 採 lazy fallback 顯示在未分組區，dashboard read model 不得為缺失 placement 寫入 DB。
 - 舊平面 target order API 只能用在沒有 grouped placement 的相容情境；已有 grouped placement 時不得打平 sidebar 狀態。
 - Group template 只是批次套用工具，不是 config fallback owner；正式 target config 仍只讀寫 `target_configs[target_id]`。
 - 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；通知設定使用系統預設，不自動繼承全域通知或任一 target，既有 group template 不跟著全域設定靜默覆蓋。

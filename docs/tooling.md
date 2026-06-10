@@ -89,7 +89,7 @@ Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | F
 git diff --check
 ```
 
-CI 使用 Node 24 對 `src/facebook_monitor/webapp/static/**/*.js` 執行 syntax check，並以目前完整測試可通過的 80% coverage 作為 baseline。這個門檻只防止覆蓋率意外大幅倒退；後續新增測試後再逐步提高，不用為了既有大型模組一次重寫測試。
+CI 使用固定的 `uv==0.9.0` 執行 `uv sync --locked --all-extras --dev`，再用 Node 24 對 `src/facebook_monitor/webapp/static/**/*.js` 執行 syntax check，並以目前完整測試可通過的 80% coverage 作為 baseline。這個門檻只防止覆蓋率意外大幅倒退；後續新增測試後再逐步提高，不用為了既有大型模組一次重寫測試。本機開發可使用較新的 uv；固定 CI 版本只是讓 GitHub Actions 的 resolver / installer 行為可重現。
 
 Complexity Report 是人工審查前置資料，不是 release validation 必跑項，也不會因 CCN / NLOC 排名造成失敗。預設會使用 `docs/maintainability_annotations.json` 將已人工確認合理的大型檔案列到 known-large section，避免它們長期佔住主排行；known-large 不是永久豁免，若相關檔案被修改仍應重新 review。若要查看純排名可加 `--no-annotations`，若要把 known-large 放回主排行可加 `--include-known-large`。
 

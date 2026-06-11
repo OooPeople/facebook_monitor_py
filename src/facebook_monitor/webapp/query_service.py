@@ -9,9 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -20,6 +22,9 @@ from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
+from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
+from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -35,6 +40,35 @@ from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.hit_record_models import FullHitRecordRow
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
+
+_ReadValue = TypeVar("_ReadValue")
+
+_ENUM_ERROR_TYPE_BY_TABLE_FIELD = {
+    ("targets", "target_kind"): "TargetKind",
+    ("targets", "metadata_status"): "TargetMetadataStatus",
+    ("targets", "worker_mode"): "WorkerMode",
+    ("seen_items", "item_kind"): "ItemKind",
+    ("match_history", "item_kind"): "ItemKind",
+    ("latest_scan_items", "item_kind"): "ItemKind",
+    ("logical_items", "item_kind"): "ItemKind",
+    ("scan_runs", "status"): "ScanStatus",
+    ("scan_runs", "worker_mode"): "WorkerMode",
+    ("notification_events", "channel"): "NotificationChannel",
+    ("notification_events", "status"): "NotificationStatus",
+    ("notification_events", "event_kind"): "NotificationEventKind",
+    ("notification_outbox", "item_kind"): "ItemKind",
+    ("notification_outbox", "channel"): "NotificationChannel",
+    ("notification_outbox", "status"): "NotificationOutboxStatus",
+    ("notification_outbox", "event_kind"): "NotificationEventKind",
+    ("notification_dedupe", "event_kind"): "NotificationEventKind",
+    ("notification_dedupe", "channel"): "NotificationChannel",
+    ("notification_dedupe", "item_kind"): "ItemKind",
+    ("notification_dedupe", "status"): "NotificationDedupeStatus",
+    ("target_runtime_state", "desired_state"): "TargetDesiredState",
+    ("target_runtime_state", "runtime_status"): "TargetRuntimeStatus",
+    ("target_cover_image_refresh_state", "status"): "TargetCoverImageRefreshStatus",
+    ("target_cover_image_refresh_state", "last_result"): "TargetCoverImageRefreshResult",
+}
 
 
 @dataclass(frozen=True)
@@ -53,6 +87,10 @@ class DashboardReadUnavailable(RuntimeError):
     """表示 dashboard read model 暫時被 SQLite write lock 擋住。"""
 
 
+class _DashboardInvariantMapperError(ValueError):
+    """表示 dashboard mapper failure 已被 DB enum invariant 定位。"""
+
+
 @dataclass(frozen=True)
 class ProfileSessionWarning:
     """保存首頁右上角 Facebook 重新登入警告。"""
@@ -63,12 +101,24 @@ class ProfileSessionWarning:
 
 
 @dataclass(frozen=True)
+class DatabaseInvariantWarning:
+    """保存首頁資料 invariant 診斷警告。"""
+
+    has_violations: bool = False
+    message: str = ""
+    violation_count: int = 0
+    tables: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class DashboardViewModel:
     """保存 dashboard template 所需 read model。"""
 
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...] = ()
     profile_session_warning: ProfileSessionWarning = ProfileSessionWarning()
+    database_invariant_warning: DatabaseInvariantWarning = DatabaseInvariantWarning()
+    dashboard_degraded: bool = False
 
     @property
     def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
@@ -115,6 +165,8 @@ class _DashboardReadResult:
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...]
     profile_session_status: ProfileSessionStatus
+    database_invariant_warning: DatabaseInvariantWarning
+    dashboard_degraded: bool = False
 
 
 def _read_dashboard_model(
@@ -157,76 +209,183 @@ def _list_target_rows(
         db_path,
         initialize_schema_on_enter=initialize_schema_on_enter,
     ) as app_context:
-        targets = app_context.repositories.targets.list_all()
-        target_ids = [target.id for target in targets]
-        placements_by_target = app_context.repositories.sidebar_layout.list_placements()
-        groups = app_context.repositories.sidebar_layout.list_groups()
-        targets = _order_targets_by_sidebar(targets, placements_by_target, groups)
-        target_ids = [target.id for target in targets]
-        configs_by_target = _configs_by_target(app_context, targets)
-        runtime_by_target = app_context.repositories.runtime_states.list_by_targets(target_ids)
-        latest_scan_runs = app_context.repositories.scan_runs.latest_by_targets(target_ids)
-        latest_failed_scan_runs = app_context.repositories.scan_runs.latest_by_targets(
-            target_ids,
-            status=ScanStatus.FAILED,
+        database_invariant_violations = validate_database_invariants(
+            app_context.repositories.runtime_states.connection
         )
-        outbox_summaries = app_context.repositories.notification_outbox.summarize_by_targets(
-            target_ids
+        database_invariant_warning = _build_database_invariant_warning(
+            database_invariant_violations
         )
-        max_items_limit = max(
-            (config.max_items_per_scan for config in configs_by_target.values()),
-            default=1,
-        )
-        latest_scan_items = app_context.repositories.latest_scan_items.list_by_targets(
-            target_ids,
-            limit_per_target=max_items_limit,
-        )
-        hit_record_preview_items = app_context.repositories.match_history.list_by_targets(
-            target_ids,
-            limit_per_target=5,
-            notified_since=session_started_at,
-        )
-        hit_record_counts = app_context.repositories.match_history.count_by_targets(
-            target_ids,
-            notified_since=session_started_at,
-        )
-        rows = tuple(
-            _build_target_row(
-                target=target,
-                config=configs_by_target[target.id],
-                runtime_state=runtime_by_target.get(
-                    target.id,
-                    TargetRuntimeState(target_id=target.id),
-                ),
-                latest_scan_items=latest_scan_items.get(target.id, ())[
-                    : configs_by_target[target.id].max_items_per_scan
-                ],
-                hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
-                latest_scan_run=latest_scan_runs.get(target.id),
-                latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
-                notification_outbox_summary=outbox_summaries.get(target.id),
-                hit_record_total_count=hit_record_counts.get(target.id, 0),
+        try:
+            targets = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.targets.list_all(),
+                tables=("targets",),
+                violations=database_invariant_violations,
             )
-            for target in targets
-        )
-        sidebar_groups = _build_sidebar_groups(
-            rows=rows,
-            placements_by_target=placements_by_target,
-            groups=groups,
-            templates_by_group={
-                group.id: (
-                    app_context.repositories.sidebar_layout.get_template(group.id)
-                    or SidebarGroupConfigTemplate(sidebar_group_id=group.id)
+            target_ids = [target.id for target in targets]
+            placements_by_target = app_context.repositories.sidebar_layout.list_placements()
+            groups = app_context.repositories.sidebar_layout.list_groups()
+            targets = _order_targets_by_sidebar(targets, placements_by_target, groups)
+            target_ids = [target.id for target in targets]
+            configs_by_target = _configs_by_target(app_context, targets)
+            runtime_by_target = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.runtime_states.list_by_targets(
+                    target_ids
+                ),
+                tables=("target_runtime_state",),
+                violations=database_invariant_violations,
+            )
+            latest_scan_runs = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.scan_runs.latest_by_targets(target_ids),
+                tables=("scan_runs",),
+                violations=database_invariant_violations,
+            )
+            latest_failed_scan_runs = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.scan_runs.latest_by_targets(
+                    target_ids,
+                    status=ScanStatus.FAILED,
+                ),
+                tables=("scan_runs",),
+                violations=database_invariant_violations,
+            )
+            outbox_summaries = (
+                app_context.repositories.notification_outbox.summarize_by_targets(target_ids)
+            )
+            max_items_limit = max(
+                (config.max_items_per_scan for config in configs_by_target.values()),
+                default=1,
+            )
+            latest_scan_items = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.latest_scan_items.list_by_targets(
+                    target_ids,
+                    limit_per_target=max_items_limit,
+                ),
+                tables=("latest_scan_items",),
+                violations=database_invariant_violations,
+            )
+            hit_record_preview_items = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.match_history.list_by_targets(
+                    target_ids,
+                    limit_per_target=5,
+                    notified_since=session_started_at,
+                ),
+                tables=("match_history",),
+                violations=database_invariant_violations,
+            )
+            hit_record_counts = app_context.repositories.match_history.count_by_targets(
+                target_ids,
+                notified_since=session_started_at,
+            )
+            rows = tuple(
+                _build_target_row(
+                    target=target,
+                    config=configs_by_target[target.id],
+                    runtime_state=runtime_by_target.get(
+                        target.id,
+                        TargetRuntimeState(target_id=target.id),
+                    ),
+                    latest_scan_items=latest_scan_items.get(target.id, ())[
+                        : configs_by_target[target.id].max_items_per_scan
+                    ],
+                    hit_record_preview_items=hit_record_preview_items.get(target.id, ()),
+                    latest_scan_run=latest_scan_runs.get(target.id),
+                    latest_failed_scan_run=latest_failed_scan_runs.get(target.id),
+                    notification_outbox_summary=outbox_summaries.get(target.id),
+                    hit_record_total_count=hit_record_counts.get(target.id, 0),
                 )
-                for group in groups
-            },
-        )
+                for target in targets
+            )
+            sidebar_groups = _build_sidebar_groups(
+                rows=rows,
+                placements_by_target=placements_by_target,
+                groups=groups,
+                templates_by_group={
+                    group.id: (
+                        app_context.repositories.sidebar_layout.get_template(group.id)
+                        or SidebarGroupConfigTemplate(sidebar_group_id=group.id)
+                    )
+                    for group in groups
+                },
+            )
+        except _DashboardInvariantMapperError:
+            return _degraded_dashboard_read_result(
+                app_context,
+                database_invariant_warning=database_invariant_warning,
+            )
         return _DashboardReadResult(
             rows=rows,
             sidebar_groups=sidebar_groups,
             profile_session_status=app_context.repositories.app_settings
             .get_profile_session_status(),
+            database_invariant_warning=database_invariant_warning,
         )
+
+
+def _read_dashboard_mapper_value(
+    operation: Callable[[], _ReadValue],
+    *,
+    tables: tuple[str, ...],
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> _ReadValue:
+    """讀取會跑 row mapper 的 repository；只讓已知 enum 壞資料進 degraded path。"""
+
+    try:
+        return operation()
+    except ValueError as exc:
+        if _is_invariant_backed_mapper_error(
+            exc,
+            violations=violations,
+            tables=tables,
+        ):
+            raise _DashboardInvariantMapperError(str(exc)) from exc
+        raise
+
+
+def _is_invariant_backed_mapper_error(
+    exc: ValueError,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+    tables: tuple[str, ...],
+) -> bool:
+    """判斷 mapper 錯誤是否可由已知 invariant violation 安全降級承接。"""
+
+    enum_contract_fields = {(contract.table, contract.field) for contract in ENUM_CONTRACTS}
+    candidate_tables = set(tables)
+    violated_type_names = {
+        type_name
+        for violation in violations
+        if violation.table in candidate_tables
+        and (violation.table, violation.field) in enum_contract_fields
+        for type_name in (
+            _ENUM_ERROR_TYPE_BY_TABLE_FIELD.get((violation.table, violation.field)),
+        )
+        if type_name
+    }
+    if not violated_type_names:
+        return False
+    message = str(exc)
+    return any(f"is not a valid {type_name}" in message for type_name in violated_type_names)
+
+
+def _degraded_dashboard_read_result(
+    app_context: ApplicationContext,
+    *,
+    database_invariant_warning: DatabaseInvariantWarning,
+) -> _DashboardReadResult:
+    """DB invariant 已壞且 mapper 無法讀取時，回傳可顯示警告的降級首頁。"""
+
+    return _DashboardReadResult(
+        rows=(),
+        sidebar_groups=_build_sidebar_groups(
+            rows=(),
+            placements_by_target={},
+            groups=(),
+            templates_by_group={},
+        ),
+        profile_session_status=app_context.repositories.app_settings
+        .get_profile_session_status(),
+        database_invariant_warning=database_invariant_warning,
+        dashboard_degraded=True,
+    )
 
 
 def get_dashboard_view(
@@ -247,6 +406,8 @@ def get_dashboard_view(
         profile_session_warning=_build_profile_session_warning(
             result.profile_session_status
         ),
+        database_invariant_warning=result.database_invariant_warning,
+        dashboard_degraded=result.dashboard_degraded,
     )
 
 
@@ -263,6 +424,27 @@ def _build_profile_session_warning(
         message=(
             "Facebook 需要重新登入。請關閉並重新開啟程式，"
             "系統會先開啟 Facebook 登入視窗；完成登入後會自動進入 Web UI。"
+        ),
+    )
+
+
+def _build_database_invariant_warning(
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> DatabaseInvariantWarning:
+    """將 DB invariant 結果轉成首頁警告，不洩漏 row id。"""
+
+    if not violations:
+        return DatabaseInvariantWarning()
+    tables = tuple(sorted({violation.table for violation in violations}))
+    table_summary = "、".join(tables[:3])
+    extra = f"（{table_summary}）" if table_summary else ""
+    return DatabaseInvariantWarning(
+        has_violations=True,
+        violation_count=len(violations),
+        tables=tables,
+        message=(
+            f"資料庫偵測到 {len(violations)} 個資料 invariant 異常{extra}。"
+            "請到設定下載支援包或執行資料檢查工具；系統不會自動修復資料。"
         ),
     )
 

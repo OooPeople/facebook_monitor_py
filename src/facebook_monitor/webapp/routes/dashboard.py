@@ -23,6 +23,7 @@ from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.dependencies import load_app_theme
 from facebook_monitor.webapp.dependencies import run_web_read_operation
 from facebook_monitor.webapp.dashboard_payloads import serialize_profile_session_warning
+from facebook_monitor.webapp.dashboard_payloads import serialize_database_invariant_warning
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_item
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_payload
 from facebook_monitor.webapp.dashboard_payloads import serialize_target_card
@@ -137,6 +138,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "error": error,
                 "scheduler_state": scheduler_state,
                 "profile_session_warning": dashboard.profile_session_warning,
+                "database_invariant_warning": dashboard.database_invariant_warning,
                 "dashboard_revision": dashboard_revision,
                 "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,
                 "min_refresh_seconds": MIN_REFRESH_SECONDS,
@@ -211,8 +213,12 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         except DashboardReadUnavailable as exc:
             raise HTTPException(status_code=503, detail="dashboard data unavailable") from exc
         return {
+            "dashboard_degraded": dashboard.dashboard_degraded,
             "profile_session_warning": serialize_profile_session_warning(
                 dashboard.profile_session_warning
+            ),
+            "database_invariant_warning": serialize_database_invariant_warning(
+                dashboard.database_invariant_warning
             ),
             "sidebar": serialize_sidebar_payload(dashboard),
             "cards": [serialize_target_card(row, templates) for row in dashboard.rows],

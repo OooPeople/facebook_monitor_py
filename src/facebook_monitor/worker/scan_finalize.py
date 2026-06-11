@@ -205,9 +205,9 @@ def record_skipped_scan(
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, [])
     if commit_guard is None:
-        app.services.targets.apply_scan_skip_decision(target.id, skip_decision)
+        app.services.targets.force_apply_scan_skip_decision(target.id, skip_decision)
     else:
-        updated_state = app.services.targets.apply_scan_skip_decision_if_owner(
+        updated_state = app.services.targets.guarded_apply_scan_skip_decision(
             target.id,
             skip_decision,
             worker_id=commit_guard.worker_id,
@@ -468,9 +468,9 @@ def mark_target_idle_for_scan_commit(
     ):
         return False
     if commit_guard is None:
-        app.services.targets.mark_target_idle(target_id)
+        app.services.targets.force_mark_target_idle(target_id)
         return True
-    updated_state = app.services.targets.mark_target_idle_if_owner(
+    updated_state = app.services.targets.guarded_mark_target_idle(
         target_id,
         worker_id=commit_guard.worker_id,
         started_at=commit_guard.started_at,

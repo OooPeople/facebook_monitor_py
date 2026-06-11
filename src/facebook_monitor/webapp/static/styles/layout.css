@@ -67,6 +67,11 @@ p {
   padding-bottom: 12px;
 }
 
+.empty--warning {
+  border-color: color-mix(in srgb, var(--warn) 34%, var(--border));
+  background: var(--warn-bg);
+}
+
 .notice.success {
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
   background: var(--success-bg);
@@ -103,6 +108,11 @@ p {
 .toast.success {
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
   background: var(--success-bg);
+}
+
+.toast.warning {
+  border-color: color-mix(in srgb, var(--warn) 30%, var(--border));
+  background: var(--warn-bg);
 }
 
 .toast.error {

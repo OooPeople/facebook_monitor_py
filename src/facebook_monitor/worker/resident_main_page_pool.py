@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 from uuid import uuid4
 
+from facebook_monitor.worker.resident_main_executor_types import AsyncBrowserContextLike
+from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_shared import ResidentTarget
 
 
@@ -19,7 +20,7 @@ from facebook_monitor.worker.resident_shared import ResidentTarget
 class PageOwnership:
     """保存 resident page 與 worker ownership 診斷資訊。"""
 
-    page: Any
+    page: AsyncReusablePageLike
     page_id: str
     target_id: str
     in_use_by_worker: str = ""
@@ -30,7 +31,7 @@ class PageOwnership:
 class AsyncResidentPagePool:
     """維護 resident main worker 的 target page 與 ownership metadata。"""
 
-    def __init__(self, context: Any) -> None:
+    def __init__(self, context: AsyncBrowserContextLike) -> None:
         self.context = context
         self.pages: dict[str, PageOwnership] = {}
         self.lock = asyncio.Lock()
@@ -50,7 +51,7 @@ class AsyncResidentPagePool:
         worker_id: str,
         *,
         page_id: str = "",
-    ) -> tuple[Any, str, bool]:
+    ) -> tuple[AsyncReusablePageLike, str, bool]:
         """取得 target 對應 page 並記錄目前 worker ownership。"""
 
         target_id = target.target.id
@@ -182,7 +183,7 @@ class AsyncResidentPagePool:
             return len(self.pages)
 
 
-async def close_page_quietly(page: Any | None) -> None:
+async def close_page_quietly(page: AsyncReusablePageLike | None) -> None:
     """安靜關閉 async Playwright page。"""
 
     if page is None or page.is_closed():

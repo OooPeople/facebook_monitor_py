@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+
 
 class AsyncResidentPageLike(Protocol):
     """resident executor page preparation 需要的 async Playwright page 能力。"""
@@ -19,6 +24,40 @@ class AsyncResidentPageLike(Protocol):
 
     async def wait_for_timeout(self, timeout: int) -> None:
         """等待指定毫秒。"""
+
+
+class AsyncReusablePageLike(AsyncResidentPageLike, Protocol):
+    """resident page pool 需要的可重用 async Playwright page 能力。"""
+
+    def is_closed(self) -> bool:
+        """回傳 page 是否已關閉。"""
+
+    async def close(self) -> None:
+        """關閉 page。"""
+
+
+class AsyncBrowserContextLike(Protocol):
+    """resident page pool 需要的 browser context 能力。"""
+
+    async def new_page(self) -> AsyncReusablePageLike:
+        """建立新的 async page。"""
+
+
+class AsyncScanCallable(Protocol):
+    """resident executor 注入的 async target scan callable。"""
+
+    async def __call__(
+        self,
+        *,
+        page: object,
+        app: ApplicationContext,
+        target: TargetDescriptor,
+        config: TargetConfig,
+        scroll_rounds: int,
+        scroll_wait_ms: int,
+        commit_guard: ScanCommitGuard | None = None,
+    ) -> object:
+        """掃描已準備好的 target page 並寫入 application context。"""
 
 
 @dataclass(frozen=True)

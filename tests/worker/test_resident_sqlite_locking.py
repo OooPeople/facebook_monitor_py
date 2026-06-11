@@ -20,6 +20,10 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.persistence.repositories.target_runtime_state import (
+    TargetRuntimeStateRepository,
+)
+from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker import resident_main as resident_main_module
 from facebook_monitor.worker import resident_main_executor as resident_main_executor_module
@@ -31,6 +35,7 @@ from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePoo
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 
 
@@ -54,7 +59,7 @@ def test_resident_main_retries_page_reload_state_sqlite_lock(
         app.services.targets.restart_target_monitoring(target.id)
 
     calls = 0
-    original = TargetApplicationService.mark_target_page_reloaded_if_owner
+    original = TargetApplicationService.guarded_mark_target_page_reloaded
 
     def flaky_mark_page_reloaded(
         self: TargetApplicationService,
@@ -69,7 +74,7 @@ def test_resident_main_retries_page_reload_state_sqlite_lock(
 
     monkeypatch.setattr(
         TargetApplicationService,
-        "mark_target_page_reloaded_if_owner",
+        "guarded_mark_target_page_reloaded",
         flaky_mark_page_reloaded,
     )
 
@@ -285,6 +290,257 @@ def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
     assert errored_state.scan_requested_at == original_errored_state.scan_requested_at
 
 
+def test_resident_main_sqlite_lock_requeue_begins_transaction_before_read(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """sqlite lock 補償需先取得 write lock，再讀取 target/runtime guard 狀態。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-current",
+            page_id="page-current",
+        )
+        assert running is not None
+        guard = scan_commit_guard_from_runtime_state(running)
+
+    events: list[str] = []
+    original_begin = resident_main_executor_module.begin_scan_commit_transaction
+    original_get = TargetRepository.get
+    original_runtime_get = TargetRuntimeStateRepository.get
+    original_guard_check = resident_main_executor_module.target_matches_scan_commit_guard
+
+    def spy_begin(*args: Any, **kwargs: Any) -> object:
+        events.append("begin")
+        return original_begin(*args, **kwargs)
+
+    def spy_get(self: TargetRepository, target_id: str) -> object:
+        events.append("target_get")
+        return original_get(self, target_id)
+
+    def spy_runtime_get(
+        self: TargetRuntimeStateRepository,
+        target_id: str,
+    ) -> object:
+        events.append("runtime_get")
+        return original_runtime_get(self, target_id)
+
+    def spy_guard_check(*args: Any, **kwargs: Any) -> object:
+        events.append("guard_check")
+        return original_guard_check(*args, **kwargs)
+
+    monkeypatch.setattr(
+        resident_main_executor_module,
+        "begin_scan_commit_transaction",
+        spy_begin,
+    )
+    monkeypatch.setattr(TargetRepository, "get", spy_get)
+    monkeypatch.setattr(TargetRuntimeStateRepository, "get", spy_runtime_get)
+    monkeypatch.setattr(
+        resident_main_executor_module,
+        "target_matches_scan_commit_guard",
+        spy_guard_check,
+    )
+
+    async def unused_scan_page(**_kwargs: Any) -> None:
+        """本測試只呼叫 retry-after helper，不會執行 scan。"""
+
+    executor = ExecutorWorkerPool(
+        options=ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        ),
+        page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+        target_queue=TargetQueue(),
+        schedule_planner=TargetSchedulePlanner(),
+        scan_page=unused_scan_page,
+    )
+    executor._write_target_retry_after_sqlite_lock(
+        target_id=target.id,
+        commit_guard=guard,
+    )
+
+    assert events[0] == "begin"
+    begin_index = events.index("begin")
+    assert any(event == "target_get" for event in events)
+    assert any(event == "runtime_get" for event in events)
+    assert any(event == "guard_check" for event in events)
+    assert all(
+        index > begin_index
+        for index, event in enumerate(events)
+        if event in {"target_get", "runtime_get", "guard_check"}
+    )
+
+
+def test_resident_main_guarded_sqlite_lock_requeue_ignores_stale_owner(
+    tmp_path: Path,
+) -> None:
+    """sqlite lock 補償若帶舊 owner guard，不可覆蓋新的 running attempt。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        old_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-old",
+            page_id="page-old",
+        )
+        assert old_running is not None
+        old_guard = scan_commit_guard_from_runtime_state(old_running)
+        app.services.targets.restart_target_monitoring(target.id)
+        new_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        assert new_running is not None
+
+    async def unused_scan_page(**_kwargs: Any) -> None:
+        """本測試只呼叫 retry-after helper，不會執行 scan。"""
+
+    executor = ExecutorWorkerPool(
+        options=ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        ),
+        page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+        target_queue=TargetQueue(),
+        schedule_planner=TargetSchedulePlanner(),
+        scan_page=unused_scan_page,
+    )
+    executor._write_target_retry_after_sqlite_lock(
+        target_id=target.id,
+        commit_guard=old_guard,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == "worker-new"
+    assert state.active_page_id == "page-new"
+    assert state.last_started_at == new_running.last_started_at
+
+
+def test_resident_main_guarded_sqlite_lock_requeue_accepts_matching_owner(
+    tmp_path: Path,
+) -> None:
+    """sqlite lock 補償只在 owner/page/start identity 符合時排入下一輪。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-current",
+            page_id="page-current",
+        )
+        assert running is not None
+        guard = scan_commit_guard_from_runtime_state(running)
+
+    async def unused_scan_page(**_kwargs: Any) -> None:
+        """本測試只呼叫 retry-after helper，不會執行 scan。"""
+
+    executor = ExecutorWorkerPool(
+        options=ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        ),
+        page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+        target_queue=TargetQueue(),
+        schedule_planner=TargetSchedulePlanner(),
+        scan_page=unused_scan_page,
+    )
+    executor._write_target_retry_after_sqlite_lock(
+        target_id=target.id,
+        commit_guard=guard,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
+    assert state.scan_requested_at is not None
+
+
+def test_resident_main_guarded_sqlite_lock_requeue_respects_stopped_target(
+    tmp_path: Path,
+) -> None:
+    """matching guard 也不可讓已停止 target 被 sqlite lock 補償重新排程。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-current",
+            page_id="page-current",
+        )
+        assert running is not None
+        guard = scan_commit_guard_from_runtime_state(running)
+        app.services.targets.pause_target_monitoring(target.id)
+        stopped_state = app.repositories.runtime_states.get(target.id)
+        assert stopped_state is not None
+
+    async def unused_scan_page(**_kwargs: Any) -> None:
+        """本測試只呼叫 retry-after helper，不會執行 scan。"""
+
+    executor = ExecutorWorkerPool(
+        options=ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+        ),
+        page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+        target_queue=TargetQueue(),
+        schedule_planner=TargetSchedulePlanner(),
+        scan_page=unused_scan_page,
+    )
+    executor._write_target_retry_after_sqlite_lock(
+        target_id=target.id,
+        commit_guard=guard,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.runtime_status == stopped_state.runtime_status
+    assert state.active_worker_id == stopped_state.active_worker_id
+    assert state.active_page_id == stopped_state.active_page_id
+    assert state.scan_requested_at == stopped_state.scan_requested_at
+
+
 def test_resident_main_heartbeat_sqlite_lock_does_not_cancel_scan(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -304,7 +560,7 @@ def test_resident_main_heartbeat_sqlite_lock_does_not_cancel_scan(
     original_retry = resident_main_executor_module.run_sqlite_operation_with_retry_async
 
     async def fake_retry(operation: Any, **kwargs: Any) -> object:
-        if kwargs["operation_name"] == "record_target_heartbeat_if_owner":
+        if kwargs["operation_name"] == "guarded_record_target_heartbeat":
             raise sqlite3.OperationalError("database is locked")
         return await original_retry(operation, **kwargs)
 

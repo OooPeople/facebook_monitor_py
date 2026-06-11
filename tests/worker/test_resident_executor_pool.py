@@ -18,11 +18,13 @@ from facebook_monitor.worker.resident_main import run_resident_main_scheduler_ti
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
+from facebook_monitor.worker.resident_main_page_pool import PageOwnership
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_test_helpers import FakeAsyncPage
 
 
 def test_resident_main_executor_keeps_third_target_queued(
@@ -126,6 +128,131 @@ def test_resident_main_executor_keeps_third_target_queued(
     assert "resident_target_enqueued target_id=" in log_text
     assert "resident_target_running target_id=" in log_text
     assert "resident_scheduler_tick cycle=1 selected=3" in log_text
+
+
+def test_resident_enqueue_publishes_item_after_runtime_queued(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """worker 不可早於 runtime queued 寫入前取得 queue item。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        db_mark_started = asyncio.Event()
+        release_db_mark = asyncio.Event()
+        scan_started = asyncio.Event()
+
+        async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+            scan_started.set()
+            return PostsScanSummary(
+                target_id=kwargs["target"].id,
+                url=kwargs["page"].url,
+                item_count=0,
+                new_count=0,
+                matched_count=0,
+                scan_run_id=1,
+                round_stats=(),
+            )
+
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=TargetSchedulePlanner(),
+            scan_page=fake_scan_page,
+        )
+        original_run_db_operation = executor._run_db_operation_with_retry  # noqa: SLF001
+
+        async def delayed_db_operation(operation_name: str, operation: Any) -> Any:
+            if operation_name == "mark_target_queued":
+                db_mark_started.set()
+                await release_db_mark.wait()
+            return await original_run_db_operation(operation_name, operation)
+
+        monkeypatch.setattr(
+            executor,
+            "_run_db_operation_with_retry",
+            delayed_db_operation,
+        )
+
+        await executor.start()
+        enqueue_task: asyncio.Task[int] | None = None
+        try:
+            due_target = DueTarget(
+                target_id=target.id,
+                interval_seconds=60,
+                due_at=utc_now(),
+            )
+            enqueue_task = asyncio.create_task(executor.enqueue_due_targets((due_target,)))
+            await asyncio.wait_for(db_mark_started.wait(), timeout=1)
+            await asyncio.sleep(0)
+            assert not scan_started.is_set()
+
+            release_db_mark.set()
+            assert await asyncio.wait_for(enqueue_task, timeout=1) == 1
+            await asyncio.wait_for(scan_started.wait(), timeout=1)
+            await target_queue.join()
+        finally:
+            release_db_mark.set()
+            if enqueue_task is not None and not enqueue_task.done():
+                enqueue_task.cancel()
+                await asyncio.gather(enqueue_task, return_exceptions=True)
+            await executor.stop(cancel_running=True)
+
+    asyncio.run(run_test())
+
+
+def test_resident_page_pool_page_id_guards_ignore_stale_attempt() -> None:
+    """page pool stale page_id 不可釋放、覆寫或關閉目前 page ownership。"""
+
+    async def run_test() -> None:
+        page = FakeAsyncPage()
+        pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        ownership = PageOwnership(
+            page=page,
+            page_id="current-page",
+            target_id="target-1",
+            in_use_by_worker="worker-current",
+            current_url="https://current.example",
+        )
+        pool.pages["target-1"] = ownership
+
+        released = await pool.release_if_page_id(
+            "target-1",
+            "stale-page",
+            current_url="https://stale-release.example",
+        )
+        reloaded_at = await pool.mark_reloaded_if_page_id(
+            "target-1",
+            "stale-page",
+            current_url="https://stale-reload.example",
+        )
+        discarded = await pool.discard_if_page_id("target-1", "stale-page")
+
+        assert released is False
+        assert reloaded_at is None
+        assert discarded is False
+        assert pool.pages["target-1"] is ownership
+        assert ownership.in_use_by_worker == "worker-current"
+        assert ownership.current_url == "https://current.example"
+        assert ownership.last_reloaded_at is None
+        assert not page.closed
+
+    asyncio.run(run_test())
 
 
 def test_resident_main_executor_requests_restart_when_worker_exits_unexpectedly(

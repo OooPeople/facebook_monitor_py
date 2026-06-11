@@ -55,8 +55,8 @@ from facebook_monitor.worker.resident_runtime_errors import (
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
-from facebook_monitor.worker.resident_main_executor import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
+from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinator

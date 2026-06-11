@@ -33,6 +33,14 @@ const updateProfileSessionWarning = (payload) => {
   warning.toggleAttribute("hidden", !needsLogin);
 };
 
+const updateDatabaseInvariantWarning = (payload) => {
+  const warning = document.querySelector("[data-database-invariant-warning]");
+  if (!warning) return;
+  const hasViolations = Boolean(payload?.has_violations);
+  warning.textContent = hasViolations ? (payload.message || "") : "";
+  warning.toggleAttribute("hidden", !hasViolations);
+};
+
 const updateAvatar = (avatar, thumbnailUrl, displayName) => {
   if (!avatar) return;
   const normalizedUrl = String(thumbnailUrl || "").trim();
@@ -256,6 +264,11 @@ export const applyDashboardPartialUpdate = async (state) => {
     const dashboardPayload = await fetchJson("/api/dashboard-cards");
     if (sequence !== state.partialUpdateSeq) return;
     updateProfileSessionWarning(dashboardPayload.profile_session_warning || {});
+    updateDatabaseInvariantWarning(dashboardPayload.database_invariant_warning || {});
+    const currentDashboardDegraded = Boolean(document.querySelector("[data-dashboard-degraded-empty]"));
+    if (Boolean(dashboardPayload.dashboard_degraded) !== currentDashboardDegraded) {
+      throw new Error("partial_update_requires_reload:dashboard_degraded_changed");
+    }
     const targetCards = Array.from(document.querySelectorAll("[data-target-card][data-target-id]"));
     const sidebarPayload = dashboardPayload.sidebar || {};
     if (

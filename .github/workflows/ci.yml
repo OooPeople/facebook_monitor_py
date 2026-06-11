@@ -29,6 +29,13 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --all-extras --dev
 
+      - name: Complexity report (review-only)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          uv run python scripts/admin/complexity_report.py --top 30 --format markdown | tee complexity-report.md
+          cat complexity-report.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install Playwright browsers
         run: uv run python -m playwright install --with-deps chromium
 

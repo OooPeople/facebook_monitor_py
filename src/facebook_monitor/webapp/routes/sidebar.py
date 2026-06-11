@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request
 
-from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.application.sidebar_layout_service import SidebarTemplateSection
 from facebook_monitor.application.target_actions import pause_sidebar_group_monitoring_action
 from facebook_monitor.application.target_actions import restart_sidebar_group_monitoring_action
 from facebook_monitor.webapp.dependencies import get_db_path
@@ -22,6 +18,9 @@ from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.sidebar_api import grouped_target_ids
 from facebook_monitor.webapp.sidebar_api import sidebar_error_detail
 from facebook_monitor.webapp.sidebar_api import string_list
+from facebook_monitor.webapp.sidebar_use_cases import parse_sidebar_template_sections
+from facebook_monitor.webapp.sidebar_use_cases import save_sidebar_group_template_use_case
+from facebook_monitor.webapp.sidebar_use_cases import update_sidebar_group_use_case
 
 
 def register_sidebar_routes(app: FastAPI) -> None:
@@ -68,27 +67,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
 
         payload = await json_object_payload(request)
         try:
-            def update(app_context: ApplicationContext):
-                """更新 sidebar group name/collapsed，維持單一 DB operation。"""
-
-                group = app_context.repositories.sidebar_layout.get_group(group_id)
-                if group is None:
-                    raise HTTPException(status_code=404, detail="找不到指定的 sidebar 群組")
-                if "name" in payload:
-                    group = app_context.services.sidebar_layout.rename_group(
-                        group_id,
-                        str(payload.get("name", "")),
-                    )
-                if "collapsed" in payload:
-                    group = app_context.services.sidebar_layout.set_group_collapsed(
-                        group_id,
-                        bool(payload.get("collapsed")),
-                    )
-                return group
-
             group = await run_web_app_context_operation(
                 request,
-                update,
+                lambda app_context: update_sidebar_group_use_case(
+                    app_context,
+                    group_id=group_id,
+                    payload=payload,
+                ),
                 operation_name="sidebar.update_group",
             )
         except ValueError as exc:
@@ -224,24 +209,13 @@ def register_sidebar_routes(app: FastAPI) -> None:
         payload = await json_object_payload(request)
         form = TargetConfigForm.from_sidebar_template_payload(payload)
         try:
-            def save_template(app_context: ApplicationContext):
-                """保存 sidebar group template，保留既有 secret 清除/沿用語義。"""
-
-                current_template = app_context.services.sidebar_layout.get_template_or_default(
-                    group_id,
-                )
-                template = app_context.services.sidebar_layout.save_template(
-                    form.to_sidebar_group_template(
-                        sidebar_group_id=group_id,
-                        existing_ntfy_topic=current_template.ntfy_topic,
-                        existing_discord_webhook=current_template.discord_webhook,
-                    )
-                )
-                return template
-
             template = await run_web_app_context_operation(
                 request,
-                save_template,
+                lambda app_context: save_sidebar_group_template_use_case(
+                    app_context,
+                    group_id=group_id,
+                    form=form,
+                ),
                 operation_name="sidebar.save_group_template",
             )
         except ValueError as exc:
@@ -253,10 +227,7 @@ def register_sidebar_routes(app: FastAPI) -> None:
         """將 sidebar group template 明確套用到該 group 內 target configs。"""
 
         payload = await json_object_payload(request)
-        sections = cast(
-            list[SidebarTemplateSection],
-            string_list(payload.get("sections") or ["all"]),
-        )
+        sections = parse_sidebar_template_sections(payload)
         try:
             updated_count = await run_web_app_context_operation(
                 request,

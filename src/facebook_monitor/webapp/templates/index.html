@@ -30,6 +30,13 @@
       >
         {{ profile_session_warning.message }}
       </div>
+      <div
+        class="toast warning database-invariant-warning"
+        data-database-invariant-warning
+        {% if not database_invariant_warning.has_violations %}hidden{% endif %}
+      >
+        {{ database_invariant_warning.message }}
+      </div>
       {% if error %}
         <div class="toast error">{{ error }}</div>
       {% endif %}
@@ -46,10 +53,17 @@
           {% include "_target_card.html" %}
         {% endfor %}
         {% if not rows %}
-          <section class="empty">
-            <h2>目前沒有 target</h2>
-            <p>點選右上角「新增」，貼上 Facebook 社團或貼文網址後即可建立 target。建立後按「開始」才會掃描。</p>
-          </section>
+          {% if dashboard.dashboard_degraded %}
+            <section class="empty empty--warning" data-dashboard-degraded-empty>
+              <h2>資料暫時無法載入</h2>
+              <p>資料庫 invariant 異常導致 target 清單無法安全顯示。請到設定下載支援包或執行資料檢查工具；系統不會自動修復資料。</p>
+            </section>
+          {% else %}
+            <section class="empty">
+              <h2>目前沒有 target</h2>
+              <p>點選右上角「新增」，貼上 Facebook 社團或貼文網址後即可建立 target。建立後按「開始」才會掃描。</p>
+            </section>
+          {% endif %}
         {% endif %}
       </section>
     </div>

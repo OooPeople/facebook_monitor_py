@@ -219,13 +219,13 @@ def record_guarded_scan_failure(
         message,
     )
     if commit_guard is None:
-        updated_state = app.services.targets.apply_scan_failure_decision(
+        updated_state = app.services.targets.force_apply_scan_failure_decision(
             target_id,
             decision,
             runtime_message,
         )
     else:
-        guarded_state = app.services.targets.apply_scan_failure_decision_if_owner(
+        guarded_state = app.services.targets.guarded_apply_scan_failure_decision(
             target_id,
             decision,
             runtime_message,
@@ -413,7 +413,7 @@ def record_active_targets_runtime_failure_notifications(
             force_record=decision.counts_toward_streak or decision.terminal,
             error_message_override=scan_error_message,
         )
-        updated_state = app.services.targets.apply_scan_failure_decision(
+        updated_state = app.services.targets.force_apply_scan_failure_decision(
             target.id,
             decision,
             runtime_message,

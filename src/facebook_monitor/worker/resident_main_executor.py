@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from collections.abc import Coroutine
 from dataclasses import replace
 from datetime import datetime
 import logging
@@ -16,8 +15,11 @@ import sqlite3
 from typing import Any
 from typing import TypeVar
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -34,6 +36,7 @@ from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_main_executor_attempt import run_queue_item
+from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
@@ -43,11 +46,11 @@ from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePoo
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_guard
 
 
 logger = logging.getLogger(__name__)
-AsyncScanCallable = Callable[..., Coroutine[Any, Any, Any]]
 T = TypeVar("T")
 __all__ = ("ExecutorWorkerPool", "prepare_resident_main_page")
 
@@ -295,6 +298,7 @@ class ExecutorWorkerPool:
         """以 guard 確認目前 attempt 後，將 DB lock 中止的 target 放回待掃。"""
 
         with SqliteApplicationContext(self.options.db_path) as app:
+            begin_scan_commit_transaction(app)
             target = app.repositories.targets.get(target_id)
             if target is None or not target.enabled or target.paused:
                 return
@@ -338,8 +342,8 @@ class ExecutorWorkerPool:
                 enqueue_reason=reason,
                 enqueued_at=datetime.now().astimezone(),
             )
-            accepted = await self.target_queue.enqueue(queue_item)
-            if not accepted:
+            reserved = await self.target_queue.reserve(queue_item)
+            if not reserved:
                 logger.info(
                     "resident_target_enqueue_skipped target_id=%s reason=%s "
                     "due_at=%s scan_requested=%s",
@@ -364,7 +368,16 @@ class ExecutorWorkerPool:
                             due_target.scan_requested_at,
                         )
 
-            await self._run_db_operation_with_retry("mark_target_queued", operation)
+            try:
+                await self._run_db_operation_with_retry("mark_target_queued", operation)
+                if not await self.target_queue.publish_reserved(queue_item):
+                    raise RuntimeError(
+                        "reserved target queue item disappeared before publish: "
+                        f"{due_target.target_id}"
+                    )
+            except Exception:
+                await self.target_queue.release_reserved(due_target.target_id)
+                raise
             logger.info(
                 "resident_target_enqueued target_id=%s reason=%s due_at=%s "
                 "interval_seconds=%s scan_requested=%s scan_requested_at=%s "
@@ -487,16 +500,31 @@ class ExecutorWorkerPool:
     async def _run_scan_with_heartbeat(
         self,
         scan_page: AsyncScanCallable,
-        **kwargs: Any,
-    ) -> Any:
+        *,
+        page: object,
+        app: ApplicationContext,
+        target: TargetDescriptor,
+        config: TargetConfig,
+        scroll_rounds: int,
+        scroll_wait_ms: int,
+        worker_id: str,
+        page_id: str,
+        commit_guard: ScanCommitGuard,
+    ) -> object:
         """以 timeout 與 heartbeat 包住 target scan，避免長跑誤判或永久卡住。"""
 
-        target = kwargs["target"]
         target_id = target.id
-        worker_id = str(kwargs.pop("worker_id"))
-        page_id = str(kwargs.pop("page_id"))
-        commit_guard = kwargs["commit_guard"]
-        scan_task: asyncio.Task[Any] = asyncio.create_task(scan_page(**kwargs))
+        scan_task: asyncio.Task[object] = asyncio.create_task(
+            scan_page(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=scroll_rounds,
+                scroll_wait_ms=scroll_wait_ms,
+                commit_guard=commit_guard,
+            )
+        )
         owner_key = build_recovery_owner_key(
             worker_id=worker_id,
             started_at=commit_guard.started_at,
@@ -570,7 +598,7 @@ class ExecutorWorkerPool:
                 return
             try:
                 heartbeat_owner_matches = await self._run_db_operation_with_retry(
-                    "record_target_heartbeat_if_owner",
+                    "guarded_record_target_heartbeat",
                     lambda: self._record_scan_heartbeat_if_owner(
                         target_id=target_id,
                         worker_id=worker_id,
@@ -614,7 +642,7 @@ class ExecutorWorkerPool:
                 commit_guard=commit_guard,
             ):
                 return False
-            heartbeat_state = app.services.targets.record_target_heartbeat_if_owner(
+            heartbeat_state = app.services.targets.guarded_record_target_heartbeat(
                 target_id,
                 worker_id=worker_id,
                 started_at=commit_guard.started_at,

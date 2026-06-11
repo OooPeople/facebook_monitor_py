@@ -431,6 +431,279 @@ def test_try_mark_target_running_claims_only_active_non_running_state(
     assert "target_not_active" in stopped_state.last_skip_reason
 
 
+def test_try_claim_target_running_alias_preserves_scan_lock_semantics(
+    tmp_path: Path,
+) -> None:
+    """try_claim alias 必須維持原子 claim 與 duplicate rejection 語義。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="claim-alias",
+                canonical_url="https://www.facebook.com/groups/claim-alias",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        claimed = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-a",
+            page_id="page-a",
+        )
+        duplicate = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-b",
+            page_id="page-b",
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert claimed is not None
+    assert duplicate is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-a"
+    assert loaded.active_page_id == "page-a"
+    assert loaded.scan_guard_count == 1
+
+
+def test_guarded_runtime_aliases_ignore_late_worker(
+    tmp_path: Path,
+) -> None:
+    """guarded aliases 不可讓舊 owner 覆蓋較新的 running attempt。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="guarded-alias",
+                canonical_url="https://www.facebook.com/groups/guarded-alias",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        old_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-old",
+            page_id="page-old",
+        )
+        assert old_running is not None
+        assert old_running.last_started_at is not None
+        app.services.targets.restart_target_monitoring(target.id)
+        new_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        assert new_running is not None
+
+        skip_decision = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        failure_decision = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        stale_heartbeat = app.services.targets.guarded_record_target_heartbeat(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_reload = app.services.targets.guarded_mark_target_page_reloaded(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_skip = app.services.targets.guarded_apply_scan_skip_decision(
+            target.id,
+            skip_decision,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_failure = app.services.targets.guarded_apply_scan_failure_decision(
+            target.id,
+            failure_decision,
+            "timeout",
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_retriable_failure = app.services.targets.guarded_mark_target_retriable_failure(
+            target.id,
+            failure_decision,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_error = app.services.targets.guarded_mark_target_error(
+            target.id,
+            "forced error",
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        stale_idle = app.services.targets.guarded_mark_target_idle(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert stale_heartbeat is None
+    assert stale_reload is None
+    assert stale_skip is None
+    assert stale_failure is None
+    assert stale_retriable_failure is None
+    assert stale_error is None
+    assert stale_idle is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+    assert loaded.last_error == ""
+    assert loaded.last_skip_reason == ""
+
+
+def test_guarded_retriable_failure_alias_accepts_matching_owner(
+    tmp_path: Path,
+) -> None:
+    """guarded retriable failure alias 在 owner 相符時會回 idle 並保留 streak。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="guarded-retry-alias",
+                canonical_url="https://www.facebook.com/groups/guarded-retry-alias",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-current",
+            page_id="page-current",
+        )
+        assert running is not None
+        assert running.last_started_at is not None
+        decision = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+
+        updated = app.services.targets.guarded_mark_target_retriable_failure(
+            target.id,
+            decision,
+            worker_id="worker-current",
+            started_at=running.last_started_at,
+            page_id="page-current",
+        )
+
+    assert updated is not None
+    assert updated.runtime_status == TargetRuntimeStatus.IDLE
+    assert updated.active_worker_id == ""
+    assert updated.active_page_id == ""
+    assert updated.consecutive_failure_reason == "page_load_timeout"
+    assert updated.consecutive_failure_count == 1
+
+
+def test_force_runtime_aliases_explicitly_override_running_owner(
+    tmp_path: Path,
+) -> None:
+    """force aliases 可覆寫 running owner，但語義必須由呼叫端顯式選用。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="force-alias",
+                canonical_url="https://www.facebook.com/groups/force-alias",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-running",
+            page_id="page-running",
+        )
+        assert running is not None
+        forced_idle = app.services.targets.force_mark_target_idle(target.id)
+        app.services.targets.force_mark_target_running(
+            target.id,
+            "worker-forced",
+            page_id="page-forced",
+        )
+        forced_reload = app.services.targets.force_mark_target_page_reloaded(
+            target.id,
+            page_id="page-reloaded",
+        )
+        skip_decision = app.services.targets.decide_scan_skip(
+            target.id,
+            SORT_ADJUST_UNCONFIRMED_REASON,
+            skip_limit=3,
+        )
+        forced_skip = app.services.targets.force_apply_scan_skip_decision(
+            target.id,
+            skip_decision,
+        )
+        app.services.targets.force_mark_target_running(
+            target.id,
+            "worker-retry",
+            page_id="page-retry",
+        )
+        failure_decision = app.services.targets.decide_scan_failure(
+            target.id,
+            "page_load_timeout",
+            source="playwright",
+        )
+        forced_retriable = app.services.targets.force_mark_target_retriable_failure(
+            target.id,
+            failure_decision,
+        )
+        app.services.targets.force_mark_target_running(
+            target.id,
+            "worker-failure",
+            page_id="page-failure",
+        )
+        forced_failure = app.services.targets.force_apply_scan_failure_decision(
+            target.id,
+            failure_decision,
+            "timeout",
+        )
+        forced_error = app.services.targets.force_mark_target_error(
+            target.id,
+            "terminal error",
+            failure_reason="manual",
+            failure_count=2,
+        )
+
+    assert forced_idle.runtime_status == TargetRuntimeStatus.IDLE
+    assert forced_idle.active_worker_id == ""
+    assert forced_reload.runtime_status == TargetRuntimeStatus.RUNNING
+    assert forced_reload.active_worker_id == "worker-forced"
+    assert forced_reload.active_page_id == "page-reloaded"
+    assert forced_reload.last_page_reloaded_at is not None
+    assert forced_skip.runtime_status == TargetRuntimeStatus.IDLE
+    assert forced_skip.active_worker_id == ""
+    assert forced_skip.last_skip_reason.startswith(SORT_ADJUST_UNCONFIRMED_REASON)
+    assert forced_retriable.runtime_status == TargetRuntimeStatus.IDLE
+    assert forced_retriable.active_worker_id == ""
+    assert forced_retriable.consecutive_failure_reason == "page_load_timeout"
+    assert forced_failure.runtime_status == TargetRuntimeStatus.IDLE
+    assert forced_failure.active_worker_id == ""
+    assert forced_failure.consecutive_failure_reason == "page_load_timeout"
+    assert forced_error.runtime_status == TargetRuntimeStatus.ERROR
+    assert forced_error.active_worker_id == ""
+    assert forced_error.last_error == "terminal error"
+    assert forced_error.consecutive_failure_reason == "manual"
+    assert forced_error.consecutive_failure_count == 2
+
+
 def test_runtime_transition_invariants_for_running_finish_and_stop(
     tmp_path: Path,
 ) -> None:

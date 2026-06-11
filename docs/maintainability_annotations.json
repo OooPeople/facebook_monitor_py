@@ -32,9 +32,9 @@
       "reason": "Shared scan commit path; changes can affect dedupe, history, latest scan, and notifications."
     },
     {
-      "path_glob": "src/facebook_monitor/facebook/sort_controls.py",
+      "path_glob": "src/facebook_monitor/facebook/sort_native_click.py",
       "category": "facebook_sort_behavior",
-      "reason": "auto_adjust_sort behavior spans native click, fallback JS, and diagnostics."
+      "reason": "auto_adjust_sort native click state machine spans sync/async Playwright stages and diagnostics."
     }
   ]
 }

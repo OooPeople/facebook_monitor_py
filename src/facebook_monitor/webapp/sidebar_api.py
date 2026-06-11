@@ -38,6 +38,7 @@ _SIDEBAR_ERROR_RULES: tuple[tuple[tuple[str, ...], str, bool], ...] = (
         True,
     ),
     (("id 不可空白",), "排序資料包含空白 id，請重新整理後再試", True),
+    (("collapsed 必須是布林值",), "collapsed 必須是布林值", True),
     (("至少需要選擇",), "至少需要選擇一個套用區段", True),
     (("未知的群組模板套用區段",), "未知的群組模板套用區段", True),
 )

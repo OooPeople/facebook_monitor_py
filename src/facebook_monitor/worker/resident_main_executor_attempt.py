@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 import sqlite3
-from typing import Any
+from typing import Protocol
+from typing import TypeVar
 
 from playwright.async_api import Error as AsyncPlaywrightError
 from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
@@ -24,12 +31,18 @@ from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
+from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
+from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
+from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_page_prepare import _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
 from facebook_monitor.worker.resident_main_page_prepare import _set_resident_scan_db_busy_timeout
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_main_queue import QueueItem
+from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentTarget
+from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle
 from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db_async
@@ -39,6 +52,65 @@ from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime
 
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+class ResidentExecutorAttemptHost(Protocol):
+    """描述 resident attempt helper 需要的 executor host 能力。"""
+
+    options: ResidentRuntimeOptions
+    page_pool: AsyncResidentPagePool
+    target_queue: TargetQueue
+    schedule_planner: TargetSchedulePlanner
+
+    async def _run_db_operation_with_retry(
+        self,
+        operation_name: str,
+        operation: Callable[[], T],
+    ) -> T:
+        """以 bounded retry 執行一個 DB operation。"""
+
+    def _target_still_active(self, target_id: str) -> bool:
+        """確認 target 仍可執行。"""
+
+    def _select_scan_page(self, target_kind: TargetKind) -> AsyncScanCallable:
+        """依 target kind 選擇 scan callable。"""
+
+    async def _run_scan_with_heartbeat(
+        self,
+        scan_page: AsyncScanCallable,
+        *,
+        page: object,
+        app: ApplicationContext,
+        target: TargetDescriptor,
+        config: TargetConfig,
+        scroll_rounds: int,
+        scroll_wait_ms: int,
+        worker_id: str,
+        page_id: str,
+        commit_guard: ScanCommitGuard,
+    ) -> object:
+        """以 heartbeat/timeout 包住 scan callable。"""
+
+    def runtime_restart_requested(self) -> bool:
+        """回傳 browser runtime 是否已要求重建。"""
+
+    def request_runtime_restart(self) -> None:
+        """要求 browser runtime 重建。"""
+
+    async def _retry_target_after_sqlite_lock(
+        self,
+        *,
+        target_id: str,
+        commit_guard: ScanCommitGuard | None,
+    ) -> None:
+        """SQLite lock 時安排 target 下輪補掃。"""
+
+    async def _register_active_attempt(self, target_id: str, owner_key: str) -> None:
+        """登記 active attempt。"""
+
+    async def _unregister_active_attempt(self, target_id: str, owner_key: str) -> None:
+        """解除 active attempt 登記。"""
 
 
 @dataclass
@@ -54,7 +126,7 @@ class ResidentQueueAttemptState:
 
 
 async def _load_and_admit_target_attempt(
-    pool: Any,
+    pool: ResidentExecutorAttemptHost,
     worker_id: str,
     item: QueueItem,
     state: ResidentQueueAttemptState,
@@ -81,16 +153,16 @@ async def _load_and_admit_target_attempt(
 
     state.page_id = await pool.page_pool.reserve_page_id(target_id)
 
-    def mark_running_operation() -> Any:
+    def mark_running_operation() -> TargetRuntimeState | None:
         with SqliteApplicationContext(pool.options.db_path) as app:
-            return app.services.targets.try_mark_target_running(
+            return app.services.targets.try_claim_target_running(
                 target_id,
                 worker_id,
                 page_id=state.page_id,
             )
 
     locked_state = await pool._run_db_operation_with_retry(
-        "try_mark_target_running",
+        "try_claim_target_running",
         mark_running_operation,
     )
     if locked_state is None:
@@ -128,11 +200,11 @@ async def _load_and_admit_target_attempt(
 
 
 async def _prepare_attempt_page(
-    pool: Any,
+    pool: ResidentExecutorAttemptHost,
     worker_id: str,
     resident_target: ResidentTarget,
     state: ResidentQueueAttemptState,
-) -> Any | None:
+) -> AsyncReusablePageLike | None:
     """取得並準備 page；reload owner 已改變時回傳 None 表示本輪 skip。"""
 
     commit_guard = _require_commit_guard(state)
@@ -159,9 +231,9 @@ async def _prepare_attempt_page(
         current_url=str(getattr(page, "url", "") or ""),
     )
 
-    def mark_reloaded_operation() -> Any:
+    def mark_reloaded_operation() -> TargetRuntimeState | None:
         with SqliteApplicationContext(pool.options.db_path) as app:
-            return app.services.targets.mark_target_page_reloaded_if_owner(
+            return app.services.targets.guarded_mark_target_page_reloaded(
                 state.target_id,
                 worker_id=commit_guard.worker_id,
                 started_at=commit_guard.started_at,
@@ -170,7 +242,7 @@ async def _prepare_attempt_page(
             )
 
     page_reload_state = await pool._run_db_operation_with_retry(
-        "mark_target_page_reloaded_if_owner",
+        "guarded_mark_target_page_reloaded",
         mark_reloaded_operation,
     )
     if page_reload_state is None:
@@ -186,10 +258,10 @@ async def _prepare_attempt_page(
 
 
 async def _run_guarded_scan_and_commit_idle(
-    pool: Any,
+    pool: ResidentExecutorAttemptHost,
     worker_id: str,
     resident_target: ResidentTarget,
-    page: Any,
+    page: AsyncReusablePageLike,
     state: ResidentQueueAttemptState,
 ) -> bool:
     """執行 target scan，並在同一 DB context 內做 guarded idle commit。"""
@@ -225,7 +297,11 @@ def _require_commit_guard(state: ResidentQueueAttemptState) -> ScanCommitGuard:
     return state.commit_guard
 
 
-async def run_queue_item(pool: Any, worker_id: str, item: QueueItem) -> AsyncTargetScanResult:
+async def run_queue_item(
+    pool: ResidentExecutorAttemptHost,
+    worker_id: str,
+    item: QueueItem,
+) -> AsyncTargetScanResult:
     """執行 queue 中的單一 target，並維護 runtime / page ownership。"""
 
     target_id = item.due_target.target_id
@@ -371,7 +447,7 @@ def _successful_attempt_result(
 
 async def _record_failure_and_finish(
     *,
-    pool: Any,
+    pool: ResidentExecutorAttemptHost,
     worker_id: str,
     state: ResidentQueueAttemptState,
     reason: str,
@@ -481,7 +557,7 @@ def _log_failure_decision(
 
 async def _retry_after_sqlite_lock_and_skip(
     *,
-    pool: Any,
+    pool: ResidentExecutorAttemptHost,
     worker_id: str,
     state: ResidentQueueAttemptState,
     exception_class: str,

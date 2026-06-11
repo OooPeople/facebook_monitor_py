@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
@@ -15,6 +17,7 @@ from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.webapp.query_service import get_dashboard_view
 from facebook_monitor.webapp.assets import ASSET_VERSION
@@ -48,6 +51,121 @@ def test_index_and_partial_payload_show_profile_needs_login_warning(
     assert warning["needs_login"] is True
     assert warning["reason"] == "login_required"
     assert "重新開啟程式" in warning["message"]
+
+
+def test_index_and_partial_payload_show_database_invariant_warning(
+    tmp_path: Path,
+) -> None:
+    """污染資料只顯示 invariant 警告與支援包提示，不在 read path 靜默修復。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="corrupt",
+                canonical_url="https://www.facebook.com/groups/corrupt",
+                group_name="異常測試社團",
+            )
+        )
+        connection = app_context.repositories.configs.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_configs SET auto_load_more = 2 WHERE target_id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+
+    assert index_response.status_code == 200
+    assert "異常測試社團" in index_response.text
+    assert "資料庫偵測到 1 個資料 invariant 異常" in index_response.text
+    assert "設定下載支援包" in index_response.text
+    payload = cards_response.json()
+    warning = payload["database_invariant_warning"]
+    assert payload["dashboard_degraded"] is False
+    assert warning["has_violations"] is True
+    assert warning["violation_count"] == 1
+    assert warning["tables"] == ["target_configs"]
+    assert "系統不會自動修復資料" in warning["message"]
+    assert target.id not in warning["message"]
+    assert target.group_id not in warning["message"]
+
+
+def test_database_invariant_warning_degrades_mapper_breaking_rows_without_ids(
+    tmp_path: Path,
+) -> None:
+    """mapper 無法載入的壞 enum row 不可讓 dashboard 500 或洩漏 row id。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="mapper-corrupt",
+                canonical_url="https://www.facebook.com/groups/mapper-corrupt",
+                group_name="mapper 異常測試社團",
+            )
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind' WHERE id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+
+    assert index_response.status_code == 200
+    assert "資料庫偵測到 1 個資料 invariant 異常" in index_response.text
+    assert "資料暫時無法載入" in index_response.text
+    assert "目前沒有 target" not in index_response.text
+    payload = cards_response.json()
+    warning = payload["database_invariant_warning"]
+    assert payload["dashboard_degraded"] is True
+    assert warning["has_violations"] is True
+    assert warning["violation_count"] == 1
+    assert warning["tables"] == ["targets"]
+    assert "系統不會自動修復資料" in warning["message"]
+    assert target.id not in warning["message"]
+    assert target.group_id not in warning["message"]
+    assert payload["cards"] == []
+
+
+def test_database_invariant_warning_does_not_degrade_unrelated_value_error(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """即使 DB 有 invariant violation，非 enum mapper 錯誤仍不可被降級吞掉。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="mapper-corrupt",
+                canonical_url="https://www.facebook.com/groups/mapper-corrupt",
+                group_name="mapper 異常測試社團",
+            )
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind' WHERE id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    def raise_unrelated_value_error(self: TargetRepository) -> list[object]:
+        raise ValueError("'x' is not a valid SurpriseBug")
+
+    monkeypatch.setattr(TargetRepository, "list_all", raise_unrelated_value_error)
+
+    with pytest.raises(ValueError, match="SurpriseBug"):
+        get_dashboard_view(db_path)
 
 
 def test_dashboard_uses_external_versioned_scripts_without_importmap(tmp_path: Path) -> None:

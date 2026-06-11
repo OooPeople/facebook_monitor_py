@@ -153,6 +153,43 @@ def test_dashboard_partial_updates_are_coalesced_while_in_flight() -> None:
     assert "state.pendingRefresh = true;" in revision_client_js
 
 
+def test_dashboard_partial_update_toggles_database_invariant_warning_safely() -> None:
+    """資料 invariant warning partial update 只用 textContent 與 hidden toggle。"""
+
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+
+    warning_update = partial_updates_js.split(
+        "const updateDatabaseInvariantWarning = (payload) => {",
+        1,
+    )[1].split("};", 1)[0]
+    assert "[data-database-invariant-warning]" in warning_update
+    assert "Boolean(payload?.has_violations)" in warning_update
+    assert "warning.textContent = hasViolations ? (payload.message || \"\") : \"\";" in (
+        warning_update
+    )
+    assert 'warning.toggleAttribute("hidden", !hasViolations);' in warning_update
+    assert "innerHTML" not in warning_update
+
+
+def test_dashboard_partial_update_reloads_when_degraded_empty_state_changes() -> None:
+    """degraded 空狀態與正常空狀態切換時，partial update 必須重載整頁。"""
+
+    index_template = Path("src/facebook_monitor/webapp/templates/index.html").read_text(
+        encoding="utf-8"
+    )
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+
+    assert "data-dashboard-degraded-empty" in index_template
+    assert "dashboard.dashboard_degraded" in index_template
+    assert "dashboardPayload.dashboard_degraded" in partial_updates_js
+    assert "[data-dashboard-degraded-empty]" in partial_updates_js
+    assert "partial_update_requires_reload:dashboard_degraded_changed" in partial_updates_js
+
+
 def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
     """掃描診斷入口收進卡片更多選單，內容顯示在共用 dialog 行為的 modal。"""
 

@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
+from facebook_monitor.webapp.query_service import DatabaseInvariantWarning
 from facebook_monitor.webapp.query_service import ProfileSessionWarning
 
 
@@ -53,6 +54,19 @@ def serialize_profile_session_warning(
         "needs_login": warning.needs_login,
         "message": warning.message,
         "reason": warning.reason,
+    }
+
+
+def serialize_database_invariant_warning(
+    warning: DatabaseInvariantWarning,
+) -> dict[str, object]:
+    """序列化首頁資料 invariant 警告。"""
+
+    return {
+        "has_violations": warning.has_violations,
+        "message": warning.message,
+        "violation_count": warning.violation_count,
+        "tables": list(warning.tables),
     }
 
 

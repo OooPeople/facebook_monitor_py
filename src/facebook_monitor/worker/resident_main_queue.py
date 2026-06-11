@@ -44,6 +44,39 @@ class TargetQueue:
             await self._queue.put(item)
             return True
 
+    async def reserve(self, item: QueueItem) -> bool:
+        """先保留 target queue 位置，但暫不交給 worker 消費。"""
+
+        target_id = item.due_target.target_id
+        async with self._lock:
+            if target_id in self._queued_target_ids or target_id in self._running_target_owners:
+                return False
+            self._queued_target_ids.add(target_id)
+            self._queued_order.append(target_id)
+            return True
+
+    async def publish_reserved(self, item: QueueItem) -> bool:
+        """將已保留的 queue item 發布給 worker 消費。"""
+
+        target_id = item.due_target.target_id
+        async with self._lock:
+            if target_id not in self._queued_target_ids:
+                return False
+            await self._queue.put(item)
+            return True
+
+    async def release_reserved(self, target_id: str) -> None:
+        """釋放尚未發布給 worker 的保留 queue 位置。"""
+
+        async with self._lock:
+            if target_id in self._running_target_owners:
+                return
+            self._queued_target_ids.discard(target_id)
+            try:
+                self._queued_order.remove(target_id)
+            except ValueError:
+                pass
+
     async def get(self) -> QueueItem | None:
         """取得下一筆 queue item，並把 target 從 queued 轉入 running set。"""
 

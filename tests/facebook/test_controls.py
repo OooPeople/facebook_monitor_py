@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import facebook_monitor.facebook.sort_controls as sort_controls_module
+import facebook_monitor.facebook.sort_native_click as sort_native_click_module
 from facebook_monitor.facebook.scroll_controls import SCROLL_LOAD_MORE_SCRIPT
 from facebook_monitor.facebook.scroll_controls import COMMENT_SCROLL_LOAD_MORE_SCRIPT
 from facebook_monitor.facebook.scroll_controls import BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT
@@ -25,11 +27,25 @@ from facebook_monitor.facebook.sort_controls import FEED_SORT_LABELS
 from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_controls import FEED_SORT_ADJUST_SCRIPT
 from facebook_monitor.facebook.sort_controls import SORT_MENU_CANDIDATE_TEXTS_SCRIPT
+from facebook_monitor.facebook.sort_controls import SORT_DIAGNOSTIC_FIELD_ALIASES
+from facebook_monitor.facebook.sort_controls import SORT_REASON_AUTO_ADJUST_DISABLED
+from facebook_monitor.facebook.sort_controls import SORT_REASON_RESULT_INVALID
+from facebook_monitor.facebook.sort_controls import NativeSortAttempt
+from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.facebook.sort_controls import ensure_preferred_comment_sort_async
 from facebook_monitor.facebook.sort_controls import ensure_preferred_comment_sort
 from facebook_monitor.facebook.sort_controls import ensure_preferred_feed_sort
 from facebook_monitor.facebook.sort_controls import ensure_preferred_feed_sort_async
 from facebook_monitor.facebook.sort_controls import normalize_sort_adjust_result
+from facebook_monitor.facebook.sort_results import (
+    SORT_DIAGNOSTIC_FIELD_ALIASES as RESULT_SORT_DIAGNOSTIC_FIELD_ALIASES,
+)
+from facebook_monitor.facebook.sort_results import (
+    SORT_REASON_AUTO_ADJUST_DISABLED as RESULT_SORT_REASON_AUTO_ADJUST_DISABLED,
+)
+from facebook_monitor.facebook.sort_results import (
+    SORT_REASON_RESULT_INVALID as RESULT_SORT_REASON_RESULT_INVALID,
+)
 
 
 SUPPORTED_FAKE_SORT_OPTION_ROLES = (
@@ -41,6 +57,72 @@ SUPPORTED_FAKE_SORT_OPTION_ROLES = (
     "checkbox",
     "button",
 )
+
+
+def test_sort_controls_reexports_result_contract_names() -> None:
+    """sort_controls 保留舊 public import surface，拆 module 不破壞呼叫端。"""
+
+    assert SORT_REASON_AUTO_ADJUST_DISABLED == RESULT_SORT_REASON_AUTO_ADJUST_DISABLED
+    assert SORT_REASON_RESULT_INVALID == RESULT_SORT_REASON_RESULT_INVALID
+    assert SORT_DIAGNOSTIC_FIELD_ALIASES == RESULT_SORT_DIAGNOSTIC_FIELD_ALIASES
+    expected_public_names = {
+        "COMMENT_SORT_DESCRIPTION_FRAGMENTS",
+        "COMMENT_SORT_ADJUST_SCRIPT",
+        "COMMENT_SORT_CURRENT_LABEL_SCRIPT",
+        "COMMENT_SORT_LABELS",
+        "COMMENT_SORT_NEWEST_LABEL",
+        "COMMENT_SORT_OPTION_WAIT_INTERVAL_MS",
+        "COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS",
+        "FEED_SORT_ADJUST_SCRIPT",
+        "FEED_SORT_CURRENT_LABEL_SCRIPT",
+        "FEED_SORT_LABELS",
+        "FEED_SORT_NEWEST_LABEL",
+        "NativeSortAttempt",
+        "NativeSortSpec",
+        "SORT_CONFIRM_INTERVAL_MS",
+        "SORT_CONFIRM_TIMEOUT_MS",
+        "SORT_DIAGNOSTIC_FIELD_ALIASES",
+        "SORT_MENU_CANDIDATE_TEXTS_SCRIPT",
+        "SORT_MENU_ROOT_SELECTOR",
+        "SORT_METHOD_JS_FALLBACK",
+        "SORT_METHOD_NATIVE_LOCATOR",
+        "SORT_MUTATION_SUPPRESSION_MS",
+        "SORT_MUTATION_SUPPRESSION_REASON",
+        "SORT_NATIVE_CLICK_TIMEOUT_MS",
+        "SORT_NATIVE_STAGE_CLICK_CONTROL",
+        "SORT_NATIVE_STAGE_CONFIRM_LABEL",
+        "SORT_NATIVE_STAGE_CURRENT_LABEL",
+        "SORT_NATIVE_STAGE_FIND_OPTION",
+        "SORT_OPTION_ROLES",
+        "SORT_OPTION_WAIT_INTERVAL_MS",
+        "SORT_OPTION_WAIT_TIMEOUT_MS",
+        "SORT_REASON_ALREADY_PREFERRED_SORT",
+        "SORT_REASON_AUTO_ADJUST_DISABLED",
+        "SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND",
+        "SORT_REASON_RESULT_INVALID",
+        "SORT_REASON_SORT_CONTROL_NOT_FOUND",
+        "SORT_REASON_SORT_UPDATE_UNCONFIRMED",
+        "SORT_REASON_UNSUPPORTED_SCAN_TARGET",
+        "SORT_REASON_UPDATED_TO_PREFERRED_SORT",
+        "SortAdjustResult",
+        "_with_sort_diagnostics",
+        "build_disabled_sort_adjust_result",
+        "ensure_preferred_comment_sort",
+        "ensure_preferred_comment_sort_async",
+        "ensure_preferred_feed_sort",
+        "ensure_preferred_feed_sort_async",
+        "normalize_sort_adjust_result",
+        "try_native_comment_sort_click",
+        "try_native_comment_sort_click_async",
+        "try_native_feed_sort_click",
+        "try_native_feed_sort_click_async",
+    }
+    assert set(sort_controls_module.__all__) == expected_public_names
+    assert len(sort_controls_module.__all__) == len(expected_public_names)
+    for name in expected_public_names:
+        assert hasattr(sort_controls_module, name), name
+    assert SortAdjustResult.__name__ == "SortAdjustResult"
+    assert NativeSortAttempt.__name__ == "NativeSortAttempt"
 
 
 class FakeKeyboard:
@@ -79,6 +161,7 @@ class FakeNativeSortPage:
         supported_option_roles: tuple[str, ...] = SUPPORTED_FAKE_SORT_OPTION_ROLES,
         menu_root_visible: bool = True,
         candidate_texts: tuple[str, ...] = (),
+        option_click_updates_label: bool = True,
     ) -> None:
         self.current_label = current_label
         self.preferred_label = preferred_label
@@ -90,6 +173,7 @@ class FakeNativeSortPage:
         self.supported_option_roles = supported_option_roles
         self.menu_root_visible = menu_root_visible
         self.candidate_texts = candidate_texts
+        self.option_click_updates_label = option_click_updates_label
         self.menu_opened = False
         self.fallback_evaluated = False
         self.role_clicks: list[tuple[str, str]] = []
@@ -191,7 +275,8 @@ class FakeNativeSortLocator:
             self._page.menu_opened = True
             return
         self._page.locator_clicks.append(self._page.preferred_label)
-        self._page.current_label = self._page.preferred_label
+        if self._page.option_click_updates_label:
+            self._page.current_label = self._page.preferred_label
 
     def _matches(self) -> bool:
         if self._is_control():
@@ -240,6 +325,7 @@ class AsyncFakeNativeSortPage:
         supported_option_roles: tuple[str, ...] = SUPPORTED_FAKE_SORT_OPTION_ROLES,
         menu_root_visible: bool = True,
         candidate_texts: tuple[str, ...] = (),
+        option_click_updates_label: bool = True,
     ) -> None:
         self.current_label = current_label
         self.preferred_label = preferred_label
@@ -251,6 +337,7 @@ class AsyncFakeNativeSortPage:
         self.supported_option_roles = supported_option_roles
         self.menu_root_visible = menu_root_visible
         self.candidate_texts = candidate_texts
+        self.option_click_updates_label = option_click_updates_label
         self.menu_opened = False
         self.fallback_evaluated = False
         self.role_clicks: list[tuple[str, str]] = []
@@ -352,7 +439,8 @@ class AsyncFakeNativeSortLocator:
             self._page.menu_opened = True
             return
         self._page.locator_clicks.append(self._page.preferred_label)
-        self._page.current_label = self._page.preferred_label
+        if self._page.option_click_updates_label:
+            self._page.current_label = self._page.preferred_label
 
     def _matches(self) -> bool:
         if self._is_control():
@@ -413,6 +501,30 @@ def _sort_fallback_payload(
         "mutationSuppressionReason": "auto_adjust_sort",
         "menuCandidateTexts": [before_label],
     }
+
+
+class FallbackOnlySortPage:
+    """只支援 JS evaluate，不支援 Playwright native locator API。"""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.fallback_evaluated = False
+
+    def evaluate(self, _script: str, _preferred_label: str | None = None) -> object:
+        self.fallback_evaluated = True
+        return self.payload
+
+
+class AsyncFallbackOnlySortPage:
+    """async 版本：只支援 JS evaluate。"""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.fallback_evaluated = False
+
+    async def evaluate(self, _script: str, _preferred_label: str | None = None) -> object:
+        self.fallback_evaluated = True
+        return self.payload
 
 
 def _run_comment_mutation_direct_signal_cases(values: list[str]) -> list[bool]:
@@ -569,6 +681,94 @@ def test_feed_sort_uses_native_click_before_js_fallback() -> None:
     assert result.to_metadata()["target_kind"] == "posts"
     assert result.to_metadata()["method"] == "native_locator"
     assert result.to_metadata()["option_locator"] == "scoped_menuitemradio"
+
+
+def test_native_already_preferred_does_not_fallback() -> None:
+    """native path 已是 preferred label 時，不應再跑 JS fallback。"""
+
+    page = FakeNativeSortPage(current_label="由新到舊")
+
+    result = ensure_preferred_comment_sort(page, enabled=True)
+    metadata = result.to_metadata()
+
+    assert not page.fallback_evaluated
+    assert result.attempted is False
+    assert result.changed is False
+    assert result.reason == "already_preferred_sort"
+    assert metadata["method"] == "native_locator"
+    assert metadata["native_attempted"] is True
+    assert metadata["target_kind"] == "comments"
+
+
+def test_native_unknown_current_label_falls_back_with_observed_label() -> None:
+    """native 讀到未知 current label 時，需 fallback 並保留觀測 label。"""
+
+    page = FakeNativeSortPage(
+        current_label="熱門留言",
+        fallback_payload=_sort_fallback_payload(
+            preferred_label="由新到舊",
+            before_label="熱門留言",
+            after_label="熱門留言",
+            reason="sort_control_not_found",
+        ),
+    )
+
+    result = ensure_preferred_comment_sort(page, enabled=True)
+    metadata = result.to_metadata()
+
+    assert page.fallback_evaluated
+    assert metadata["method"] == "js_fallback"
+    assert metadata["fallback_used"] is True
+    assert metadata["native_failure_stage"] == "current_label"
+    assert metadata["native_after_label"] == "熱門留言"
+
+
+def test_native_confirm_timeout_falls_back_without_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """native click 後 label 未更新時，需以 confirm_label fallback，不依賴例外。"""
+
+    monkeypatch.setattr(sort_native_click_module, "SORT_CONFIRM_TIMEOUT_MS", 1)
+    page = FakeNativeSortPage(
+        option_click_updates_label=False,
+        fallback_payload=_sort_fallback_payload(
+            preferred_label="由新到舊",
+            before_label="最相關",
+            after_label="最相關",
+            reason="sort_update_unconfirmed",
+        ),
+    )
+
+    result = ensure_preferred_comment_sort(page, enabled=True)
+    metadata = result.to_metadata()
+
+    assert page.fallback_evaluated
+    assert result.reason == "sort_update_unconfirmed"
+    assert metadata["method"] == "js_fallback"
+    assert metadata["native_failure_stage"] == "confirm_label"
+    assert metadata["native_after_label"] == "最相關"
+    assert "native_exception_class" not in metadata
+
+
+def test_page_without_native_locator_support_uses_plain_js_fallback() -> None:
+    """不支援 Playwright locator API 時，直接跑 JS fallback 且不加 native diagnostics。"""
+
+    page = FallbackOnlySortPage(
+        _sort_fallback_payload(
+            preferred_label="由新到舊",
+            before_label="最相關",
+            after_label="最相關",
+            reason="preferred_sort_option_not_found",
+        )
+    )
+
+    result = ensure_preferred_comment_sort(page, enabled=True)
+    metadata = result.to_metadata()
+
+    assert page.fallback_evaluated
+    assert metadata["reason"] == "preferred_sort_option_not_found"
+    assert "fallback_used" not in metadata
+    assert "native_attempted" not in metadata
 
 
 def test_native_find_option_failure_closes_residual_menu_before_fallback() -> None:
@@ -739,6 +939,132 @@ def test_async_native_sort_success() -> None:
     asyncio.run(run_test())
 
 
+def test_async_native_already_preferred_does_not_fallback() -> None:
+    """async native 已是 preferred label 時不跑 JS fallback。"""
+
+    async def run_test() -> None:
+        page = AsyncFakeNativeSortPage(current_label="由新到舊")
+
+        result = await ensure_preferred_comment_sort_async(page, enabled=True)
+        metadata = result.to_metadata()
+
+        assert not page.fallback_evaluated
+        assert result.attempted is False
+        assert result.reason == "already_preferred_sort"
+        assert metadata["method"] == "native_locator"
+        assert metadata["native_attempted"] is True
+        assert metadata["target_kind"] == "comments"
+
+    asyncio.run(run_test())
+
+
+def test_async_native_unknown_current_label_falls_back_with_observed_label() -> None:
+    """async native 讀到未知 current label 時，需 fallback 並保留觀測 label。"""
+
+    async def run_test() -> None:
+        page = AsyncFakeNativeSortPage(
+            current_label="熱門留言",
+            fallback_payload=_sort_fallback_payload(
+                preferred_label="由新到舊",
+                before_label="熱門留言",
+                after_label="熱門留言",
+                reason="sort_control_not_found",
+            ),
+        )
+
+        result = await ensure_preferred_comment_sort_async(page, enabled=True)
+        metadata = result.to_metadata()
+
+        assert page.fallback_evaluated
+        assert metadata["method"] == "js_fallback"
+        assert metadata["fallback_used"] is True
+        assert metadata["native_failure_stage"] == "current_label"
+        assert metadata["native_after_label"] == "熱門留言"
+
+    asyncio.run(run_test())
+
+
+def test_async_native_click_control_failure_falls_back_with_diagnostics() -> None:
+    """async click_control 失敗也需回 JS fallback 並保留階段診斷。"""
+
+    async def run_test() -> None:
+        page = AsyncFakeNativeSortPage(
+            control_click_raises=True,
+            fallback_payload=_sort_fallback_payload(
+                preferred_label="由新到舊",
+                before_label="最相關",
+                after_label="最相關",
+                reason="preferred_sort_option_not_found",
+            ),
+        )
+
+        result = await ensure_preferred_comment_sort_async(page, enabled=True)
+        metadata = result.to_metadata()
+
+        assert page.fallback_evaluated
+        assert metadata["method"] == "js_fallback"
+        assert metadata["fallback_used"] is True
+        assert metadata["native_failure_stage"] == "click_control"
+        assert metadata["native_exception_class"] == "RuntimeError"
+
+    asyncio.run(run_test())
+
+
+def test_async_native_confirm_timeout_falls_back_without_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """async native click 後 label 未更新時，需以 confirm_label fallback。"""
+
+    monkeypatch.setattr(sort_native_click_module, "SORT_CONFIRM_TIMEOUT_MS", 1)
+
+    async def run_test() -> None:
+        page = AsyncFakeNativeSortPage(
+            option_click_updates_label=False,
+            fallback_payload=_sort_fallback_payload(
+                preferred_label="由新到舊",
+                before_label="最相關",
+                after_label="最相關",
+                reason="sort_update_unconfirmed",
+            ),
+        )
+
+        result = await ensure_preferred_comment_sort_async(page, enabled=True)
+        metadata = result.to_metadata()
+
+        assert page.fallback_evaluated
+        assert result.reason == "sort_update_unconfirmed"
+        assert metadata["method"] == "js_fallback"
+        assert metadata["native_failure_stage"] == "confirm_label"
+        assert metadata["native_after_label"] == "最相關"
+        assert "native_exception_class" not in metadata
+
+    asyncio.run(run_test())
+
+
+def test_async_page_without_native_locator_support_uses_plain_js_fallback() -> None:
+    """async 不支援 native locator API 時，直接跑 JS fallback。"""
+
+    async def run_test() -> None:
+        page = AsyncFallbackOnlySortPage(
+            _sort_fallback_payload(
+                preferred_label="由新到舊",
+                before_label="最相關",
+                after_label="最相關",
+                reason="preferred_sort_option_not_found",
+            )
+        )
+
+        result = await ensure_preferred_comment_sort_async(page, enabled=True)
+        metadata = result.to_metadata()
+
+        assert page.fallback_evaluated
+        assert metadata["reason"] == "preferred_sort_option_not_found"
+        assert "fallback_used" not in metadata
+        assert "native_attempted" not in metadata
+
+    asyncio.run(run_test())
+
+
 def test_async_native_confirm_exception_falls_back_with_diagnostics() -> None:
     """async native confirm transient error 應回 JS fallback。"""
 
@@ -883,7 +1209,7 @@ def test_sort_adjust_result_matches_golden_fixture() -> None:
         assert result.before_label == expected["before_label"], case["name"]
         assert result.after_label == expected["after_label"], case["name"]
         assert result.reason == expected["reason"], case["name"]
-        assert metadata["menu_candidate_texts"] == expected["menu_candidate_texts"], case["name"]
+        assert metadata == expected["metadata"], case["name"]
 
 
 def test_scroll_script_uses_target_by_and_restore_snapshot() -> None:

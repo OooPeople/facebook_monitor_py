@@ -15,7 +15,31 @@ from facebook_monitor.application.sidebar_layout_service import SidebarTemplateS
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.sidebar_api import grouped_target_ids
 from facebook_monitor.webapp.sidebar_api import string_list
+
+
+def save_sidebar_order_use_case(
+    app_context: ApplicationContext,
+    *,
+    payload: dict[str, object],
+) -> int:
+    """保存平面 target order，供排序第一階段與 fallback 使用。"""
+
+    target_ids = string_list(payload.get("target_ids"))
+    return app_context.services.sidebar_layout.save_target_order(target_ids)
+
+
+def create_sidebar_group_use_case(
+    app_context: ApplicationContext,
+    *,
+    payload: dict[str, object],
+) -> SidebarGroup:
+    """建立 sidebar UI group。"""
+
+    return app_context.services.sidebar_layout.create_group(
+        str(payload.get("name", ""))
+    )
 
 
 def update_sidebar_group_use_case(
@@ -42,6 +66,53 @@ def update_sidebar_group_use_case(
             collapsed,
         )
     return group
+
+
+def delete_sidebar_group_use_case(
+    app_context: ApplicationContext,
+    *,
+    group_id: str,
+) -> None:
+    """刪除空 sidebar group。"""
+
+    app_context.services.sidebar_layout.delete_empty_group(group_id)
+
+
+def save_sidebar_group_order_use_case(
+    app_context: ApplicationContext,
+    *,
+    payload: dict[str, object],
+) -> int:
+    """保存 sidebar group order。"""
+
+    group_ids = string_list(payload.get("group_ids"))
+    app_context.services.sidebar_layout.save_group_order(group_ids)
+    return len(group_ids)
+
+
+def save_sidebar_layout_use_case(
+    app_context: ApplicationContext,
+    *,
+    payload: dict[str, object],
+) -> int:
+    """以單一 transaction 保存 sidebar group order 與 target placements。"""
+
+    return app_context.services.sidebar_layout.save_layout(
+        group_ids=string_list(payload.get("group_ids")),
+        grouped_target_ids=grouped_target_ids(payload.get("groups")),
+    )
+
+
+def save_sidebar_placements_use_case(
+    app_context: ApplicationContext,
+    *,
+    payload: dict[str, object],
+) -> int:
+    """保存 sidebar group + target placements。"""
+
+    return app_context.services.sidebar_layout.save_placements(
+        grouped_target_ids(payload.get("groups"))
+    )
 
 
 def parse_sidebar_group_name(payload: dict[str, object]) -> str | None:

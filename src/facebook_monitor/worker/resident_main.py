@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 import sqlite3
 from typing import Any
+from typing import Protocol
 
 from playwright.async_api import async_playwright
 
@@ -31,6 +32,9 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
+from facebook_monitor.facebook.group_metadata import (
+    AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
+)
 from facebook_monitor.notifications.outbox_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
@@ -75,6 +79,16 @@ __all__ = (
     "refresh_requested_target_metadata",
     "refresh_target_group_cover_image_from_context",
 )
+
+
+class BrowserTimeoutContextLike(Protocol):
+    """resident 啟動時設定 Playwright context timeout 需要的能力。"""
+
+    def set_default_timeout(self, timeout: float) -> None:
+        """設定 Playwright default timeout。"""
+
+    def set_default_navigation_timeout(self, timeout: float) -> None:
+        """設定 Playwright navigation timeout。"""
 
 
 @dataclass(frozen=True)
@@ -243,7 +257,7 @@ async def _run_resident_browser_runtime_session(
 async def _run_scheduler_ticks_until_restart(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any,
+    browser_context: GroupMetadataBrowserContextLike,
     page_pool: AsyncResidentPagePool,
     target_queue: TargetQueue,
     executor: ExecutorWorkerPool,
@@ -314,7 +328,7 @@ def _browser_runtime_timeout_seconds(options: ResidentRuntimeOptions) -> float:
 
 
 def _set_browser_context_timeouts(
-    browser_context: Any,
+    browser_context: BrowserTimeoutContextLike,
     options: ResidentRuntimeOptions,
 ) -> None:
     """設定 Playwright context 的 default timeout 與 navigation timeout。"""
@@ -421,7 +435,7 @@ def _log_display_next_due_update_exception(
 async def run_resident_main_scheduler_tick(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any | None = None,
+    browser_context: GroupMetadataBrowserContextLike | None = None,
     page_pool: AsyncResidentPagePool,
     target_queue: TargetQueue,
     executor: ExecutorWorkerPool,

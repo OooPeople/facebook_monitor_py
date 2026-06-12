@@ -14,8 +14,8 @@
 | Local modifications | None |
 | Vendored module | `src/facebook_monitor/webapp/static/vendor/sortablejs/sortable.esm.js` |
 | Vendored license | `src/facebook_monitor/webapp/static/vendor/sortablejs/LICENSE` |
-| Module SHA256 | `62375E4088A365131D262921A50367280717136598DE5F5C208137A919141A96` |
-| License SHA256 | `E94DFC31E800D169257569DB270457C9F028440C9CCAE41E7EB78B2DB18F1298` |
+| Repository module SHA256 (LF checkout bytes) | `6C9B20F666B97A0D3577088EED380B9D2A522C61DAAC2BE464C8C13672A7B2F2` |
+| Repository license SHA256 (LF checkout bytes) | `199071E94A4D6BA6F634ACD6020842EFC55161B9FB639A432C50DA687781219D` |
 
 更新流程：
 

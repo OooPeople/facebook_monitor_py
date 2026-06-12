@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from facebook_monitor.worker.resident_main_executor_types import AsyncBrowserContextLike
+from facebook_monitor.worker.resident_main_executor_types import (
+    AsyncPagePoolBrowserContextLike,
+)
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_shared import ResidentTarget
 
@@ -31,7 +33,7 @@ class PageOwnership:
 class AsyncResidentPagePool:
     """維護 resident main worker 的 target page 與 ownership metadata。"""
 
-    def __init__(self, context: AsyncBrowserContextLike) -> None:
+    def __init__(self, context: AsyncPagePoolBrowserContextLike) -> None:
         self.context = context
         self.pages: dict[str, PageOwnership] = {}
         self.lock = asyncio.Lock()

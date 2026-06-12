@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import ItemKind
@@ -23,6 +22,7 @@ from facebook_monitor.facebook.comment_extractor import CommentCollectionMeta
 from facebook_monitor.facebook.comment_extractor import CommentExtractRoundStats
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_diagnostics
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_diagnostics_async
+from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.facebook.sort_controls import ensure_preferred_comment_sort
 from facebook_monitor.facebook.sort_controls import ensure_preferred_comment_sort_async
@@ -35,7 +35,9 @@ from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
 from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
+from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
+from facebook_monitor.worker.scan_orchestration import SyncScannablePageLike
 from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata
 from facebook_monitor.worker.scan_metadata import SORT_ADJUST_SKIP_COLLECTION_MODE
@@ -61,10 +63,6 @@ class CommentsScanSummary:
     matched_count: int
     scan_run_id: int
     round_stats: tuple[CommentExtractRoundStats, ...] = ()
-
-
-class NotificationSender(NtfySender, Protocol):
-    """定義 comments worker 可注入的通知發送函式介面。"""
 
 
 def build_comments_scan_metadata(
@@ -166,13 +164,13 @@ def build_comments_sort_unconfirmed_skip_metadata(
 
 def scan_comments_target_page(
     *,
-    page: Any,
+    page: SyncScannablePageLike,
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
     scroll_rounds: int = 0,
     scroll_wait_ms: int = 0,
-    notification_sender: NotificationSender = send_ntfy_notification,
+    notification_sender: NtfySender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
@@ -248,13 +246,13 @@ def scan_comments_target_page(
 
 async def scan_comments_target_page_async(
     *,
-    page: Any,
+    page: AsyncScannablePageLike,
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
     scroll_rounds: int = 0,
     scroll_wait_ms: int = 0,
-    notification_sender: NotificationSender = send_ntfy_notification,
+    notification_sender: NtfySender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
@@ -349,7 +347,7 @@ def finalize_comments_pipeline_scan(
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
-    items: list[Any],
+    items: list[ExtractedItem],
     collection_meta: CommentCollectionMeta,
     sort_adjust_result: SortAdjustResult,
     round_stats: list[CommentExtractRoundStats],
@@ -357,7 +355,7 @@ def finalize_comments_pipeline_scan(
     requested_scroll_rounds: int,
     scroll_wait_ms: int,
     auto_load_more: bool,
-    notification_sender: NotificationSender,
+    notification_sender: NtfySender,
     desktop_notification_sender: DesktopSender,
     discord_notification_sender: DiscordSender,
     commit_guard: ScanCommitGuard | None = None,

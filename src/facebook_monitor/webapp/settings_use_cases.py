@@ -10,8 +10,10 @@ from fastapi import Request
 from starlette.concurrency import run_in_threadpool
 
 from facebook_monitor.application.notification_admin import clear_failed_notifications
+from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
 from facebook_monitor.diagnostics.support_bundle import SupportBundleResult
+from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
 from facebook_monitor.runtime.build_metadata import collect_build_metadata
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.dependencies import get_db_path
@@ -20,8 +22,52 @@ from facebook_monitor.webapp.dependencies import get_runtime_paths
 from facebook_monitor.webapp.dependencies import open_profile_options
 from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
+from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.dependencies import run_web_db_operation
 from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
+
+
+async def save_theme_preference_for_settings(request: Request, theme: str) -> str:
+    """保存 settings 頁 theme preference 並回傳實際寫入值。"""
+
+    return await run_web_app_context_operation(
+        request,
+        lambda app_context: app_context.repositories.app_settings.save_theme(theme),
+        operation_name="settings.save_theme",
+    )
+
+
+def parse_target_keyword_defaults_for_settings(
+    *,
+    exclude_keywords: str,
+    exclude_ignore_phrases: str,
+) -> TargetKeywordDefaultSettings:
+    """驗證並建立新增 target 時套用的關鍵字預設設定。"""
+
+    parse_limited_keywords_text(exclude_keywords, field_label="排除關鍵字預設")
+    parse_limited_keywords_text(
+        exclude_ignore_phrases,
+        field_label="排除字忽略片語預設",
+    )
+    return TargetKeywordDefaultSettings(
+        exclude_keywords_text=exclude_keywords,
+        exclude_ignore_phrases_text=exclude_ignore_phrases,
+    )
+
+
+async def save_target_keyword_defaults_for_settings(
+    request: Request,
+    settings: TargetKeywordDefaultSettings,
+) -> None:
+    """保存 settings 頁 target keyword defaults。"""
+
+    await run_web_app_context_operation(
+        request,
+        lambda app_context: app_context.repositories.app_settings.save_target_keyword_defaults(
+            settings
+        ),
+        operation_name="settings.save_target_keyword_defaults",
+    )
 
 
 async def clear_failed_notifications_for_settings(request: Request) -> int:

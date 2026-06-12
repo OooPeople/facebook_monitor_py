@@ -24,7 +24,7 @@ from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
 class FakeLocator:
     """提供 comments worker 測試需要的 body inner_text。"""
 
-    def inner_text(self, timeout: int) -> str:
+    def inner_text(self, *, timeout: int) -> str:
         """回傳假頁面 body 文字。"""
 
         return "社團貼文頁已登入"
@@ -145,7 +145,7 @@ class MissingCommentSortControlPage(FakeCommentsPage):
 class ContentUnavailableLocator(FakeLocator):
     """提供 Facebook 內容不可見頁文字。"""
 
-    def inner_text(self, timeout: int) -> str:
+    def inner_text(self, *, timeout: int) -> str:
         """回傳內容不可見頁文字。"""
 
         return (

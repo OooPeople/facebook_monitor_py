@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import platform
 import sys
 from typing import Annotated
@@ -16,34 +15,17 @@ from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from facebook_monitor.application.update_flow import download_and_launch_verified_update
-from facebook_monitor.application.update_flow import download_verified_update
-from facebook_monitor.application.update_flow import launch_verified_update
-from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.notifications.safe_messages import safe_exception_message
-from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
-from facebook_monitor.runtime.build_metadata import BuildMetadata
-from facebook_monitor.runtime.build_metadata import collect_build_metadata
-from facebook_monitor.runtime.paths import RuntimePaths
-from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
-from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
-from facebook_monitor.updates.release_check import build_idle_update_check
 from facebook_monitor.updates.release_check import check_github_release_updates
-from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import reveal_in_file_manager
 from facebook_monitor.updates.handoff import write_pending_update
-from facebook_monitor.updates.capability import resolve_update_capability
-from facebook_monitor.updates.capability import UpdateCapability
 from facebook_monitor.updates.launcher import launch_temp_updater
-from facebook_monitor.webapp.assets import ASSET_VERSION
-from facebook_monitor.webapp.dependencies import get_runtime_paths
 from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
-from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.profile_session import ProfileSessionError
 from facebook_monitor.webapp.settings_view import build_settings_template_context
 from facebook_monitor.webapp.settings_use_cases import (
@@ -52,21 +34,15 @@ from facebook_monitor.webapp.settings_use_cases import (
 from facebook_monitor.webapp.settings_use_cases import close_facebook_profile_for_settings
 from facebook_monitor.webapp.settings_use_cases import create_support_bundle_for_settings
 from facebook_monitor.webapp.settings_use_cases import open_facebook_profile_for_settings
-
-
-@dataclass(frozen=True)
-class _SettingsUpdateContext:
-    """Settings route 執行更新流程時共用的 runtime context。"""
-
-    metadata: BuildMetadata
-    paths: RuntimePaths
-    update_capability: UpdateCapability
-
-    @property
-    def allow_env_repository_override(self) -> bool:
-        """source mode 保留測試與 debug repository override。"""
-
-        return not self.metadata.frozen
+from facebook_monitor.webapp.settings_use_cases import parse_target_keyword_defaults_for_settings
+from facebook_monitor.webapp.settings_use_cases import save_target_keyword_defaults_for_settings
+from facebook_monitor.webapp.settings_use_cases import save_theme_preference_for_settings
+from facebook_monitor.webapp.settings_update_use_cases import apply_update_for_settings
+from facebook_monitor.webapp.settings_update_use_cases import build_settings_update_context
+from facebook_monitor.webapp.settings_update_use_cases import download_and_apply_update_for_settings
+from facebook_monitor.webapp.settings_update_use_cases import download_update_for_settings
+from facebook_monitor.webapp.settings_update_use_cases import load_settings_update_check
+from facebook_monitor.webapp.settings_update_use_cases import SettingsUpdateContext
 
 
 def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -102,7 +78,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         theme = str(payload.get("theme", "")).strip()
         if theme not in {"light", "dark"}:
             raise HTTPException(status_code=400, detail="invalid theme")
-        return {"theme": await _save_app_theme(request, theme)}
+        return {"theme": await save_theme_preference_for_settings(request, theme)}
 
     @app.post("/settings/target-keywords")
     async def update_target_keyword_defaults(
@@ -113,13 +89,13 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """更新新增 target 時套用的關鍵字預設值。"""
 
         try:
-            settings = _parse_target_keyword_defaults(
+            settings = parse_target_keyword_defaults_for_settings(
                 exclude_keywords=exclude_keywords,
                 exclude_ignore_phrases=exclude_ignore_phrases,
             )
         except ValueError as exc:
             return redirect_settings_with_error(str(exc))
-        await _save_target_keyword_defaults(request, settings)
+        await save_target_keyword_defaults_for_settings(request, settings)
         return redirect_settings_with_message(
             "關鍵字預設值已保存",
             feedback="target_keyword_defaults_saved",
@@ -134,16 +110,12 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_settings_with_error(
                 update_context.update_capability.unsupported_reason
             )
-        outcome = await download_verified_update(
-            current_version=update_context.metadata.app_version,
-            paths=update_context.paths,
-            update_capability=update_context.update_capability,
-            allow_env_repository_override=update_context.allow_env_repository_override,
+        outcome = await download_update_for_settings(
+            update_context,
             check_updates=check_github_release_updates,
             download_update=download_and_verify_update,
             reveal_file_manager=reveal_in_file_manager,
             write_pending_update=write_pending_update,
-            reveal_download=True,
         )
         if not outcome.ok:
             return redirect_settings_with_error(outcome.message)
@@ -158,9 +130,8 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return redirect_settings_with_error(
                 update_context.update_capability.unsupported_reason
             )
-        outcome = launch_verified_update(
-            paths=update_context.paths,
-            update_capability=update_context.update_capability,
+        outcome = apply_update_for_settings(
+            update_context,
             launch_updater=launch_temp_updater,
             request_shutdown=lambda: _request_app_shutdown(request),
         )
@@ -178,11 +149,8 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 update_context.update_capability.unsupported_reason,
                 stage="environment",
             )
-        outcome = await download_and_launch_verified_update(
-            current_version=update_context.metadata.app_version,
-            paths=update_context.paths,
-            update_capability=update_context.update_capability,
-            allow_env_repository_override=update_context.allow_env_repository_override,
+        outcome = await download_and_apply_update_for_settings(
+            update_context,
             check_updates=check_github_release_updates,
             download_update=download_and_verify_update,
             write_pending_update=write_pending_update,
@@ -253,109 +221,26 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return redirect_settings_with_message("Facebook 設定視窗已關閉")
 
 
-def _build_settings_update_context(request: Request) -> _SettingsUpdateContext:
+def _build_settings_update_context(request: Request) -> SettingsUpdateContext:
     """收集 settings 頁所有更新流程共用的 build、path 與 capability。"""
 
-    metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-    paths = get_runtime_paths(request)
-    return _SettingsUpdateContext(
-        metadata=metadata,
-        paths=paths,
-        update_capability=_resolve_update_capability(
-            packaging_mode=metadata.packaging_mode,
-            frozen=metadata.frozen,
-            app_base_dir=paths.app_base_dir,
-            data_dir=paths.data_dir,
-            db_path=paths.db_path,
-        ),
+    return build_settings_update_context(
+        request,
+        current_system=_current_update_system,
+        current_machine=_current_update_machine,
     )
 
 
 async def _load_settings_update_check(
     request: Request,
-    update_context: _SettingsUpdateContext,
-) -> UpdateCheckResult:
+    update_context: SettingsUpdateContext,
+):
     """依 query 決定 settings 頁只顯示 idle 狀態或實際檢查 GitHub release。"""
 
-    update_check = build_idle_update_check(
-        current_version=update_context.metadata.app_version,
-        channel="stable",
-        allow_env_repository_override=update_context.allow_env_repository_override,
-    )
-    if request.query_params.get("update_check") != "1":
-        return update_check
-    try:
-        with acquire_update_operation_lock(update_context.paths.runtime_dir, "settings-check"):
-            return await check_github_release_updates(
-                current_version=update_context.metadata.app_version,
-                channel="stable",
-                allow_env_repository_override=update_context.allow_env_repository_override,
-            )
-    except UpdateOperationLockError:
-        return update_check
-
-
-async def _save_app_theme(request: Request, theme: str) -> str:
-    """保存 settings 頁 theme preference 並回傳實際寫入值。"""
-
-    return await run_web_app_context_operation(
+    return await load_settings_update_check(
         request,
-        lambda app_context: app_context.repositories.app_settings.save_theme(theme),
-        operation_name="settings.save_theme",
-    )
-
-
-def _parse_target_keyword_defaults(
-    *,
-    exclude_keywords: str,
-    exclude_ignore_phrases: str,
-) -> TargetKeywordDefaultSettings:
-    """驗證並建立新增 target 時套用的關鍵字預設設定。"""
-
-    parse_limited_keywords_text(exclude_keywords, field_label="排除關鍵字預設")
-    parse_limited_keywords_text(
-        exclude_ignore_phrases,
-        field_label="排除字忽略片語預設",
-    )
-    return TargetKeywordDefaultSettings(
-        exclude_keywords_text=exclude_keywords,
-        exclude_ignore_phrases_text=exclude_ignore_phrases,
-    )
-
-
-async def _save_target_keyword_defaults(
-    request: Request,
-    settings: TargetKeywordDefaultSettings,
-) -> None:
-    """保存 settings 頁 target keyword defaults。"""
-
-    await run_web_app_context_operation(
-        request,
-        lambda app_context: app_context.repositories.app_settings.save_target_keyword_defaults(
-            settings
-        ),
-        operation_name="settings.save_target_keyword_defaults",
-    )
-
-
-def _resolve_update_capability(
-    *,
-    packaging_mode: str,
-    frozen: bool,
-    app_base_dir: object,
-    data_dir: object | None = None,
-    db_path: object | None = None,
-) -> UpdateCapability:
-    """依 settings 測試替換後的平台判斷委派 updates capability。"""
-
-    return resolve_update_capability(
-        packaging_mode=packaging_mode,
-        frozen=frozen,
-        app_base_dir=app_base_dir,
-        data_dir=data_dir,
-        db_path=db_path,
-        system=_current_update_system(),
-        machine=_current_update_machine(),
+        update_context,
+        check_updates=check_github_release_updates,
     )
 
 

@@ -12,8 +12,8 @@ from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
-from facebook_monitor.webapp.query_service import DatabaseInvariantWarning
-from facebook_monitor.webapp.query_service import ProfileSessionWarning
+from facebook_monitor.webapp.dashboard_read_models import DatabaseInvariantWarning
+from facebook_monitor.webapp.dashboard_read_models import ProfileSessionWarning
 
 
 def serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:

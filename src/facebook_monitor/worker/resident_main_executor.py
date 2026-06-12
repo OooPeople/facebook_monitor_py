@@ -34,6 +34,7 @@ from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_main_executor_attempt import run_queue_item
+from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
@@ -485,7 +486,7 @@ class ExecutorWorkerPool:
         self,
         scan_page: AsyncScanCallable,
         *,
-        page: object,
+        page: AsyncReusablePageLike,
         app: ApplicationContext,
         target: TargetDescriptor,
         config: TargetConfig,

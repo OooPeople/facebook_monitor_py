@@ -80,7 +80,7 @@ class ResidentExecutorAttemptHost(Protocol):
         self,
         scan_page: AsyncScanCallable,
         *,
-        page: object,
+        page: AsyncReusablePageLike,
         app: ApplicationContext,
         target: TargetDescriptor,
         config: TargetConfig,

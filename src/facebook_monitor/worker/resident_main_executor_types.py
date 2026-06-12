@@ -9,6 +9,7 @@ from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
 
 
 class AsyncResidentPageLike(Protocol):
@@ -26,7 +27,7 @@ class AsyncResidentPageLike(Protocol):
         """等待指定毫秒。"""
 
 
-class AsyncReusablePageLike(AsyncResidentPageLike, Protocol):
+class AsyncReusablePageLike(AsyncResidentPageLike, AsyncScannablePageLike, Protocol):
     """resident page pool 需要的可重用 async Playwright page 能力。"""
 
     def is_closed(self) -> bool:
@@ -36,7 +37,7 @@ class AsyncReusablePageLike(AsyncResidentPageLike, Protocol):
         """關閉 page。"""
 
 
-class AsyncBrowserContextLike(Protocol):
+class AsyncPagePoolBrowserContextLike(Protocol):
     """resident page pool 需要的 browser context 能力。"""
 
     async def new_page(self) -> AsyncReusablePageLike:
@@ -49,7 +50,7 @@ class AsyncScanCallable(Protocol):
     async def __call__(
         self,
         *,
-        page: object,
+        page: AsyncReusablePageLike,
         app: ApplicationContext,
         target: TargetDescriptor,
         config: TargetConfig,

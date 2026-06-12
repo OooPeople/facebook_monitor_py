@@ -12,6 +12,15 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 
 
+class FakeAsyncLocator:
+    """resident scan 測試用 locator。"""
+
+    async def inner_text(self, *, timeout: int) -> str:
+        """回傳可掃描頁面的 body text。"""
+
+        return "Facebook group page"
+
+
 class FakeAsyncPage:
     """測試用 async page，記錄導航與關閉狀態。"""
 
@@ -34,6 +43,11 @@ class FakeAsyncPage:
 
     async def wait_for_timeout(self, milliseconds: int) -> None:
         """模擬 Playwright 等待。"""
+
+    def locator(self, selector: str) -> FakeAsyncLocator:
+        """回傳 body locator。"""
+
+        return FakeAsyncLocator()
 
     def is_closed(self) -> bool:
         """回傳 page 是否關閉。"""
@@ -81,7 +95,7 @@ class FakeAsyncBrowserContext:
 class FakeMetadataLocator:
     """metadata refresh 測試用 locator。"""
 
-    async def inner_text(self, timeout: int) -> str:
+    async def inner_text(self, *, timeout: int) -> str:
         """回傳已登入狀態的 body text。"""
 
         return "Facebook group page"
@@ -90,7 +104,7 @@ class FakeMetadataLocator:
 class FakeLoggedOutMetadataLocator(FakeMetadataLocator):
     """metadata refresh 失敗測試用 locator。"""
 
-    async def inner_text(self, timeout: int) -> str:
+    async def inner_text(self, *, timeout: int) -> str:
         """回傳未登入頁面的 body text。"""
 
         return "Log into Facebook"

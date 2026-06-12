@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
@@ -28,6 +27,7 @@ from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
 from facebook_monitor.facebook.feed_extractor import SeenItemPredicate
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics_async
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics
+from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_controls import SortAdjustResult
 from facebook_monitor.facebook.sort_controls import ensure_preferred_feed_sort_async
@@ -41,7 +41,9 @@ from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
 from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
+from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
+from facebook_monitor.worker.scan_orchestration import SyncScannablePageLike
 from facebook_monitor.worker.scan_metadata import PostScanMetadata
 from facebook_monitor.worker.scan_metadata import PostScanRoundMetadata
 from facebook_monitor.worker.scan_metadata import SORT_ADJUST_SKIP_COLLECTION_MODE
@@ -69,10 +71,6 @@ class PostsScanSummary:
     scan_run_id: int
     round_stats: tuple[ExtractRoundStats, ...]
     scan_skipped: bool = False
-
-
-class NotificationSender(NtfySender, Protocol):
-    """定義 worker 可注入的通知發送函式介面。"""
 
 
 def build_scan_metadata(
@@ -207,13 +205,13 @@ def infer_scan_stop_reason(
 
 def scan_posts_page(
     *,
-    page: Any,
+    page: SyncScannablePageLike,
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
     scroll_rounds: int,
     scroll_wait_ms: int,
-    notification_sender: NotificationSender = send_ntfy_notification,
+    notification_sender: NtfySender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
@@ -295,13 +293,13 @@ def scan_posts_page(
 
 async def scan_posts_page_async(
     *,
-    page: Any,
+    page: AsyncScannablePageLike,
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
     scroll_rounds: int,
     scroll_wait_ms: int,
-    notification_sender: NotificationSender = send_ntfy_notification,
+    notification_sender: NtfySender = send_ntfy_notification,
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
@@ -387,7 +385,7 @@ def finalize_posts_pipeline_scan(
     app: ApplicationContext,
     target: TargetDescriptor,
     config: TargetConfig,
-    items: list[Any],
+    items: list[ExtractedItem],
     collection_meta: ExtractCollectionMeta,
     sort_adjust_result: SortAdjustResult,
     round_stats: list[ExtractRoundStats],
@@ -395,7 +393,7 @@ def finalize_posts_pipeline_scan(
     requested_scroll_rounds: int,
     scroll_wait_ms: int,
     auto_load_more: bool,
-    notification_sender: NotificationSender,
+    notification_sender: NtfySender,
     desktop_notification_sender: DesktopSender,
     discord_notification_sender: DiscordSender,
     commit_guard: ScanCommitGuard | None = None,

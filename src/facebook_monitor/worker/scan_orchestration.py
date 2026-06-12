@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Protocol
 
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
@@ -15,6 +15,46 @@ from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import SESSION_INVALID_REASON
 from facebook_monitor.facebook.collection_policy import get_effective_scroll_rounds
 from facebook_monitor.worker.errors import WorkerFailure
+
+
+class SyncLocatorLike(Protocol):
+    """sync page guard 只需要讀取 locator 文字。"""
+
+    def inner_text(self, *, timeout: int) -> str:
+        """讀取 locator 文字內容。"""
+
+
+class AsyncLocatorLike(Protocol):
+    """async page guard 只需要讀取 locator 文字。"""
+
+    async def inner_text(self, *, timeout: int) -> str:
+        """讀取 locator 文字內容。"""
+
+
+class SyncScannablePageLike(Protocol):
+    """掃描前 sync guard 需要的最小 Playwright page 能力。
+
+    Facebook sort/extractor helper 仍保留動態 Playwright 邊界；本 Protocol 只描述
+    worker pipeline 進入掃描前 guard 會直接使用的能力。
+    """
+
+    url: str
+
+    def locator(self, selector: str) -> SyncLocatorLike:
+        """回傳指定 selector 的 locator。"""
+
+
+class AsyncScannablePageLike(Protocol):
+    """掃描前 async guard 需要的最小 Playwright page 能力。
+
+    Facebook sort/extractor helper 仍保留動態 Playwright 邊界；本 Protocol 只描述
+    worker pipeline 進入掃描前 guard 會直接使用的能力。
+    """
+
+    url: str
+
+    def locator(self, selector: str) -> AsyncLocatorLike:
+        """回傳指定 selector 的 locator。"""
 
 
 def classify_facebook_session_failure(
@@ -73,7 +113,7 @@ def ensure_facebook_scan_page_available(body_text: str, current_url: str = "") -
     ensure_facebook_content_available(body_text, current_url)
 
 
-def ensure_sync_page_logged_in(page: Any) -> None:
+def ensure_sync_page_logged_in(page: SyncScannablePageLike) -> None:
     """sync Playwright page 登入 guard。"""
 
     ensure_facebook_login_present(
@@ -82,7 +122,7 @@ def ensure_sync_page_logged_in(page: Any) -> None:
     )
 
 
-def ensure_sync_page_scannable(page: Any) -> None:
+def ensure_sync_page_scannable(page: SyncScannablePageLike) -> None:
     """sync Playwright page 掃描前 guard。"""
 
     ensure_facebook_scan_page_available(
@@ -91,14 +131,14 @@ def ensure_sync_page_scannable(page: Any) -> None:
     )
 
 
-async def ensure_async_page_logged_in(page: Any) -> None:
+async def ensure_async_page_logged_in(page: AsyncScannablePageLike) -> None:
     """async Playwright page 登入 guard。"""
 
     body_text = await page.locator("body").inner_text(timeout=10000)
     ensure_facebook_login_present(body_text, str(getattr(page, "url", "") or ""))
 
 
-async def ensure_async_page_scannable(page: Any) -> None:
+async def ensure_async_page_scannable(page: AsyncScannablePageLike) -> None:
     """async Playwright page 掃描前 guard。"""
 
     body_text = await page.locator("body").inner_text(timeout=10000)

@@ -19,7 +19,7 @@ class FakeLocator:
     def __init__(self, text: str) -> None:
         self.text = text
 
-    def inner_text(self, timeout: int) -> str:
+    def inner_text(self, *, timeout: int) -> str:
         """回傳假頁面 body 文字。"""
 
         return self.text

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 import logging
-from typing import Any
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
@@ -14,6 +13,9 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.facebook.group_metadata import (
+    AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
+)
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
@@ -36,7 +38,7 @@ COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK = (
 async def refresh_requested_target_metadata(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any | None,
+    browser_context: GroupMetadataBrowserContextLike | None,
     should_stop: StopCheckCallable | None = None,
     request_runtime_restart: Callable[[], None] | None = None,
 ) -> int:
@@ -111,7 +113,7 @@ def list_metadata_refresh_target_ids(options: ResidentRuntimeOptions) -> tuple[s
 async def refresh_pending_target_cover_images(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any | None,
+    browser_context: GroupMetadataBrowserContextLike | None,
     should_stop: StopCheckCallable | None = None,
     request_runtime_restart: Callable[[], None] | None = None,
 ) -> int:
@@ -301,7 +303,7 @@ def _is_scheduler_runtime_refresh_failure(exc: Exception) -> bool:
 async def refresh_target_group_cover_image_from_context(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any,
+    browser_context: GroupMetadataBrowserContextLike,
     state: TargetCoverImageRefreshState,
 ) -> bool:
     """用 resident browser context 只刷新 target group cover image URL。"""
@@ -433,7 +435,7 @@ def mark_target_metadata_refresh_failed(
 async def refresh_target_group_name_from_context(
     *,
     options: ResidentRuntimeOptions,
-    browser_context: Any,
+    browser_context: GroupMetadataBrowserContextLike,
     target_id: str,
 ) -> bool:
     """用 resident browser context 補齊 target group name。"""

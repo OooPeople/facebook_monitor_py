@@ -17,7 +17,10 @@ from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
+from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
+from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
@@ -161,6 +164,56 @@ def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -
         assert planner.dispatched_target_ids == [target.id]
 
     asyncio.run(run_test())
+
+
+def test_resident_pre_admission_failure_does_not_force_runtime_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """claim running 前失敗不可用 commit_guard=None 覆寫 runtime。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="pre-admission-failure",
+                canonical_url="https://www.facebook.com/groups/pre-admission-failure",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def fail_before_running(*_args: object, **_kwargs: object) -> object:
+        raise WorkerFailure("pre_admission_failure", "failed before running claim")
+
+    monkeypatch.setattr(attempt_module, "load_resident_target", fail_before_running)
+
+    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        raise AssertionError("scan should not run before target admission")
+
+    summary = asyncio.run(
+        run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+            scan_page=fake_scan_page,
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert summary.skipped_count == 1
+    assert summary.failure_count == 0
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.last_error == ""
+    assert latest_scan is None
 
 
 def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) -> None:

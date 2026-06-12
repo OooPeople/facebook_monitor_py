@@ -15,17 +15,13 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from starlette.concurrency import run_in_threadpool
 
-from facebook_monitor.application.notification_admin import clear_failed_notifications
 from facebook_monitor.application.update_flow import download_and_launch_verified_update
 from facebook_monitor.application.update_flow import download_verified_update
 from facebook_monitor.application.update_flow import launch_verified_update
 from facebook_monitor.core.input_limits import parse_limited_keywords_text
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import format_notification_event_message
-from facebook_monitor.diagnostics.support_bundle import create_support_bundle
-from facebook_monitor.diagnostics.support_bundle import SupportBundleResult
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
 from facebook_monitor.runtime.build_metadata import BuildMetadata
@@ -43,20 +39,19 @@ from facebook_monitor.updates.capability import resolve_update_capability
 from facebook_monitor.updates.capability import UpdateCapability
 from facebook_monitor.updates.launcher import launch_temp_updater
 from facebook_monitor.webapp.assets import ASSET_VERSION
-from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.dependencies import get_profile_manager
 from facebook_monitor.webapp.dependencies import get_runtime_paths
 from facebook_monitor.webapp.request_payloads import json_object_payload
-from facebook_monitor.webapp.dependencies import open_profile_options
-from facebook_monitor.webapp.dependencies import pause_scheduler_for_profile_use
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
-from facebook_monitor.webapp.dependencies import resume_scheduler_after_profile_use
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
-from facebook_monitor.webapp.dependencies import run_web_db_operation
 from facebook_monitor.webapp.profile_session import ProfileSessionError
-from facebook_monitor.webapp.runtime_diagnostics import build_runtime_diagnostics_view
 from facebook_monitor.webapp.settings_view import build_settings_template_context
+from facebook_monitor.webapp.settings_use_cases import (
+    clear_failed_notifications_for_settings,
+)
+from facebook_monitor.webapp.settings_use_cases import close_facebook_profile_for_settings
+from facebook_monitor.webapp.settings_use_cases import create_support_bundle_for_settings
+from facebook_monitor.webapp.settings_use_cases import open_facebook_profile_for_settings
 
 
 @dataclass(frozen=True)
@@ -211,7 +206,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """手動清除 failed notification outbox rows，不影響 pending rows。"""
 
         try:
-            cleared_count = await _clear_failed_notifications_for_settings(request)
+            cleared_count = await clear_failed_notifications_for_settings(request)
         except Exception as exc:
             return redirect_settings_with_error(
                 "清除失敗通知失敗："
@@ -229,7 +224,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """建立並下載 redacted support bundle。"""
 
         try:
-            result = await _create_support_bundle_for_settings(request)
+            result = await create_support_bundle_for_settings(request)
         except Exception as exc:
             return redirect_settings_with_error(
                 "支援診斷包建立失敗：" + format_failure_message_text(str(exc))
@@ -245,7 +240,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         """開啟 Facebook automation profile 設定視窗。"""
 
         try:
-            await _open_facebook_profile_for_settings(request)
+            await open_facebook_profile_for_settings(request)
         except ProfileSessionError as exc:
             return redirect_settings_with_error(format_failure_message_text(str(exc)))
         return redirect_settings_with_message("Facebook 設定視窗已開啟")
@@ -254,7 +249,7 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def close_facebook_profile(request: Request) -> RedirectResponse:
         """關閉 Facebook automation profile 設定視窗。"""
 
-        await _close_facebook_profile_for_settings(request)
+        await close_facebook_profile_for_settings(request)
         return redirect_settings_with_message("Facebook 設定視窗已關閉")
 
 
@@ -341,91 +336,6 @@ async def _save_target_keyword_defaults(
         ),
         operation_name="settings.save_target_keyword_defaults",
     )
-
-
-async def _clear_failed_notifications_for_settings(request: Request) -> int:
-    """清除 settings 頁允許的 failed notification outbox rows。"""
-
-    db_path = get_db_path(request)
-    return await run_web_db_operation(
-        lambda: clear_failed_notifications(db_path=db_path),
-        operation_name="settings.clear_failed_notifications",
-    )
-
-
-async def _create_support_bundle_for_settings(request: Request) -> SupportBundleResult:
-    """建立 settings 頁下載用的 redacted support bundle。"""
-
-    paths = get_runtime_paths(request)
-    metadata = collect_build_metadata(asset_version=ASSET_VERSION)
-    diagnostics = build_runtime_diagnostics_view(request.app.state)
-    return await run_in_threadpool(
-        create_support_bundle,
-        paths=paths,
-        runtime_diagnostics_text=diagnostics.copy_text,
-        app_metadata={
-            "app_version": metadata.app_version,
-            "asset_version": metadata.asset_version,
-            "packaging_mode": metadata.packaging_mode,
-            "python_version": metadata.python_version,
-        },
-        scheduler_state=_support_bundle_scheduler_state(request.app.state),
-    )
-
-
-def _support_bundle_scheduler_state(app_state: object) -> dict[str, object]:
-    """整理 support bundle 使用的 scheduler state，不觸發任何啟停動作。"""
-
-    scheduler_manager = getattr(app_state, "scheduler_manager", None)
-    if scheduler_manager is None:
-        return {}
-    try:
-        state = scheduler_manager.state()
-    except Exception:
-        return {}
-    lifecycle_state = getattr(state, "lifecycle_state", "")
-    return {
-        "running": bool(getattr(state, "running", False)),
-        "interval_seconds": getattr(state, "interval_seconds", 0),
-        "lifecycle_state": getattr(lifecycle_state, "value", str(lifecycle_state)),
-        "last_cycle_at": getattr(state, "last_cycle_at", ""),
-        "last_error": getattr(state, "last_error", ""),
-        "max_concurrent_scans": getattr(state, "max_concurrent_scans", 0),
-        "current_running_count": getattr(state, "current_running_count", 0),
-        "current_queued_count": getattr(state, "current_queued_count", 0),
-        "queue_length": getattr(state, "queue_length", 0),
-        "queued_target_ids": tuple(getattr(state, "queued_target_ids", ())),
-        "worker_ids": tuple(getattr(state, "worker_ids", ())),
-        "page_pool_size": getattr(state, "page_pool_size", 0),
-        "last_opened_page_count": getattr(state, "last_opened_page_count", 0),
-        "last_reused_page_count": getattr(state, "last_reused_page_count", 0),
-        "last_closed_page_count": getattr(state, "last_closed_page_count", 0),
-        "resident_browser_alive": bool(getattr(state, "resident_browser_alive", False)),
-        "recovered_runtime_count": getattr(state, "recovered_runtime_count", 0),
-        "notification_dispatch_count": getattr(state, "notification_dispatch_count", 0),
-        "worker_health_ok": bool(getattr(state, "worker_health_ok", True)),
-    }
-
-
-async def _open_facebook_profile_for_settings(request: Request) -> None:
-    """暫停 scheduler 後開啟 settings 頁管理的 Facebook profile 視窗。"""
-
-    pause_scheduler_for_profile_use(request)
-    try:
-        await run_in_threadpool(
-            get_profile_manager(request).open,
-            open_profile_options(request),
-        )
-    except Exception:
-        resume_scheduler_after_profile_use(request)
-        raise
-
-
-async def _close_facebook_profile_for_settings(request: Request) -> None:
-    """關閉 settings 頁管理的 Facebook profile 視窗並恢復 scheduler。"""
-
-    await run_in_threadpool(get_profile_manager(request).close)
-    resume_scheduler_after_profile_use(request)
 
 
 def _resolve_update_capability(

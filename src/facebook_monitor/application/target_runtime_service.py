@@ -404,6 +404,68 @@ class TargetRuntimeService:
         self.runtime_states.save(state)
         return state
 
+    def force_request_target_retry_after_runtime_restart(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState:
+        """runtime restart recovery：無條件清 owner 並要求新 runtime 補掃。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._retry_requested_state(existing_state)
+        self.runtime_states.save(state)
+        return state
+
+    def record_guarded_target_retry_after_sqlite_lock(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """DB lock 中止後的補掃寫回；只有 running owner 相符時才更新。"""
+
+        if not self._target_is_active(target_id):
+            return None
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._retry_requested_state(existing_state)
+        return self.runtime_states.save_if_running_owner(
+            state,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def record_non_running_target_retry_after_sqlite_lock(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState | None:
+        """DB lock 發生於 claim 前時，只允許非 running row 留下補掃要求。"""
+
+        if not self._target_is_active(target_id):
+            return None
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._retry_requested_state(existing_state)
+        return self.runtime_states.save_if_not_running(state)
+
+    def _retry_requested_state(
+        self,
+        existing_state: TargetRuntimeState,
+    ) -> TargetRuntimeState:
+        """建立 recovery 補掃 state，保留 failure streak 並清除本輪 owner。"""
+
+        now = utc_now()
+        return replace(
+            existing_state,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=now,
+            enqueue_reason="",
+            active_worker_id="",
+            active_page_id="",
+            updated_at=now,
+        )
+
     def mark_target_idle(self, target_id: str) -> TargetRuntimeState:
         """標記單一 target 已完成本輪掃描並回到 idle。"""
 
@@ -417,6 +479,14 @@ class TargetRuntimeService:
         """無條件將 target 標回 idle；呼叫端必須顯式接受覆寫 owner。"""
 
         return self.mark_target_idle(target_id)
+
+    def mark_target_idle_if_not_running(self, target_id: str) -> TargetRuntimeState | None:
+        """只在 row 不是 running owner 時將 target 標回 idle。"""
+
+        self._require_target(target_id)
+        existing_state = self.ensure_runtime_state(target_id)
+        state = self._idle_state(existing_state)
+        return self.runtime_states.save_if_not_running(state)
 
     def mark_target_idle_if_owner(
         self,
@@ -1077,6 +1147,14 @@ class TargetRuntimeService:
 
         if self.targets.get(target_id) is None:
             raise ValueError(f"Target not found: {target_id}")
+
+    def _target_is_active(self, target_id: str) -> bool:
+        """確認 target 存在且仍是可掃描狀態。"""
+
+        target = self.targets.get(target_id)
+        if target is None:
+            raise ValueError(f"Target not found: {target_id}")
+        return target.enabled and not target.paused
 
 
 def _scan_request_after_current_attempt(

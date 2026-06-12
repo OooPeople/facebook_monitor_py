@@ -11,6 +11,7 @@ from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.user_messages import format_notification_event_message
+from facebook_monitor.notifications.failure_taxonomy import classify_notification_failure
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class NotificationOutboxHealth:
     max_attempts: int
     last_failure_channel: str = ""
     last_failure_reason: str = ""
+    last_failure_category: str = ""
 
     @property
     def has_failed(self) -> bool:
@@ -57,6 +59,15 @@ def load_notification_outbox_health(db_path: Path) -> NotificationOutboxHealth:
         last_failure_reason=format_notification_event_message(latest_failed.last_error)
         if latest_failed
         else "",
+        last_failure_category=(
+            classify_notification_failure(
+                channel=latest_failed.channel.value,
+                failure_reason=latest_failed.failure_reason,
+                last_error=latest_failed.last_error,
+            )
+            if latest_failed
+            else ""
+        ),
     )
 
 

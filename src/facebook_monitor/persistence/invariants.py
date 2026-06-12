@@ -12,8 +12,10 @@ from dataclasses import dataclass
 
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
+from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
+from facebook_monitor.persistence.sqlite_codec import decode_datetime
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ def validate_database_invariants(
     violations.extend(_enum_violations(connection))
     violations.extend(_boolean_violations(connection))
     violations.extend(_range_violations(connection))
+    violations.extend(_datetime_violations(connection))
     violations.extend(_runtime_state_violations(connection))
     return tuple(violations)
 
@@ -111,6 +114,43 @@ def _range_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantV
             )
             for row in rows
         )
+    return violations
+
+
+def _datetime_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
+    violations: list[DatabaseInvariantViolation] = []
+    for contract in DATETIME_CONTRACTS:
+        fields = ", ".join(contract.fields)
+        rows = connection.execute(
+            f"SELECT {contract.row_id_column} AS row_id, {fields} FROM {contract.table}"
+        ).fetchall()
+        required_fields = set(contract.required_fields)
+        for row in rows:
+            row_id = str(row["row_id"])
+            for field in contract.fields:
+                value = row[field]
+                if not value:
+                    if field in required_fields:
+                        violations.append(
+                            DatabaseInvariantViolation(
+                                table=contract.table,
+                                row_id=row_id,
+                                field=field,
+                                message="datetime value is required",
+                            )
+                        )
+                    continue
+                try:
+                    decode_datetime(str(value))
+                except ValueError:
+                    violations.append(
+                        DatabaseInvariantViolation(
+                            table=contract.table,
+                            row_id=row_id,
+                            field=field,
+                            message=f"invalid datetime value {value!r}",
+                        )
+                    )
     return violations
 
 

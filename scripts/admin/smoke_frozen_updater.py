@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -26,13 +27,17 @@ from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION
 from facebook_monitor.updates.manifest import release_manifest_asset_name
+from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import missing_required_paths
 from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 from facebook_monitor.updates.validation import has_posix_executable_bit
 from facebook_monitor.version import APP_VERSION
+from facebook_monitor.versioning import parse_version
 from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin._release_build import DEFAULT_PRIVATE_KEY_FILE
 from scripts.admin.create_release_manifest import create_release_manifest
@@ -127,39 +132,58 @@ def run_smoke(
         encoding="utf-8",
     )
 
+    smoke_update_version = _next_smoke_update_version(APP_VERSION)
+    _patch_smoke_app_version(
+        new_app,
+        layout_policy=layout_policy,
+        version=smoke_update_version,
+    )
     data_dir = old_app / "data"
     runtime_dir = data_dir / "runtime"
     logs_dir = data_dir / "logs"
-    updates_dir = data_dir / "updates" / f"{APP_VERSION}-smoke"
+    updates_dir = data_dir / "updates" / smoke_update_version
+    artifact_set_dir = updates_dir / "attempt-smoke"
     profile_dir = data_dir / "profiles" / "automation_default"
-    for directory in (runtime_dir, logs_dir, updates_dir, profile_dir):
+    for directory in (runtime_dir, logs_dir, artifact_set_dir, profile_dir):
         directory.mkdir(parents=True, exist_ok=True)
     (data_dir / "app.db").write_text("smoke-user-db", encoding="utf-8")
     (profile_dir / "profile-marker.txt").write_text("smoke-profile", encoding="utf-8")
 
     artifact_policy = update_artifact_policy_for_key(layout_policy.platform_key)
-    zip_path = updates_dir / artifact_policy.asset_name(APP_VERSION)
+    zip_path = artifact_set_dir / artifact_policy.asset_name(smoke_update_version)
     _write_app_zip(new_app, zip_path)
     digest = calculate_sha256(zip_path)
-    zip_path.with_name(release_sha256_asset_name(zip_path.name)).write_text(
+    sha256_path = zip_path.with_name(release_sha256_asset_name(zip_path.name))
+    sha256_path.write_text(
         render_sha256_sidecar(digest, zip_path.name),
         encoding="ascii",
     )
     manifest_path, manifest_signature_path, manifest_sha256, manifest_key_id = (
         _write_smoke_manifest(
-            updates_dir=updates_dir,
+            updates_dir=artifact_set_dir,
             zip_path=zip_path,
+            version=smoke_update_version,
             platform_key=artifact_policy.platform_key,
             private_key_file=private_key_file,
             private_key_b64=private_key_b64,
         )
+    )
+    _write_smoke_verified_download_marker(
+        artifact_set_dir=artifact_set_dir,
+        zip_path=zip_path,
+        sha256_path=sha256_path,
+        manifest_path=manifest_path,
+        manifest_signature_path=manifest_signature_path,
+        manifest_sha256=manifest_sha256,
+        manifest_key_id=manifest_key_id,
+        digest=digest,
     )
     pending_path = runtime_dir / "pending_update.json"
     pending_path.write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "version": APP_VERSION,
+                "version": smoke_update_version,
                 "repository": DEFAULT_UPDATE_REPOSITORY,
                 "asset_name": zip_path.name,
                 "zip_path": str(zip_path),
@@ -263,22 +287,56 @@ def run_smoke(
         ),
         "executable_checks": executable_checks,
         "old_app": str(old_app),
+        "smoke_update_version": smoke_update_version,
     }
+
+
+def _next_smoke_update_version(current_version: str) -> str:
+    """產生只供 smoke 使用、且必定比目前 app 新的版本號。"""
+
+    parsed = parse_version(current_version)
+    parts = list(parsed.release)
+    while len(parts) < 3:
+        parts.append(0)
+    if parsed.prerelease_label:
+        return ".".join(str(part) for part in parts)
+    parts[-1] += 1
+    return ".".join(str(part) for part in parts)
+
+
+def _patch_smoke_app_version(
+    app_root: Path,
+    *,
+    layout_policy: UpdaterLayoutPolicy,
+    version: str,
+) -> None:
+    """讓 smoke update artifact 的 macOS bundle version 與 pending version 對齊。"""
+
+    if layout_policy.platform_key != "macos-arm64":
+        return
+    plist_path = app_root / MACOS_APP_BUNDLE_INFO_PLIST
+    value = plistlib.loads(plist_path.read_bytes())
+    if not isinstance(value, dict):
+        raise ValueError("smoke_macos_info_plist_invalid")
+    value["CFBundleShortVersionString"] = version
+    value["CFBundleVersion"] = version
+    plist_path.write_bytes(plistlib.dumps(value, sort_keys=True))
 
 
 def _write_smoke_manifest(
     *,
     updates_dir: Path,
     zip_path: Path,
+    version: str,
     platform_key: str,
     private_key_file: Path | None,
     private_key_b64: str,
 ) -> tuple[Path, Path, str, str]:
     """建立 updater smoke 使用的 signed manifest 與 detached signature。"""
 
-    manifest_path = updates_dir / release_manifest_asset_name(APP_VERSION)
+    manifest_path = updates_dir / release_manifest_asset_name(version)
     create_release_manifest(
-        version=APP_VERSION,
+        version=version,
         repository=DEFAULT_UPDATE_REPOSITORY,
         key_id=DEFAULT_KEY_ID,
         asset_specs=[f"{platform_key}={zip_path}"],
@@ -295,6 +353,42 @@ def _write_smoke_manifest(
         force=True,
     )
     return manifest_path, signature_path, calculate_sha256(manifest_path), DEFAULT_KEY_ID
+
+
+def _write_smoke_verified_download_marker(
+    *,
+    artifact_set_dir: Path,
+    zip_path: Path,
+    sha256_path: Path,
+    manifest_path: Path,
+    manifest_signature_path: Path,
+    manifest_sha256: str,
+    manifest_key_id: str,
+    digest: str,
+) -> None:
+    """寫出 strict updater handoff 需要的 verified download set marker。"""
+
+    marker_path = artifact_set_dir / VERIFIED_DOWNLOAD_SET_MARKER_NAME
+    marker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION,
+                "asset_name": zip_path.name,
+                "asset_sha256": digest,
+                "asset_size": zip_path.stat().st_size,
+                "sha256_name": sha256_path.name,
+                "sha256_sha256": calculate_sha256(sha256_path),
+                "manifest_name": manifest_path.name,
+                "manifest_sha256": manifest_sha256,
+                "manifest_key_id": manifest_key_id,
+                "manifest_signature_name": manifest_signature_path.name,
+                "manifest_signature_sha256": calculate_sha256(manifest_signature_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _validate_smoke_root(smoke_root: Path) -> None:

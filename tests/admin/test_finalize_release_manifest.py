@@ -13,6 +13,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.manifest import verify_release_manifest
+from facebook_monitor.updates.trust import TRUSTED_RELEASE_PUBLIC_KEYS
+from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin.finalize_release_manifest import finalize_release_manifest
 
 
@@ -34,6 +36,12 @@ def _release_key_pair() -> tuple[str, str]:
         )
     ).decode("ascii")
     return private_key_b64, public_key_b64
+
+
+def test_default_release_key_id_is_trusted_by_runtime() -> None:
+    """finalize 預設簽章 key 必須仍在 updater runtime trust root。"""
+
+    assert DEFAULT_KEY_ID in TRUSTED_RELEASE_PUBLIC_KEYS
 
 
 def _write_release_asset(dist_dir: Path, name: str, content: bytes = b"zip") -> Path:

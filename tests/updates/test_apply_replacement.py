@@ -24,7 +24,7 @@ def test_apply_pending_update_replaces_app_files_but_preserves_data(tmp_path: Pa
     data_dir = app_root / "data"
     data_dir.mkdir()
     (data_dir / "app.db").write_text("user data", encoding="utf-8")
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
 
@@ -43,7 +43,7 @@ def test_apply_pending_update_refuses_when_app_lock_is_held(tmp_path: Path) -> N
 
     app_root = tmp_path / "app"
     make_app_root(app_root, exe_text="old")
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
     pending = pending_update(tmp_path, zip_path=zip_path, digest=digest)
@@ -67,7 +67,7 @@ def test_apply_pending_update_restores_backup_when_replace_fails(
     data_dir = app_root / "data"
     data_dir.mkdir()
     (data_dir / "app.db").write_text("user data", encoding="utf-8")
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
     original_copy_path = updater_apply_replacement._copy_path

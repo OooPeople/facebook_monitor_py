@@ -13,6 +13,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.platforms import detect_layout_policy
 from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
@@ -249,6 +251,30 @@ def pending_update(tmp_path: Path, *, zip_path: Path, digest: str) -> PendingUpd
         tmp_path=tmp_path,
         zip_path=zip_path,
         digest=digest,
+    )
+    sha256_path = zip_path.with_name(zip_path.name + ".sha256")
+    sha256_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8")
+    marker_path = zip_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME
+    marker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION,
+                "asset_name": zip_path.name,
+                "asset_sha256": digest,
+                "asset_size": zip_path.stat().st_size if zip_path.exists() else 1,
+                "sha256_name": sha256_path.name,
+                "sha256_sha256": hashlib.sha256(sha256_path.read_bytes()).hexdigest(),
+                "manifest_name": manifest_path.name,
+                "manifest_sha256": manifest_digest,
+                "manifest_key_id": TEST_KEY_ID,
+                "manifest_signature_name": signature_path.name,
+                "manifest_signature_sha256": hashlib.sha256(
+                    signature_path.read_bytes()
+                ).hexdigest(),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
     )
     return PendingUpdate(
         schema_version=1,

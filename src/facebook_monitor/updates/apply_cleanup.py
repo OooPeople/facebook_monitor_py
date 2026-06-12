@@ -11,6 +11,7 @@ import uuid
 
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
 from facebook_monitor.updates.validation import is_reparse_or_symlink
@@ -71,16 +72,16 @@ def _cleanup_applied_update(
             label="manifest_signature",
             warnings=warnings,
         )
-    parent = pending.zip_path.parent
-    try:
-        resolved_parent = parent.resolve()
-        resolved_updates_dir = updates_dir.resolve()
-        if resolved_parent != resolved_updates_dir and resolved_parent.is_relative_to(
-            resolved_updates_dir
-        ):
-            parent.rmdir()
-    except OSError as exc:
-        warnings.append(_cleanup_warning("updates_parent", parent, exc))
+    _cleanup_file(
+        pending.zip_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME,
+        label="verified_download_marker",
+        warnings=warnings,
+    )
+    _cleanup_applied_artifact_parent(
+        pending.zip_path.parent,
+        updates_dir=updates_dir,
+        warnings=warnings,
+    )
     _cleanup_file(pending_path, label="pending", warnings=warnings)
     staging_dir = (
         pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(pending.version)
@@ -136,6 +137,40 @@ def _cleanup_old_backup_dirs(
         warnings=warnings,
     )
     return tuple(warnings)
+
+
+def _cleanup_applied_artifact_parent(
+    parent: Path,
+    *,
+    updates_dir: Path,
+    warnings: list[str],
+) -> None:
+    """清除本次下載 artifact parent；atomic attempt set 可整棵移除。"""
+
+    try:
+        resolved_parent = parent.resolve()
+        resolved_updates_dir = updates_dir.resolve()
+        if resolved_parent == resolved_updates_dir or not resolved_parent.is_relative_to(
+            resolved_updates_dir
+        ):
+            return
+        if is_reparse_or_symlink(parent):
+            warnings.append(
+                _cleanup_warning(
+                    "updates_parent_unsafe",
+                    parent,
+                    OSError("artifact parent is symlink or junction"),
+                )
+            )
+            return
+        if parent.name.startswith("attempt-") and parent.parent.resolve().is_relative_to(
+            resolved_updates_dir
+        ):
+            shutil.rmtree(parent)
+            return
+        parent.rmdir()
+    except OSError as exc:
+        warnings.append(_cleanup_warning("updates_parent", parent, exc))
 
 
 def _resolve_backup_root(backup_root: Path) -> tuple[Path, str | None]:

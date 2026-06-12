@@ -16,6 +16,7 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
@@ -180,6 +181,30 @@ class TargetMonitoringCommands:
     ) -> None:
         """Web UI 啟動時停止所有 target，不改變 refresh mode。"""
 
-        for target in self.targets.list_all():
+        targets = self.targets.list_enabled()
+        self._ensure_startup_reset_runtime_rows_are_decodable(targets)
+        for target in targets:
             target = self.registry.normalize_target_names(target)
             self.pause_target_monitoring(target.id)
+
+    def _ensure_startup_reset_runtime_rows_are_decodable(
+        self,
+        targets: list[TargetDescriptor],
+    ) -> None:
+        """避免 startup reset 把 active runtime corruption 靜默覆寫掉。"""
+
+        target_ids = {target.id for target in targets}
+        if not target_ids:
+            return
+        violations = validate_database_invariants(self.targets.connection)
+        active_runtime_violations = [
+            violation.format()
+            for violation in violations
+            if violation.table == "target_runtime_state"
+            and violation.row_id in target_ids
+        ]
+        if active_runtime_violations:
+            raise ValueError(
+                "database_invariant_violation: "
+                + "; ".join(sorted(active_runtime_violations))
+            )

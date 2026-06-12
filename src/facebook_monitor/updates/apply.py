@@ -12,13 +12,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
+import json
 from pathlib import Path
 import time
+import uuid
 import zipfile
 
 from facebook_monitor.runtime.instance_lock import AppInstanceLockError
 from facebook_monitor.runtime.instance_lock import AppInstanceLock
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
+from facebook_monitor.runtime.update_operation_lock import ensure_update_operation_lock
+from facebook_monitor.runtime.update_operation_lock import UpdateOperationLock
+from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
 from facebook_monitor.updates.apply_app_tree import find_staging_app_root
 from facebook_monitor.updates.apply_app_tree import validate_current_app_root
 from facebook_monitor.updates.apply_app_tree import validate_staging_app_root
@@ -40,6 +45,7 @@ from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import calculate_sha256
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import load_pending_update
+from facebook_monitor.updates.handoff import validate_pending_update_artifact_set
 from facebook_monitor.updates.handoff import validate_pending_update_paths
 from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
@@ -69,10 +75,15 @@ class PreparedUpdateStage:
     staging_app_root: Path
 
 
+CONSUMED_PENDING_UPDATE_MARKER_NAME = "pending_update.applied.json"
+CONSUMED_PENDING_UPDATE_MARKER_SCHEMA_VERSION = 1
+
+
 def apply_pending_update_file(
     path: Path,
     *,
     wait_for_lock_seconds: float = 0,
+    wait_for_operation_lock_seconds: float = 0,
     poll_seconds: float = 1,
     log_path: Path | None = None,
 ) -> UpdaterApplyResult:
@@ -92,6 +103,7 @@ def apply_pending_update_file(
         pending,
         path,
         wait_for_lock_seconds=wait_for_lock_seconds,
+        wait_for_operation_lock_seconds=wait_for_operation_lock_seconds,
         poll_seconds=poll_seconds,
         log_path=log_path,
     )
@@ -102,26 +114,19 @@ def apply_loaded_pending_update_file(
     path: Path,
     *,
     wait_for_lock_seconds: float = 0,
+    wait_for_operation_lock_seconds: float = 0,
     poll_seconds: float = 1,
     log_path: Path | None = None,
 ) -> UpdaterApplyResult:
     """使用已讀取的 pending update 套用更新並處理 handoff cleanup。"""
 
-    result = apply_pending_update(
+    result, cleanup_warnings = _apply_loaded_pending_update_file_under_operation_lock(
         pending,
+        path,
         wait_for_lock_seconds=wait_for_lock_seconds,
+        wait_for_operation_lock_seconds=wait_for_operation_lock_seconds,
         poll_seconds=poll_seconds,
     )
-    cleanup_warnings: tuple[str, ...] = ()
-    if result.applied:
-        cleanup_warnings = (
-            *_cleanup_applied_update(path, pending),
-            *_cleanup_old_backup_dirs(
-                pending.runtime_dir / BACKUP_DIR_NAME,
-                keep_count=BACKUP_RETENTION_COUNT,
-                preserve=result.backup_dir,
-            ),
-        )
     _append_updater_log(log_path, result)
     _append_cleanup_warning_log(log_path, cleanup_warnings)
     return result
@@ -131,12 +136,248 @@ def apply_pending_update(
     pending: PendingUpdate,
     *,
     wait_for_lock_seconds: float = 0,
+    wait_for_operation_lock_seconds: float = 0,
     poll_seconds: float = 1,
 ) -> UpdaterApplyResult:
     """套用已驗證更新包；主程式仍執行時會拒絕替換。"""
 
     try:
+        with _wait_for_update_operation_lock(
+            pending.runtime_dir,
+            wait_for_operation_lock_seconds=wait_for_operation_lock_seconds,
+            poll_seconds=poll_seconds,
+        ):
+            return _apply_pending_update_locked(
+                pending,
+                wait_for_lock_seconds=wait_for_lock_seconds,
+                poll_seconds=poll_seconds,
+            )
+    except UpdateOperationLockError as exc:
+        return UpdaterApplyResult(
+            status="operation_lock",
+            applied=False,
+            message=str(exc),
+        )
+
+
+def _apply_loaded_pending_update_file_under_operation_lock(
+    pending: PendingUpdate,
+    path: Path,
+    *,
+    wait_for_lock_seconds: float,
+    wait_for_operation_lock_seconds: float,
+    poll_seconds: float,
+) -> tuple[UpdaterApplyResult, tuple[str, ...]]:
+    """在同一把 operation lock 內完成 handoff 確認、套用與 cleanup。"""
+
+    try:
+        with _wait_for_update_operation_lock(
+            pending.runtime_dir,
+            wait_for_operation_lock_seconds=wait_for_operation_lock_seconds,
+            poll_seconds=poll_seconds,
+        ):
+            stale_result = _validate_loaded_pending_update_file_is_current(pending, path)
+            if stale_result is not None:
+                return stale_result, ()
+            result = _apply_pending_update_locked(
+                pending,
+                wait_for_lock_seconds=wait_for_lock_seconds,
+                poll_seconds=poll_seconds,
+            )
+            cleanup_warnings: tuple[str, ...] = ()
+            if result.applied:
+                cleanup_warnings = _cleanup_loaded_pending_update_file(
+                    pending,
+                    path,
+                    result,
+                )
+            return result, cleanup_warnings
+    except UpdateOperationLockError as exc:
+        return (
+            UpdaterApplyResult(
+                status="operation_lock",
+                applied=False,
+                message=str(exc),
+            ),
+            (),
+        )
+
+
+def _validate_loaded_pending_update_file_is_current(
+    pending: PendingUpdate,
+    path: Path,
+) -> UpdaterApplyResult | None:
+    """確認已載入的 pending 仍是目前 handoff，避免 stale updater 重複套用。"""
+
+    if _consumed_pending_update_marker_matches(
+        pending,
+        _consumed_pending_update_marker_path(path),
+        pending_path=path,
+    ) or _consumed_pending_update_marker_matches(pending, path, pending_path=path):
+        return UpdaterApplyResult(
+            status="pending_update_already_applied",
+            applied=False,
+            message=str(path),
+        )
+    try:
+        current = load_pending_update(path)
+    except FileNotFoundError:
+        return UpdaterApplyResult(
+            status="pending_update_missing",
+            applied=False,
+            message=str(path),
+        )
+    except (OSError, ValueError) as exc:
+        return UpdaterApplyResult(
+            status="failed",
+            applied=False,
+            message=str(exc),
+        )
+    if current != pending:
+        return UpdaterApplyResult(
+            status="pending_update_changed",
+            applied=False,
+            message=str(path),
+        )
+    return None
+
+
+def _cleanup_loaded_pending_update_file(
+    pending: PendingUpdate,
+    path: Path,
+    result: UpdaterApplyResult,
+) -> tuple[str, ...]:
+    """成功套用後，在 operation lock 釋放前清除 handoff 與舊備份。"""
+
+    return (
+        *_write_consumed_pending_update_marker(pending, path),
+        *_cleanup_applied_update(path, pending),
+        *_cleanup_old_backup_dirs(
+            pending.runtime_dir / BACKUP_DIR_NAME,
+            keep_count=BACKUP_RETENTION_COUNT,
+            preserve=result.backup_dir,
+        ),
+    )
+
+
+def _write_consumed_pending_update_marker(
+    pending: PendingUpdate,
+    path: Path,
+) -> tuple[str, ...]:
+    """記錄 handoff 已成功套用，避免 cleanup 失敗後被第二個 updater 重跑。"""
+
+    marker_path = _consumed_pending_update_marker_path(path)
+    tmp_path = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")
+    payload = _consumed_pending_update_marker_payload(pending, path)
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_path.open("x", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+            file.write("\n")
+        tmp_path.replace(marker_path)
+    except OSError as exc:
+        return (
+            f"consumed_pending_marker:{type(exc).__name__}:{exc}",
+            *_overwrite_pending_update_with_consumed_marker(path, payload),
+        )
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return ()
+
+
+def _overwrite_pending_update_with_consumed_marker(
+    path: Path,
+    payload: dict[str, object],
+) -> tuple[str, ...]:
+    """consumed marker 寫入失敗時，退回覆寫 pending 檔避免重複套用。"""
+
+    try:
+        with path.open("w", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+            file.write("\n")
+    except OSError as exc:
+        return (f"consumed_pending_fallback:{type(exc).__name__}:{exc}",)
+    return ()
+
+
+def _consumed_pending_update_marker_matches(
+    pending: PendingUpdate,
+    marker_path: Path,
+    *,
+    pending_path: Path,
+) -> bool:
+    """回傳目前 handoff 是否已被前一個 updater 標記為成功套用。"""
+
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload == _consumed_pending_update_marker_payload(pending, pending_path)
+
+
+def _consumed_pending_update_marker_payload(
+    pending: PendingUpdate,
+    path: Path,
+) -> dict[str, object]:
+    """建立 consumed marker payload；只放判斷同一 handoff 必要欄位。"""
+
+    return {
+        "schema_version": CONSUMED_PENDING_UPDATE_MARKER_SCHEMA_VERSION,
+        "handoff_consumed": True,
+        "pending_path": str(path.resolve()),
+        "version": pending.version,
+        "repository": pending.repository,
+        "asset_name": pending.asset_name,
+        "zip_path": str(pending.zip_path.resolve()),
+        "expected_sha256": pending.expected_sha256.casefold(),
+        "manifest_sha256": pending.manifest_sha256.casefold(),
+        "created_at": pending.created_at,
+    }
+
+
+def _consumed_pending_update_marker_path(path: Path) -> Path:
+    """回傳 pending handoff 對應的 consumed marker 路徑。"""
+
+    return path.with_name(CONSUMED_PENDING_UPDATE_MARKER_NAME)
+
+
+@contextmanager
+def _wait_for_update_operation_lock(
+    runtime_dir: Path,
+    *,
+    wait_for_operation_lock_seconds: float,
+    poll_seconds: float,
+) -> Iterator[UpdateOperationLock]:
+    """等待 settings route 釋放 updater operation lock，再進入套用流程。"""
+
+    deadline = time.monotonic() + max(0, wait_for_operation_lock_seconds)
+    last_error: UpdateOperationLockError | None = None
+    while True:
+        try:
+            with ensure_update_operation_lock(runtime_dir, "updater-apply") as lock:
+                yield lock
+                return
+        except UpdateOperationLockError as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                raise last_error
+            time.sleep(max(0.1, poll_seconds))
+
+
+def _apply_pending_update_locked(
+    pending: PendingUpdate,
+    *,
+    wait_for_lock_seconds: float,
+    poll_seconds: float,
+) -> UpdaterApplyResult:
+    """已持有 operation lock 時執行實際套用流程。"""
+
+    try:
         validate_pending_update_paths(pending)
+        validate_pending_update_artifact_set(pending)
         _validate_pending_version_is_newer(pending)
         _validate_pending_artifact_policy_matches_install(pending)
         _validate_pending_manifest_trust(pending)

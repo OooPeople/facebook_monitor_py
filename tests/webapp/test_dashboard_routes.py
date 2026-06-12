@@ -15,8 +15,11 @@ from facebook_monitor.application.services import RecordScanRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.webapp.query_service import get_dashboard_view
@@ -111,7 +114,7 @@ def test_database_invariant_warning_degrades_mapper_breaking_rows_without_ids(
         connection = app_context.repositories.targets.connection
         connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
-            "UPDATE targets SET target_kind = 'invalid-kind' WHERE id = ?",
+            "UPDATE targets SET target_kind = 'invalid-kind', enabled = 1, paused = 0 WHERE id = ?",
             (target.id,),
         )
         connection.execute("PRAGMA ignore_check_constraints = OFF")
@@ -134,6 +137,311 @@ def test_database_invariant_warning_degrades_mapper_breaking_rows_without_ids(
     assert target.id not in warning["message"]
     assert target.group_id not in warning["message"]
     assert payload["cards"] == []
+
+
+def test_database_invariant_warning_skips_inactive_corrupt_target_row(
+    tmp_path: Path,
+) -> None:
+    """inactive 壞 target row 不應讓 dashboard 全頁降級或遮蔽正常 target。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        normal = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="normal",
+                canonical_url="https://www.facebook.com/groups/normal",
+                group_name="正常社團",
+            )
+        )
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-corrupt",
+                group_name="inactive 壞資料",
+            )
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind', paused = 1 WHERE id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+
+    assert index_response.status_code == 200
+    assert "正常社團" in index_response.text
+    assert "inactive 壞資料" not in index_response.text
+    assert "資料暫時無法載入" not in index_response.text
+    payload = cards_response.json()
+    warning = payload["database_invariant_warning"]
+    assert payload["dashboard_degraded"] is False
+    assert warning["has_violations"] is True
+    assert warning["tables"] == ["targets"]
+    assert [card["target_id"] for card in payload["cards"]] == [normal.id]
+    assert corrupt.id not in warning["message"]
+
+
+def test_database_invariant_warning_skips_inactive_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """inactive runtime 壞 enum 不應讓 dashboard/sidebar partial update 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        normal = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="normal",
+                canonical_url="https://www.facebook.com/groups/normal",
+                group_name="正常社團",
+            )
+        )
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-runtime-corrupt",
+                group_name="inactive runtime 壞資料",
+            )
+        )
+        app_context.services.targets.pause_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = ? WHERE target_id = ?",
+            ("banana", corrupt.id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+    sidebar_response = client.get("/api/sidebar")
+
+    assert index_response.status_code == 200
+    assert cards_response.status_code == 200
+    assert sidebar_response.status_code == 200
+    assert "正常社團" in index_response.text
+    assert "inactive runtime 壞資料" not in index_response.text
+    payload = cards_response.json()
+    assert payload["dashboard_degraded"] is False
+    assert payload["database_invariant_warning"]["tables"] == ["target_runtime_state"]
+    assert [card["target_id"] for card in payload["cards"]] == [normal.id]
+    assert [item["target_id"] for item in sidebar_response.json()["items"]] == [normal.id]
+
+
+def test_database_invariant_warning_skips_inactive_missing_runtime_updated_at(
+    tmp_path: Path,
+) -> None:
+    """inactive runtime 缺 required datetime 也應走 invariant skip，不讓 dashboard 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        normal = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="normal",
+                canonical_url="https://www.facebook.com/groups/normal",
+                group_name="正常社團",
+            )
+        )
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-runtime-datetime",
+                canonical_url="https://www.facebook.com/groups/inactive-runtime-datetime",
+                group_name="inactive runtime 日期壞資料",
+            )
+        )
+        app_context.services.targets.pause_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute(
+            "UPDATE target_runtime_state SET updated_at = ? WHERE target_id = ?",
+            ("", corrupt.id),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dashboard_degraded"] is False
+    assert payload["database_invariant_warning"]["tables"] == ["target_runtime_state"]
+    assert [card["target_id"] for card in payload["cards"]] == [normal.id]
+
+
+def test_database_invariant_warning_degrades_corrupt_latest_scan_datetime(
+    tmp_path: Path,
+) -> None:
+    """latest scan mapper datetime 壞掉時，dashboard 應降級顯示 invariant warning。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="latest-datetime-corrupt",
+                canonical_url="https://www.facebook.com/groups/latest-datetime-corrupt",
+                group_name="latest datetime 壞資料",
+            )
+        )
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="bad-latest-datetime",
+                    item_index=0,
+                    text="日期壞掉的最近掃描",
+                )
+            ],
+        )
+        app_context.repositories.latest_scan_items.connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE target_id = ?",
+            ("not-a-datetime", target.id),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dashboard_degraded"] is True
+    assert payload["database_invariant_warning"]["tables"] == ["latest_scan_items"]
+    assert payload["cards"] == []
+
+
+def test_database_invariant_warning_degrades_corrupt_outbox_summary_datetime(
+    tmp_path: Path,
+) -> None:
+    """outbox summary datetime 壞掉時，dashboard 應降級而不是未處理 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="outbox-datetime-corrupt",
+                canonical_url="https://www.facebook.com/groups/outbox-datetime-corrupt",
+                group_name="outbox datetime 壞資料",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:outbox-datetime:desktop",
+                target_id=target.id,
+                item_key="outbox-datetime",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="title",
+                message="message",
+            )
+        )
+        app_context.repositories.notification_outbox.connection.execute(
+            "UPDATE notification_outbox SET updated_at = ? WHERE target_id = ?",
+            ("outbox-bad-datetime", target.id),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    cards_response = client.get("/api/dashboard-cards")
+    card_response = client.get(f"/api/targets/{target.id}/card")
+
+    assert cards_response.status_code == 200
+    cards_payload = cards_response.json()
+    assert cards_payload["dashboard_degraded"] is True
+    assert cards_payload["database_invariant_warning"]["tables"] == ["notification_outbox"]
+    assert cards_payload["cards"] == []
+    assert card_response.status_code == 503
+
+
+def test_target_card_returns_404_for_inactive_corrupt_target_row(
+    tmp_path: Path,
+) -> None:
+    """單卡 partial read 對 inactive 壞 target row 應回 404，不應 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-card-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-card-corrupt",
+                group_name="inactive 單卡壞資料",
+            )
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind', paused = 1 WHERE id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get(f"/api/targets/{corrupt.id}/card")
+
+    assert response.status_code == 404
+
+
+def test_target_card_returns_404_for_inactive_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """單卡 partial read 對 inactive runtime 壞 row 應回 404，不應 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-runtime-card-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-runtime-card-corrupt",
+                group_name="inactive runtime 單卡壞資料",
+            )
+        )
+        app_context.services.targets.pause_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = ? WHERE target_id = ?",
+            ("banana", corrupt.id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get(f"/api/targets/{corrupt.id}/card")
+
+    assert response.status_code == 404
+
+
+def test_target_card_returns_503_for_active_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """單卡 partial read 對 active runtime 壞 row 應明確失敗，不可修復或 404。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-runtime-card-corrupt",
+                canonical_url="https://www.facebook.com/groups/active-runtime-card-corrupt",
+                group_name="active runtime 單卡壞資料",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = ? WHERE target_id = ?",
+            ("banana", corrupt.id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get(f"/api/targets/{corrupt.id}/card")
+
+    assert response.status_code == 503
 
 
 def test_database_invariant_warning_does_not_degrade_unrelated_value_error(
@@ -165,6 +473,57 @@ def test_database_invariant_warning_does_not_degrade_unrelated_value_error(
     monkeypatch.setattr(TargetRepository, "list_all", raise_unrelated_value_error)
 
     with pytest.raises(ValueError, match="SurpriseBug"):
+        get_dashboard_view(db_path)
+
+
+def test_database_invariant_warning_does_not_degrade_unrelated_datetime_value_error(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """datetime invariant 存在時，也不可吞掉不同壞值的 mapper-like ValueError。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="datetime-mapper-bug",
+                canonical_url="https://www.facebook.com/groups/datetime-mapper-bug",
+                group_name="datetime mapper bug",
+            )
+        )
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="datetime-mapper-bug",
+                    item_index=0,
+                    text="datetime mapper bug",
+                )
+            ],
+        )
+        app_context.repositories.latest_scan_items.connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE target_id = ?",
+            ("stored-bad-datetime", target.id),
+        )
+
+    def raise_unrelated_datetime_value_error(
+        self: LatestScanItemRepository,
+        target_ids: list[str],
+        *,
+        limit_per_target: int,
+    ) -> dict[str, list[object]]:
+        raise ValueError("Invalid isoformat string: 'unrelated-bug'")
+
+    monkeypatch.setattr(
+        LatestScanItemRepository,
+        "list_by_targets",
+        raise_unrelated_datetime_value_error,
+    )
+
+    with pytest.raises(ValueError, match="unrelated-bug"):
         get_dashboard_view(db_path)
 
 

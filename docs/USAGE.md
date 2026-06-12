@@ -163,7 +163,7 @@ xattr -dr com.apple.quarantine "./facebook-monitor"
 
 如果解壓到其他位置，請把 `~/Downloads` 改成實際位置。這只是在移除 macOS 對該次瀏覽器下載加上的 quarantine 標記，不等同於完成 Developer ID signing / notarization；後續從已能啟動的 app 內使用更新器下載並替換新版，通常不需要重做。
 
-更新流程會保留 `data/` 內的 DB、profile、secrets 與 logs。下載檔會放在 `<data-dir>/updates/<version>/`，套用成功後會清除本次下載 zip、同名 `.sha256`、signed manifest / `.sig` 與 pending handoff。若套用或清理失敗，先看 `<logs-dir>/updater.log`。
+更新流程會保留 `data/` 內的 DB、profile、secrets 與 logs。下載檔會放在 `<data-dir>/updates/<version>/`，只有 zip、同名 `.sha256`、signed manifest、`.sig` 與 verified marker 都一致時才會交給 updater 套用；套用成功後會清除本次下載 set 與 pending handoff。若套用或清理失敗，先看 `<logs-dir>/updater.log`。
 
 若更新後沒有自動重啟：
 

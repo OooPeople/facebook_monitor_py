@@ -18,8 +18,11 @@ from typing import Any
 import uuid
 
 from facebook_monitor.runtime.paths import RuntimePaths
+from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import UpdateDownloadResult
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
+from facebook_monitor.updates.download import validate_verified_download_set
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.updates.validation import is_dangerous_root
 from facebook_monitor.updates.validation import is_reparse_or_symlink
@@ -82,6 +85,7 @@ def write_pending_update(
         raise ValueError("download_result_manifest_missing")
     if not download_result.manifest_key_id:
         raise ValueError("download_result_manifest_key_missing")
+    validate_verified_download_set(download_result)
     pending = PendingUpdate(
         schema_version=PENDING_UPDATE_SCHEMA_VERSION,
         version=update_check.latest_version,
@@ -107,6 +111,7 @@ def write_pending_update(
         manifest_key_id=download_result.manifest_key_id,
     )
     validate_pending_update_paths(pending)
+    validate_pending_update_artifact_set(pending)
     destination = pending_update_path(paths.runtime_dir)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(destination, _pending_to_json_dict(pending))
@@ -164,6 +169,7 @@ def load_pending_update(path: Path) -> PendingUpdate:
     if not pending.manifest_key_id:
         raise ValueError("pending_update_manifest_key_missing")
     validate_pending_update_paths(pending, pending_path=path)
+    validate_pending_update_artifact_set(pending)
     return pending
 
 
@@ -216,6 +222,50 @@ def validate_pending_update_paths(
         expected_pending_path = pending_update_path(runtime_dir).resolve()
         if pending_path.resolve() != expected_pending_path:
             raise ValueError("pending_update_path_mismatch")
+
+
+def validate_pending_update_artifact_set(pending: PendingUpdate) -> None:
+    """確認 pending update 指向完整 atomic artifact set。"""
+
+    updates_version_dir = (
+        pending.data_dir.resolve()
+        / "updates"
+        / sanitize_release_asset_name(pending.version)
+    )
+    set_dir = pending.zip_path.resolve().parent
+    if set_dir == updates_version_dir or set_dir.parent != updates_version_dir:
+        raise ValueError("pending_update_artifact_set_invalid")
+    if not set_dir.name.startswith("attempt-"):
+        raise ValueError("pending_update_artifact_set_invalid")
+    if is_reparse_or_symlink(set_dir):
+        raise ValueError("pending_update_artifact_set_unsafe")
+    sha256_path = set_dir / release_sha256_asset_name(pending.zip_path.name)
+    if not sha256_path.is_file():
+        raise ValueError("pending_update_sha256_missing")
+    if pending.manifest_path is None or pending.manifest_signature_path is None:
+        raise ValueError("pending_update_manifest_missing")
+    marker_path = set_dir / VERIFIED_DOWNLOAD_SET_MARKER_NAME
+    if not marker_path.is_file():
+        raise ValueError("pending_update_verified_set_missing")
+    download_result = UpdateDownloadResult(
+        status="verified",
+        downloaded=True,
+        verified=True,
+        file_path=pending.zip_path,
+        sha256_path=sha256_path,
+        expected_sha256=pending.expected_sha256,
+        actual_sha256=pending.actual_sha256,
+        failure_reason="",
+        manifest_path=pending.manifest_path,
+        manifest_signature_path=pending.manifest_signature_path,
+        manifest_sha256=pending.manifest_sha256,
+        manifest_key_id=pending.manifest_key_id,
+        verified_set_marker_path=marker_path,
+    )
+    try:
+        validate_verified_download_set(download_result)
+    except (OSError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _pending_to_json_dict(pending: PendingUpdate) -> dict[str, Any]:

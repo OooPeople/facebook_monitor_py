@@ -67,6 +67,7 @@
 
 - Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
+- notification failure 會保留安全化錯誤與內部分類摘要，用於 Settings health 與 support bundle 診斷；這不代表系統會自動 retry、補送或建立 dead-letter UI。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
 - desktop notification 是 target-scoped compact message，正式摘要只包含 `社團`、`類型`、`命中` 三行，內容由共用 payload builder 產生；平台 sender 只負責投遞，不自行重組內容。
 - Windows desktop notification 的正式路徑由目前 process 內的 Win32 `Shell_NotifyIconW` tray owner 送出，使用 bundled / source tree 的 `facebook-monitor-tray.ico` / `facebook-monitor.ico`，不再以 PowerShell process 與系統 information icon 作為正式路徑。Windows icon asset 尺寸需求歸 `packaging/assets/README.md` 管理。
@@ -86,7 +87,9 @@
 - macOS onedir 內包含 `Facebook Monitor.app` Finder / Dock native launcher；它啟動同一個 onedir 內的正式 `facebook-monitor` executable，並留在 Dock 作為可 Quit 的母程序與唯一 native notification owner。若舊版 updater 直接啟動新版 root `facebook-monitor` binary，新版 binary 會自動轉交給 `.app` launcher，updater 仍以 onedir 根目錄作為 app base dir。
 - 設定頁只查 GitHub stable Release metadata；一般使用者 UI 不暴露 Preview / Stable channel 選擇、repository、asset 檔名或 SHA256 檔名。
 - Release asset 檔名必須精確對齊 GitHub tag version：Windows 使用 `facebook-monitor-{version}-windows-portable.zip`，macOS arm64 使用 `facebook-monitor-{version}-macos-arm64-onedir.zip`，兩者都必須有同名 `.sha256`；同一個 release 還必須包含 `facebook-monitor-{version}-manifest.json` 與 detached signature。若 GitHub 只剩較舊 release，app 會用它做版本比較，但使用者看到的「最新版本」不會被較舊版本覆蓋。若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本 zip。
-- Web UI 只負責下載、驗證 Ed25519 signed manifest、交叉檢查 release zip 的 SHA256 / size、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
+- 更新的 download / apply API 會取得 update operation lock，避免同一 data dir 內並發下載、套用或 updater CLI 路徑互相覆蓋。
+- Web UI 只負責下載、驗證 Ed25519 signed manifest、交叉檢查 release zip 的 SHA256 / size、發布完整 verified artifact set、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
+- verified artifact set 以同版本更新目錄內的 `verified-download.json` 作為最後發布 marker；handoff / apply 前會重新驗證 zip、manifest、signature、SHA256 與 marker，因此 updater 不接受半套下載結果。
 - `facebook-monitor-updater.exe` / `facebook-monitor-updater` 是獨立 PyInstaller onedir entrypoint。從 Web UI 啟動時會複製 updater binary 與同層 `_internal/` 到唯一 temp 目錄，避免 updater 鎖住原 app base dir；舊 temp updater runtime copy 會依保留時間清理。
 - updater 在主程式釋放 app instance lock 後，會重驗 signed manifest 與 zip SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、備份目前 app files、替換 app files，並保留 `data/`。
 - macOS updater 解壓 staging 時會保留 zip 內 POSIX executable bit 與安全的 tree-internal symlink，避免覆蓋後的 `facebook-monitor`、`facebook-monitor-updater`、bundled browser 或 PyInstaller runtime layout 失效；指向 app tree 外部的 symlink 會被拒絕。
@@ -107,6 +110,7 @@
 - Runtime data maintenance 只清可重建 scan/debug 資料與可選的 legacy `seen_items` mirror；不得把 `notification_outbox` 當作一般 runtime/debug 資料清掉。bounded retention 另行清理 60 天外 logical/dedupe state 與短期 terminal outbox rows。
 - Local dedupe 採 60 天 bounded horizon：`logical_items` / `logical_item_aliases` 以 `last_seen_at` 保留 60 天，`notification_dedupe` 以 `last_deduped_at` 保留 60 天；超過 horizon 的舊 item 若再次出現，可能被視為新的可通知項目。
 - bounded retention 會短留 terminal outbox rows：`sent` / `skipped` 預設保留 7 天，`failed` / `processing_failed` 預設保留 14 天供診斷；`pending` / `processing_pending`、latest scan 仍引用的 logical item 與 active notification dedupe references 會被保護。
+- support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、schema/table counts 與 invariant summary；產生時先寫同目錄 temp zip，成功後才發布正式 zip，retention 只清正式 support bundle。
 
 ## Web UI 語義
 
@@ -120,6 +124,7 @@
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
 - dashboard revision 是 partial update 的觸發來源；Web UI 以 batch payload 更新 sidebar 與 target cards。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API 暫留 `notified_at` legacy key 作相容。
+- dashboard / target card / hit records read model 需要對 inactive 或 paused 的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；active fatal invariant 仍應回報阻擋或 degraded 狀態。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
 

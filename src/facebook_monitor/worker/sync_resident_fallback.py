@@ -44,7 +44,7 @@ from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.resident_shared import load_resident_target
-from facebook_monitor.worker.resident_shared import mark_resident_target_error
+from facebook_monitor.worker.resident_shared import force_mark_resident_target_error
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
@@ -220,7 +220,7 @@ def run_sync_resident_fallback_cycle(
         try:
             resident_target = load_resident_target(options.db_path, target_id)
         except WorkerFailure as exc:
-            mark_resident_target_error(
+            force_mark_resident_target_error(
                 options.db_path,
                 target_id,
                 format_scan_failure_message(exc.reason, str(exc)),

@@ -88,6 +88,106 @@ def test_scheduler_start_preflight_blocks_active_target_decode_violation(
     assert f"targets[{target.id}].target_kind" in result.message
 
 
+def test_scheduler_start_preflight_allows_inactive_target_decode_violation(
+    tmp_path: Path,
+) -> None:
+    """inactive/paused target 壞 enum 不在 scheduler hot path，不能阻止啟動。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="group-1",
+                canonical_url="https://www.facebook.com/groups/group-1",
+                name="Group 1",
+            )
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute(
+            "UPDATE targets SET target_kind = ?, paused = 1 WHERE id = ?",
+            ("banana", target.id),
+        )
+
+    result = run_scheduler_start_preflight(
+        db_path,
+        default_interval_seconds=60,
+    )
+
+    assert result.ok
+
+
+def test_scheduler_start_preflight_blocks_active_runtime_decode_violation(
+    tmp_path: Path,
+) -> None:
+    """active target 的 runtime enum 壞掉時仍要阻止 scheduler crash-loop。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="group-1",
+                canonical_url="https://www.facebook.com/groups/group-1",
+                name="Group 1",
+            )
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET enabled = 1, paused = 0 WHERE id = ?",
+            (target.id,),
+        )
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = ? WHERE target_id = ?",
+            ("banana", target.id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    result = run_scheduler_start_preflight(
+        db_path,
+        default_interval_seconds=60,
+    )
+
+    assert not result.ok
+    assert f"target_runtime_state[{target.id}].runtime_status" in result.message
+
+
+def test_scheduler_start_preflight_allows_inactive_runtime_decode_violation(
+    tmp_path: Path,
+) -> None:
+    """inactive/paused target 的 runtime enum 壞掉時，不阻止 scheduler 啟動。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="group-1",
+                canonical_url="https://www.facebook.com/groups/group-1",
+                name="Group 1",
+            )
+        )
+        app.services.targets.pause_target_monitoring(target.id)
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = ? WHERE target_id = ?",
+            ("banana", target.id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    result = run_scheduler_start_preflight(
+        db_path,
+        default_interval_seconds=60,
+    )
+
+    assert result.ok
+
+
 def test_scheduler_start_preflight_allows_stale_running_runtime_state(
     tmp_path: Path,
 ) -> None:

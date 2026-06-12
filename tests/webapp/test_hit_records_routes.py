@@ -254,6 +254,275 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         )
 
 
+def test_hit_record_api_returns_404_for_inactive_corrupt_target_row(
+    tmp_path: Path,
+) -> None:
+    """命中紀錄 API 對 inactive 壞 target row 應回 404，不應 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-hit-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-hit-corrupt",
+                group_name="inactive hit 壞資料",
+            )
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind', paused = 1 WHERE id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/preview").status_code == 404
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/count").status_code == 404
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records").status_code == 404
+
+
+def test_hit_record_api_returns_404_for_inactive_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """命中紀錄 API 對 inactive 壞 runtime row 應回 404，不應 500。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-hit-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-hit-runtime-corrupt",
+                group_name="inactive hit runtime 壞資料",
+            )
+        )
+        app_context.services.targets.pause_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = 'invalid' WHERE target_id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/preview").status_code == 404
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/count").status_code == 404
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records").status_code == 404
+
+
+def test_hit_record_api_returns_503_for_active_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """命中紀錄 API 對 active 壞 runtime row 應明確 503，不可 404 或修復。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-hit-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/active-hit-runtime-corrupt",
+                group_name="active hit runtime 壞資料",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(corrupt.id)
+        connection = app_context.repositories.runtime_states.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = 'invalid' WHERE target_id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/preview").status_code == 503
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records/count").status_code == 503
+    assert client.get(f"/api/targets/{corrupt.id}/hit-records").status_code == 503
+
+
+def test_hit_record_api_returns_503_for_corrupt_match_history_datetime(
+    tmp_path: Path,
+) -> None:
+    """命中紀錄 mapper datetime 壞掉時，API 應回 503 而不是未處理例外。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="hit-history-datetime-corrupt",
+                canonical_url="https://www.facebook.com/groups/hit-history-datetime-corrupt",
+                group_name="hit history 日期壞資料",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="bad-history-datetime",
+                text="日期壞掉的命中紀錄",
+                include_rule="日期",
+                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                created_at=app.state.session_started_at + timedelta(seconds=1),
+            )
+        )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET created_at = ? WHERE target_id = ?",
+            ("not-a-datetime", target.id),
+        )
+
+    client = TestClient(app)
+
+    preview_response = client.get(f"/api/targets/{target.id}/hit-records/preview")
+    count_response = client.get(f"/api/targets/{target.id}/hit-records/count")
+    full_response = client.get(f"/api/targets/{target.id}/hit-records")
+
+    assert preview_response.status_code == 503
+    assert count_response.status_code == 503
+    assert full_response.status_code == 503
+
+
+def test_hit_record_count_ignores_other_target_corrupt_match_history_datetime(
+    tmp_path: Path,
+) -> None:
+    """其他 target 的 hit history datetime 壞資料，不應拖垮本 target count。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="corrupt-hit-history",
+                canonical_url="https://www.facebook.com/groups/corrupt-hit-history",
+                group_name="corrupt hit history",
+            )
+        )
+        normal = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="normal-hit-history",
+                canonical_url="https://www.facebook.com/groups/normal-hit-history",
+                group_name="normal hit history",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=corrupt.id,
+                group_id=corrupt.group_id,
+                group_name=corrupt.group_name,
+                item_kind=ItemKind.POST,
+                item_key="other-target-bad-history-datetime",
+                text="其他 target 日期壞掉的命中紀錄",
+                include_rule="日期",
+                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                created_at=app.state.session_started_at + timedelta(seconds=1),
+            )
+        )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET created_at = ? WHERE target_id = ?",
+            ("not-a-datetime", corrupt.id),
+        )
+
+    client = TestClient(app)
+
+    response = client.get(f"/api/targets/{normal.id}/hit-records/count")
+
+    assert response.status_code == 200
+    assert response.json()["total_count"] == 0
+
+
+def test_hit_record_count_returns_503_for_corrupt_match_history_notified_at(
+    tmp_path: Path,
+) -> None:
+    """notified_at 壞掉時，count 也不可宣稱 read model 可用。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="hit-history-notified-at-corrupt",
+                canonical_url="https://www.facebook.com/groups/hit-history-notified-at-corrupt",
+                group_name="hit history notified_at corrupt",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="bad-history-notified-at",
+                text="通知時間壞掉的命中紀錄",
+                include_rule="日期",
+                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                created_at=app.state.session_started_at + timedelta(seconds=1),
+            )
+        )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET notified_at = ? WHERE target_id = ?",
+            ("not-a-datetime", target.id),
+        )
+
+    client = TestClient(app)
+
+    response = client.get(f"/api/targets/{target.id}/hit-records/count")
+
+    assert response.status_code == 503
+
+
+def test_hit_record_preview_count_ignores_corrupt_match_history_before_session(
+    tmp_path: Path,
+) -> None:
+    """本次 session 前的壞 hit history row 不影響 preview/count，但 full list 仍不可讀。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="old-hit-history-datetime-corrupt",
+                canonical_url="https://www.facebook.com/groups/old-hit-history-datetime-corrupt",
+                group_name="old hit history datetime corrupt",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="old-bad-history-datetime",
+                text="舊 session 日期壞掉的命中紀錄",
+                include_rule="日期",
+                notified_at=app.state.session_started_at - timedelta(seconds=1),
+                created_at=app.state.session_started_at - timedelta(seconds=1),
+            )
+        )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET created_at = ? WHERE target_id = ?",
+            ("not-a-datetime", target.id),
+        )
+
+    client = TestClient(app)
+    preview_response = client.get(f"/api/targets/{target.id}/hit-records/preview")
+    count_response = client.get(f"/api/targets/{target.id}/hit-records/count")
+    full_response = client.get(f"/api/targets/{target.id}/hit-records")
+
+    assert preview_response.status_code == 200
+    assert count_response.status_code == 200
+    assert count_response.json()["total_count"] == 0
+    assert full_response.status_code == 503
+
+
 def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> None:
     """Web read model 不把非 Facebook permalink 輸出成可點擊連結。"""
 

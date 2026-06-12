@@ -538,6 +538,51 @@ class TargetApplicationService:
 
         return self.runtime_service.force_mark_target_idle(target_id)
 
+    def force_request_target_retry_after_runtime_restart(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState:
+        """runtime restart recovery：清 owner 並要求新 runtime 補掃。"""
+
+        return self.runtime_service.force_request_target_retry_after_runtime_restart(
+            target_id,
+        )
+
+    def record_guarded_target_retry_after_sqlite_lock(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """DB lock 中止後補掃；只有 running owner 相符時才更新。"""
+
+        return self.runtime_service.record_guarded_target_retry_after_sqlite_lock(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
+    def record_non_running_target_retry_after_sqlite_lock(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState | None:
+        """DB lock 發生於 claim 前時，只更新非 running row。"""
+
+        return self.runtime_service.record_non_running_target_retry_after_sqlite_lock(
+            target_id,
+        )
+
+    def mark_target_idle_if_not_running(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState | None:
+        """只在 row 不是 running owner 時將 target 標回 idle。"""
+
+        return self.runtime_service.mark_target_idle_if_not_running(target_id)
+
     def mark_target_idle_if_owner(
         self,
         target_id: str,

@@ -161,6 +161,7 @@ _UPDATE_REASON_LABELS = {
     "invalid_asset_name": "更新檔名不安全",
     "download_path_unsafe": "更新檔下載路徑不安全",
     "download_too_large": "更新檔超過大小限制",
+    "update_operation_locked": "更新流程正在執行中，請稍後再試",
     "download_http_404": "更新檔下載位址不存在",
     "updater_missing": "找不到內建更新器",
     "pending_update_missing": "找不到更新交接檔",

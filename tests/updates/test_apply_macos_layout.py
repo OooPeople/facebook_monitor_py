@@ -35,7 +35,7 @@ def test_apply_pending_update_supports_macos_arm64_onedir_layout(
     data_dir = app_root / "data"
     data_dir.mkdir()
     (data_dir / "app.db").write_text("user data", encoding="utf-8")
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
 
@@ -64,7 +64,7 @@ def test_apply_pending_update_supports_macos_root_level_zip_layout(
     data_dir = app_root / "data"
     data_dir.mkdir()
     (data_dir / "app.db").write_text("user data", encoding="utf-8")
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_root_level_update_zip(zip_path, app_text="new")
 
@@ -85,7 +85,7 @@ def test_apply_pending_update_rejects_macos_zip_without_executable_bit_metadata(
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_app_root(source_root, app_text="new")
@@ -123,7 +123,7 @@ def test_apply_pending_update_rejects_macos_browser_without_executable_bit_metad
     make_macos_chrome_for_testing_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_chrome_for_testing_app_root(source_root, app_text="new")
@@ -169,7 +169,7 @@ def test_apply_pending_update_preserves_safe_macos_symlinks(tmp_path: Path) -> N
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_app_root(source_root, app_text="new")
@@ -210,7 +210,7 @@ def test_apply_pending_update_replaces_legacy_macos_shell_launcher(
     write_macos_app_bundle(app_root, launcher_content=legacy_launcher)
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
 
@@ -242,7 +242,7 @@ def test_apply_pending_update_supports_macos_chrome_for_testing_layout(
     data_dir = app_root / "data"
     data_dir.mkdir()
     (data_dir / "app.db").write_text("user data", encoding="utf-8")
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_chrome_for_testing_update_zip(zip_path, app_text="new")
 
@@ -275,7 +275,7 @@ def test_apply_pending_update_rejects_macos_plist_hidden_string(
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_app_root(source_root, app_text="new")
@@ -304,8 +304,6 @@ def test_apply_pending_update_rejects_macos_plist_hidden_string(
     assert result.status == "failed"
     assert result.message == "staging_macos_bundle_hidden_from_dock"
     assert (app_root / "facebook-monitor").read_bytes().endswith(b"old")
-
-
 def test_apply_pending_update_rejects_macos_bundle_identifier_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -315,7 +313,7 @@ def test_apply_pending_update_rejects_macos_bundle_identifier_mismatch(
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_app_root(source_root, app_text="new")
@@ -358,7 +356,7 @@ def test_apply_pending_update_rejects_macos_background_only_integer(
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     source_root = zip_path.parent / "new" / "facebook-monitor"
     make_macos_app_root(source_root, app_text="new")

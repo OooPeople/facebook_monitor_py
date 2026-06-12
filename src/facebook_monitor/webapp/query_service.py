@@ -24,7 +24,11 @@ from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
 from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.persistence.row_mappers import target_from_row
+from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
+from facebook_monitor.persistence.sqlite_codec import decode_datetime
+from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -68,6 +72,26 @@ _ENUM_ERROR_TYPE_BY_TABLE_FIELD = {
     ("target_runtime_state", "runtime_status"): "TargetRuntimeStatus",
     ("target_cover_image_refresh_state", "status"): "TargetCoverImageRefreshStatus",
     ("target_cover_image_refresh_state", "last_result"): "TargetCoverImageRefreshResult",
+}
+
+_DATETIME_ERROR_FRAGMENTS_BY_TABLE = {
+    "targets": ("target row has invalid datetime fields",),
+    "match_history": ("match history row has invalid created_at",),
+    "latest_scan_items": ("latest scan item row has invalid scanned_at",),
+    "scan_runs": ("scan run row has invalid datetime fields",),
+    "notification_events": ("notification event row has invalid created_at",),
+    "notification_outbox": ("notification outbox row has invalid datetime fields",),
+    "target_runtime_state": ("target runtime state row has invalid updated_at",),
+    "target_cover_image_refresh_state": (
+        "cover image refresh row has invalid updated_at",
+    ),
+    "sidebar_groups": ("sidebar group row has invalid datetime fields",),
+    "sidebar_target_placements": (
+        "sidebar target placement row has invalid updated_at",
+    ),
+    "sidebar_group_config_templates": (
+        "sidebar group template row has invalid updated_at",
+    ),
 }
 
 
@@ -216,15 +240,27 @@ def _list_target_rows(
             database_invariant_violations
         )
         try:
-            targets = _read_dashboard_mapper_value(
-                lambda: app_context.repositories.targets.list_all(),
-                tables=("targets",),
+            targets = _read_dashboard_targets(
+                app_context,
                 violations=database_invariant_violations,
             )
             target_ids = [target.id for target in targets]
-            placements_by_target = app_context.repositories.sidebar_layout.list_placements()
-            groups = app_context.repositories.sidebar_layout.list_groups()
+            placements_by_target = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.sidebar_layout.list_placements(),
+                tables=("sidebar_target_placements",),
+                violations=database_invariant_violations,
+            )
+            groups = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.sidebar_layout.list_groups(),
+                tables=("sidebar_groups",),
+                violations=database_invariant_violations,
+            )
             targets = _order_targets_by_sidebar(targets, placements_by_target, groups)
+            targets = _skip_inactive_runtime_invariant_targets(
+                app_context,
+                targets=targets,
+                violations=database_invariant_violations,
+            )
             target_ids = [target.id for target in targets]
             configs_by_target = _configs_by_target(app_context, targets)
             runtime_by_target = _read_dashboard_mapper_value(
@@ -247,8 +283,12 @@ def _list_target_rows(
                 tables=("scan_runs",),
                 violations=database_invariant_violations,
             )
-            outbox_summaries = (
-                app_context.repositories.notification_outbox.summarize_by_targets(target_ids)
+            outbox_summaries = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.notification_outbox.summarize_by_targets(
+                    target_ids
+                ),
+                tables=("notification_outbox",),
+                violations=database_invariant_violations,
             )
             max_items_limit = max(
                 (config.max_items_per_scan for config in configs_by_target.values()),
@@ -298,13 +338,11 @@ def _list_target_rows(
                 rows=rows,
                 placements_by_target=placements_by_target,
                 groups=groups,
-                templates_by_group={
-                    group.id: (
-                        app_context.repositories.sidebar_layout.get_template(group.id)
-                        or SidebarGroupConfigTemplate(sidebar_group_id=group.id)
-                    )
-                    for group in groups
-                },
+                templates_by_group=_sidebar_templates_by_group(
+                    app_context,
+                    groups=groups,
+                    violations=database_invariant_violations,
+                ),
             )
         except _DashboardInvariantMapperError:
             return _degraded_dashboard_read_result(
@@ -320,13 +358,167 @@ def _list_target_rows(
         )
 
 
+def _read_dashboard_targets(
+    app_context: ApplicationContext,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> list[TargetDescriptor]:
+    """讀取 dashboard targets；inactive 壞 invariant row 只跳過，不拖垮首頁。"""
+
+    try:
+        return _read_dashboard_mapper_value(
+            lambda: app_context.repositories.targets.list_all(),
+            tables=("targets",),
+            violations=violations,
+        )
+    except _DashboardInvariantMapperError:
+        skipped_ids = _inactive_target_invariant_row_ids(
+            app_context.repositories.targets.connection,
+            violations=violations,
+        )
+        if not skipped_ids:
+            raise
+        try:
+            return _list_targets_excluding_ids(
+                app_context.repositories.targets.connection,
+                skipped_ids=skipped_ids,
+            )
+        except ValueError as exc:
+            if _is_invariant_backed_mapper_error(
+                exc,
+                violations=violations,
+                tables=("targets",),
+            ):
+                raise _DashboardInvariantMapperError(str(exc)) from exc
+            raise
+
+
+def _skip_inactive_runtime_invariant_targets(
+    app_context: ApplicationContext,
+    *,
+    targets: list[TargetDescriptor],
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> list[TargetDescriptor]:
+    """移除 inactive 且 runtime invariant 壞掉的 target，避免 read model 全頁降級。"""
+
+    skipped_ids = _inactive_runtime_invariant_row_ids(
+        app_context.repositories.runtime_states.connection,
+        violations=violations,
+    )
+    if not skipped_ids:
+        return targets
+    return [target for target in targets if target.id not in skipped_ids]
+
+
+def _inactive_invariant_target_ids(
+    connection: sqlite3.Connection,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> set[str]:
+    """回傳 Web read model 可安全略過的 inactive/paused 壞 target ids。"""
+
+    return _inactive_target_invariant_row_ids(
+        connection,
+        violations=violations,
+    ) | _inactive_runtime_invariant_row_ids(
+        connection,
+        violations=violations,
+    )
+
+
+def _inactive_target_invariant_row_ids(
+    connection: sqlite3.Connection,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> set[str]:
+    """回傳 targets 表中 inactive/paused 且有 invariant violation 的 row id。"""
+
+    candidate_ids = {
+        violation.row_id
+        for violation in violations
+        if violation.table == "targets"
+        and violation.field
+        in {"target_kind", "metadata_status", "worker_mode", "created_at", "updated_at"}
+    }
+    return _inactive_target_ids(connection, candidate_ids)
+
+
+def _inactive_runtime_invariant_row_ids(
+    connection: sqlite3.Connection,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> set[str]:
+    """回傳 runtime 表中所屬 target 非 active hot path 的壞 row id。"""
+
+    candidate_ids = {
+        violation.row_id
+        for violation in violations
+        if violation.table == "target_runtime_state"
+        and violation.field
+        in {
+            "desired_state",
+            "runtime_status",
+            "scan_requested_at",
+            "last_enqueued_at",
+            "last_started_at",
+            "last_finished_at",
+            "last_heartbeat_at",
+            "last_page_reloaded_at",
+            "display_next_due_at",
+            "updated_at",
+        }
+    }
+    return _inactive_target_ids(connection, candidate_ids)
+
+
+def _inactive_target_ids(
+    connection: sqlite3.Connection,
+    candidate_ids: set[str],
+) -> set[str]:
+    """從候選 target ids 中挑出 scheduler hot path 以外的 row。"""
+
+    if not candidate_ids:
+        return set()
+    placeholders = ",".join("?" for _ in candidate_ids)
+    rows = connection.execute(
+        f"""
+        SELECT id
+        FROM targets
+        WHERE id IN ({placeholders})
+          AND (enabled != 1 OR paused != 0)
+        """,
+        tuple(sorted(candidate_ids)),
+    ).fetchall()
+    return {str(row["id"]) for row in rows}
+
+
+def _list_targets_excluding_ids(
+    connection: sqlite3.Connection,
+    *,
+    skipped_ids: set[str],
+) -> list[TargetDescriptor]:
+    """直接讀取可 decode targets，排除已確認 inactive 的壞 row。"""
+
+    placeholders = ",".join("?" for _ in skipped_ids)
+    rows = connection.execute(
+        f"""
+        SELECT *
+        FROM targets
+        WHERE id NOT IN ({placeholders})
+        ORDER BY created_at
+        """,
+        tuple(sorted(skipped_ids)),
+    ).fetchall()
+    return [target_from_row(row) for row in rows]
+
+
 def _read_dashboard_mapper_value(
     operation: Callable[[], _ReadValue],
     *,
     tables: tuple[str, ...],
     violations: tuple[DatabaseInvariantViolation, ...],
 ) -> _ReadValue:
-    """讀取會跑 row mapper 的 repository；只讓已知 enum 壞資料進 degraded path。"""
+    """讀取會跑 row mapper 的 repository；只讓已知 invariant 壞資料降級。"""
 
     try:
         return operation()
@@ -349,7 +541,23 @@ def _is_invariant_backed_mapper_error(
     """判斷 mapper 錯誤是否可由已知 invariant violation 安全降級承接。"""
 
     enum_contract_fields = {(contract.table, contract.field) for contract in ENUM_CONTRACTS}
+    datetime_contract_fields = {
+        (contract.table, field)
+        for contract in DATETIME_CONTRACTS
+        for field in contract.fields
+    }
     candidate_tables = set(tables)
+    has_datetime_violation = any(
+        violation.table in candidate_tables
+        and (violation.table, violation.field) in datetime_contract_fields
+        for violation in violations
+    )
+    datetime_violations = tuple(
+        violation
+        for violation in violations
+        if violation.table in candidate_tables
+        and (violation.table, violation.field) in datetime_contract_fields
+    )
     violated_type_names = {
         type_name
         for violation in violations
@@ -360,10 +568,43 @@ def _is_invariant_backed_mapper_error(
         )
         if type_name
     }
-    if not violated_type_names:
-        return False
     message = str(exc)
+    if has_datetime_violation and _matches_datetime_mapper_error(
+        message,
+        violations=datetime_violations,
+    ):
+        return True
     return any(f"is not a valid {type_name}" in message for type_name in violated_type_names)
+
+
+def _matches_datetime_mapper_error(
+    message: str,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> bool:
+    """判斷 ValueError 是否符合已知 datetime mapper failure 形狀。"""
+
+    return any(
+        fragment in message
+        for table in {violation.table for violation in violations}
+        for fragment in _DATETIME_ERROR_FRAGMENTS_BY_TABLE.get(table, ())
+    ) or (
+        "Invalid isoformat string" in message
+        and any(_datetime_violation_value_matches(message, violation) for violation in violations)
+    )
+
+
+def _datetime_violation_value_matches(
+    message: str,
+    violation: DatabaseInvariantViolation,
+) -> bool:
+    """確認 raw datetime parser error 指到 invariant 已定位的同一個壞值。"""
+
+    prefix = "invalid datetime value "
+    if not violation.message.startswith(prefix):
+        return False
+    value_repr = violation.message[len(prefix):]
+    return bool(value_repr and value_repr in message)
 
 
 def _degraded_dashboard_read_result(
@@ -469,35 +710,69 @@ def get_target_card(
 
     try:
         with _read_application_context(db_path) as app_context:
-            target = app_context.repositories.targets.get(target_id)
+            violations = validate_database_invariants(
+                app_context.repositories.targets.connection
+            )
+            if target_id in _inactive_invariant_target_ids(
+                app_context.repositories.targets.connection,
+                violations=violations,
+            ):
+                return None
+            target = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.targets.get(target_id),
+                tables=("targets",),
+                violations=violations,
+            )
             if target is None:
                 return None
             config = _configs_by_target(app_context, [target])[target.id]
-            runtime_state = app_context.repositories.runtime_states.get(
-                target.id
+            runtime_state = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.runtime_states.get(target.id),
+                tables=("target_runtime_state",),
+                violations=violations,
             ) or TargetRuntimeState(target_id=target.id)
             return _build_target_row(
                 target=target,
                 config=config,
                 runtime_state=runtime_state,
-                latest_scan_items=app_context.repositories.latest_scan_items.list_by_target(
-                    target.id,
-                    limit=config.max_items_per_scan,
+                latest_scan_items=_read_dashboard_mapper_value(
+                    lambda: app_context.repositories.latest_scan_items.list_by_target(
+                        target.id,
+                        limit=config.max_items_per_scan,
+                    ),
+                    tables=("latest_scan_items",),
+                    violations=violations,
                 ),
-                hit_record_preview_items=app_context.repositories.match_history.list_by_target(
-                    target.id,
-                    limit=5,
-                    notified_since=session_started_at,
+                hit_record_preview_items=_read_dashboard_mapper_value(
+                    lambda: app_context.repositories.match_history.list_by_target(
+                        target.id,
+                        limit=5,
+                        notified_since=session_started_at,
+                    ),
+                    tables=("match_history",),
+                    violations=violations,
                 ),
-                latest_scan_run=app_context.repositories.scan_runs.latest_by_target(target.id),
-                latest_failed_scan_run=app_context.repositories.scan_runs.latest_by_target(
-                    target.id,
-                    status=ScanStatus.FAILED,
+                latest_scan_run=_read_dashboard_mapper_value(
+                    lambda: app_context.repositories.scan_runs.latest_by_target(target.id),
+                    tables=("scan_runs",),
+                    violations=violations,
                 ),
-                notification_outbox_summary=(
-                    app_context.repositories.notification_outbox
-                    .summarize_by_targets([target.id])
-                    .get(target.id)
+                latest_failed_scan_run=_read_dashboard_mapper_value(
+                    lambda: app_context.repositories.scan_runs.latest_by_target(
+                        target.id,
+                        status=ScanStatus.FAILED,
+                    ),
+                    tables=("scan_runs",),
+                    violations=violations,
+                ),
+                notification_outbox_summary=_read_dashboard_mapper_value(
+                    lambda: (
+                        app_context.repositories.notification_outbox
+                        .summarize_by_targets([target.id])
+                        .get(target.id)
+                    ),
+                    tables=("notification_outbox",),
+                    violations=violations,
                 ),
                 hit_record_total_count=app_context.repositories.match_history.count_by_target(
                     target.id,
@@ -507,6 +782,8 @@ def get_target_card(
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+    except _DashboardInvariantMapperError as exc:
+        raise DashboardReadUnavailable(str(exc)) from exc
 
 
 def _order_targets_by_sidebar(
@@ -571,6 +848,32 @@ def _build_sidebar_groups(
         )
     )
     return tuple(sections)
+
+
+def _sidebar_templates_by_group(
+    app_context: ApplicationContext,
+    *,
+    groups: tuple[SidebarGroup, ...],
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> dict[str, SidebarGroupConfigTemplate]:
+    """讀取 sidebar group templates，讓壞 datetime row 走 invariant 降級。"""
+
+    templates: dict[str, SidebarGroupConfigTemplate] = {}
+    for group in groups:
+        group_id = group.id
+
+        def read_template() -> SidebarGroupConfigTemplate:
+            return (
+                app_context.repositories.sidebar_layout.get_template(group_id)
+                or SidebarGroupConfigTemplate(sidebar_group_id=group_id)
+            )
+
+        templates[group.id] = _read_dashboard_mapper_value(
+            read_template,
+            tables=("sidebar_group_config_templates",),
+            violations=violations,
+        )
+    return templates
 
 
 def _configs_by_target(
@@ -642,10 +945,42 @@ def target_exists(db_path: Path, target_id: str) -> bool:
 
     try:
         with _read_application_context(db_path) as app_context:
-            return app_context.repositories.targets.get(target_id) is not None
+            violations = validate_database_invariants(
+                app_context.repositories.targets.connection
+            )
+            if target_id in _inactive_invariant_target_ids(
+                app_context.repositories.targets.connection,
+                violations=violations,
+            ):
+                return False
+            if _has_target_or_runtime_invariant_violation(target_id, violations):
+                raise DashboardReadUnavailable("database invariant violation")
+            return (
+                _read_dashboard_mapper_value(
+                    lambda: app_context.repositories.targets.get(target_id),
+                    tables=("targets",),
+                    violations=violations,
+                )
+                is not None
+            )
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+    except _DashboardInvariantMapperError as exc:
+        raise DashboardReadUnavailable(str(exc)) from exc
+
+
+def _has_target_or_runtime_invariant_violation(
+    target_id: str,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> bool:
+    """判斷 target hot path 是否有不可忽略的 target/runtime invariant violation。"""
+
+    return any(
+        violation.row_id == target_id
+        and violation.table in {"targets", "target_runtime_state"}
+        for violation in violations
+    )
 
 
 def list_hit_record_preview_rows(
@@ -659,17 +994,26 @@ def list_hit_record_preview_rows(
 
     try:
         with _read_application_context(db_path) as app_context:
+            violations = validate_database_invariants(
+                app_context.repositories.targets.connection
+            )
             return tuple(
                 HitRecordPreviewRow(entry=entry)
-                for entry in app_context.repositories.match_history.list_by_target(
-                    target_id,
-                    limit=limit,
-                    notified_since=session_started_at,
+                for entry in _read_dashboard_mapper_value(
+                    lambda: app_context.repositories.match_history.list_by_target(
+                        target_id,
+                        limit=limit,
+                        notified_since=session_started_at,
+                    ),
+                    tables=("match_history",),
+                    violations=violations,
                 )
             )
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+    except _DashboardInvariantMapperError as exc:
+        raise DashboardReadUnavailable(str(exc)) from exc
 
 
 def list_full_hit_record_rows(
@@ -684,20 +1028,34 @@ def list_full_hit_record_rows(
     bounded_offset = max(int(offset), 0)
     try:
         with _read_application_context(db_path) as app_context:
-            entries = app_context.repositories.match_history.list_by_target(
-                target_id,
-                limit=limit,
-                offset=bounded_offset,
+            violations = validate_database_invariants(
+                app_context.repositories.targets.connection
             )
-            notification_events = (
-                app_context.repositories.notification_events.latest_sent_by_target_item_keys(
+            entries = _read_dashboard_mapper_value(
+                lambda: app_context.repositories.match_history.list_by_target(
                     target_id,
-                    [entry.item_key for entry in entries],
-                )
+                    limit=limit,
+                    offset=bounded_offset,
+                ),
+                tables=("match_history",),
+                violations=violations,
+            )
+            notification_events = _read_dashboard_mapper_value(
+                lambda: (
+                    app_context.repositories.notification_events
+                    .latest_sent_by_target_item_keys(
+                        target_id,
+                        [entry.item_key for entry in entries],
+                    )
+                ),
+                tables=("notification_events",),
+                violations=violations,
             )
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+    except _DashboardInvariantMapperError as exc:
+        raise DashboardReadUnavailable(str(exc)) from exc
     return tuple(
         FullHitRecordRow(
             entry=entry,
@@ -718,6 +1076,11 @@ def count_hit_records(
 
     try:
         with _read_application_context(db_path) as app_context:
+            _raise_if_hit_record_count_is_invariant_unsafe(
+                app_context.repositories.match_history.connection,
+                target_id=target_id,
+                notified_since=session_started_at,
+            )
             return app_context.repositories.match_history.count_by_target(
                 target_id,
                 notified_since=session_started_at,
@@ -725,6 +1088,59 @@ def count_hit_records(
     except sqlite3.OperationalError as exc:
         _raise_dashboard_read_unavailable_if_locked(exc)
         raise
+
+
+def _raise_if_hit_record_count_is_invariant_unsafe(
+    connection: sqlite3.Connection,
+    *,
+    target_id: str,
+    notified_since: datetime | None,
+) -> None:
+    """確認 count 查詢範圍內沒有會讓 hit-record mapper 失敗的 datetime。"""
+
+    rows = connection.execute(
+        """
+        SELECT id, notified_at, created_at
+        FROM match_history
+        WHERE target_id = ?
+        """,
+        (target_id,),
+    ).fetchall()
+    since_text = encode_datetime(notified_since)
+    for row in rows:
+        if _hit_record_datetime_row_blocks_count(row, since_text=since_text):
+            raise DashboardReadUnavailable("database invariant violation")
+
+
+def _hit_record_datetime_row_blocks_count(
+    row: sqlite3.Row,
+    *,
+    since_text: str,
+) -> bool:
+    """回傳單筆 match_history datetime 是否會讓對應 read model 不可讀。"""
+
+    notified_at = str(row["notified_at"] or "")
+    if since_text:
+        if not notified_at:
+            return False
+        if not _is_valid_datetime_text(notified_at):
+            return True
+        if notified_at < since_text:
+            return False
+    elif notified_at and not _is_valid_datetime_text(notified_at):
+        return True
+    created_at = str(row["created_at"] or "")
+    return not created_at or not _is_valid_datetime_text(created_at)
+
+
+def _is_valid_datetime_text(value: str) -> bool:
+    """檢查 SQLite datetime text 是否可被既有 mapper decode。"""
+
+    try:
+        decode_datetime(value)
+    except ValueError:
+        return False
+    return True
 
 
 def get_dashboard_revision(db_path: Path) -> DashboardRevision:

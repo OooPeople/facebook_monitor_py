@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetConfigPatch
 from facebook_monitor.application.services import UpsertCommentsTargetRequest
@@ -367,6 +369,89 @@ def test_webui_startup_pause_all_targets_without_overwriting_floating_interval(
     assert config.jitter_enabled
     assert config.min_refresh_sec == 25
     assert config.max_refresh_sec == 35
+
+
+def test_webui_startup_pause_all_targets_skips_inactive_corrupt_target_row(
+    tmp_path: Path,
+) -> None:
+    """Web UI 啟動整理不應因已暫停的壞 target enum 阻止正常 target 停止。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        active = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active",
+                canonical_url="https://www.facebook.com/groups/active",
+            )
+        )
+        corrupt = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-corrupt",
+            )
+        )
+        app.services.targets.pause_target_monitoring(corrupt.id)
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE targets SET target_kind = 'invalid-kind', paused = 1 WHERE id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        app.services.targets.pause_all_targets_for_webui_startup()
+
+        loaded_active = app.repositories.targets.get(active.id)
+        active_state = app.repositories.runtime_states.get(active.id)
+        corrupt_row = connection.execute(
+            "SELECT paused, target_kind FROM targets WHERE id = ?",
+            (corrupt.id,),
+        ).fetchone()
+
+    assert loaded_active is not None
+    assert loaded_active.paused
+    assert active_state is not None
+    assert active_state.desired_state == TargetDesiredState.STOPPED
+    assert corrupt_row["paused"] == 1
+    assert corrupt_row["target_kind"] == "invalid-kind"
+
+
+def test_webui_startup_pause_all_targets_fails_on_active_corrupt_runtime_row(
+    tmp_path: Path,
+) -> None:
+    """Web UI 啟動整理不可把 active runtime invariant violation 靜默修掉。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="active-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/active-runtime-corrupt",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = 'invalid' WHERE target_id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        with pytest.raises(ValueError, match="database_invariant_violation"):
+            app.services.targets.pause_all_targets_for_webui_startup()
+
+        runtime_row = connection.execute(
+            "SELECT runtime_status FROM target_runtime_state WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()
+        target_row = connection.execute(
+            "SELECT paused FROM targets WHERE id = ?",
+            (target.id,),
+        ).fetchone()
+
+    assert runtime_row["runtime_status"] == "invalid"
+    assert target_row["paused"] == 0
 
 
 def test_update_target_status_request(tmp_path: Path) -> None:

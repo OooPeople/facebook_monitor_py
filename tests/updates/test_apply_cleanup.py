@@ -12,6 +12,8 @@ from facebook_monitor.updates.apply import _backup_folder_name
 from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
 from facebook_monitor.updates.apply import _prepare_empty_dir
 from facebook_monitor.updates.apply import UpdaterApplyResult
+from facebook_monitor.updates.apply_cleanup import _cleanup_applied_update
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 
 
 from tests.updates.apply_test_helpers import pending_update
@@ -137,26 +139,67 @@ def test_prepare_empty_dir_rejects_path_that_resolves_to_work_root(
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
+def test_cleanup_applied_update_removes_atomic_attempt_set(tmp_path: Path) -> None:
+    """成功套用後只清除本次 atomic artifact set，不碰同版本其他 set。"""
+
+    zip_path = (
+        tmp_path
+        / "app"
+        / "data"
+        / "updates"
+        / "0.1.0"
+        / "attempt-current"
+        / "update.zip"
+    )
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_text("zip", encoding="utf-8")
+    (zip_path.parent / "update.zip.sha256").write_text("a" * 64, encoding="utf-8")
+    (zip_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (zip_path.parent / "leftover.tmp").write_text("tmp", encoding="utf-8")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest="a" * 64)
+    pending_path = tmp_path / "app" / "data" / "runtime" / "pending_update.json"
+    pending_path.parent.mkdir(parents=True)
+    pending_path.write_text("{}", encoding="utf-8")
+    other_set = zip_path.parent.parent / "attempt-other"
+    other_set.mkdir()
+    (other_set / "keep.txt").write_text("keep", encoding="utf-8")
+
+    warnings = _cleanup_applied_update(pending_path, pending)
+
+    assert warnings == ()
+    assert not zip_path.parent.exists()
+    assert other_set.exists()
+    assert (other_set / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert not pending_path.exists()
+
+
 def test_apply_loaded_pending_update_file_logs_cleanup_warnings(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     """cleanup 失敗會寫入 updater log，但不改變成功套用結果。"""
 
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     pending = pending_update(tmp_path, zip_path=zip_path, digest="a" * 64)
     pending_path = tmp_path / "app" / "data" / "runtime" / "pending_update.json"
     log_path = tmp_path / "app" / "data" / "logs" / "updater.log"
 
-    def fake_apply_pending_update(*args, **kwargs) -> UpdaterApplyResult:
+    def fake_apply_pending_update_locked(*args, **kwargs) -> UpdaterApplyResult:
         return UpdaterApplyResult(status="applied", applied=True, message="updated")
 
     def fake_cleanup_applied_update(*args, **kwargs) -> tuple[str, ...]:
         return ("pending:EACCES",)
 
     monkeypatch.setattr(
-        "facebook_monitor.updates.apply.apply_pending_update",
-        fake_apply_pending_update,
+        "facebook_monitor.updates.apply._validate_loaded_pending_update_file_is_current",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.updates.apply._apply_pending_update_locked",
+        fake_apply_pending_update_locked,
     )
     monkeypatch.setattr(
         "facebook_monitor.updates.apply._cleanup_applied_update",

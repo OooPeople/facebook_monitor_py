@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 import json
@@ -33,7 +35,7 @@ else:
 UPDATE_OPERATION_LOCK_FILE_NAME = "update-operation.lock"
 UPDATE_OPERATION_LOCK_BUSY_MESSAGE = "更新流程正在執行中，請稍後再試。"
 _LOCK_BYTE_COUNT = 1
-_ACTIVE_UPDATE_OPERATION_LOCKS: set[str] = set()
+_ACTIVE_UPDATE_OPERATION_LOCKS: dict[str, object] = {}
 _ACTIVE_UPDATE_OPERATION_LOCKS_GUARD = threading.Lock()
 
 
@@ -52,6 +54,50 @@ class UpdateOperationLock:
     runtime_dir: Path
     lock_path: Path
     owner: str
+    _active_token: object = field(default_factory=object, repr=False, compare=False)
+
+
+_CURRENT_UPDATE_OPERATION_LOCK: ContextVar[UpdateOperationLock | None] = ContextVar(
+    "facebook_monitor_update_operation_lock",
+    default=None,
+)
+
+
+@contextmanager
+def ensure_update_operation_lock(
+    runtime_dir: Path,
+    owner: str,
+    *,
+    reusable_owner_prefixes: tuple[str, ...] = ("settings-", "updater-"),
+) -> Iterator[UpdateOperationLock]:
+    """確保目前 call chain 持有 updater operation lock。
+
+    Settings route 會先取得外層 lock；standalone updater 或未來新入口若直接
+    呼叫底層 updater API，這裡會自動取得同一把 lock，避免繞過互斥邊界。
+    """
+
+    current = current_update_operation_lock(runtime_dir)
+    if current is not None and current.owner.startswith(reusable_owner_prefixes):
+        yield current
+        return
+    with acquire_update_operation_lock(runtime_dir, owner) as lock:
+        yield lock
+
+
+def current_update_operation_lock(runtime_dir: Path) -> UpdateOperationLock | None:
+    """回傳目前 context 持有且 runtime dir 相符的 operation lock。"""
+
+    current = _CURRENT_UPDATE_OPERATION_LOCK.get()
+    if current is None:
+        return None
+    expected_runtime_dir = runtime_dir.expanduser().resolve()
+    if current.runtime_dir != expected_runtime_dir:
+        return None
+    lock_identity = _lock_path_identity(current.lock_path)
+    with _ACTIVE_UPDATE_OPERATION_LOCKS_GUARD:
+        if _ACTIVE_UPDATE_OPERATION_LOCKS.get(lock_identity) is not current._active_token:
+            return None
+    return current
 
 
 @dataclass(frozen=True)
@@ -74,13 +120,14 @@ def acquire_update_operation_lock(
     resolved_runtime_dir.mkdir(parents=True, exist_ok=True)
     lock_path = resolved_runtime_dir / UPDATE_OPERATION_LOCK_FILE_NAME
     lock_identity = _lock_path_identity(lock_path)
+    active_token = object()
     with _ACTIVE_UPDATE_OPERATION_LOCKS_GUARD:
         if lock_identity in _ACTIVE_UPDATE_OPERATION_LOCKS:
             raise UpdateOperationLockError(
                 UPDATE_OPERATION_LOCK_BUSY_MESSAGE,
                 lock_path=lock_path,
             )
-        _ACTIVE_UPDATE_OPERATION_LOCKS.add(lock_identity)
+        _ACTIVE_UPDATE_OPERATION_LOCKS[lock_identity] = active_token
     lock_file: BinaryIO | None = None
     locked = False
     try:
@@ -88,14 +135,21 @@ def acquire_update_operation_lock(
         _lock_file(lock_file, lock_path)
         locked = True
         _write_update_operation_owner_info(lock_file, owner=owner)
-        yield UpdateOperationLock(
+        lock = UpdateOperationLock(
             runtime_dir=resolved_runtime_dir,
             lock_path=lock_path,
             owner=owner,
+            _active_token=active_token,
         )
+        context_token = _CURRENT_UPDATE_OPERATION_LOCK.set(lock)
+        try:
+            yield lock
+        finally:
+            _CURRENT_UPDATE_OPERATION_LOCK.reset(context_token)
     finally:
         with _ACTIVE_UPDATE_OPERATION_LOCKS_GUARD:
-            _ACTIVE_UPDATE_OPERATION_LOCKS.discard(lock_identity)
+            if _ACTIVE_UPDATE_OPERATION_LOCKS.get(lock_identity) is active_token:
+                _ACTIVE_UPDATE_OPERATION_LOCKS.pop(lock_identity, None)
         if lock_file is not None:
             if locked:
                 _unlock_file(lock_file)

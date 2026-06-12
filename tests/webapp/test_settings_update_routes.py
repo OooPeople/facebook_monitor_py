@@ -604,7 +604,12 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
     ) -> UpdateDownloadResult:
         checked_update["asset_name"] = update_check.asset_name
         checked_update["updates_dir"] = updates_dir
-        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        file_path = (
+            updates_dir
+            / "0.1.1"
+            / "attempt-test"
+            / "facebook-monitor-0.1.1-windows-portable.zip"
+        )
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
         return verified_update_download_result(
@@ -645,7 +650,10 @@ def test_settings_download_update_verifies_asset_and_opens_folder(
     assert checked_update["updates_dir"] == paths.updates_dir
     assert (paths.runtime_dir / "pending_update.json").is_file()
     assert opened_paths == [
-        paths.updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        paths.updates_dir
+        / "0.1.1"
+        / "attempt-test"
+        / "facebook-monitor-0.1.1-windows-portable.zip"
     ]
 
 
@@ -729,7 +737,12 @@ def test_settings_macos_download_update_does_not_create_pending_update(
         updates_dir: Path,
     ) -> UpdateDownloadResult:
         checked_update["asset_name"] = update_check.asset_name
-        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
+        file_path = (
+            updates_dir
+            / "0.1.1"
+            / "attempt-test"
+            / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
+        )
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
         return verified_update_download_result(
@@ -806,7 +819,12 @@ def test_settings_download_and_apply_update_returns_modal_json_and_requests_shut
     ) -> UpdateDownloadResult:
         checked_update["asset_name"] = update_check.asset_name
         checked_update["updates_dir"] = updates_dir
-        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-windows-portable.zip"
+        file_path = (
+            updates_dir
+            / "0.1.1"
+            / "attempt-test"
+            / "facebook-monitor-0.1.1-windows-portable.zip"
+        )
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
         return verified_update_download_result(
@@ -946,7 +964,12 @@ def test_settings_macos_download_and_apply_update_creates_handoff(
     ) -> UpdateDownloadResult:
         checked_update["asset_name"] = update_check.asset_name
         checked_update["updates_dir"] = updates_dir
-        file_path = updates_dir / "0.1.1" / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
+        file_path = (
+            updates_dir
+            / "0.1.1"
+            / "attempt-test"
+            / "facebook-monitor-0.1.1-macos-arm64-onedir.zip"
+        )
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
         return verified_update_download_result(
@@ -1056,7 +1079,7 @@ def test_settings_macos_download_and_apply_uses_macos_release_asset_policy(
     ) -> UpdateDownloadResult:
         checked_update["asset_name"] = update_check.asset_name
         checked_update["asset_download_url"] = update_check.asset_download_url
-        file_path = updates_dir / "9.9.9" / update_check.asset_name
+        file_path = updates_dir / "9.9.9" / "attempt-test" / update_check.asset_name
         file_path.parent.mkdir(parents=True)
         file_path.write_bytes(b"verified zip")
         return verified_update_download_result(

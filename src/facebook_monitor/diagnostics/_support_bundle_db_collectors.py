@@ -16,6 +16,7 @@ import sqlite3
 from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
+from facebook_monitor.notifications.failure_taxonomy import classify_notification_failure
 from facebook_monitor.persistence.schema import MIN_SUPPORTED_SCHEMA_VERSION
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
@@ -579,9 +580,13 @@ def _notification_diagnostics_payload(
         payload: dict[str, object] = {"available": True}
         if "notification_outbox" in table_names:
             payload["outbox_counts"] = _notification_outbox_counts(connection, aliases)
+            payload["failure_category_counts"] = _notification_failure_category_counts(
+                connection,
+            )
             payload["failed_outbox_samples"] = _failed_outbox_samples(connection, aliases)
         else:
             payload["outbox_counts"] = []
+            payload["failure_category_counts"] = {}
             payload["failed_outbox_samples"] = []
         if "notification_events" in table_names:
             payload["event_counts"] = _notification_event_counts(connection, aliases)
@@ -775,6 +780,11 @@ def _failed_outbox_samples(
                 str(row["failure_reason"] or ""),
                 aliases=aliases,
             ),
+            "failure_category": classify_notification_failure(
+                channel=str(row["channel"] or ""),
+                failure_reason=str(row["failure_reason"] or ""),
+                last_error=str(row["last_error"] or ""),
+            ),
             "failure_count": int(row["failure_count"] or 0),
             "last_error": _freeform_summary(
                 str(row["last_error"] or ""),
@@ -786,6 +796,29 @@ def _failed_outbox_samples(
         }
         for row in rows
     ]
+
+
+def _notification_failure_category_counts(
+    connection: sqlite3.Connection,
+) -> dict[str, int]:
+    """彙總 failed outbox 的衍生 failure category。"""
+
+    rows = connection.execute(
+        """
+        SELECT channel, failure_reason, last_error
+        FROM notification_outbox
+        WHERE status IN ('failed', 'processing_failed')
+        """
+    ).fetchall()
+    counts = Counter(
+        classify_notification_failure(
+            channel=str(row["channel"] or ""),
+            failure_reason=str(row["failure_reason"] or ""),
+            last_error=str(row["last_error"] or ""),
+        )
+        for row in rows
+    )
+    return dict(sorted(counts.items()))
 
 
 def _notification_event_counts(

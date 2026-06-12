@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import datetime
 import logging
 import sqlite3
@@ -23,7 +22,6 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
@@ -41,7 +39,7 @@ from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScan
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.resident_shared import mark_resident_target_idle
+from facebook_monitor.worker.resident_shared import force_mark_resident_target_idle
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
@@ -121,7 +119,7 @@ class ExecutorWorkerPool:
                 if runtime_restart:
                     await self._request_target_retry_after_runtime_restart_async(target_id)
                 else:
-                    mark_resident_target_idle(self.options.db_path, target_id)
+                    force_mark_resident_target_idle(self.options.db_path, target_id)
         if cancel_running and runtime_restart:
             await self._cancel_active_attempts_for_runtime_restart()
 
@@ -259,19 +257,7 @@ class ExecutorWorkerPool:
         with SqliteApplicationContext(self.options.db_path) as app:
             if app.repositories.targets.get(target_id) is None:
                 return
-            state = app.services.targets.ensure_runtime_state(target_id)
-            now = utc_now()
-            app.repositories.runtime_states.save(
-                replace(
-                    state,
-                    runtime_status=TargetRuntimeStatus.IDLE,
-                    scan_requested_at=now,
-                    enqueue_reason="",
-                    active_worker_id="",
-                    active_page_id="",
-                    updated_at=now,
-                )
-            )
+            app.services.targets.force_request_target_retry_after_runtime_restart(target_id)
 
     async def _retry_target_after_sqlite_lock(
         self,
@@ -311,6 +297,10 @@ class ExecutorWorkerPool:
                     TargetRuntimeStatus.QUEUED,
                 }:
                     return
+                app.services.targets.record_non_running_target_retry_after_sqlite_lock(
+                    target_id,
+                )
+                return
             else:
                 if not target_matches_scan_commit_guard(
                     app=app,
@@ -318,18 +308,12 @@ class ExecutorWorkerPool:
                     commit_guard=commit_guard,
                 ):
                     return
-            now = utc_now()
-            app.repositories.runtime_states.save(
-                replace(
-                    state,
-                    runtime_status=TargetRuntimeStatus.IDLE,
-                    scan_requested_at=now,
-                    enqueue_reason="",
-                    active_worker_id="",
-                    active_page_id="",
-                    updated_at=now,
+                app.services.targets.record_guarded_target_retry_after_sqlite_lock(
+                    target_id,
+                    worker_id=commit_guard.worker_id,
+                    started_at=commit_guard.started_at,
+                    page_id=commit_guard.page_id,
                 )
-            )
 
     async def enqueue_due_targets(self, due_targets: tuple[DueTarget, ...]) -> int:
         """把 due targets 放入 queue；成功 enqueue 時同步 runtime state。"""

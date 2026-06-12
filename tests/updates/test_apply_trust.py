@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import json
 from pathlib import Path
 import shutil
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from facebook_monitor.updates.apply import apply_pending_update
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 
 
 from tests.updates.apply_test_helpers import make_app_root
@@ -28,7 +30,7 @@ def test_apply_pending_update_rejects_hash_changed_after_handoff(tmp_path: Path)
 
     app_root = tmp_path / "app"
     make_app_root(app_root, exe_text="old")
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
     zip_path.write_bytes(b"changed")
@@ -36,7 +38,7 @@ def test_apply_pending_update_rejects_hash_changed_after_handoff(tmp_path: Path)
     result = apply_pending_update(pending_update(tmp_path, zip_path=zip_path, digest=digest))
 
     assert result.status == "failed"
-    assert result.message == "pending_zip_sha256_mismatch"
+    assert result.message == "download_result_verified_set_mismatch"
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
 
 
@@ -47,7 +49,7 @@ def test_apply_pending_update_rejects_manifest_changed_after_handoff(
 
     app_root = tmp_path / "app"
     make_app_root(app_root, exe_text="old")
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
     manifest_path = zip_path.with_name("facebook-monitor-0.1.0-manifest.json")
@@ -67,7 +69,7 @@ def test_apply_pending_update_rejects_manifest_changed_after_handoff(
     result = apply_pending_update(pending)
 
     assert result.status == "failed"
-    assert result.message == "pending_manifest_sha256_mismatch"
+    assert result.message == "download_result_verified_set_mismatch"
     assert (app_root / "facebook-monitor.exe").read_text(encoding="utf-8") == "old"
 
 
@@ -78,7 +80,7 @@ def test_apply_pending_update_rejects_self_consistent_manifest_without_valid_sig
 
     app_root = tmp_path / "app"
     make_app_root(app_root, exe_text="old")
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     original_digest = make_update_zip(zip_path, exe_text="new")
     pending = pending_update(tmp_path, zip_path=zip_path, digest=original_digest)
@@ -92,6 +94,18 @@ def test_apply_pending_update_rejects_self_consistent_manifest_without_valid_sig
         digest=tampered_digest,
     )
     signature_path.write_bytes(original_signature)
+    sha256_path = zip_path.with_name(zip_path.name + ".sha256")
+    sha256_path.write_text(f"{tampered_digest}  {zip_path.name}\n", encoding="utf-8")
+    marker_path = zip_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["asset_sha256"] = tampered_digest
+    marker["asset_size"] = zip_path.stat().st_size
+    marker["sha256_sha256"] = hashlib.sha256(sha256_path.read_bytes()).hexdigest()
+    marker["manifest_sha256"] = manifest_digest
+    marker["manifest_signature_sha256"] = hashlib.sha256(
+        signature_path.read_bytes()
+    ).hexdigest()
+    marker_path.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
     tampered_pending = replace(
         pending,
         expected_sha256=tampered_digest,

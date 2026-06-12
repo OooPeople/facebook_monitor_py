@@ -14,7 +14,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import httpx
 import pytest
 
+from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
 from facebook_monitor.updates.download import download_and_verify_update
+from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 from facebook_monitor.updates.download import read_expected_sha256
 from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
@@ -32,6 +34,13 @@ MANIFEST_URL = f"{RELEASE_URL_PREFIX}/{MANIFEST_NAME}"
 MANIFEST_SIGNATURE_URL = f"{RELEASE_URL_PREFIX}/{MANIFEST_SIGNATURE_NAME}"
 TEST_PRIVATE_KEY = Ed25519PrivateKey.generate()
 TEST_KEY_ID = "test-release-key"
+FIXED_ATTEMPT_ID = "fixedattempt0000000000000000000000"
+
+
+class FixedUuid:
+    """測試用固定 uuid，讓 attempt set path 可預期。"""
+
+    hex = FIXED_ATTEMPT_ID
 
 
 def update_check() -> UpdateCheckResult:
@@ -68,6 +77,12 @@ def trusted_public_keys() -> dict[str, str]:
         format=serialization.PublicFormat.Raw,
     )
     return {TEST_KEY_ID: base64.b64encode(public_key).decode("ascii")}
+
+
+def fixed_uuid4() -> FixedUuid:
+    """回傳固定 uuid 物件，供 monkeypatch download attempt id。"""
+
+    return FixedUuid()
 
 
 def manifest_bytes_for(zip_bytes: bytes) -> bytes:
@@ -252,6 +267,36 @@ def test_download_and_verify_update_stores_verified_zip_under_updates_dir(
     assert result.file_path.is_relative_to((tmp_path / "updates").resolve())
     assert result.expected_sha256 == digest
     assert result.actual_sha256 == digest
+    assert result.verified_set_marker_path == result.file_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME
+    assert result.verified_set_marker_path.is_file()
+    version_dir = (tmp_path / "updates" / "0.1.0").resolve()
+    assert result.file_path.parent.parent == version_dir
+    assert result.file_path.parent.name.startswith("attempt-")
+    assert not (version_dir / ASSET_NAME).exists()
+    assert not (version_dir / SHA256_NAME).exists()
+    assert sorted(path.name for path in version_dir.iterdir()) == [result.file_path.parent.name]
+
+
+def test_download_and_verify_update_returns_busy_when_operation_locked(
+    tmp_path: Path,
+) -> None:
+    """同一 runtime 已有外部更新操作時，底層下載不可繞過 operation lock。"""
+
+    updates_dir = tmp_path / "updates"
+
+    with acquire_update_operation_lock(tmp_path / "runtime", "external"):
+        result = asyncio.run(
+            download_and_verify_update(
+                update_check=update_check(),
+                updates_dir=updates_dir,
+                transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+                trusted_public_keys=trusted_public_keys(),
+            )
+        )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "update_operation_locked"
+    assert not updates_dir.exists()
 
 
 def test_download_and_verify_update_follows_github_asset_redirects(
@@ -346,6 +391,7 @@ def test_download_and_verify_update_rejects_oversized_asset(tmp_path: Path) -> N
     assert result.file_path is not None
     assert not result.file_path.exists()
     assert not result.file_path.with_name(result.file_path.name + ".tmp").exists()
+    assert list((tmp_path / "updates" / "0.1.0").iterdir()) == []
 
 
 def test_download_and_verify_update_removes_staged_zip_when_sha256_download_fails(
@@ -369,8 +415,7 @@ def test_download_and_verify_update_removes_staged_zip_when_sha256_download_fail
     assert result.sha256_path is not None
     assert not result.file_path.exists()
     assert not result.sha256_path.exists()
-    assert not result.file_path.with_name(result.file_path.name + ".download").exists()
-    assert not result.sha256_path.with_name(result.sha256_path.name + ".download").exists()
+    assert list((updates_dir / "0.1.0").iterdir()) == []
 
 
 def test_download_and_verify_update_requires_sha256_url(tmp_path: Path) -> None:
@@ -528,19 +573,24 @@ def test_download_and_verify_update_rejects_symlinked_updates_dir(tmp_path: Path
     assert list(outside.iterdir()) == []
 
 
-def test_download_and_verify_update_rejects_existing_tmp_symlink(tmp_path: Path) -> None:
-    """下載 `.tmp` 若已是 symlink，不可 follow 後覆寫外部檔。"""
+def test_download_and_verify_update_rejects_existing_attempt_dir_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """staging attempt 目錄若已是 symlink，不可 follow 後寫入外部檔。"""
 
     updates_dir = tmp_path / "updates"
     destination_dir = updates_dir / "0.1.0"
     destination_dir.mkdir(parents=True)
-    outside = tmp_path / "outside.txt"
-    outside.write_text("keep", encoding="utf-8")
-    tmp_link = destination_dir / "facebook-monitor-0.1.0-windows-portable.zip.tmp"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    attempt_link = destination_dir / f".attempt-{FIXED_ATTEMPT_ID}"
     try:
-        tmp_link.symlink_to(outside)
+        attempt_link.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
-        pytest.skip(f"file symlink unavailable: {exc}")
+        pytest.skip(f"directory symlink unavailable: {exc}")
+    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(
@@ -559,24 +609,23 @@ def test_download_and_verify_update_rejects_existing_tmp_symlink(tmp_path: Path)
 
     assert result.status == "failed"
     assert result.failure_reason == "download_path_unsafe"
-    assert outside.read_text(encoding="utf-8") == "keep"
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
-def test_download_and_verify_update_rejects_existing_sha256_tmp_symlink(
+def test_download_and_verify_update_rejects_existing_verified_attempt_dir(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SHA256 `.tmp` 若已是 symlink，不可先留下 zip staging 檔。"""
+    """正式 attempt set 若已存在，不可覆寫既有 verified artifact set。"""
 
     updates_dir = tmp_path / "updates"
     destination_dir = updates_dir / "0.1.0"
     destination_dir.mkdir(parents=True)
-    outside = tmp_path / "outside-sha.txt"
-    outside.write_text("keep", encoding="utf-8")
-    tmp_link = destination_dir / "facebook-monitor-0.1.0-windows-portable.zip.sha256.tmp"
-    try:
-        tmp_link.symlink_to(outside)
-    except (OSError, NotImplementedError) as exc:
-        pytest.skip(f"file symlink unavailable: {exc}")
+    existing_set = destination_dir / f"attempt-{FIXED_ATTEMPT_ID}"
+    existing_set.mkdir()
+    marker = existing_set / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(
@@ -597,8 +646,7 @@ def test_download_and_verify_update_rejects_existing_sha256_tmp_symlink(
     assert result.failure_reason == "download_path_unsafe"
     assert result.file_path is not None
     assert not result.file_path.exists()
-    assert not result.file_path.with_name(result.file_path.name + ".download").exists()
-    assert outside.read_text(encoding="utf-8") == "keep"
+    assert marker.read_text(encoding="utf-8") == "keep"
 
 
 def test_download_and_verify_update_reports_io_error_when_version_dir_is_file(
@@ -626,15 +674,16 @@ def test_download_and_verify_update_reports_io_error_when_version_dir_is_file(
     assert result.failure_reason == "download_path_unsafe"
 
 
-def test_download_and_verify_update_rejects_destination_directory(
+def test_download_and_verify_update_rejects_existing_attempt_asset_directory(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """目的檔若已是目錄，要回傳可診斷的 unsafe path failure。"""
+    """正式 set 內目的檔若已是目錄，要回傳 unsafe path failure。"""
 
     destination_dir = tmp_path / "updates" / "0.1.0"
-    (destination_dir / "facebook-monitor-0.1.0-windows-portable.zip").mkdir(
-        parents=True
-    )
+    attempt_dir = destination_dir / f"attempt-{FIXED_ATTEMPT_ID}"
+    (attempt_dir / "facebook-monitor-0.1.0-windows-portable.zip").mkdir(parents=True)
+    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(

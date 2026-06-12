@@ -58,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = apply_pending_update_file(
             pending_path,
             wait_for_lock_seconds=float(args.wait_seconds),
+            wait_for_operation_lock_seconds=float(args.wait_seconds),
             log_path=paths.logs_dir / "updater.log",
         )
     else:
@@ -66,6 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pending,
             pending_path,
             wait_for_lock_seconds=float(args.wait_seconds),
+            wait_for_operation_lock_seconds=float(args.wait_seconds),
             log_path=paths.logs_dir / "updater.log",
         )
     print(f"{result.status}: {result.message}")

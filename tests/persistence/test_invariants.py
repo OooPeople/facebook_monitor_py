@@ -9,6 +9,7 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
+from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
@@ -80,6 +81,37 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("notification_dedupe", "dedupe_epoch"),
     ("notification_dedupe", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
+}
+
+EXPECTED_DATETIME_CONTRACT_KEYS = {
+    ("targets", "created_at"),
+    ("targets", "updated_at"),
+    ("match_history", "notified_at"),
+    ("match_history", "created_at"),
+    ("latest_scan_items", "scanned_at"),
+    ("scan_runs", "started_at"),
+    ("scan_runs", "finished_at"),
+    ("notification_events", "created_at"),
+    ("notification_outbox", "created_at"),
+    ("notification_outbox", "updated_at"),
+    ("target_runtime_state", "scan_requested_at"),
+    ("target_runtime_state", "last_enqueued_at"),
+    ("target_runtime_state", "last_started_at"),
+    ("target_runtime_state", "last_finished_at"),
+    ("target_runtime_state", "last_heartbeat_at"),
+    ("target_runtime_state", "last_page_reloaded_at"),
+    ("target_runtime_state", "display_next_due_at"),
+    ("target_runtime_state", "updated_at"),
+    ("target_cover_image_refresh_state", "requested_at"),
+    ("target_cover_image_refresh_state", "last_attempted_at"),
+    ("target_cover_image_refresh_state", "last_succeeded_at"),
+    ("target_cover_image_refresh_state", "last_failed_at"),
+    ("target_cover_image_refresh_state", "updated_at"),
+    ("global_notification_settings", "updated_at"),
+    ("sidebar_groups", "created_at"),
+    ("sidebar_groups", "updated_at"),
+    ("sidebar_target_placements", "updated_at"),
+    ("sidebar_group_config_templates", "updated_at"),
 }
 
 
@@ -159,6 +191,33 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
     assert "non-running state must not keep active worker/page ownership" in formatted
 
 
+def test_database_invariants_report_required_runtime_updated_at(
+    tmp_path: Path,
+) -> None:
+    """runtime updated_at 為 mapper 必要欄位，空值需被 invariant checker 抓到。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-updated-at",
+                canonical_url="https://www.facebook.com/groups/runtime-updated-at",
+            )
+        )
+        connection = app.repositories.targets.connection
+        connection.execute(
+            "UPDATE target_runtime_state SET updated_at = '' WHERE target_id = ?",
+            (target.id,),
+        )
+
+        violations = validate_database_invariants(connection)
+
+    formatted = "\n".join(violation.format() for violation in violations)
+    assert "target_runtime_state" in formatted
+    assert "updated_at" in formatted
+    assert "datetime value is required" in formatted
+
+
 def test_schema_contract_fields_exist_in_current_schema(tmp_path: Path) -> None:
     """schema contract 引用的欄位必須存在於 current schema。"""
 
@@ -178,10 +237,16 @@ def test_schema_contract_has_independent_expected_key_set() -> None:
         for field in contract.fields
     }
     range_keys = {(contract.table, contract.field) for contract in RANGE_CONTRACTS}
+    datetime_keys = {
+        (contract.table, field)
+        for contract in DATETIME_CONTRACTS
+        for field in contract.fields
+    }
 
     assert enum_keys == EXPECTED_ENUM_CONTRACT_KEYS
     assert boolean_keys == EXPECTED_BOOLEAN_CONTRACT_KEYS
     assert range_keys == EXPECTED_RANGE_CONTRACT_KEYS
+    assert datetime_keys == EXPECTED_DATETIME_CONTRACT_KEYS
 
 
 def test_schema_contract_fields_exist_after_legacy_migration(tmp_path: Path) -> None:
@@ -229,4 +294,13 @@ def _assert_schema_contract_queries_are_valid(connection: sqlite3.Connection) ->
                 "LIMIT 1"
             ),
             range_contract.params,
+        ).fetchall()
+    for datetime_contract in DATETIME_CONTRACTS:
+        fields = ", ".join(datetime_contract.fields)
+        connection.execute(
+            f"""
+            SELECT {datetime_contract.row_id_column} AS row_id, {fields}
+            FROM {datetime_contract.table}
+            LIMIT 1
+            """
         ).fetchall()

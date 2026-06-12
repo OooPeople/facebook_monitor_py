@@ -183,33 +183,49 @@ def _group_feed_route_key(url: str) -> tuple[str, str] | None:
     return ("groups", group_id)
 
 
-def mark_resident_target_error(db_path: Path, target_id: str, message: str) -> None:
-    """將 target runtime state 標成 error；target 已不存在時忽略。"""
+def force_mark_resident_target_error(db_path: Path, target_id: str, message: str) -> None:
+    """resident recovery 將 target 標成 error；target 已不存在時忽略。"""
 
     def operation() -> None:
         with SqliteApplicationContext(db_path) as app:
             if app.repositories.targets.get(target_id) is None:
                 return
-            app.services.targets.mark_target_error(target_id, message)
+            app.services.targets.force_mark_target_error(target_id, message)
 
     run_sqlite_operation_with_retry(
         operation,
-        operation_name="mark_resident_target_error",
+        operation_name="force_mark_resident_target_error",
         logger=logger,
     )
 
 
-def mark_resident_target_idle(db_path: Path, target_id: str) -> None:
-    """將 target runtime state 標回 idle；target 已不存在時忽略。"""
+def force_mark_resident_target_idle(db_path: Path, target_id: str) -> None:
+    """resident recovery 將 target 標回 idle；target 已不存在時忽略。"""
 
     def operation() -> None:
         with SqliteApplicationContext(db_path) as app:
             if app.repositories.targets.get(target_id) is None:
                 return
-            app.services.targets.mark_target_idle(target_id)
+            app.services.targets.force_mark_target_idle(target_id)
 
     run_sqlite_operation_with_retry(
         operation,
-        operation_name="mark_resident_target_idle",
+        operation_name="force_mark_resident_target_idle",
+        logger=logger,
+    )
+
+
+def mark_resident_target_idle_if_not_running(db_path: Path, target_id: str) -> None:
+    """pre-claim skip 只在 target 目前不是 running owner 時回 idle。"""
+
+    def operation() -> None:
+        with SqliteApplicationContext(db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return
+            app.services.targets.mark_target_idle_if_not_running(target_id)
+
+    run_sqlite_operation_with_retry(
+        operation,
+        operation_name="mark_resident_target_idle_if_not_running",
         logger=logger,
     )

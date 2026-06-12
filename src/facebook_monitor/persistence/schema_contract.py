@@ -57,6 +57,16 @@ class SchemaRangeContract:
     params: tuple[Any, ...] = ()
 
 
+@dataclass(frozen=True)
+class SchemaDatetimeContract:
+    """描述一張表中應維持可解析 ISO datetime 的欄位。"""
+
+    table: str
+    row_id_column: str
+    fields: tuple[str, ...]
+    required_fields: tuple[str, ...] = ()
+
+
 def _enum_values(enum_type: type[StrEnum]) -> frozenset[str]:
     """回傳 StrEnum values。"""
 
@@ -297,5 +307,96 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
             "scan_guard_count < 0 OR consecutive_failure_count < 0 "
             "OR consecutive_scan_skip_count < 0"
         ),
+    ),
+)
+
+
+DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
+    SchemaDatetimeContract(
+        "targets",
+        "id",
+        ("created_at", "updated_at"),
+        required_fields=("created_at", "updated_at"),
+    ),
+    SchemaDatetimeContract(
+        "match_history",
+        "id",
+        ("notified_at", "created_at"),
+        required_fields=("created_at",),
+    ),
+    SchemaDatetimeContract(
+        "latest_scan_items",
+        "target_id || ':' || item_key",
+        ("scanned_at",),
+        required_fields=("scanned_at",),
+    ),
+    SchemaDatetimeContract(
+        "scan_runs",
+        "id",
+        ("started_at", "finished_at"),
+        required_fields=("started_at", "finished_at"),
+    ),
+    SchemaDatetimeContract(
+        "notification_events",
+        "id",
+        ("created_at",),
+        required_fields=("created_at",),
+    ),
+    SchemaDatetimeContract(
+        "notification_outbox",
+        "id",
+        ("created_at", "updated_at"),
+        required_fields=("created_at", "updated_at"),
+    ),
+    SchemaDatetimeContract(
+        "target_runtime_state",
+        "target_id",
+        (
+            "scan_requested_at",
+            "last_enqueued_at",
+            "last_started_at",
+            "last_finished_at",
+            "last_heartbeat_at",
+            "last_page_reloaded_at",
+            "display_next_due_at",
+            "updated_at",
+        ),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "target_cover_image_refresh_state",
+        "target_id",
+        (
+            "requested_at",
+            "last_attempted_at",
+            "last_succeeded_at",
+            "last_failed_at",
+            "updated_at",
+        ),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "global_notification_settings",
+        "id",
+        ("updated_at",),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "sidebar_groups",
+        "id",
+        ("created_at", "updated_at"),
+        required_fields=("created_at", "updated_at"),
+    ),
+    SchemaDatetimeContract(
+        "sidebar_target_placements",
+        "target_id",
+        ("updated_at",),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "sidebar_group_config_templates",
+        "sidebar_group_id",
+        ("updated_at",),
+        required_fields=("updated_at",),
     ),
 )

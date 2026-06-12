@@ -704,6 +704,185 @@ def test_force_runtime_aliases_explicitly_override_running_owner(
     assert forced_error.consecutive_failure_count == 2
 
 
+def test_runtime_restart_retry_recovery_clears_owner_and_requests_scan(
+    tmp_path: Path,
+) -> None:
+    """runtime restart recovery 應集中由 service 清 owner 並留下補掃要求。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="runtime-restart-retry",
+                canonical_url="https://www.facebook.com/groups/runtime-restart-retry",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-runtime-restart",
+            page_id="page-runtime-restart",
+        )
+        assert running is not None
+
+        recovered = app.services.targets.force_request_target_retry_after_runtime_restart(
+            target.id,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert recovered.runtime_status == TargetRuntimeStatus.IDLE
+    assert recovered.scan_requested_at is not None
+    assert recovered.active_worker_id == ""
+    assert recovered.active_page_id == ""
+    assert loaded == recovered
+
+
+def test_sqlite_lock_retry_recovery_clears_owner_and_requests_scan(
+    tmp_path: Path,
+) -> None:
+    """sqlite lock recovery 在 owner 相符時由 service 清 owner 並補掃。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="sqlite-lock-retry",
+                canonical_url="https://www.facebook.com/groups/sqlite-lock-retry",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-sqlite-lock",
+            page_id="page-sqlite-lock",
+        )
+        assert running is not None
+        assert running.last_started_at is not None
+
+        recovered = app.services.targets.record_guarded_target_retry_after_sqlite_lock(
+            target.id,
+            worker_id="worker-sqlite-lock",
+            started_at=running.last_started_at,
+            page_id="page-sqlite-lock",
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert recovered is not None
+    assert recovered.runtime_status == TargetRuntimeStatus.IDLE
+    assert recovered.scan_requested_at is not None
+    assert recovered.active_worker_id == ""
+    assert recovered.active_page_id == ""
+    assert loaded == recovered
+
+
+def test_sqlite_lock_retry_recovery_ignores_stale_owner(
+    tmp_path: Path,
+) -> None:
+    """sqlite lock recovery 不可讓舊 owner 清掉較新的 running owner。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="sqlite-lock-stale",
+                canonical_url="https://www.facebook.com/groups/sqlite-lock-stale",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        old_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-old",
+            page_id="page-old",
+        )
+        assert old_running is not None
+        assert old_running.last_started_at is not None
+        app.services.targets.restart_target_monitoring(target.id)
+        new_running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-new",
+            page_id="page-new",
+        )
+        assert new_running is not None
+
+        stale_update = app.services.targets.record_guarded_target_retry_after_sqlite_lock(
+            target.id,
+            worker_id="worker-old",
+            started_at=old_running.last_started_at,
+            page_id="page-old",
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert stale_update is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-new"
+    assert loaded.active_page_id == "page-new"
+
+
+def test_non_running_sqlite_lock_retry_recovery_does_not_override_running(
+    tmp_path: Path,
+) -> None:
+    """claim 前 recovery 只能更新非 running row，不能清掉 active owner。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="sqlite-lock-non-running",
+                canonical_url="https://www.facebook.com/groups/sqlite-lock-non-running",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-running",
+            page_id="page-running",
+        )
+        assert running is not None
+
+        blocked = app.services.targets.record_non_running_target_retry_after_sqlite_lock(
+            target.id,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert blocked is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-running"
+    assert loaded.active_page_id == "page-running"
+
+
+def test_mark_target_idle_if_not_running_does_not_override_running_owner(
+    tmp_path: Path,
+) -> None:
+    """pre-claim idle patch 不可清掉已被 worker claim 的 running owner。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="idle-if-not-running",
+                canonical_url="https://www.facebook.com/groups/idle-if-not-running",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.try_claim_target_running(
+            target.id,
+            "worker-running",
+            page_id="page-running",
+        )
+        assert running is not None
+
+        skipped = app.services.targets.mark_target_idle_if_not_running(target.id)
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert skipped is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.active_worker_id == "worker-running"
+    assert loaded.active_page_id == "page-running"
+
+
 def test_runtime_transition_invariants_for_running_finish_and_stop(
     tmp_path: Path,
 ) -> None:

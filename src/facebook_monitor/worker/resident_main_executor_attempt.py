@@ -44,7 +44,7 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
-from facebook_monitor.worker.resident_shared import mark_resident_target_idle
+from facebook_monitor.worker.resident_shared import mark_resident_target_idle_if_not_running
 from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db_async
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
@@ -148,7 +148,7 @@ async def _load_and_admit_target_attempt(
             worker_id,
             "target_not_active_before_running",
         )
-        mark_resident_target_idle(pool.options.db_path, target_id)
+        mark_resident_target_idle_if_not_running(pool.options.db_path, target_id)
         return None
 
     state.page_id = await pool.page_pool.reserve_page_id(target_id)
@@ -362,6 +362,15 @@ async def run_queue_item(
                 request_runtime_restart=False,
                 include_page_counts_in_log=False,
             )
+        if state.commit_guard is None:
+            _finish_pre_admission_failure(
+                pool=pool,
+                worker_id=worker_id,
+                state=state,
+                reason="scheduler_cancel_before_running",
+                exception_class="CancelledError",
+            )
+            raise
         await record_guarded_scan_failure_for_db_async(
             db_path=pool.options.db_path,
             target_id=target_id,
@@ -369,7 +378,7 @@ async def run_queue_item(
             message="resident scheduler is stopping",
             source="scheduler_cancel",
             worker_path="resident_main",
-            commit_guard=state.commit_guard,
+            commit_guard=_require_commit_guard(state),
             exception_class="CancelledError",
             page_reused=state.acquired_page and not state.opened,
         )
@@ -461,6 +470,15 @@ async def _record_failure_and_finish(
 ) -> AsyncTargetScanResult:
     """記錄 guarded scan failure，並依 recovery decision 完成本輪結果。"""
 
+    if state.commit_guard is None:
+        return _finish_pre_admission_failure(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
+            reason=reason,
+            exception_class=exception_class,
+        )
+    commit_guard = _require_commit_guard(state)
     decision = await record_guarded_scan_failure_for_db_async(
         db_path=pool.options.db_path,
         target_id=state.target_id,
@@ -468,7 +486,7 @@ async def _record_failure_and_finish(
         message=message,
         source=source,
         worker_path="resident_main",
-        commit_guard=state.commit_guard,
+        commit_guard=commit_guard,
         exception_class=exception_class,
         page_reused=_attempt_reused_page(state),
     )
@@ -503,6 +521,29 @@ async def _record_failure_and_finish(
             reused_page=_attempt_reused_page(state),
         )
     return AsyncTargetScanResult(target_id=state.target_id, failure=True)
+
+
+def _finish_pre_admission_failure(
+    *,
+    pool: ResidentExecutorAttemptHost,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    reason: str,
+    exception_class: str,
+) -> AsyncTargetScanResult:
+    """claim running 前失敗時，不走 scan finalize 的 unguarded fallback。"""
+
+    mark_resident_target_idle_if_not_running(pool.options.db_path, state.target_id)
+    logger.warning(
+        "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
+        "reason=%s exception_class=%s",
+        state.target_id,
+        worker_id,
+        state.page_id,
+        reason,
+        exception_class,
+    )
+    return AsyncTargetScanResult(target_id=state.target_id, skipped=True)
 
 
 def _log_failure_decision(

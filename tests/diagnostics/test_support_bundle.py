@@ -484,6 +484,9 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
         scheduler_payload = json.loads(archive.read("scheduler_state.json").decode("utf-8"))
         scan_payload = json.loads(archive.read("scan_summaries.json").decode("utf-8"))
         dedupe_payload = json.loads(archive.read("dedupe_summary.json").decode("utf-8"))
+        notification_payload = json.loads(
+            archive.read("notification_diagnostics.json").decode("utf-8")
+        )
         log_payload = json.loads(archive.read("log_tail.json").decode("utf-8"))
 
     assert names == {
@@ -509,6 +512,8 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
     assert scheduler_payload["queued_targets"] == ["target_001"]
     assert scan_payload["stop_reason_counts"] == {"extractor_failed": 1}
     assert dedupe_payload["available"] is True
+    assert notification_payload["failure_category_counts"] == {"unknown": 1}
+    assert notification_payload["failed_outbox_samples"][0]["failure_category"] == "unknown"
     assert {
         "scan_scope_state",
         "target_dedupe_state",

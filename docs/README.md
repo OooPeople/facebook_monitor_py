@@ -23,10 +23,12 @@
 - `docs/local/TASK_BREAKDOWN.md`：若存在，作為本機活狀態、下一步、風險與最近驗證的主來源。
 - `docs/local/HANDOFF.md`：若存在，作為新對話或下一位 agent 接手的本機摘要。
 - `docs/local/archive/`：若存在，保存歷史計畫、spike 與長篇推導，不作為目前狀態來源。
+- root 底下 `review*.md`：若存在，視為本機 ignored 的審查工作筆記；可保留原始 review 內容，但最新狀態必須同步摘要到本機活狀態或文件表格，避免歷史建議被誤用為目前待辦。
 
 ## 更新規則
 
 - 目前進度、下一步、風險或最近驗證：若本機有 `docs/local/TASK_BREAKDOWN.md`，只更新該文件並保持摘要層級；不要新增公開追蹤的進度文件。
+- 本機 review 檔整理：先在檔案頂部維護最新狀態表或結論；下方原始 review 若保留，必須明確標成歷史參考，並讓 `TASK_BREAKDOWN.md` 反映真正下一步。
 - 正式主路徑、資料語義、模組邊界或 deferred 邊界：更新 `docs/ARCHITECTURE.md`，必要時只在 `AGENTS.md` 保留短 guardrail 或文件索引。
 - Web UI 呈現、互動一致性、sidebar layout 或 route / presenter 邊界：更新 `docs/WEB_UI_CONTRACT.md`；若會影響 target state、scheduler、notification、dedupe 或 persistence，主語義仍要更新 `docs/ARCHITECTURE.md`。
 - Web UI vendored frontend file 來源、版本、license 或 checksum：更新 `docs/frontend-vendor.md`。

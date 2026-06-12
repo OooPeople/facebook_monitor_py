@@ -368,6 +368,65 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(state.target_id)
 
+    def save_if_not_running(self, state: TargetRuntimeState) -> TargetRuntimeState | None:
+        """只在目前 row 不是 running owner 時保存 state。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                desired_state = ?,
+                runtime_status = ?,
+                scan_requested_at = ?,
+                last_enqueued_at = ?,
+                last_started_at = ?,
+                last_finished_at = ?,
+                last_heartbeat_at = ?,
+                last_error = ?,
+                last_skip_reason = ?,
+                enqueue_reason = ?,
+                active_worker_id = ?,
+                active_page_id = ?,
+                last_page_reloaded_at = ?,
+                scan_guard_count = ?,
+                display_next_due_at = ?,
+                consecutive_failure_reason = ?,
+                consecutive_failure_count = ?,
+                consecutive_scan_skip_reason = ?,
+                consecutive_scan_skip_count = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status != ?
+            """,
+            (
+                state.desired_state.value,
+                state.runtime_status.value,
+                encode_datetime(state.scan_requested_at),
+                encode_datetime(state.last_enqueued_at),
+                encode_datetime(state.last_started_at),
+                encode_datetime(state.last_finished_at),
+                encode_datetime(state.last_heartbeat_at),
+                state.last_error,
+                state.last_skip_reason,
+                state.enqueue_reason,
+                state.active_worker_id,
+                state.active_page_id,
+                encode_datetime(state.last_page_reloaded_at),
+                state.scan_guard_count,
+                encode_datetime(state.display_next_due_at),
+                state.consecutive_failure_reason,
+                state.consecutive_failure_count,
+                state.consecutive_scan_skip_reason,
+                state.consecutive_scan_skip_count,
+                encode_datetime(state.updated_at),
+                state.target_id,
+                TargetRuntimeStatus.RUNNING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(state.target_id)
+
     def record_heartbeat_if_running_owner(
         self,
         target_id: str,

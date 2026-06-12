@@ -9,14 +9,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from typing import AsyncIterator
+import uuid
 
 import httpx
 
 from facebook_monitor.core.defaults import PYTHON_UPDATER_RUNTIME_DEFAULTS
+from facebook_monitor.runtime.update_operation_lock import ensure_update_operation_lock
+from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.checksum import HASH_CHUNK_SIZE
@@ -36,6 +41,8 @@ MAX_UPDATE_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 MAX_SHA256_DOWNLOAD_BYTES = 1024 * 1024
 MAX_MANIFEST_DOWNLOAD_BYTES = 1024 * 1024
 MAX_MANIFEST_SIGNATURE_DOWNLOAD_BYTES = 4096
+VERIFIED_DOWNLOAD_SET_MARKER_NAME = "verified-download.json"
+VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,7 @@ class UpdateDownloadResult:
     manifest_signature_path: Path | None = None
     manifest_sha256: str = ""
     manifest_key_id: str = ""
+    verified_set_marker_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -66,10 +74,13 @@ class UpdateDownloadPlan:
     manifest_signature_name: str
     updates_root: Path
     destination_dir: Path
+    verified_set_dir: Path
+    staged_set_dir: Path
     file_path: Path
     sha256_path: Path | None
     manifest_path: Path
     manifest_signature_path: Path
+    verified_set_marker_path: Path
     staged_file_path: Path
     staged_sha256_path: Path | None
     staged_manifest_path: Path
@@ -97,6 +108,36 @@ async def download_and_verify_update(
 ) -> UpdateDownloadResult:
     """下載更新 zip 與 signed manifest，驗證通過後保留於 updates dir。"""
 
+    try:
+        with ensure_update_operation_lock(
+            _operation_runtime_dir_for_updates_dir(updates_dir),
+            "download-and-verify-update",
+        ):
+            return await _download_and_verify_update_locked(
+                update_check=update_check,
+                updates_dir=updates_dir,
+                timeout_seconds=timeout_seconds,
+                transport=transport,
+                max_asset_bytes=max_asset_bytes,
+                max_sha256_bytes=max_sha256_bytes,
+                trusted_public_keys=trusted_public_keys,
+            )
+    except UpdateOperationLockError:
+        return _failure("update_operation_locked")
+
+
+async def _download_and_verify_update_locked(
+    *,
+    update_check: UpdateCheckResult,
+    updates_dir: Path,
+    timeout_seconds: float,
+    transport: httpx.AsyncBaseTransport | None,
+    max_asset_bytes: int,
+    max_sha256_bytes: int,
+    trusted_public_keys: Mapping[str, str] | None,
+) -> UpdateDownloadResult:
+    """已持有 operation lock 時執行實際下載與驗證。"""
+
     missing_reason = _missing_update_download_reason(update_check)
     if missing_reason:
         return _failure(missing_reason)
@@ -123,7 +164,7 @@ async def download_and_verify_update(
         if verification.expected_sha256 != verification.actual_sha256:
             _cleanup_staged_download(plan)
             return _sha256_mismatch_result(plan, verification)
-        _publish_verified_download_plan(plan)
+        _publish_verified_download_plan(plan, verification)
     except httpx.HTTPStatusError as exc:
         _cleanup_staged_download(plan)
         return _failure_for_plan(
@@ -221,10 +262,13 @@ def _build_download_plan(
     version_dir_name = sanitize_release_asset_name(update_check.latest_version)
     updates_root = Path(updates_dir).expanduser().absolute()
     destination_dir = updates_root / version_dir_name
-    file_path = destination_dir / asset_name
-    sha256_path = destination_dir / sha256_name
-    manifest_path = destination_dir / manifest_name
-    manifest_signature_path = destination_dir / manifest_signature_name
+    attempt_id = uuid.uuid4().hex
+    verified_set_dir = destination_dir / f"attempt-{attempt_id}"
+    staged_set_dir = destination_dir / f".attempt-{attempt_id}"
+    file_path = verified_set_dir / asset_name
+    sha256_path = verified_set_dir / sha256_name
+    manifest_path = verified_set_dir / manifest_name
+    manifest_signature_path = verified_set_dir / manifest_signature_name
     validate_initial_release_download_url(
         update_check.asset_download_url,
         expected_asset_name=asset_name,
@@ -254,14 +298,17 @@ def _build_download_plan(
         manifest_signature_name=manifest_signature_name,
         updates_root=updates_root,
         destination_dir=destination_dir,
+        verified_set_dir=verified_set_dir,
+        staged_set_dir=staged_set_dir,
         file_path=file_path,
         sha256_path=sha256_path,
         manifest_path=manifest_path,
         manifest_signature_path=manifest_signature_path,
-        staged_file_path=_staging_destination(file_path),
-        staged_sha256_path=_staging_destination(sha256_path),
-        staged_manifest_path=_staging_destination(manifest_path),
-        staged_manifest_signature_path=_staging_destination(manifest_signature_path),
+        verified_set_marker_path=verified_set_dir / VERIFIED_DOWNLOAD_SET_MARKER_NAME,
+        staged_file_path=staged_set_dir / asset_name,
+        staged_sha256_path=staged_set_dir / sha256_name,
+        staged_manifest_path=staged_set_dir / manifest_name,
+        staged_manifest_signature_path=staged_set_dir / manifest_signature_name,
     )
 
 
@@ -269,6 +316,11 @@ def _prepare_download_plan(plan: UpdateDownloadPlan) -> None:
     """建立下載目錄並檢查正式 / staging 目的地安全性。"""
 
     _prepare_destination_dir(plan.destination_dir, updates_root=plan.updates_root)
+    _prepare_attempt_set_dir(plan.staged_set_dir, updates_root=plan.updates_root)
+    _ensure_download_set_destination_available(
+        plan.verified_set_dir,
+        updates_root=plan.updates_root,
+    )
     destinations = [
         plan.file_path,
         plan.staged_file_path,
@@ -276,6 +328,7 @@ def _prepare_download_plan(plan: UpdateDownloadPlan) -> None:
         plan.manifest_signature_path,
         plan.staged_manifest_path,
         plan.staged_manifest_signature_path,
+        plan.verified_set_marker_path,
     ]
     if plan.sha256_path is not None and plan.staged_sha256_path is not None:
         destinations.extend([plan.sha256_path, plan.staged_sha256_path])
@@ -367,28 +420,24 @@ def _verify_staged_asset(
 def _cleanup_staged_download(plan: UpdateDownloadPlan) -> None:
     """清除 staged manifest、signature、sidecar 與 zip。"""
 
-    _cleanup_download_artifacts(
-        plan.staged_file_path,
-        plan.staged_manifest_path,
-        plan.staged_manifest_signature_path,
-        *_optional_paths(plan.staged_sha256_path),
-        updates_root=plan.updates_root,
-    )
+    _cleanup_download_dir(plan.staged_set_dir, updates_root=plan.updates_root)
 
 
-def _publish_verified_download_plan(plan: UpdateDownloadPlan) -> None:
-    """將驗證通過的 staging 檔發布到正式檔名。"""
+def _publish_verified_download_plan(
+    plan: UpdateDownloadPlan,
+    verification: StagedAssetVerification,
+) -> None:
+    """將驗證通過的 staging set 發布為正式 artifact set。"""
 
     _publish_verified_download(
         staged_file_path=plan.staged_file_path,
-        file_path=plan.file_path,
         staged_sha256_path=plan.staged_sha256_path,
-        sha256_path=plan.sha256_path,
         staged_manifest_path=plan.staged_manifest_path,
-        manifest_path=plan.manifest_path,
         staged_manifest_signature_path=plan.staged_manifest_signature_path,
-        manifest_signature_path=plan.manifest_signature_path,
+        staged_set_dir=plan.staged_set_dir,
+        verified_set_dir=plan.verified_set_dir,
         updates_root=plan.updates_root,
+        verification=verification,
     )
 
 
@@ -411,6 +460,7 @@ def _sha256_mismatch_result(
         manifest_signature_path=plan.manifest_signature_path,
         manifest_sha256=verification.manifest.manifest_sha256,
         manifest_key_id=verification.manifest.key_id,
+        verified_set_marker_path=plan.verified_set_marker_path,
     )
 
 
@@ -433,6 +483,7 @@ def _verified_result(
         manifest_signature_path=plan.manifest_signature_path,
         manifest_sha256=verification.manifest.manifest_sha256,
         manifest_key_id=verification.manifest.key_id,
+        verified_set_marker_path=plan.verified_set_marker_path,
     )
 
 
@@ -445,6 +496,7 @@ def _failure_for_plan(reason: str, *, plan: UpdateDownloadPlan) -> UpdateDownloa
         sha256_path=plan.sha256_path,
         manifest_path=plan.manifest_path,
         manifest_signature_path=plan.manifest_signature_path,
+        verified_set_marker_path=plan.verified_set_marker_path,
     )
 
 
@@ -520,12 +572,6 @@ def _verify_staged_manifest(
     )
 
 
-def _staging_destination(destination: Path) -> Path:
-    """回傳驗證完成前使用的 staging 路徑。"""
-
-    return destination.with_name(destination.name + ".download")
-
-
 def _prepare_destination_dir(path: Path, *, updates_root: Path) -> None:
     """建立安全的下載版本目錄；既有非目錄或連結一律拒絕。"""
 
@@ -538,6 +584,31 @@ def _prepare_destination_dir(path: Path, *, updates_root: Path) -> None:
         return
     path.mkdir(parents=True, exist_ok=True)
     ensure_safe_download_path(path, updates_root=updates_root)
+
+
+def _prepare_attempt_set_dir(path: Path, *, updates_root: Path) -> None:
+    """建立單次下載 staging set 目錄；既有路徑一律視為不安全。"""
+
+    _ensure_download_set_destination_available(path, updates_root=updates_root)
+    path.mkdir()
+    ensure_safe_download_path(path, updates_root=updates_root)
+    if is_reparse_or_symlink(path):
+        raise ValueError("download_path_unsafe")
+
+
+def _ensure_download_set_destination_available(
+    path: Path,
+    *,
+    updates_root: Path,
+) -> None:
+    """確認 artifact set 目錄目的地可安全建立。"""
+
+    ensure_safe_download_path(path.parent, updates_root=updates_root)
+    ensure_safe_download_path(path, updates_root=updates_root)
+    if is_reparse_or_symlink(path):
+        raise ValueError("download_path_unsafe")
+    if path.exists():
+        raise ValueError("download_path_unsafe")
 
 
 def _prepare_download_destinations(
@@ -557,42 +628,233 @@ def _prepare_download_destinations(
 def _publish_verified_download(
     *,
     staged_file_path: Path,
-    file_path: Path,
     staged_sha256_path: Path | None,
-    sha256_path: Path | None,
     staged_manifest_path: Path,
-    manifest_path: Path,
     staged_manifest_signature_path: Path,
-    manifest_signature_path: Path,
+    staged_set_dir: Path,
+    verified_set_dir: Path,
     updates_root: Path,
+    verification: StagedAssetVerification,
 ) -> None:
-    """驗證完成後才將 staging 檔發布到正式檔名。"""
+    """驗證完成後才將 staging set 原子發布到正式 set 目錄。"""
 
-    for destination in (file_path, manifest_path, manifest_signature_path):
-        _ensure_download_destination_available(destination, updates_root=updates_root)
-    if sha256_path is not None:
-        _ensure_download_destination_available(sha256_path, updates_root=updates_root)
-    published_paths: list[Path] = []
+    _ensure_download_set_destination_available(
+        verified_set_dir,
+        updates_root=updates_root,
+    )
+    staged_marker_path = staged_set_dir / VERIFIED_DOWNLOAD_SET_MARKER_NAME
     try:
-        staged_file_path.replace(file_path)
-        published_paths.append(file_path)
-        staged_manifest_path.replace(manifest_path)
-        published_paths.append(manifest_path)
-        staged_manifest_signature_path.replace(manifest_signature_path)
-        published_paths.append(manifest_signature_path)
-        if staged_sha256_path is not None and sha256_path is not None:
-            staged_sha256_path.replace(sha256_path)
-            published_paths.append(sha256_path)
-    except Exception:
-        _cleanup_download_artifacts(
-            *published_paths,
-            staged_file_path,
-            staged_manifest_path,
-            staged_manifest_signature_path,
-            *_optional_paths(staged_sha256_path),
+        _write_verified_download_set_marker(
+            staged_marker_path,
+            file_path=staged_file_path,
+            sha256_path=staged_sha256_path,
+            manifest_path=staged_manifest_path,
+            manifest_signature_path=staged_manifest_signature_path,
+            verification=verification,
             updates_root=updates_root,
         )
+        staged_set_dir.replace(verified_set_dir)
+    except Exception:
+        _cleanup_download_dir(staged_set_dir, updates_root=updates_root)
+        _cleanup_download_dir(verified_set_dir, updates_root=updates_root)
         raise
+
+
+def validate_verified_download_set(download_result: UpdateDownloadResult) -> None:
+    """確認 verified download set marker 與目前檔案仍一致。"""
+
+    if not download_result.verified or download_result.file_path is None:
+        raise ValueError("download_result_not_verified")
+    marker_path = download_result.verified_set_marker_path or _verified_marker_path_for(
+        download_result.file_path
+    )
+    _validate_verified_download_set_paths(download_result, marker_path)
+    payload = _load_verified_download_set_marker(marker_path)
+    _validate_verified_marker_asset(payload, download_result)
+    if (
+        download_result.manifest_path is None
+        or download_result.manifest_signature_path is None
+    ):
+        raise ValueError("download_result_manifest_missing")
+    _validate_verified_marker_manifest(payload, download_result)
+    _validate_verified_marker_signature(payload, download_result)
+    _validate_verified_marker_sidecar(payload, download_result)
+
+
+def _validate_verified_download_set_paths(
+    download_result: UpdateDownloadResult,
+    marker_path: Path,
+) -> None:
+    """確認 verified download set 的所有檔案位於同一個目錄。"""
+
+    assert download_result.file_path is not None
+    set_dir = download_result.file_path.parent
+    if marker_path.parent != set_dir:
+        raise ValueError("download_result_verified_set_mismatch")
+    if (
+        download_result.manifest_path is not None
+        and download_result.manifest_path.parent != set_dir
+    ):
+        raise ValueError("download_result_verified_set_mismatch")
+    if (
+        download_result.manifest_signature_path is not None
+        and download_result.manifest_signature_path.parent != set_dir
+    ):
+        raise ValueError("download_result_verified_set_mismatch")
+    if (
+        download_result.sha256_path is not None
+        and download_result.sha256_path.parent != set_dir
+    ):
+        raise ValueError("download_result_verified_set_mismatch")
+
+
+def _load_verified_download_set_marker(marker_path: Path) -> dict[str, object]:
+    """讀取 verified set marker 並確認 schema。"""
+
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("download_result_verified_set_missing") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("download_result_verified_set_invalid")
+    if payload.get("schema_version") != VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION:
+        raise ValueError("download_result_verified_set_invalid")
+    return payload
+
+
+def _validate_verified_marker_asset(
+    payload: Mapping[str, object],
+    download_result: UpdateDownloadResult,
+) -> None:
+    """確認 marker 的 zip 名稱與 hash 仍吻合。"""
+
+    assert download_result.file_path is not None
+    expected_sha256 = download_result.expected_sha256.casefold()
+    _require_marker_value(payload, "asset_name", download_result.file_path.name)
+    _require_marker_value(payload, "asset_sha256", expected_sha256)
+    _require_file_sha256(download_result.file_path, expected_sha256)
+
+
+def _validate_verified_marker_manifest(
+    payload: Mapping[str, object],
+    download_result: UpdateDownloadResult,
+) -> None:
+    """確認 marker 的 manifest 名稱與 hash 仍吻合。"""
+
+    assert download_result.manifest_path is not None
+    manifest_sha256 = download_result.manifest_sha256.casefold()
+    if payload.get("manifest_name") != download_result.manifest_path.name:
+        raise ValueError("download_result_verified_set_mismatch")
+    _require_marker_value(payload, "manifest_sha256", manifest_sha256)
+    _require_file_sha256(download_result.manifest_path, manifest_sha256)
+
+
+def _validate_verified_marker_signature(
+    payload: Mapping[str, object],
+    download_result: UpdateDownloadResult,
+) -> None:
+    """確認 marker 的 detached signature 名稱與 hash 仍吻合。"""
+
+    assert download_result.manifest_signature_path is not None
+    _require_marker_value(
+        payload,
+        "manifest_signature_name",
+        download_result.manifest_signature_path.name,
+    )
+    _require_marker_value(
+        payload,
+        "manifest_signature_sha256",
+        calculate_sha256(download_result.manifest_signature_path).casefold(),
+    )
+
+
+def _validate_verified_marker_sidecar(
+    payload: Mapping[str, object],
+    download_result: UpdateDownloadResult,
+) -> None:
+    """確認 marker 的 SHA256 sidecar 名稱與 hash 仍吻合。"""
+
+    if download_result.sha256_path is not None:
+        _require_marker_value(payload, "sha256_name", download_result.sha256_path.name)
+        _require_marker_value(
+            payload,
+            "sha256_sha256",
+            calculate_sha256(download_result.sha256_path).casefold(),
+        )
+        return
+    if payload.get("sha256_name"):
+        raise ValueError("download_result_verified_set_mismatch")
+
+
+def _require_marker_value(
+    payload: Mapping[str, object],
+    key: str,
+    expected: str,
+) -> None:
+    """確認 marker 欄位值等於預期字串。"""
+
+    if payload.get(key) != expected:
+        raise ValueError("download_result_verified_set_mismatch")
+
+
+def _require_file_sha256(path: Path, expected_sha256: str) -> None:
+    """確認檔案 hash 等於 marker / download result 內的預期值。"""
+
+    if calculate_sha256(path) != expected_sha256:
+        raise ValueError("download_result_verified_set_mismatch")
+
+
+def _write_verified_download_set_marker(
+    marker_path: Path,
+    *,
+    file_path: Path,
+    sha256_path: Path | None,
+    manifest_path: Path,
+    manifest_signature_path: Path,
+    verification: StagedAssetVerification,
+    updates_root: Path,
+) -> None:
+    """以最後一步 atomic marker 發布整組 verified download。"""
+
+    payload = {
+        "schema_version": VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION,
+        "asset_name": file_path.name,
+        "asset_sha256": verification.actual_sha256.casefold(),
+        "asset_size": file_path.stat().st_size,
+        "sha256_name": sha256_path.name if sha256_path is not None else "",
+        "sha256_sha256": (
+            calculate_sha256(sha256_path).casefold()
+            if sha256_path is not None
+            else ""
+        ),
+        "manifest_name": manifest_path.name,
+        "manifest_sha256": verification.manifest.manifest_sha256.casefold(),
+        "manifest_key_id": verification.manifest.key_id,
+        "manifest_signature_name": manifest_signature_path.name,
+        "manifest_signature_sha256": calculate_sha256(
+            manifest_signature_path
+        ).casefold(),
+    }
+    tmp_path = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")
+    _prepare_download_tmp(marker_path, tmp_path, updates_root=updates_root)
+    try:
+        with tmp_path.open("x", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+            file.write("\n")
+        tmp_path.replace(marker_path)
+    except FileExistsError as exc:
+        raise ValueError("download_path_unsafe") from exc
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _verified_marker_path_for(file_path: Path) -> Path:
+    """依更新 zip 路徑回推 verified set marker 路徑。"""
+
+    return file_path.parent / VERIFIED_DOWNLOAD_SET_MARKER_NAME
 
 
 def _prepare_download_tmp(
@@ -627,22 +889,8 @@ def _ensure_download_destination_available(
         raise ValueError("download_path_unsafe")
 
 
-def _cleanup_download_artifacts(
-    *paths: Path,
-    updates_root: Path,
-) -> None:
-    """清掉下載流程留下的安全範圍內暫存與目的檔。"""
-
-    for path in paths:
-        _safe_unlink_download_path(
-            path.with_name(path.name + ".tmp"),
-            updates_root=updates_root,
-        )
-        _safe_unlink_download_path(path, updates_root=updates_root)
-
-
-def _safe_unlink_download_path(path: Path, *, updates_root: Path) -> None:
-    """只移除確認仍在安全 updates tree 內的一般檔或 symlink。"""
+def _cleanup_download_dir(path: Path, *, updates_root: Path) -> None:
+    """安全清除單次下載 artifact set 目錄。"""
 
     try:
         ensure_safe_download_path(path, updates_root=updates_root)
@@ -651,14 +899,13 @@ def _safe_unlink_download_path(path: Path, *, updates_root: Path) -> None:
     try:
         if path.is_symlink() or path.is_file():
             path.unlink(missing_ok=True)
+            return
+        if path.exists():
+            if is_reparse_or_symlink(path):
+                return
+            shutil.rmtree(path)
     except OSError:
-            pass
-
-
-def _optional_paths(*paths: Path | None) -> tuple[Path, ...]:
-    """回傳非空路徑 tuple，供 cleanup call-site 保持精簡。"""
-
-    return tuple(path for path in paths if path is not None)
+        pass
 
 
 async def _aiter_response_bytes(response: httpx.Response) -> AsyncIterator[bytes]:
@@ -689,6 +936,7 @@ def _failure(
     sha256_path: Path | None = None,
     manifest_path: Path | None = None,
     manifest_signature_path: Path | None = None,
+    verified_set_marker_path: Path | None = None,
 ) -> UpdateDownloadResult:
     """建立下載失敗結果。"""
 
@@ -703,7 +951,14 @@ def _failure(
         failure_reason=reason,
         manifest_path=manifest_path,
         manifest_signature_path=manifest_signature_path,
+        verified_set_marker_path=verified_set_marker_path,
     )
+
+
+def _operation_runtime_dir_for_updates_dir(updates_dir: Path) -> Path:
+    """依 RuntimePaths 慣例從 updates dir 推導 updater operation lock 目錄。"""
+
+    return Path(updates_dir).expanduser().resolve().parent / "runtime"
 
 
 def reveal_in_file_manager(path: Path) -> bool:

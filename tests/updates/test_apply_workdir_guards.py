@@ -27,7 +27,7 @@ def test_apply_pending_update_rejects_asset_policy_mismatched_to_app_layout(
         "detect_layout_policy",
         lambda app_base_dir: MACOS_ARM64_LAYOUT_POLICY,
     )
-    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "update.zip"
+    zip_path = tmp_path / "app" / "data" / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_update_zip(zip_path, exe_text="new")
 
@@ -45,7 +45,7 @@ def test_apply_pending_update_refuses_symlinked_staging_dir(tmp_path: Path) -> N
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
     outside = tmp_path / "outside"
@@ -74,7 +74,7 @@ def test_apply_pending_update_refuses_symlinked_staging_parent(tmp_path: Path) -
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
     outside = tmp_path / "outside"
@@ -101,7 +101,7 @@ def test_apply_pending_update_refuses_symlinked_backup_parent(tmp_path: Path) ->
     make_macos_app_root(app_root, app_text="old")
     data_dir = app_root / "data"
     data_dir.mkdir()
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
     outside = tmp_path / "outside"
@@ -131,7 +131,7 @@ def test_apply_pending_update_rejects_current_symlink_to_data(tmp_path: Path) ->
     data_dir = app_root / "data"
     (data_dir / "profiles").mkdir(parents=True)
     (app_root / "profile-link").symlink_to("data/profiles")
-    zip_path = data_dir / "updates" / "0.1.0" / "update.zip"
+    zip_path = data_dir / "updates" / "0.1.0" / "attempt-test" / "update.zip"
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     digest = make_macos_update_zip(zip_path, app_text="new")
 

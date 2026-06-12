@@ -16,11 +16,11 @@ from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.dependencies import run_web_db_operation
 from facebook_monitor.webapp.dependencies import run_web_read_operation
-from facebook_monitor.webapp.query_service import count_hit_records
-from facebook_monitor.webapp.query_service import list_full_hit_record_rows
-from facebook_monitor.webapp.query_service import list_hit_record_preview_rows
-from facebook_monitor.webapp.query_service import target_exists
-from facebook_monitor.webapp.query_service import DashboardReadUnavailable
+from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
+from facebook_monitor.webapp.hit_record_queries import count_hit_records
+from facebook_monitor.webapp.hit_record_queries import list_full_hit_record_rows
+from facebook_monitor.webapp.hit_record_queries import list_hit_record_preview_rows
+from facebook_monitor.webapp.hit_record_queries import target_exists
 
 
 def register_hit_record_routes(app: FastAPI) -> None:

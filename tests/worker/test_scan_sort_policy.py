@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from facebook_monitor.core.models import TargetConfig
-from facebook_monitor.facebook.sort_controls import SORT_REASON_SORT_CONTROL_NOT_FOUND
-from facebook_monitor.facebook.sort_controls import SortAdjustResult
+from facebook_monitor.facebook.sort_results import SORT_REASON_SORT_CONTROL_NOT_FOUND
+from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
 from facebook_monitor.worker.scan_sort_policy import sort_control_absent_without_observed_label
 

@@ -24,8 +24,8 @@ from facebook_monitor.webapp.dependencies import get_ntfy_sender
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
-from facebook_monitor.webapp.form_models import format_notification_form_error
-from facebook_monitor.webapp.form_models import NotificationConfigForm
+from facebook_monitor.webapp.notification_form_models import format_notification_form_error
+from facebook_monitor.webapp.notification_form_models import NotificationConfigForm
 from facebook_monitor.webapp.notification_test_presenter import (
     NotificationTestFeedback,
     build_notification_test_error_feedback,

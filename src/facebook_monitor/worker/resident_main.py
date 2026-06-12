@@ -44,18 +44,8 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
-from facebook_monitor.worker.resident_maintenance import (
-    refresh_pending_target_cover_images,
-)
-from facebook_monitor.worker.resident_maintenance import (
-    refresh_requested_target_metadata,
-)
-from facebook_monitor.worker.resident_maintenance import (
-    refresh_target_group_cover_image_from_context,
-)
-from facebook_monitor.worker.resident_runtime_errors import (
-    _is_playwright_driver_shutdown_exception,
-)
+import facebook_monitor.worker.resident_maintenance as resident_maintenance
+import facebook_monitor.worker.resident_runtime_errors as resident_runtime_errors
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
@@ -75,10 +65,6 @@ _DISPLAY_NEXT_DUE_BUSY_TIMEOUT_MS = 100
 AsyncSleepCallable = Callable[[float], Coroutine[Any, Any, None]]
 StopCheckCallable = Callable[[], bool]
 AsyncCycleObserver = Callable[[ResidentCycleSummary], None]
-__all__ = (
-    "refresh_requested_target_metadata",
-    "refresh_target_group_cover_image_from_context",
-)
 
 
 class BrowserTimeoutContextLike(Protocol):
@@ -108,7 +94,9 @@ def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
     def handle_exception(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
         """只消化 Playwright driver shutdown 的已知背景 future 例外。"""
 
-        if _is_playwright_driver_shutdown_exception(context.get("exception")):
+        if resident_runtime_errors._is_playwright_driver_shutdown_exception(
+            context.get("exception")
+        ):
             return
         if previous_handler is not None:
             previous_handler(loop, context)
@@ -459,7 +447,7 @@ async def run_resident_main_scheduler_tick(
     run_bounded_retention_maintenance_if_due(options)
     metadata_refresh_count = 0
     if not stop_requested() and not executor.runtime_restart_requested():
-        metadata_refresh_count = await refresh_requested_target_metadata(
+        metadata_refresh_count = await resident_maintenance.refresh_requested_target_metadata(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,
@@ -467,7 +455,7 @@ async def run_resident_main_scheduler_tick(
         )
     cover_image_refresh_count = 0
     if not stop_requested() and not executor.runtime_restart_requested():
-        cover_image_refresh_count = await refresh_pending_target_cover_images(
+        cover_image_refresh_count = await resident_maintenance.refresh_pending_target_cover_images(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,

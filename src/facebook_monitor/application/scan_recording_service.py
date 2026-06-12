@@ -54,6 +54,4 @@ class ScanRecordingService:
         )
 
 
-ScanApplicationService = ScanRecordingService
-
-__all__ = ["RecordScanRequest", "ScanApplicationService", "ScanRecordingService"]
+__all__ = ["RecordScanRequest", "ScanRecordingService"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from facebook_monitor.runtime import startup_diagnostics
+import facebook_monitor.runtime.startup_diagnostics as startup_diagnostics
 from facebook_monitor.runtime.logging_setup import configure_app_logging
 from facebook_monitor.runtime.logging_setup import LOG_BACKUP_COUNT
 from facebook_monitor.runtime.logging_setup import LOG_MAX_BYTES

@@ -16,8 +16,8 @@ from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
-from facebook_monitor.webapp.form_models import format_notification_form_error
-from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.notification_form_models import format_notification_form_error
+from facebook_monitor.webapp.target_config_form import TargetConfigForm
 
 
 def register_target_config_routes(app: FastAPI) -> None:

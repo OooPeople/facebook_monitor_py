@@ -14,7 +14,7 @@ from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.sidebar_layout_service import SidebarTemplateSection
 from facebook_monitor.core.sidebar_models import SidebarGroup
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
-from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.target_config_form import TargetConfigForm
 from facebook_monitor.webapp.sidebar_api import grouped_target_ids
 from facebook_monitor.webapp.sidebar_api import string_list
 

@@ -28,16 +28,16 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.persistence.sqlite import AppSettingsRepository
-from facebook_monitor.persistence.sqlite import LatestScanItemRepository
-from facebook_monitor.persistence.sqlite import MatchHistoryRepository
-from facebook_monitor.persistence.sqlite import NotificationEventRepository
-from facebook_monitor.persistence.sqlite import ScanRunRepository
-from facebook_monitor.persistence.sqlite import SeenItemRepository
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import TargetRepository
-from facebook_monitor.persistence.sqlite import TargetRuntimeStateRepository
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
+from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
+from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
+from facebook_monitor.persistence.repositories.notification_events import NotificationEventRepository
+from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
+from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.repositories.target_runtime_state import TargetRuntimeStateRepository
+from facebook_monitor.persistence.schema import initialize_schema
 
 from tests.persistence.sqlite_test_helpers import target_config_repository
 from tests.persistence.sqlite_test_helpers import global_notification_settings_repository

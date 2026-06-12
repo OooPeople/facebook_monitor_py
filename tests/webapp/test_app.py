@@ -13,8 +13,8 @@ from pytest import MonkeyPatch
 from starlette.requests import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import RequestBodyTooLarge
 from facebook_monitor.webapp.app import _read_request_body_with_limit

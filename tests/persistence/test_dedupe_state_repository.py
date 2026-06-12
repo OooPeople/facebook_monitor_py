@@ -9,9 +9,9 @@ from typing import cast
 
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import TargetRepository
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.schema import initialize_schema
 
 
 class _InterleavingConnection:

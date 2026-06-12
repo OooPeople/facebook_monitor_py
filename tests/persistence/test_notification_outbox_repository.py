@@ -13,11 +13,11 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.persistence.sqlite import LogicalItemRepository
-from facebook_monitor.persistence.sqlite import NotificationDedupeRepository
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import TargetRepository
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.notification_dedupe import NotificationDedupeRepository
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.schema import initialize_schema
 
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 

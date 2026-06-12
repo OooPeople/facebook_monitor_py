@@ -7,8 +7,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetMetadataStatus
 from tests.helpers.webapp import FakeSchedulerManager

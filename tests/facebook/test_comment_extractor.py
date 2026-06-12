@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import facebook_monitor.facebook.comment_extractor as comment_extractor
-from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more_guard_held
 from facebook_monitor.facebook.comment_extractor import (
     collect_comment_items_with_load_more_guard_held_async,

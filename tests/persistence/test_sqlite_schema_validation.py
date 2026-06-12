@@ -6,9 +6,9 @@ from contextlib import closing
 from pathlib import Path
 import sqlite3
 
-from facebook_monitor.persistence.sqlite import SCHEMA_VERSION
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.schema import SCHEMA_VERSION
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.schema import initialize_schema
 
 
 def test_initialize_schema_rejects_existing_db_without_schema_metadata(

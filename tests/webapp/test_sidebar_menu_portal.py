@@ -14,7 +14,7 @@ import pytest
 import uvicorn
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.webapp.app import create_app
 
 

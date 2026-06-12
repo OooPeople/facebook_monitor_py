@@ -1,7 +1,7 @@
 """Application service facade。
 
-職責：保留既有 `app.services.targets.*` public API，同時把實際職責委派給
-target registry/config/runtime/monitoring command services。
+職責：保留 `TargetApplicationService` 作為 target application facade，並把
+實際職責委派給 target registry/config/runtime/monitoring command services。
 """
 
 from __future__ import annotations
@@ -9,23 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from facebook_monitor.application.scan_recording_service import RecordScanRequest
-from facebook_monitor.application.scan_recording_service import ScanApplicationService
+from facebook_monitor.application import target_requests as _target_requests
 from facebook_monitor.application.target_config_service import TargetConfigService
 from facebook_monitor.application.target_monitoring_commands import (
     ResetTargetNotificationStateResult,
 )
 from facebook_monitor.application.target_monitoring_commands import TargetMonitoringCommands
 from facebook_monitor.application.target_registry_service import TargetRegistryService
-from facebook_monitor.application.target_registry_service import clean_facebook_group_name
-from facebook_monitor.application.target_requests import DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
-from facebook_monitor.application.target_requests import TargetConfigPatch
-from facebook_monitor.application.target_requests import UNSET_CONFIG_VALUE
-from facebook_monitor.application.target_requests import UnsetConfigValue
-from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
-from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
-from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
@@ -298,7 +288,7 @@ class TargetApplicationService:
 
     def upsert_group_posts_target(
         self,
-        request: UpsertGroupPostsTargetRequest,
+        request: _target_requests.UpsertGroupPostsTargetRequest,
     ) -> TargetDescriptor:
         """建立或更新 group posts target。"""
 
@@ -306,7 +296,7 @@ class TargetApplicationService:
 
     def upsert_comments_target(
         self,
-        request: UpsertCommentsTargetRequest,
+        request: _target_requests.UpsertCommentsTargetRequest,
     ) -> TargetDescriptor:
         """建立或更新 comments target。"""
 
@@ -326,7 +316,10 @@ class TargetApplicationService:
 
         return self.config_service.save_config_for_target(target, config)
 
-    def update_target_config(self, request: UpdateTargetConfigRequest) -> TargetConfig:
+    def update_target_config(
+        self,
+        request: _target_requests.UpdateTargetConfigRequest,
+    ) -> TargetConfig:
         """更新單一 target 監視設定。"""
 
         return self.config_service.update_target_config(request)
@@ -952,7 +945,10 @@ class TargetApplicationService:
             consumed_at,
         )
 
-    def update_target_status(self, request: UpdateTargetStatusRequest) -> TargetDescriptor:
+    def update_target_status(
+        self,
+        request: _target_requests.UpdateTargetStatusRequest,
+    ) -> TargetDescriptor:
         """更新 target 啟停狀態。"""
 
         return self.monitoring_commands.update_target_status(request)
@@ -978,7 +974,9 @@ class TargetApplicationService:
     def pause_all_targets_for_webui_startup(
         self,
         *,
-        default_fixed_refresh_sec: int = DEFAULT_WEBUI_FIXED_REFRESH_SECONDS,
+        default_fixed_refresh_sec: int = (
+            _target_requests.DEFAULT_WEBUI_FIXED_REFRESH_SECONDS
+        ),
     ) -> None:
         """Web UI 啟動時停止所有 target，並補齊固定掃描間隔設定。"""
 
@@ -989,16 +987,5 @@ class TargetApplicationService:
 
 __all__ = [
     "CoverImageRefreshRequestResult",
-    "DEFAULT_WEBUI_FIXED_REFRESH_SECONDS",
-    "RecordScanRequest",
-    "ScanApplicationService",
     "TargetApplicationService",
-    "TargetConfigPatch",
-    "UNSET_CONFIG_VALUE",
-    "UnsetConfigValue",
-    "UpdateTargetConfigRequest",
-    "UpdateTargetStatusRequest",
-    "UpsertCommentsTargetRequest",
-    "UpsertGroupPostsTargetRequest",
-    "clean_facebook_group_name",
 ]

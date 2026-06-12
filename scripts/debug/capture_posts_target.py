@@ -17,9 +17,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import UNSET_CONFIG_VALUE
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UNSET_CONFIG_VALUE
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError

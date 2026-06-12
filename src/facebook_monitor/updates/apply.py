@@ -42,7 +42,7 @@ from facebook_monitor.updates.apply_zip import validate_macos_zip_executable_bit
 from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
-from facebook_monitor.updates.download import calculate_sha256
+from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import load_pending_update
 from facebook_monitor.updates.handoff import validate_pending_update_artifact_set

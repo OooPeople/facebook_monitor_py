@@ -10,7 +10,7 @@ from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.input_limits import MAX_DISPLAY_NAME_LENGTH
 from facebook_monitor.core.input_limits import MAX_NOTIFICATION_ENDPOINT_LENGTH

@@ -15,8 +15,8 @@ if str(SRC) not in sys.path:
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpdateTargetConfigRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor

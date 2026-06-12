@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.schema import initialize_schema
 
 from tests.persistence.sqlite_test_helpers import table_sql
 

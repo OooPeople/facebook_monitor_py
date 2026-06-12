@@ -25,7 +25,7 @@ from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockEr
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.checksum import HASH_CHUNK_SIZE
-from facebook_monitor.updates.checksum import calculate_sha256 as _calculate_sha256
+from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import read_sha256_sidecar
 from facebook_monitor.updates.download_url_policy import validate_final_release_download_url
 from facebook_monitor.updates.download_url_policy import validate_initial_release_download_url
@@ -212,18 +212,6 @@ def ensure_safe_download_path(path: Path, *, updates_root: Path) -> None:
         raise ValueError("download_path_unsafe")
 
 
-def read_expected_sha256(path: Path, *, expected_filename: str) -> str:
-    """讀取 `.sha256` 檔案，支援常見 `hash  filename` 格式。"""
-
-    return read_sha256_sidecar(path, expected_filename=expected_filename)
-
-
-def calculate_sha256(path: Path) -> str:
-    """計算檔案 SHA256。"""
-
-    return _calculate_sha256(path)
-
-
 def _missing_update_download_reason(update_check: UpdateCheckResult) -> str:
     """回傳 update check 缺少必要下載資訊的原因。"""
 
@@ -381,7 +369,7 @@ async def _download_staged_release_files(
             max_bytes=max_sha256_bytes,
             expected_asset_name=plan.sha256_name,
         )
-        sidecar_sha256 = read_expected_sha256(
+        sidecar_sha256 = read_sha256_sidecar(
             plan.staged_sha256_path,
             expected_filename=plan.asset_name,
         )

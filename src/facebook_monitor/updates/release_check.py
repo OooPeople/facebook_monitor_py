@@ -19,11 +19,10 @@ from facebook_monitor.updates.artifacts import UpdateRuntimePlatform
 from facebook_monitor.updates.artifacts import current_update_runtime_platform
 from facebook_monitor.updates.artifacts import is_release_asset_name_for_policy
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
-from facebook_monitor.updates.artifacts import WINDOWS_PORTABLE_POLICY
 from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.versioning import normalize_version_text
-from facebook_monitor.versioning import parse_version
+from facebook_monitor.versioning import parse_version as _parse_version
 
 
 DEFAULT_UPDATE_REPOSITORY = "OooPeople/facebook_monitor_py"
@@ -175,9 +174,60 @@ def evaluate_release(
 ) -> UpdateCheckResult:
     """依單筆 GitHub release payload 判斷是否有可用 release asset。"""
 
+    latest_version, release_url = _release_identity_from_payload(release)
+    version_gate = _version_gate_result(
+        current_version=current_version,
+        latest_version=latest_version,
+        release_url=release_url,
+        channel=channel,
+        repository=repository,
+    )
+    if version_gate is not None:
+        return version_gate
+
+    resolved_platform, resolved_policy = _resolve_release_artifact_policy(
+        artifact_policy=artifact_policy,
+        runtime_platform=runtime_platform,
+    )
+    if resolved_policy is None:
+        return _unsupported_platform_result(
+            current_version=current_version,
+            latest_version=latest_version,
+            release_url=release_url,
+            channel=channel,
+            repository=repository,
+            runtime_platform=resolved_platform,
+        )
+
+    assets = parse_release_assets(release.get("assets", []))
+    return _artifact_gate_result(
+        assets=assets,
+        latest_version=latest_version,
+        release_url=release_url,
+        channel=channel,
+        repository=repository,
+        current_version=current_version,
+        policy=resolved_policy,
+    )
+
+
+def _release_identity_from_payload(release: dict[str, Any]) -> tuple[str, str]:
+    """從 GitHub release payload 取出 normalized version 與 release URL。"""
+
     tag_name = str(release.get("tag_name", "")).strip()
-    latest_version = normalize_version_text(tag_name)
-    release_url = str(release.get("html_url", "")).strip()
+    return normalize_version_text(tag_name), str(release.get("html_url", "")).strip()
+
+
+def _version_gate_result(
+    *,
+    current_version: str,
+    latest_version: str,
+    release_url: str,
+    channel: str,
+    repository: str,
+) -> UpdateCheckResult | None:
+    """處理 release tag / version ordering；新版才回傳 None 繼續 asset gate。"""
+
     if not latest_version:
         return _failure_result(
             current_version=current_version,
@@ -186,8 +236,8 @@ def evaluate_release(
             reason="missing_tag_name",
         )
     try:
-        parsed_current = parse_version(current_version)
-        parsed_latest = parse_version(latest_version)
+        parsed_current = _parse_version(current_version)
+        parsed_latest = _parse_version(latest_version)
     except ValueError as exc:
         return _failure_result(
             current_version=current_version,
@@ -198,47 +248,81 @@ def evaluate_release(
             release_url=release_url,
         )
 
-    if parsed_latest.sort_key() <= parsed_current.sort_key():
-        return _checked_release_result(
-            status="current",
-            channel=channel,
-            repository=repository,
-            current_version=current_version,
-            latest_version=current_version,
-            summary="目前已是最新版本",
-            detail="" if latest_version == current_version else (
-                f"GitHub 最新 release 是 {latest_version}，不高於目前版本。"
-            ),
-            release_url=release_url,
-            failure_reason="",
-        )
-    resolved_platform = runtime_platform or current_update_runtime_platform()
-    resolved_policy = artifact_policy or resolved_platform.artifact_policy
-    if resolved_policy is None:
-        return _checked_release_result(
-            status="platform_unsupported",
-            channel=channel,
-            repository=repository,
-            current_version=current_version,
-            latest_version=latest_version,
-            summary=f"找到新版 {latest_version}，但目前平台沒有對應更新檔",
-            detail=resolved_platform.unsupported_reason
-            or "目前平台沒有對應的更新檔，只支援檢查版本資訊。",
-            release_url=release_url,
-            failure_reason="platform_unsupported",
-        )
+    if parsed_latest.sort_key() > parsed_current.sort_key():
+        return None
+    return _checked_release_result(
+        status="current",
+        channel=channel,
+        repository=repository,
+        current_version=current_version,
+        latest_version=current_version,
+        summary="目前已是最新版本",
+        detail="" if latest_version == current_version else (
+            f"GitHub 最新 release 是 {latest_version}，不高於目前版本。"
+        ),
+        release_url=release_url,
+        failure_reason="",
+    )
 
-    assets = parse_release_assets(release.get("assets", []))
+
+def _resolve_release_artifact_policy(
+    *,
+    artifact_policy: UpdateArtifactPolicy | None,
+    runtime_platform: UpdateRuntimePlatform | None,
+) -> tuple[UpdateRuntimePlatform, UpdateArtifactPolicy | None]:
+    """解析 release asset policy；明確 override 優先於 runtime platform。"""
+
+    resolved_platform = runtime_platform or current_update_runtime_platform()
+    return resolved_platform, artifact_policy or resolved_platform.artifact_policy
+
+
+def _unsupported_platform_result(
+    *,
+    current_version: str,
+    latest_version: str,
+    release_url: str,
+    channel: str,
+    repository: str,
+    runtime_platform: UpdateRuntimePlatform,
+) -> UpdateCheckResult:
+    """建立 unsupported platform 的 checked result。"""
+
+    return _checked_release_result(
+        status="platform_unsupported",
+        channel=channel,
+        repository=repository,
+        current_version=current_version,
+        latest_version=latest_version,
+        summary=f"找到新版 {latest_version}，但目前平台沒有對應更新檔",
+        detail=runtime_platform.unsupported_reason
+        or "目前平台沒有對應的更新檔，只支援檢查版本資訊。",
+        release_url=release_url,
+        failure_reason="platform_unsupported",
+    )
+
+
+def _artifact_gate_result(
+    *,
+    assets: tuple[ReleaseAsset, ...],
+    latest_version: str,
+    release_url: str,
+    channel: str,
+    repository: str,
+    current_version: str,
+    policy: UpdateArtifactPolicy,
+) -> UpdateCheckResult:
+    """套用 release artifact gate，四件齊全時才回報可更新。"""
+
     asset_bundle = _release_asset_bundle(
         assets,
         latest_version=latest_version,
-        policy=resolved_policy,
+        policy=policy,
     )
     if asset_bundle.portable_asset is None:
         if has_version_mismatched_portable_asset(
             assets,
             latest_version=latest_version,
-            policy=resolved_policy,
+            policy=policy,
         ):
             return _checked_release_result(
                 status="asset_version_mismatch",
@@ -246,7 +330,7 @@ def evaluate_release(
                 repository=repository,
                 current_version=current_version,
                 latest_version=latest_version,
-                summary=f"找到新版，但 {resolved_policy.display_label} zip 版本不符",
+                summary=f"找到新版，但 {policy.display_label} zip 版本不符",
                 detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
                 release_url=release_url,
                 failure_reason="asset_version_mismatch",
@@ -257,8 +341,8 @@ def evaluate_release(
             repository=repository,
             current_version=current_version,
             latest_version=latest_version,
-            summary=f"找到新版，但沒有 {resolved_policy.display_label} zip",
-            detail=f"Release asset 未包含預期的 {resolved_policy.display_label} zip。",
+            summary=f"找到新版，但沒有 {policy.display_label} zip",
+            detail=f"Release asset 未包含預期的 {policy.display_label} zip。",
             release_url=release_url,
             failure_reason="asset_missing",
         )
@@ -414,20 +498,6 @@ def parse_release_assets(value: object) -> tuple[ReleaseAsset, ...]:
     return tuple(assets)
 
 
-def find_windows_portable_asset(
-    assets: tuple[ReleaseAsset, ...],
-    *,
-    latest_version: str,
-) -> ReleaseAsset | None:
-    """尋找 Windows portable zip；只接受符合 release version 的精確檔名。"""
-
-    return find_portable_asset(
-        assets,
-        latest_version=latest_version,
-        policy=WINDOWS_PORTABLE_POLICY,
-    )
-
-
 def find_portable_asset(
     assets: tuple[ReleaseAsset, ...],
     *,
@@ -441,20 +511,6 @@ def find_portable_asset(
         if asset.name == expected_name:
             return asset
     return None
-
-
-def has_version_mismatched_windows_portable_asset(
-    assets: tuple[ReleaseAsset, ...],
-    *,
-    latest_version: str,
-) -> bool:
-    """判斷 release 是否含有 portable zip，但檔名版本未對齊 tag。"""
-
-    return has_version_mismatched_portable_asset(
-        assets,
-        latest_version=latest_version,
-        policy=WINDOWS_PORTABLE_POLICY,
-    )
 
 
 def has_version_mismatched_portable_asset(

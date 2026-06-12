@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import NotificationDedupeStatus
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import ScanStatus

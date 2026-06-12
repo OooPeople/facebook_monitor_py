@@ -7,9 +7,9 @@ from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import RecordScanRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetRuntimeStatus

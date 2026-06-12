@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from facebook_monitor.webapp.highlight import build_highlight_segments
+from facebook_monitor.core.keyword_highlight import build_highlight_segments
 
 
 def test_highlight_segments_keep_original_nfkc_text() -> None:

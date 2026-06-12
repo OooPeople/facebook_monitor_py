@@ -23,8 +23,8 @@ from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.core.user_messages import split_coded_message
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
-from facebook_monitor.webapp.form_models import FIXED_REFRESH_MODE
-from facebook_monitor.webapp.form_models import FLOATING_REFRESH_MODE
+from facebook_monitor.webapp.form_refresh import FIXED_REFRESH_MODE
+from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 
 PENDING_TARGET_DISPLAY_NAME = "抓取社團名稱中，請稍後"

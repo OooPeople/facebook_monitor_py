@@ -19,7 +19,7 @@ from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnost
 from facebook_monitor.facebook.feed_extractor import extract_post_like_items
 from facebook_monitor.facebook.feed_extractor import get_scroll_position
 from facebook_monitor.facebook.feed_extractor import normalize_text_fingerprint
-from facebook_monitor.facebook.permalink import normalize_permalink
+from facebook_monitor.core.permalink_identity import normalize_permalink
 
 __all__ = [
     "ExtractedItem",

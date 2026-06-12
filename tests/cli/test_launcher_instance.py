@@ -8,7 +8,7 @@ import pytest
 
 from facebook_monitor import launcher
 from facebook_monitor.runtime.logging_setup import reset_app_logging
-from facebook_monitor.runtime import windows_integration
+import facebook_monitor.runtime.windows_integration as windows_integration
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER_ENV_VALUE

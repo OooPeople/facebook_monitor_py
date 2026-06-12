@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from facebook_monitor.runtime import instance_lock
+import facebook_monitor.runtime.instance_lock as instance_lock
 from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
 from facebook_monitor.runtime.instance_lock import acquire_resource_identity_lock
 from facebook_monitor.runtime.instance_lock import _canonical_resource_identity_path

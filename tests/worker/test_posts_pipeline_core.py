@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from tests.worker.posts_pipeline_test_helpers import _activate_target

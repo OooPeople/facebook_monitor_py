@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 
 
 from tests.webapp.app_test_helpers import create_app

@@ -1,7 +1,7 @@
 """Support bundle retention cleanup。
 
-職責：刪除過期或超出數量上限的 support bundle zip；public API
-由 support_bundle.py facade 轉呼叫。
+職責：刪除過期或超出數量上限的 support bundle zip。建立 support bundle
+的流程可直接呼叫此模組，避免 retention 規則散在 zip writer 內。
 """
 
 from __future__ import annotations

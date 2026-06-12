@@ -12,7 +12,7 @@ from pytest import MonkeyPatch
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
@@ -197,7 +197,7 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
         fake_launch_persistent_context_async,
     )
     monkeypatch.setattr(
-        "facebook_monitor.worker.resident_main.refresh_requested_target_metadata",
+        "facebook_monitor.worker.resident_maintenance.refresh_requested_target_metadata",
         fake_refresh_requested_target_metadata,
     )
 

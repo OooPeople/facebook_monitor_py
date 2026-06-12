@@ -6,11 +6,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import RecordScanRequest
-from facebook_monitor.application.services import UpdateTargetConfigRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetDesiredState

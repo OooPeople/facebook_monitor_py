@@ -9,10 +9,10 @@ from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import RecordScanRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel

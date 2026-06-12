@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor

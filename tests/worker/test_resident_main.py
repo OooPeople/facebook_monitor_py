@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.worker.resident_main import _is_playwright_driver_shutdown_exception
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.worker.resident_runtime_errors import _is_playwright_driver_shutdown_exception
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 
 

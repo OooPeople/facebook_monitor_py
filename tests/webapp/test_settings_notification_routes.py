@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry

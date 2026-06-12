@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 from facebook_monitor.facebook.feed_extractor import build_extract_round_stats
-from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.feed_extractor import normalize_feed_extraction_payload
 from facebook_monitor.facebook.feed_extractor import normalize_debug_metadata
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
 from facebook_monitor.facebook.permalink import is_comment_permalink_href
-from facebook_monitor.facebook.permalink import normalize_permalink
+from facebook_monitor.core.permalink_identity import normalize_permalink
 
 
 def test_extract_canonical_permalink_from_group_posts_href() -> None:

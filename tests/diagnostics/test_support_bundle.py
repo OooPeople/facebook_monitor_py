@@ -25,8 +25,8 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
-from facebook_monitor.diagnostics.support_bundle import prune_old_support_bundles
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _SUPPORT_COUNT_TABLES
+from facebook_monitor.diagnostics._support_bundle_retention import prune_old_support_bundles
+from facebook_monitor.diagnostics._support_bundle_db_common import _SUPPORT_COUNT_TABLES
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.scan_runs import ScanRunRepository
@@ -697,7 +697,7 @@ def test_support_bundle_create_runs_retention_cleanup(
         return 0
 
     monkeypatch.setattr(
-        "facebook_monitor.diagnostics.support_bundle.prune_old_support_bundles",
+        "facebook_monitor.diagnostics.support_bundle._prune_old_support_bundles",
         fake_prune_old_support_bundles,
     )
 

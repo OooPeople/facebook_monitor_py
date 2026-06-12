@@ -15,7 +15,6 @@ from facebook_monitor.core.permalink_identity import build_canonical_group_post_
 from facebook_monitor.core.permalink_identity import extract_comment_id_from_value
 from facebook_monitor.core.permalink_identity import extract_group_route_query_post_id
 from facebook_monitor.core.permalink_identity import normalize_facebook_url
-from facebook_monitor.core.permalink_identity import normalize_permalink as normalize_permalink_identity
 
 
 @dataclass(frozen=True)
@@ -33,12 +32,6 @@ class CommentPermalinkDetails:
     permalink: str = ""
     source: str = "unavailable"
     comment_id: str = ""
-
-
-def normalize_permalink(raw_url: str) -> str:
-    """將支援的 Facebook href 變體正規化成 canonical group post URL。"""
-
-    return normalize_permalink_identity(raw_url)
 
 
 def build_canonical_group_comment_url(group_id: str, post_id: str, comment_id: str) -> str:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
-from facebook_monitor.application.services import ScanApplicationService
+from facebook_monitor.application.scan_recording_service import ScanRecordingService
 from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.sidebar_layout_service import SidebarLayoutService
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
@@ -85,7 +85,7 @@ class ServiceBundle:
     """保存 application service 入口。"""
 
     targets: TargetApplicationService
-    scans: ScanApplicationService
+    scans: ScanRecordingService
     sidebar_layout: SidebarLayoutService
 
 
@@ -171,7 +171,7 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
             notification_dedupe=repositories.notification_dedupe,
             notification_outbox=repositories.notification_outbox,
         ),
-        scans=ScanApplicationService(scan_runs=repositories.scan_runs),
+        scans=ScanRecordingService(scan_runs=repositories.scan_runs),
         sidebar_layout=SidebarLayoutService(
             targets=repositories.targets,
             configs=repositories.configs,

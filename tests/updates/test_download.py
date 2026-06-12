@@ -17,7 +17,7 @@ import pytest
 from facebook_monitor.runtime.update_operation_lock import acquire_update_operation_lock
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
-from facebook_monitor.updates.download import read_expected_sha256
+from facebook_monitor.updates.checksum import read_sha256_sidecar
 from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult
@@ -701,7 +701,7 @@ def test_download_and_verify_update_rejects_existing_attempt_asset_directory(
     assert result.failure_reason == "download_path_unsafe"
 
 
-def test_read_expected_sha256_rejects_filename_mismatch(tmp_path: Path) -> None:
+def test_read_sha256_sidecar_rejects_filename_mismatch(tmp_path: Path) -> None:
     """SHA256 檔案若指定另一個檔名，要拒絕驗證。"""
 
     sha_path = tmp_path / "app.zip.sha256"
@@ -711,7 +711,7 @@ def test_read_expected_sha256_rejects_filename_mismatch(tmp_path: Path) -> None:
     )
 
     try:
-        read_expected_sha256(sha_path, expected_filename="app.zip")
+        read_sha256_sidecar(sha_path, expected_filename="app.zip")
     except ValueError as exc:
         assert str(exc) == "sha256_filename_mismatch"
     else:

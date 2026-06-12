@@ -22,8 +22,6 @@ from typing import Any
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.handoff import PendingUpdate
 from facebook_monitor.updates.handoff import pending_update_path
-from facebook_monitor.updates.platforms import WINDOWS_APP_ENTRY
-from facebook_monitor.updates.platforms import WINDOWS_UPDATER_ENTRY
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import layout_policy_for_updater_path
 from facebook_monitor.updates.platforms import supported_layout_policies
@@ -32,8 +30,6 @@ from facebook_monitor.updates.validation import is_reparse_or_symlink
 from facebook_monitor.updates.validation import validate_tree_links_stay_within_root
 
 
-UPDATER_EXE_NAME = WINDOWS_UPDATER_ENTRY
-APP_EXE_NAME = WINDOWS_APP_ENTRY
 TEMP_UPDATER_MAX_AGE_SECONDS = 24 * 60 * 60
 TEMP_UPDATER_DIR_NAME = "temp_updater"
 

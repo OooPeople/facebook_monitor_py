@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
-from facebook_monitor.webapp.query_service import get_dashboard_view
+from facebook_monitor.webapp.dashboard_queries import get_dashboard_view
 
 
 def test_dashboard_order_uses_sidebar_placement_without_changing_target_repository(

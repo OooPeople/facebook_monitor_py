@@ -39,7 +39,7 @@ from facebook_monitor.webapp.dashboard_presenters import is_retrying_failure_sca
 from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
 from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
-from facebook_monitor.webapp.form_models import FLOATING_REFRESH_MODE
+from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow

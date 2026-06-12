@@ -130,6 +130,25 @@ class ScanFinalizeResult:
 
 
 @dataclass(frozen=True)
+class _ClassifiedScanItem:
+    """保存單筆 item 的分類結果與原始 keyword evaluation。"""
+
+    result: ScanMatchResult
+    keyword_evaluation: KeywordEvaluation
+
+
+@dataclass(frozen=True)
+class _ScanFinalizeAccumulator:
+    """保存 finalize transaction 內累積出的寫入結果。"""
+
+    match_results: list[ScanMatchResult]
+    new_items: list[NormalizedScanItem]
+    matched_items: list[NormalizedScanItem]
+    history_entries: list[MatchHistoryEntry]
+    notification_payloads: list[MatchNotificationPayload]
+
+
+@dataclass(frozen=True)
 class ScanCommitGuard:
     """保存本輪 scan admission identity，避免 stop/start 後舊掃描寫回。"""
 
@@ -282,120 +301,225 @@ def finalize_scan_items(
     begin_scan_commit_transaction(app)
     ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
     app.repositories.app_settings.mark_profile_ok(source="scan_success")
-    match_results: list[ScanMatchResult] = []
-    new_items: list[NormalizedScanItem] = []
-    matched_items: list[NormalizedScanItem] = []
-    history_entries: list[MatchHistoryEntry] = []
-    notification_payloads: list[MatchNotificationPayload] = []
+    baseline_mode = not app.repositories.scan_scope_state.is_initialized(target.scope_id)
+    accumulator = _process_scan_items_for_finalize(
+        app=app,
+        target=target,
+        config=config,
+        items=items,
+        baseline_mode=baseline_mode,
+        notification_sender=notification_sender,
+        desktop_notification_sender=desktop_notification_sender,
+        discord_notification_sender=discord_notification_sender,
+    )
+    scan_run_id, latest_items, scan_metadata = _record_success_scan_snapshot(
+        app=app,
+        target=target,
+        config=config,
+        item_count=item_count,
+        metadata=metadata,
+        baseline_mode=baseline_mode,
+        accumulator=accumulator,
+    )
+    return _build_scan_finalize_result(
+        scan_run_id=scan_run_id,
+        latest_items=latest_items,
+        scan_metadata=scan_metadata,
+        accumulator=accumulator,
+    )
+
+
+def _process_scan_items_for_finalize(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    items: list[NormalizedScanItem],
+    baseline_mode: bool,
+    notification_sender: NtfySender,
+    desktop_notification_sender: DesktopSender,
+    discord_notification_sender: DiscordSender,
+) -> _ScanFinalizeAccumulator:
+    """在既有 scan commit transaction 內處理 seen、keyword、history 與 outbox。"""
+
+    accumulator = _ScanFinalizeAccumulator(
+        match_results=[],
+        new_items=[],
+        matched_items=[],
+        history_entries=[],
+        notification_payloads=[],
+    )
     keyword_matcher = compile_keyword_matcher(
         include_keywords=config.include_keywords,
         include_keyword_groups=config.include_keyword_groups,
         exclude_keywords=config.exclude_keywords,
         exclude_ignore_phrases=config.exclude_ignore_phrases,
     )
-    baseline_mode = not app.repositories.scan_scope_state.is_initialized(target.scope_id)
-
     for item in items:
-        seen_item = SeenItem(
-            scope_id=target.scope_id,
-            item_key=item.item_key,
-            item_kind=item.item_kind,
-            parent_post_id=item.parent_post_id,
-            comment_id=item.comment_id,
+        classified = _mark_seen_and_classify_item(
+            app=app,
+            target=target,
+            item=item,
+            keyword_matcher=keyword_matcher,
+            baseline_mode=baseline_mode,
         )
-        logical_seen = app.repositories.logical_items.mark_seen_aliases(
-            target_id=target.id,
-            item=seen_item,
-            item_keys=item.alias_keys,
+        result = classified.result
+        accumulator.match_results.append(result)
+        if result.is_new:
+            accumulator.new_items.append(item)
+        if result.is_matched:
+            accumulator.matched_items.append(item)
+        if not result.eligible_for_notify:
+            continue
+        history_entry, notification_payload = _record_match_notification_side_effects(
+            app=app,
+            target=target,
+            config=config,
+            classified=classified,
+            notification_sender=notification_sender,
+            desktop_notification_sender=desktop_notification_sender,
+            discord_notification_sender=discord_notification_sender,
         )
-        legacy_seen_within_horizon = app.repositories.seen_items.has_seen_any_since(
-            target.scope_id,
-            item.alias_keys,
-            utc_now()
-            - timedelta(
-                days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days
-            ),
-        )
-        app.repositories.seen_items.mark_seen_aliases(
-            seen_item,
-            item.alias_keys,
-        )
-        keyword_evaluation = keyword_matcher.evaluate(item.text)
-        result = build_scan_match_result(
+        accumulator.history_entries.append(history_entry)
+        accumulator.notification_payloads.append(notification_payload)
+    return accumulator
+
+
+def _mark_seen_and_classify_item(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    item: NormalizedScanItem,
+    keyword_matcher: Any,
+    baseline_mode: bool,
+) -> _ClassifiedScanItem:
+    """標記 seen aliases 並產生單筆 scan match result。"""
+
+    seen_item = SeenItem(
+        scope_id=target.scope_id,
+        item_key=item.item_key,
+        item_kind=item.item_kind,
+        parent_post_id=item.parent_post_id,
+        comment_id=item.comment_id,
+    )
+    logical_seen = app.repositories.logical_items.mark_seen_aliases(
+        target_id=target.id,
+        item=seen_item,
+        item_keys=item.alias_keys,
+    )
+    legacy_seen_within_horizon = app.repositories.seen_items.has_seen_any_since(
+        target.scope_id,
+        item.alias_keys,
+        utc_now()
+        - timedelta(
+            days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days
+        ),
+    )
+    app.repositories.seen_items.mark_seen_aliases(
+        seen_item,
+        item.alias_keys,
+    )
+    keyword_evaluation = keyword_matcher.evaluate(item.text)
+    return _ClassifiedScanItem(
+        result=build_scan_match_result(
             item=item,
             is_new=logical_seen.is_new and not legacy_seen_within_horizon,
             keyword_evaluation=keyword_evaluation,
             baseline_mode=baseline_mode,
             logical_item_id=logical_seen.logical_item_id,
-        )
-        match_results.append(result)
-        if result.is_new:
-            new_items.append(item)
-        if result.is_matched:
-            matched_items.append(item)
-        if not result.eligible_for_notify:
-            continue
+        ),
+        keyword_evaluation=keyword_evaluation,
+    )
 
-        notified_at = utc_now()
-        history_entry = MatchHistoryEntry(
-            target_id=target.id,
-            group_id=target.group_id,
-            group_name=target.group_name,
-            item_kind=item.item_kind,
-            parent_post_id=item.parent_post_id,
-            comment_id=item.comment_id,
-            item_key=item.item_key,
-            author=item.author,
-            text=item.text,
-            display_text=item.display_text or item.text,
-            permalink=item.permalink,
-            include_rule=result.include_rule,
-            include_rules=keyword_evaluation.include_rules,
-            include_group_matches=keyword_evaluation.include_group_matches,
-            timestamp_text=item.timestamp_text,
-            notified_at=notified_at,
-            created_at=notified_at,
-        )
-        app.repositories.match_history.add(history_entry)
-        history_entries.append(history_entry)
 
-        notification_payload = MatchNotificationPayload(
-            item_key=item.item_key,
-            logical_item_id=logical_seen.logical_item_id,
-            item_kind=item.item_kind,
-            author=item.author,
-            text=item.display_text or item.text,
-            permalink=item.permalink,
-            matched_keyword=result.matched_keyword,
-        )
-        queue_match_notifications_after_commit(
-            app=app,
-            target=target,
-            config=config,
-            item_key=notification_payload.item_key,
-            logical_item_id=notification_payload.logical_item_id,
-            author=notification_payload.author,
-            item_text=notification_payload.text,
-            permalink=notification_payload.permalink,
-            matched_keyword=notification_payload.matched_keyword,
-            item_kind=notification_payload.item_kind,
-            ntfy_sender=notification_sender,
-            desktop_sender=desktop_notification_sender,
-            discord_sender=discord_notification_sender,
-        )
-        notification_payloads.append(notification_payload)
+def _record_match_notification_side_effects(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    classified: _ClassifiedScanItem,
+    notification_sender: NtfySender,
+    desktop_notification_sender: DesktopSender,
+    discord_notification_sender: DiscordSender,
+) -> tuple[MatchHistoryEntry, MatchNotificationPayload]:
+    """寫入 match history 並註冊 notification outbox after-commit dispatch。"""
 
-    scan_metadata = dict(metadata)
-    scan_metadata["baseline_mode"] = baseline_mode
-    scan_metadata["scope_id"] = target.scope_id
-    scan_metadata["new_count"] = len(new_items)
-    scan_metadata["matched_count"] = len(matched_items)
+    result = classified.result
+    item = result.item
+    notified_at = utc_now()
+    history_entry = MatchHistoryEntry(
+        target_id=target.id,
+        group_id=target.group_id,
+        group_name=target.group_name,
+        item_kind=item.item_kind,
+        parent_post_id=item.parent_post_id,
+        comment_id=item.comment_id,
+        item_key=item.item_key,
+        author=item.author,
+        text=item.text,
+        display_text=item.display_text or item.text,
+        permalink=item.permalink,
+        include_rule=result.include_rule,
+        include_rules=classified.keyword_evaluation.include_rules,
+        include_group_matches=classified.keyword_evaluation.include_group_matches,
+        timestamp_text=item.timestamp_text,
+        notified_at=notified_at,
+        created_at=notified_at,
+    )
+    app.repositories.match_history.add(history_entry)
+
+    notification_payload = MatchNotificationPayload(
+        item_key=item.item_key,
+        logical_item_id=result.logical_item_id,
+        item_kind=item.item_kind,
+        author=item.author,
+        text=item.display_text or item.text,
+        permalink=item.permalink,
+        matched_keyword=result.matched_keyword,
+    )
+    queue_match_notifications_after_commit(
+        app=app,
+        target=target,
+        config=config,
+        item_key=notification_payload.item_key,
+        logical_item_id=notification_payload.logical_item_id,
+        author=notification_payload.author,
+        item_text=notification_payload.text,
+        permalink=notification_payload.permalink,
+        matched_keyword=notification_payload.matched_keyword,
+        item_kind=notification_payload.item_kind,
+        ntfy_sender=notification_sender,
+        desktop_sender=desktop_notification_sender,
+        discord_sender=discord_notification_sender,
+    )
+    return history_entry, notification_payload
+
+
+def _record_success_scan_snapshot(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    item_count: int,
+    metadata: dict[str, Any],
+    baseline_mode: bool,
+    accumulator: _ScanFinalizeAccumulator,
+) -> tuple[int, tuple[LatestScanItem, ...], dict[str, Any]]:
+    """寫入 scan run 與 latest snapshot；仍由 caller 持有同一個 transaction。"""
+
+    scan_metadata = _build_success_scan_metadata(
+        metadata=metadata,
+        target=target,
+        baseline_mode=baseline_mode,
+        new_count=len(accumulator.new_items),
+        matched_count=len(accumulator.matched_items),
+    )
     scan_run_id = app.services.scans.record_scan(
         RecordScanRequest(
             target_id=target.id,
             status=ScanStatus.SUCCESS,
             item_count=item_count,
-            matched_count=len(matched_items),
+            matched_count=len(accumulator.matched_items),
             metadata=scan_metadata,
         )
     )
@@ -403,26 +527,59 @@ def finalize_scan_items(
         target.id,
         limit=config.max_items_per_scan,
     )
-    latest_items = build_latest_scan_items(
-        target=target,
-        scan_run_id=scan_run_id,
-        match_results=match_results,
-        previous_latest_items=previous_latest_items,
-        target_count=config.max_items_per_scan,
-        carry_over_previous_items=should_carry_over_previous_latest_items(scan_metadata),
+    latest_items = tuple(
+        build_latest_scan_items(
+            target=target,
+            scan_run_id=scan_run_id,
+            match_results=accumulator.match_results,
+            previous_latest_items=previous_latest_items,
+            target_count=config.max_items_per_scan,
+            carry_over_previous_items=should_carry_over_previous_latest_items(
+                scan_metadata
+            ),
+        )
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, latest_items)
-    if not baseline_mode or match_results:
+    if not baseline_mode or accumulator.match_results:
         app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+    return scan_run_id, latest_items, scan_metadata
+
+
+def _build_success_scan_metadata(
+    *,
+    metadata: dict[str, Any],
+    target: TargetDescriptor,
+    baseline_mode: bool,
+    new_count: int,
+    matched_count: int,
+) -> dict[str, Any]:
+    """建立 success scan metadata，保留 caller metadata 並補 finalize counters。"""
+
+    scan_metadata = dict(metadata)
+    scan_metadata["baseline_mode"] = baseline_mode
+    scan_metadata["scope_id"] = target.scope_id
+    scan_metadata["new_count"] = new_count
+    scan_metadata["matched_count"] = matched_count
+    return scan_metadata
+
+
+def _build_scan_finalize_result(
+    *,
+    scan_run_id: int,
+    latest_items: tuple[LatestScanItem, ...],
+    scan_metadata: dict[str, Any],
+    accumulator: _ScanFinalizeAccumulator,
+) -> ScanFinalizeResult:
+    """將 finalize accumulator 轉成 public result model。"""
 
     return ScanFinalizeResult(
         scan_run_id=scan_run_id,
-        new_items=tuple(new_items),
-        matched_items=tuple(matched_items),
-        match_results=tuple(match_results),
-        history_entries=tuple(history_entries),
-        notification_payloads=tuple(notification_payloads),
-        latest_items=tuple(latest_items),
+        new_items=tuple(accumulator.new_items),
+        matched_items=tuple(accumulator.matched_items),
+        match_results=tuple(accumulator.match_results),
+        history_entries=tuple(accumulator.history_entries),
+        notification_payloads=tuple(accumulator.notification_payloads),
+        latest_items=latest_items,
         scan_summary=scan_metadata,
     )
 

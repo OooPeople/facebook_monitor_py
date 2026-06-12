@@ -8,7 +8,7 @@ from typing import cast
 
 
 from facebook_monitor import launcher
-from facebook_monitor.runtime import windows_integration
+import facebook_monitor.runtime.windows_integration as windows_integration
 
 def test_plain_uvicorn_runner_exposes_shutdown_hook(monkeypatch) -> None:
     """非 Windows tray 路徑也要讓 Web UI 可要求 uvicorn 關閉。"""

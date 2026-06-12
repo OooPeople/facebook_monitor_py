@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.comment_dom_author_script import COMMENT_DOM_AUTHOR_SCRIPT
 from facebook_monitor.facebook.comment_dom_bootstrap_script import COMMENT_DOM_BOOTSTRAP_SCRIPT
 from facebook_monitor.facebook.comment_dom_collector_script import COMMENT_DOM_COLLECTOR_SCRIPT
@@ -18,7 +18,7 @@ from facebook_monitor.facebook.comment_dom_text_extraction_script import (
     COMMENT_DOM_TEXT_EXTRACTION_SCRIPT,
 )
 from facebook_monitor.facebook.comment_dom_text_script import COMMENT_DOM_TEXT_CLEANUP_SCRIPT
-from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.feed_dom_bootstrap_script import FEED_DOM_BOOTSTRAP_SCRIPT
 from facebook_monitor.facebook.feed_dom_collector_script import FEED_DOM_COLLECTOR_SCRIPT
 from facebook_monitor.facebook.feed_dom_diagnostics_script import FEED_DOM_DIAGNOSTICS_SCRIPT
@@ -32,10 +32,6 @@ from facebook_monitor.facebook.scroll_comment_scripts import (
 from facebook_monitor.facebook.scroll_comment_scripts import (
     COMMENT_SCROLL_LOAD_MORE_SCRIPT as COMMENT_SCROLL_LOAD_MORE_FRAGMENT,
 )
-from facebook_monitor.facebook.scroll_control_scripts import COMMENT_SCROLL_HELPERS_SCRIPT
-from facebook_monitor.facebook.scroll_control_scripts import COMMENT_SCROLL_LOAD_MORE_SCRIPT
-from facebook_monitor.facebook.scroll_control_scripts import SCROLL_HELPERS_SCRIPT
-from facebook_monitor.facebook.scroll_control_scripts import SCROLL_LOAD_MORE_SCRIPT
 from facebook_monitor.facebook.scroll_guard_scripts import (
     BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT as BEGIN_COMMENT_LOAD_MORE_GUARD_FRAGMENT,
 )
@@ -302,15 +298,6 @@ def test_shared_permalink_helper_behavior_preserves_post_and_comment_routes() ->
         },
         {"value": "2187454285426518"},
     ]
-
-
-def test_scroll_control_scripts_reexport_split_payloads() -> None:
-    """scroll control facade 必須 re-export posts / comments payload。"""
-
-    assert SCROLL_HELPERS_SCRIPT == SCROLL_HELPERS_FRAGMENT
-    assert SCROLL_LOAD_MORE_SCRIPT == SCROLL_LOAD_MORE_FRAGMENT
-    assert COMMENT_SCROLL_HELPERS_SCRIPT == COMMENT_SCROLL_HELPERS_FRAGMENT
-    assert COMMENT_SCROLL_LOAD_MORE_SCRIPT == COMMENT_SCROLL_LOAD_MORE_FRAGMENT
 
 
 def test_scroll_fragments_keep_responsibility_markers() -> None:

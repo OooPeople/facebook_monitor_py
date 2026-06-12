@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard

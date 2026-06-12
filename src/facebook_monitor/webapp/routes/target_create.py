@@ -38,9 +38,9 @@ from facebook_monitor.webapp.dependencies import redirect_new_target_with_error
 from facebook_monitor.webapp.dependencies import redirect_with_message
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.dependencies import run_with_temporary_profile_access
-from facebook_monitor.webapp.form_models import CreateTargetConfigFormFields
-from facebook_monitor.webapp.form_models import format_notification_form_error
-from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.notification_form_models import format_notification_form_error
+from facebook_monitor.webapp.target_config_form import TargetConfigForm
+from facebook_monitor.webapp.target_create_form import CreateTargetConfigFormFields
 from facebook_monitor.webapp.profile_session import ProfileSessionError
 
 

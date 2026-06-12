@@ -38,7 +38,6 @@ from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePa
 from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
-from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import force_mark_resident_target_idle
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
@@ -51,7 +50,7 @@ from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_gua
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
-__all__ = ("ExecutorWorkerPool", "prepare_resident_main_page")
+__all__ = ("ExecutorWorkerPool",)
 
 
 class ExecutorWorkerPool:

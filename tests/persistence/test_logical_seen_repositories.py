@@ -7,11 +7,11 @@ from pathlib import Path
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.persistence.sqlite import LogicalItemRepository
-from facebook_monitor.persistence.sqlite import SeenItemRepository
-from facebook_monitor.persistence.sqlite import SqliteConnection
-from facebook_monitor.persistence.sqlite import TargetRepository
-from facebook_monitor.persistence.sqlite import initialize_schema
+from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.seen_items import SeenItemRepository
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
+from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.schema import initialize_schema
 
 
 def test_seen_items_clear_scope_only_deletes_that_scan_scope(tmp_path: Path) -> None:

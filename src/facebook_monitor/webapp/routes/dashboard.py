@@ -27,13 +27,13 @@ from facebook_monitor.webapp.dashboard_payloads import serialize_database_invari
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_item
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_payload
 from facebook_monitor.webapp.dashboard_payloads import serialize_target_card
-from facebook_monitor.webapp.query_service import get_dashboard_revision
-from facebook_monitor.webapp.query_service import get_dashboard_view
-from facebook_monitor.webapp.query_service import get_target_card
-from facebook_monitor.webapp.query_service import list_sidebar_items
-from facebook_monitor.webapp.query_service import DashboardReadUnavailable
-from facebook_monitor.webapp.query_service import DashboardRevision
-from facebook_monitor.webapp.query_service import DashboardRevisionUnavailable
+from facebook_monitor.webapp.dashboard_queries import get_dashboard_view
+from facebook_monitor.webapp.dashboard_queries import get_target_card
+from facebook_monitor.webapp.dashboard_queries import list_sidebar_items
+from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
+from facebook_monitor.webapp.dashboard_read_models import DashboardRevision
+from facebook_monitor.webapp.dashboard_read_models import DashboardRevisionUnavailable
+from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
 
 
 def _format_dashboard_revision_event(payload: dict[str, str]) -> str:

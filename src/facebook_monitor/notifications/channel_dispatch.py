@@ -1,7 +1,7 @@
 """通知通道實際分發。
 
-職責：保存 sender protocol、channel definition、單筆 outbox event 發送與
-notification event 記錄。outbox claim/retry 流程由 `outbox_service` 管理。
+職責：保存 sender protocol、單筆 outbox event 發送與 notification event
+記錄。channel registry 屬於 core notification channels。
 """
 
 from __future__ import annotations
@@ -11,15 +11,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
-from facebook_monitor.core.notification_channels import NotificationChannelDefinition
-from facebook_monitor.core.notification_channels import get_channel_definition
+import facebook_monitor.core.notification_channels as notification_channels
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
-from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
@@ -31,12 +28,8 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 __all__ = [
     "DesktopSender",
     "DiscordSender",
-    "NOTIFICATION_CHANNEL_DEFINITIONS",
-    "NotificationChannelDefinition",
     "NtfySender",
     "dispatch_notification_outbox_entry",
-    "get_channel_definition",
-    "is_channel_enabled",
     "record_failed_notification_event_for_outbox_error",
     "record_notification_event",
 ]
@@ -76,16 +69,6 @@ NotificationChannelHandler = Callable[
     [ApplicationContext, TargetDescriptor, NotificationOutboxEntry, NotificationSenders],
     tuple[int, NotificationOutboxStatus, str],
 ]
-
-
-def is_channel_enabled(
-    config: TargetConfig,
-    definition: NotificationChannelDefinition,
-) -> bool:
-    """判斷指定通知通道是否已由使用者啟用。"""
-
-    # Backward-compatible facade；新程式碼優先使用 channel_plan。
-    return bool(getattr(config, definition.enabled_field))
 
 
 def _result_to_status(ok: bool) -> tuple[NotificationStatus, NotificationOutboxStatus]:
@@ -168,7 +151,9 @@ def _dispatch_ntfy_channel(
             app=app,
             target=target,
             entry=entry,
-            message=get_channel_definition(entry.channel).skipped_message,
+            message=notification_channels.get_channel_definition(
+                entry.channel
+            ).skipped_message,
         )
     result = senders.ntfy(
         NtfyConfig(topic=entry.endpoint, click_url=entry.permalink),
@@ -195,7 +180,9 @@ def _dispatch_discord_channel(
             app=app,
             target=target,
             entry=entry,
-            message=get_channel_definition(entry.channel).skipped_message,
+            message=notification_channels.get_channel_definition(
+                entry.channel
+            ).skipped_message,
         )
     result = senders.discord(
         DiscordConfig(webhook_url=entry.endpoint),
@@ -229,7 +216,7 @@ def dispatch_notification_outbox_entry(
 ) -> tuple[int, NotificationOutboxStatus, str]:
     """發送單筆 outbox event，回傳 event id、outbox 狀態與 result message。"""
 
-    get_channel_definition(entry.channel)
+    notification_channels.get_channel_definition(entry.channel)
     handler = NOTIFICATION_CHANNEL_HANDLERS.get(entry.channel)
     if handler is None:
         raise ValueError(f"Unsupported notification channel: {entry.channel}")

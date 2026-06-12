@@ -10,8 +10,11 @@ from fastapi.testclient import TestClient
 
 from facebook_monitor.application import context as application_context
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.webapp import query_service
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.webapp.dashboard_queries import list_sidebar_items
+from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
+from facebook_monitor.webapp.dashboard_read_models import DashboardRevisionUnavailable
+from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
 
@@ -51,29 +54,15 @@ def test_dashboard_revision_endpoint_changes_after_target_update(tmp_path: Path)
     assert first_revision != second_revision
 
 
-def test_dashboard_revision_read_path_does_not_initialize_schema(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """SSE revision read path 不應建立 application context 或重跑 schema init。"""
+def test_dashboard_revision_read_path_does_not_initialize_schema(tmp_path: Path) -> None:
+    """SSE revision read path 不應為空 DB 建立 schema 或檔案。"""
 
     db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app_context:
-        app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222518561920110",
-                canonical_url="https://www.facebook.com/groups/222518561920110",
-            )
-        )
 
-    def fail_if_called(*args: object, **kwargs: object) -> None:
-        raise AssertionError("dashboard revision should use direct read-only connection")
+    revision = get_dashboard_revision(db_path)
 
-    monkeypatch.setattr(query_service, "SqliteApplicationContext", fail_if_called)
-
-    revision = query_service.get_dashboard_revision(db_path)
-
-    assert int(revision.revision) > 0
+    assert revision.revision == "0"
+    assert not db_path.exists()
 
 
 def test_dashboard_sidebar_read_path_does_not_initialize_schema(
@@ -96,7 +85,7 @@ def test_dashboard_sidebar_read_path_does_not_initialize_schema(
 
     monkeypatch.setattr(application_context, "initialize_schema", fail_if_called)
 
-    items = query_service.list_sidebar_items(db_path)
+    items = list_sidebar_items(db_path)
 
     assert len(items) == 1
 
@@ -112,7 +101,7 @@ def test_dashboard_revision_endpoint_ignores_temporary_sqlite_lock(
         pass
 
     def raise_locked(*args: object, **kwargs: object) -> object:
-        raise query_service.DashboardRevisionUnavailable("database is locked")
+        raise DashboardRevisionUnavailable("database is locked")
 
     monkeypatch.setattr(dashboard_routes, "get_dashboard_revision", raise_locked)
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
@@ -133,7 +122,7 @@ def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
         pass
 
     def raise_locked(*args: object, **kwargs: object) -> object:
-        raise query_service.DashboardReadUnavailable("database is locked")
+        raise DashboardReadUnavailable("database is locked")
 
     monkeypatch.setattr(dashboard_routes, "list_sidebar_items", raise_locked)
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))

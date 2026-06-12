@@ -7,15 +7,15 @@ from pathlib import Path
 
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
-from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
-from facebook_monitor.facebook.sort_controls import SortAdjustResult
+from facebook_monitor.facebook.sort_results import FEED_SORT_NEWEST_LABEL
+from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.posts_pipeline import build_feed_seen_stop_predicate
 from facebook_monitor.worker.posts_pipeline import scan_posts_page

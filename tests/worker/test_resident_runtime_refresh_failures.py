@@ -12,8 +12,8 @@ from pytest import MonkeyPatch
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetMetadataStatus

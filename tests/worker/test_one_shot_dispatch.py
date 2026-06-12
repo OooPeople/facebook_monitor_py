@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import RecordScanRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON

@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.notifications.desktop import DesktopNotificationResult

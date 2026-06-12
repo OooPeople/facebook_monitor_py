@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import TargetConfig
-from facebook_monitor.notifications.channel_dispatch import get_channel_definition
+from facebook_monitor.core.notification_channels import get_channel_definition
 from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
 from facebook_monitor.notifications.channel_plan import get_channel_endpoint
 from facebook_monitor.notifications.channel_plan import is_channel_enabled_by_config

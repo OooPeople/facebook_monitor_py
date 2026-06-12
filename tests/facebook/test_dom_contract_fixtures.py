@@ -17,8 +17,8 @@ from playwright.sync_api import Page
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from facebook_monitor.facebook.comment_dom import COMMENTS_LIKE_ITEMS_SCRIPT
-from facebook_monitor.facebook.feed_dom import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details
 

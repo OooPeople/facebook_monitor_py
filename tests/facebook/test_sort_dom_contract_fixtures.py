@@ -9,13 +9,13 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 from playwright.sync_api import sync_playwright
 
-from facebook_monitor.facebook.sort_controls import COMMENT_SORT_ADJUST_SCRIPT
-from facebook_monitor.facebook.sort_controls import COMMENT_SORT_CURRENT_LABEL_SCRIPT
-from facebook_monitor.facebook.sort_controls import COMMENT_SORT_NEWEST_LABEL
-from facebook_monitor.facebook.sort_controls import FEED_SORT_ADJUST_SCRIPT
-from facebook_monitor.facebook.sort_controls import FEED_SORT_CURRENT_LABEL_SCRIPT
-from facebook_monitor.facebook.sort_controls import FEED_SORT_NEWEST_LABEL
-from facebook_monitor.facebook.sort_controls import normalize_sort_adjust_result
+from facebook_monitor.facebook.sort_results import COMMENT_SORT_NEWEST_LABEL
+from facebook_monitor.facebook.sort_results import FEED_SORT_NEWEST_LABEL
+from facebook_monitor.facebook.sort_results import normalize_sort_adjust_result
+from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_CURRENT_LABEL_SCRIPT
+from facebook_monitor.facebook.sort_scripts import FEED_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
 
 
 GROUP_ID = "222518561920110"

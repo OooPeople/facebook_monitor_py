@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from facebook_monitor.webapp.form_models import format_notification_form_error
+from facebook_monitor.webapp.notification_form_models import format_notification_form_error
 
 _SIDEBAR_SAFE_ECHO_FRAGMENTS = ("不可超過", "最多")
 _SIDEBAR_ERROR_RULES: tuple[tuple[tuple[str, ...], str, bool], ...] = (

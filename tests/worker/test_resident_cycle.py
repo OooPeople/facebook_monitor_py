@@ -8,8 +8,8 @@ from typing import Any
 
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -17,7 +17,7 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
-from facebook_monitor.worker.resident_main_executor import prepare_resident_main_page
+from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions

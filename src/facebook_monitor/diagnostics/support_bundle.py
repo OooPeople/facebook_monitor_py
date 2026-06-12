@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 import uuid
@@ -19,15 +18,15 @@ from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.diagnostics._support_bundle_constants import SUPPORT_BUNDLE_FILENAME_PREFIX
 from facebook_monitor.diagnostics._support_bundle_constants import SUPPORT_BUNDLE_FILENAME_SUFFIX
 from facebook_monitor.diagnostics._support_bundle_constants import SUPPORT_BUNDLE_SCHEMA_VERSION
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _database_health_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _database_summary_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _cover_image_hosts_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _dedupe_summary_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _latest_scan_debug_summary_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _notification_diagnostics_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _scan_summaries_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _target_inventory_payload
-from facebook_monitor.diagnostics._support_bundle_db_collectors import _target_runtime_states_payload
+from facebook_monitor.diagnostics._support_bundle_database_collectors import _database_health_payload
+from facebook_monitor.diagnostics._support_bundle_database_collectors import _database_summary_payload
+from facebook_monitor.diagnostics._support_bundle_dedupe_collectors import _dedupe_summary_payload
+from facebook_monitor.diagnostics._support_bundle_notification_collectors import _notification_diagnostics_payload
+from facebook_monitor.diagnostics._support_bundle_scan_collectors import _latest_scan_debug_summary_payload
+from facebook_monitor.diagnostics._support_bundle_scan_collectors import _scan_summaries_payload
+from facebook_monitor.diagnostics._support_bundle_target_collectors import _cover_image_hosts_payload
+from facebook_monitor.diagnostics._support_bundle_target_collectors import _target_inventory_payload
+from facebook_monitor.diagnostics._support_bundle_target_collectors import _target_runtime_states_payload
 from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
 from facebook_monitor.diagnostics._support_bundle_redaction import _runtime_diagnostics_text
 from facebook_monitor.diagnostics._support_bundle_redaction import _sanitize_app_metadata
@@ -225,29 +224,10 @@ def create_support_bundle(
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise
-    prune_old_support_bundles(
+    _prune_old_support_bundles(
         bundle_dir,
         max_age_days=PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS.support_bundle_retention_days,
         max_files=PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS.support_bundle_max_files,
         preserve=(bundle_path,),
     )
     return SupportBundleResult(path=bundle_path, filename=filename)
-
-
-def prune_old_support_bundles(
-    bundle_dir: Path,
-    *,
-    max_age_days: int,
-    max_files: int,
-    now: datetime | None = None,
-    preserve: tuple[Path, ...] = (),
-) -> int:
-    """刪除過期或超出數量上限的 support bundle。"""
-
-    return _prune_old_support_bundles(
-        bundle_dir,
-        max_age_days=max_age_days,
-        max_files=max_files,
-        now=now,
-        preserve=preserve,
-    )

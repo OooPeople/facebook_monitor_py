@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import UpdateTargetStatusRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpdateTargetStatusRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import MatchHistoryEntry

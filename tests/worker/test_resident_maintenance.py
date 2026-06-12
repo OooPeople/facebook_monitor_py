@@ -12,8 +12,8 @@ from typing import Any
 from pytest import MonkeyPatch
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertCommentsTargetRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
@@ -27,8 +27,8 @@ from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
-from facebook_monitor.worker.resident_main import refresh_requested_target_metadata
-from facebook_monitor.worker.resident_main import refresh_target_group_cover_image_from_context
+from facebook_monitor.worker.resident_maintenance import refresh_requested_target_metadata
+from facebook_monitor.worker.resident_maintenance import refresh_target_group_cover_image_from_context
 from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary

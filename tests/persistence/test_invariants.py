@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
 from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS

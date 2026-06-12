@@ -11,7 +11,7 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
-from facebook_monitor.webapp.highlight import build_highlight_segment_dicts
+from facebook_monitor.core.keyword_highlight import build_highlight_segment_dicts
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 from facebook_monitor.webapp.notification_presenters import format_notification_event_message
 from facebook_monitor.webapp.notification_presenters import format_notification_status_label

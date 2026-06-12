@@ -14,7 +14,7 @@ from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.services import TargetApplicationService
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now

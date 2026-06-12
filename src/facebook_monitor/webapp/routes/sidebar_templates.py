@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi import Request
 
 from facebook_monitor.webapp.dependencies import run_web_app_context_operation
-from facebook_monitor.webapp.form_models import TargetConfigForm
+from facebook_monitor.webapp.target_config_form import TargetConfigForm
 from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.routes.sidebar_common import sidebar_bad_request
 from facebook_monitor.webapp.sidebar_use_cases import parse_sidebar_template_sections

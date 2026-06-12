@@ -9,9 +9,9 @@ from typing import cast
 
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpdateTargetConfigRequest
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
@@ -100,6 +100,99 @@ def test_finalize_does_not_send_notification_when_transaction_rolls_back(
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
         assert stored_target is None
+
+
+def test_finalize_rollback_keeps_committed_target_but_discards_scan_writes(
+    tmp_path: Path,
+) -> None:
+    """已提交 target 不應因本輪 finalize rollback 被刪，但 scan 寫入需全數回復。"""
+
+    sent_ntfy: list[tuple[NtfyConfig, str, str]] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        """記錄是否真的送出通知。"""
+
+        sent_ntfy.append((config, title, message))
+        return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+    try:
+        with SqliteApplicationContext(db_path) as app:
+
+            def fail_replace_for_target(
+                _target_id: str,
+                _items: Iterable[LatestScanItem],
+            ) -> None:
+                """模擬 latest scan 寫入失敗。"""
+
+                raise RuntimeError("latest_write_failed")
+
+            cast(
+                Any, app.repositories.latest_scan_items
+            ).replace_for_target = fail_replace_for_target
+            finalize_scan_items(
+                app=app,
+                target=target,
+                config=config,
+                items=[
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:rollback",
+                        alias_keys=("post:rollback",),
+                        group_id="123",
+                        text="票券",
+                    )
+                ],
+                item_count=1,
+                metadata={"worker": "test_worker"},
+                notification_sender=fake_ntfy_sender,
+            )
+    except RuntimeError as exc:
+        assert str(exc) == "latest_write_failed"
+
+    assert sent_ntfy == []
+    with SqliteApplicationContext(db_path) as app:
+        stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
+        assert stored_target is not None
+        assert app.repositories.match_history.list_by_target(target.id) == []
+        assert app.repositories.latest_scan_items.list_by_target(target.id) == []
+        connection = app.repositories.runtime_states.connection
+        table_counts = {
+            table_name: connection.execute(
+                f"SELECT COUNT(1) FROM {table_name}"
+            ).fetchone()[0]
+            for table_name in (
+                "scan_runs",
+                "seen_items",
+                "logical_items",
+                "logical_item_aliases",
+                "notification_dedupe",
+                "notification_outbox",
+            )
+        }
+        assert table_counts == {
+            "scan_runs": 0,
+            "seen_items": 0,
+            "logical_items": 0,
+            "logical_item_aliases": 0,
+            "notification_dedupe": 0,
+            "notification_outbox": 0,
+        }
 
 
 def test_outbox_keeps_retryable_failed_notification_after_commit(

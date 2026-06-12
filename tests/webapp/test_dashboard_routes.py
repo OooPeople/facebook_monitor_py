@@ -9,9 +9,9 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.services import TargetConfigPatch
-from facebook_monitor.application.services import UpsertGroupPostsTargetRequest
-from facebook_monitor.application.services import RecordScanRequest
+from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -22,7 +22,7 @@ from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
-from facebook_monitor.webapp.query_service import get_dashboard_view
+from facebook_monitor.webapp.dashboard_queries import get_dashboard_view
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from tests.helpers.webapp import FakeSchedulerManager
 

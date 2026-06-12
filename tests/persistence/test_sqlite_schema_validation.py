@@ -174,6 +174,51 @@ def test_initialize_schema_rejects_current_version_db_missing_required_columns(
             raise AssertionError("current schema missing required columns should fail fast")
 
 
+def test_initialize_schema_rejects_current_version_db_missing_target_constraints(
+    tmp_path: Path,
+) -> None:
+    """已標成 current version 的 DB 若缺 targets CHECK，不得被視為合法 current。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP TABLE targets")
+        connection.execute(
+            """
+            CREATE TABLE targets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                group_cover_image_url TEXT NOT NULL DEFAULT '',
+                parent_post_id TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                metadata_status TEXT NOT NULL DEFAULT 'resolved',
+                metadata_error TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL,
+                paused INTEGER NOT NULL,
+                worker_mode TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.commit()
+
+    with SqliteConnection(db_path) as sqlite:
+        try:
+            initialize_schema(sqlite.require_connection())
+        except RuntimeError as exc:
+            assert f"SQLite schema version {SCHEMA_VERSION} is missing" in str(exc)
+            assert "constraint" in str(exc)
+            assert "targets." in str(exc)
+        else:
+            raise AssertionError("current schema missing targets CHECK should fail fast")
+
+
 def test_initialize_schema_accepts_plain_sqlite_connection_for_current_db(
     tmp_path: Path,
 ) -> None:

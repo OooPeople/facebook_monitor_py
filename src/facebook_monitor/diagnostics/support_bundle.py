@@ -21,6 +21,7 @@ from facebook_monitor.diagnostics._support_bundle_constants import SUPPORT_BUNDL
 from facebook_monitor.diagnostics._support_bundle_constants import SUPPORT_BUNDLE_SCHEMA_VERSION
 from facebook_monitor.diagnostics._support_bundle_db_collectors import _database_health_payload
 from facebook_monitor.diagnostics._support_bundle_db_collectors import _database_summary_payload
+from facebook_monitor.diagnostics._support_bundle_db_collectors import _cover_image_hosts_payload
 from facebook_monitor.diagnostics._support_bundle_db_collectors import _dedupe_summary_payload
 from facebook_monitor.diagnostics._support_bundle_db_collectors import _latest_scan_debug_summary_payload
 from facebook_monitor.diagnostics._support_bundle_db_collectors import _notification_diagnostics_payload
@@ -79,7 +80,7 @@ def create_support_bundle(
                         [
                             "Facebook Monitor support bundle",
                             "This bundle intentionally excludes the SQLite DB, browser profile, cookies, secrets, full logs, and full post/comment text.",
-                            "It includes bounded redacted log tails, runtime snapshots, scan summaries, notification summaries, and database health checks.",
+                            "It includes bounded redacted log tails, runtime snapshots, scan summaries, notification summaries, cover image host histograms, and database health checks.",
                             "Paths, URLs, IDs, errors, and secret-like values are redacted or aliased before writing on a best-effort basis.",
                             "Please review the extracted files before sharing this bundle.",
                             "",
@@ -129,6 +130,13 @@ def create_support_bundle(
                     name="target_inventory",
                     filename="target_inventory.json",
                     collect=lambda: _target_inventory_payload(paths.db_path, aliases),
+                )
+                _write_json_section(
+                    archive,
+                    sections,
+                    name="cover_image_hosts",
+                    filename="cover_image_hosts.json",
+                    collect=lambda: _cover_image_hosts_payload(paths.db_path),
                 )
                 _write_json_section(
                     archive,

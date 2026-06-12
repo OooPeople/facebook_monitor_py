@@ -73,10 +73,12 @@ def test_scheduler_start_preflight_blocks_active_target_decode_violation(
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             "UPDATE targets SET target_kind = ?, paused = 0 WHERE id = ?",
             ("banana", target.id),
         )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
 
     result = run_scheduler_start_preflight(
         db_path,
@@ -105,10 +107,12 @@ def test_scheduler_start_preflight_allows_inactive_target_decode_violation(
 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             "UPDATE targets SET target_kind = ?, paused = 1 WHERE id = ?",
             ("banana", target.id),
         )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
 
     result = run_scheduler_start_preflight(
         db_path,

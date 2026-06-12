@@ -41,6 +41,7 @@
 - posts target 代表社團貼文監視。
 - comments target 代表單篇社團貼文留言監視。
 - target identity 由 `target_kind + scope_id` 決定，並由 DB unique index 保護。
+- `targets.target_kind`、`metadata_status`、`enabled`、`paused` 與 `worker_mode` 由 SQLite CHECK constraints 保護；既有 DB 透過正式 migration chain 重建 `targets` table，不由 current schema bootstrap 靜默修補。
 - keyword、include keyword groups、exclude-ignore phrases、refresh、notification 都是 target-scoped config。
 - seen、latest scan、match history、notification events、runtime state 都是 target-scoped state。
 - 使用者按下「開始」只恢復監看並要求立即掃描；seen、logical item aliases、notification dedupe/outbox 狀態與 `match_history` / 查看紀錄都會保留。若要讓目前仍符合關鍵字的同一 item 可在下次掃描再次通知，使用者需在 target 更多操作中明確執行「重置通知狀態」；這會清該 target 的 `notification_outbox` rows、同一 scan scope 的 legacy `seen_items` 與目前 epoch 的 logical item aliases，推進 target-scoped dedupe epoch，並保留或建立 initialized `scan_scope_state`，避免下一輪變成 baseline suppressed scan。
@@ -110,7 +111,7 @@
 - Runtime data maintenance 只清可重建 scan/debug 資料與可選的 legacy `seen_items` mirror；不得把 `notification_outbox` 當作一般 runtime/debug 資料清掉。bounded retention 另行清理 60 天外 logical/dedupe state 與短期 terminal outbox rows。
 - Local dedupe 採 60 天 bounded horizon：`logical_items` / `logical_item_aliases` 以 `last_seen_at` 保留 60 天，`notification_dedupe` 以 `last_deduped_at` 保留 60 天；超過 horizon 的舊 item 若再次出現，可能被視為新的可通知項目。
 - bounded retention 會短留 terminal outbox rows：`sent` / `skipped` 預設保留 7 天，`failed` / `processing_failed` 預設保留 14 天供診斷；`pending` / `processing_pending`、latest scan 仍引用的 logical item 與 active notification dedupe references 會被保護。
-- support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、schema/table counts 與 invariant summary；產生時先寫同目錄 temp zip，成功後才發布正式 zip，retention 只清正式 support bundle。
+- support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、schema/table counts、invariant summary 與 privacy-safe cover image host histogram；cover image host 診斷只輸出 hostname / suffix / reject reason counts，不輸出完整 URL、path、query、target id 或 target 名稱。產生時先寫同目錄 temp zip，成功後才發布正式 zip，retention 只清正式 support bundle。
 
 ## Web UI 語義
 

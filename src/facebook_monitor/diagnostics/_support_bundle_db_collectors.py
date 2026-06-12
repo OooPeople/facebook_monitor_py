@@ -15,6 +15,7 @@ import sqlite3
 
 from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
 from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.diagnostics.cover_image_hosts import collect_cover_image_host_report
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.notifications.failure_taxonomy import classify_notification_failure
 from facebook_monitor.persistence.schema import MIN_SUPPORTED_SCHEMA_VERSION
@@ -246,6 +247,15 @@ def _target_inventory_payload(
         "enabled_paused_counts": dict(sorted(status_counts.items())),
         "targets": targets,
     }
+
+
+def _cover_image_hosts_payload(db_path: Path) -> dict[str, object]:
+    """建立不含完整 URL 的 cover image host 統計。"""
+
+    if not db_path.is_file():
+        return {"available": False, "reason": "database_missing"}
+    with _readonly_connection(db_path) as connection:
+        return collect_cover_image_host_report(connection)
 
 
 def _target_runtime_states_payload(

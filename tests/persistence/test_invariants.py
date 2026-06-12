@@ -146,11 +146,19 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
         )
         app.services.targets.restart_target_monitoring(target.id)
         connection = app.repositories.targets.connection
-        connection.execute(
-            "UPDATE targets SET target_kind = ?, enabled = ? WHERE id = ?",
-            ("pages", 2, target.id),
-        )
         connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE targets
+            SET target_kind = ?,
+                metadata_status = ?,
+                worker_mode = ?,
+                enabled = ?,
+                paused = ?
+            WHERE id = ?
+            """,
+            ("pages", "unknown", "sync", 2, -1, target.id),
+        )
         connection.execute(
             """
             UPDATE target_configs
@@ -182,7 +190,10 @@ def test_database_invariants_report_enum_boolean_range_and_runtime_errors(
     formatted = "\n".join(violation.format() for violation in violations)
     assert "targets" in formatted
     assert "target_kind" in formatted
+    assert "metadata_status" in formatted
+    assert "worker_mode" in formatted
     assert "enabled" in formatted
+    assert "paused" in formatted
     assert "target_configs" in formatted
     assert "refresh_range" in formatted
     assert "target_dedupe_state" in formatted

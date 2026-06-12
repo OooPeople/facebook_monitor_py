@@ -1095,6 +1095,7 @@ def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path
         notifications = NotificationEventRepository(connection).list_by_target("posts-target")
         history = MatchHistoryRepository(connection).list_by_target("posts-target")
         has_seen = SeenItemRepository(connection).has_seen("111", "legacy-item")
+        targets_sql = table_sql(connection, "targets")
 
     assert version == str(SCHEMA_VERSION)
     assert posts_target is not None
@@ -1128,6 +1129,11 @@ def test_initialize_schema_migrates_v10_fixture_to_current_schema(tmp_path: Path
     assert len(history) == 1
     assert history[0].include_rule == "legacy"
     assert has_seen
+    assert "CHECK (target_kind IN ('posts', 'comments'))" in targets_sql
+    assert "CHECK (metadata_status IN ('resolved', 'pending', 'failed'))" in targets_sql
+    assert "CHECK (enabled IN (0, 1))" in targets_sql
+    assert "CHECK (paused IN (0, 1))" in targets_sql
+    assert "CHECK (worker_mode IN ('headless', 'headed_compat'))" in targets_sql
 
 
 def test_initialize_schema_migrates_v12_missing_columns_to_current(tmp_path: Path) -> None:
@@ -1489,3 +1495,287 @@ def test_initialize_schema_migrates_v34_display_text_columns(
     assert has_latest_display_text
     assert history[0].display_text == "第一行 第二行"
     assert latest_items[0].display_text == "第一行 第二行"
+
+
+def test_initialize_schema_migrates_v35_targets_check_constraints(
+    tmp_path: Path,
+) -> None:
+    """v36 會重建 targets，加入核心 enum / boolean CHECK 並保留既有資料。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = "2026-05-01T00:00:00+00:00"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        _create_raw_v35_targets_schema(connection)
+        _insert_v35_target(
+            connection,
+            target_id="posts-target",
+            group_id="posts-group",
+            target_kind="posts",
+            metadata_status="resolved",
+            enabled=1,
+            paused=0,
+            worker_mode="headless",
+            now_text=now_text,
+        )
+        _insert_v35_target(
+            connection,
+            target_id="comments-target",
+            group_id="comments-group",
+            target_kind="comments",
+            metadata_status="pending",
+            enabled=0,
+            paused=1,
+            worker_mode="headed_compat",
+            now_text=now_text,
+        )
+        _insert_v35_target(
+            connection,
+            target_id="failed-metadata-target",
+            group_id="failed-group",
+            target_kind="posts",
+            metadata_status="failed",
+            enabled=1,
+            paused=1,
+            worker_mode="headless",
+            now_text=now_text,
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        targets_sql = table_sql(connection, "targets")
+        rows = connection.execute(
+            """
+            SELECT id, target_kind, metadata_status, enabled, paused, worker_mode
+            FROM targets
+            ORDER BY id
+            """
+        ).fetchall()
+
+        try:
+            connection.execute(
+                """
+                UPDATE targets
+                SET worker_mode = 'sync'
+                WHERE id = 'posts-target'
+                """
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "CHECK constraint failed" in str(exc)
+        else:
+            raise AssertionError("v35 -> v36 migration should constrain worker_mode")
+
+    assert version == str(SCHEMA_VERSION)
+    assert "CHECK (target_kind IN ('posts', 'comments'))" in targets_sql
+    assert "CHECK (metadata_status IN ('resolved', 'pending', 'failed'))" in targets_sql
+    assert "CHECK (enabled IN (0, 1))" in targets_sql
+    assert "CHECK (paused IN (0, 1))" in targets_sql
+    assert "CHECK (worker_mode IN ('headless', 'headed_compat'))" in targets_sql
+    assert [(row["id"], row["metadata_status"], row["worker_mode"]) for row in rows] == [
+        ("comments-target", "pending", "headed_compat"),
+        ("failed-metadata-target", "failed", "headless"),
+        ("posts-target", "resolved", "headless"),
+    ]
+
+
+def test_initialize_schema_rejects_v35_targets_with_invalid_check_values(
+    tmp_path: Path,
+) -> None:
+    """v36 targets rebuild 遇到既有壞 enum / boolean 應 fail fast，不自動修資料。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        _create_raw_v35_targets_schema(connection)
+        _insert_v35_target(
+            connection,
+            target_id="bad-target",
+            target_kind="pages",
+            metadata_status="resolved",
+            enabled=2,
+            paused=0,
+            worker_mode="headless",
+            now_text="2026-05-01T00:00:00+00:00",
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        try:
+            initialize_schema(sqlite.require_connection())
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("invalid v35 targets data should stop migration")
+
+    assert "SQLite targets table contains values incompatible with v36 CHECK" in message
+    assert "targets.target_kind" in message
+    assert "targets.enabled" in message
+    assert "bad-target" in message
+
+
+def test_initialize_schema_migrates_v35_targets_rebuild_preserves_fk_and_indexes(
+    tmp_path: Path,
+) -> None:
+    """targets parent-table rebuild 不應破壞 FK、cascade、metadata index 或 scope unique。"""
+
+    db_path = tmp_path / "app.db"
+    now_text = "2026-05-01T00:00:00+00:00"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        _create_raw_v35_targets_schema(connection)
+        connection.execute(
+            """
+            CREATE TABLE target_dedupe_state (
+                target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+                dedupe_epoch INTEGER NOT NULL DEFAULT 0 CHECK (dedupe_epoch >= 0),
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        _insert_v35_target(
+            connection,
+            target_id="posts-target",
+            group_id="group-1",
+            scope_id="group-1",
+            target_kind="posts",
+            metadata_status="resolved",
+            enabled=1,
+            paused=0,
+            worker_mode="headless",
+            now_text=now_text,
+        )
+        connection.execute(
+            """
+            INSERT INTO target_dedupe_state (target_id, dedupe_epoch, updated_at)
+            VALUES ('posts-target', 3, ?)
+            """,
+            (now_text,),
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        indexes = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        fk_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        dedupe_before_delete = connection.execute(
+            "SELECT dedupe_epoch FROM target_dedupe_state WHERE target_id = 'posts-target'"
+        ).fetchone()
+        try:
+            _insert_v35_target(
+                connection,
+                target_id="duplicate-scope-target",
+                group_id="group-1",
+                scope_id="group-1",
+                target_kind="posts",
+                metadata_status="resolved",
+                enabled=1,
+                paused=0,
+                worker_mode="headless",
+                now_text=now_text,
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "UNIQUE constraint failed" in str(exc)
+        else:
+            raise AssertionError("target kind/scope unique index should survive rebuild")
+        connection.execute("DELETE FROM targets WHERE id = 'posts-target'")
+        dedupe_after_delete = connection.execute(
+            "SELECT 1 FROM target_dedupe_state WHERE target_id = 'posts-target'"
+        ).fetchone()
+
+    assert {"idx_targets_kind_scope_unique", "idx_targets_metadata_status_updated"}.issubset(
+        indexes
+    )
+    assert fk_violations == []
+    assert dedupe_before_delete["dedupe_epoch"] == 3
+    assert dedupe_after_delete is None
+
+
+def _create_raw_v35_targets_schema(connection: sqlite3.Connection) -> None:
+    """建立 v35 代表性 targets schema；尚未含 v36 CHECK。"""
+
+    connection.executescript(
+        """
+        CREATE TABLE schema_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO schema_metadata (key, value) VALUES ('version', '35');
+        CREATE TABLE targets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            target_kind TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            group_name TEXT NOT NULL,
+            group_cover_image_url TEXT NOT NULL DEFAULT '',
+            parent_post_id TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            canonical_url TEXT NOT NULL,
+            metadata_status TEXT NOT NULL DEFAULT 'resolved',
+            metadata_error TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL,
+            paused INTEGER NOT NULL,
+            worker_mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _insert_v35_target(
+    connection: sqlite3.Connection,
+    *,
+    target_id: str,
+    group_id: str | None = None,
+    scope_id: str | None = None,
+    target_kind: str,
+    metadata_status: str,
+    enabled: int,
+    paused: int,
+    worker_mode: str,
+    now_text: str,
+) -> None:
+    """直接寫入 raw v35 targets row。"""
+
+    resolved_group_id = group_id or target_id
+    resolved_scope_id = (
+        scope_id
+        or (
+            resolved_group_id
+            if target_kind == "posts"
+            else f"{resolved_group_id}:post:{target_id}:comments"
+        )
+    )
+    connection.execute(
+        """
+        INSERT INTO targets (
+            id, name, target_kind, group_id, group_name, group_cover_image_url,
+            parent_post_id, scope_id, canonical_url, metadata_status, metadata_error,
+            enabled, paused, worker_mode, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, '', ?, ?, ?, ?, ?)
+        """,
+        (
+            target_id,
+            target_id,
+            target_kind,
+            resolved_group_id,
+            "Group One",
+            resolved_scope_id,
+            f"https://www.facebook.com/groups/{resolved_group_id}/{target_id}",
+            metadata_status,
+            enabled,
+            paused,
+            worker_mode,
+            now_text,
+            now_text,
+        ),
+    )

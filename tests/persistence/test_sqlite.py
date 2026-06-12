@@ -132,3 +132,112 @@ def test_current_schema_enforces_selected_check_constraints(tmp_path: Path) -> N
             assert "CHECK constraint failed" in str(exc)
         else:
             raise AssertionError("notification_dedupe.status should be constrained")
+
+
+def test_current_schema_enforces_target_check_constraints(tmp_path: Path) -> None:
+    """fresh DB 的 targets 核心 enum / boolean 由 SQLite CHECK 保護。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        targets_sql = table_sql(connection, "targets")
+        assert "CHECK (target_kind IN ('posts', 'comments'))" in targets_sql
+        assert "CHECK (metadata_status IN ('resolved', 'pending', 'failed'))" in targets_sql
+        assert "CHECK (enabled IN (0, 1))" in targets_sql
+        assert "CHECK (paused IN (0, 1))" in targets_sql
+        assert "CHECK (worker_mode IN ('headless', 'headed_compat'))" in targets_sql
+
+        legal_cases = (
+            ("legal-posts", "posts", "resolved", 1, 0, "headless"),
+            ("legal-comments", "comments", "pending", 0, 1, "headed_compat"),
+            ("legal-failed", "posts", "failed", 1, 1, "headless"),
+        )
+        for target_id, target_kind, metadata_status, enabled, paused, worker_mode in legal_cases:
+            _insert_raw_target(
+                connection,
+                target_id=target_id,
+                target_kind=target_kind,
+                metadata_status=metadata_status,
+                enabled=enabled,
+                paused=paused,
+                worker_mode=worker_mode,
+            )
+
+        invalid_cases: tuple[tuple[str, str | int], ...] = (
+            ("target_kind", "pages"),
+            ("metadata_status", "unknown"),
+            ("enabled", 2),
+            ("paused", -1),
+            ("worker_mode", "sync"),
+        )
+        for index, (field, value) in enumerate(invalid_cases, start=1):
+            try:
+                _insert_raw_target_with_invalid_field(connection, index, field, value)
+            except sqlite3.IntegrityError as exc:
+                assert "CHECK constraint failed" in str(exc)
+            else:
+                raise AssertionError(f"targets CHECK should reject {field}={value!r}")
+
+
+def _insert_raw_target_with_invalid_field(
+    connection: sqlite3.Connection,
+    index: int,
+    field: str,
+    value: str | int,
+) -> None:
+    """依欄位型別明確傳入壞值，避免 **kwargs 型別被推成 object。"""
+
+    target_id = f"invalid-{index}"
+    if field == "target_kind":
+        _insert_raw_target(connection, target_id=target_id, target_kind=str(value))
+    elif field == "metadata_status":
+        _insert_raw_target(connection, target_id=target_id, metadata_status=str(value))
+    elif field == "enabled":
+        _insert_raw_target(connection, target_id=target_id, enabled=int(value))
+    elif field == "paused":
+        _insert_raw_target(connection, target_id=target_id, paused=int(value))
+    elif field == "worker_mode":
+        _insert_raw_target(connection, target_id=target_id, worker_mode=str(value))
+    else:
+        raise AssertionError(f"unknown targets field {field!r}")
+
+
+def _insert_raw_target(
+    connection: sqlite3.Connection,
+    *,
+    target_id: str,
+    target_kind: str = "posts",
+    metadata_status: str = "resolved",
+    enabled: int = 1,
+    paused: int = 0,
+    worker_mode: str = "headless",
+) -> None:
+    """直接寫入 targets，供 schema CHECK 測試使用。"""
+
+    connection.execute(
+        """
+        INSERT INTO targets (
+            id, name, target_kind, group_id, group_name, group_cover_image_url,
+            parent_post_id, scope_id, canonical_url, metadata_status, metadata_error,
+            enabled, paused, worker_mode, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, '', '', ?, ?, ?, '', ?, ?, ?, ?, ?)
+        """,
+        (
+            target_id,
+            target_id,
+            target_kind,
+            target_id,
+            target_id,
+            target_id,
+            f"https://www.facebook.com/groups/{target_id}",
+            metadata_status,
+            enabled,
+            paused,
+            worker_mode,
+            "2026-05-01T00:00:00+00:00",
+            "2026-05-01T00:00:00+00:00",
+        ),
+    )

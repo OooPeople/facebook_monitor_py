@@ -11,7 +11,7 @@ from facebook_monitor.persistence.schema_repair import repair_duplicate_target_s
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 MIN_SUPPORTED_SCHEMA_VERSION = 10
 REQUIRED_CURRENT_SCHEMA_TABLES = frozenset(
     {
@@ -129,6 +129,13 @@ def validate_current_schema_shape(connection: sqlite3.Connection) -> None:
             f"SQLite schema version {SCHEMA_VERSION} is missing required column(s): "
             + ", ".join(missing_columns)
         )
+    missing_constraints = _missing_current_schema_constraints(connection)
+    if missing_constraints:
+        raise RuntimeError(
+            f"SQLite schema version {SCHEMA_VERSION} is missing required "
+            "constraint(s): "
+            + ", ".join(missing_constraints)
+        )
 
 
 @lru_cache(maxsize=1)
@@ -153,6 +160,41 @@ def _table_columns(connection: sqlite3.Connection, table_name: str) -> frozenset
         str(row[1])
         for row in connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
     )
+
+
+def _missing_current_schema_constraints(connection: sqlite3.Connection) -> list[str]:
+    """檢查 current DB 是否保留必要 CHECK constraints。"""
+
+    targets_sql = _table_sql(connection, "targets")
+    required_target_constraints = (
+        "CHECK (target_kind IN ('posts', 'comments'))",
+        "CHECK (metadata_status IN ('resolved', 'pending', 'failed'))",
+        "CHECK (enabled IN (0, 1))",
+        "CHECK (paused IN (0, 1))",
+        "CHECK (worker_mode IN ('headless', 'headed_compat'))",
+    )
+    return [
+        f"targets.{index}"
+        for index, constraint in enumerate(required_target_constraints, start=1)
+        if constraint not in targets_sql
+    ]
+
+
+def _table_sql(connection: sqlite3.Connection, table_name: str) -> str:
+    """讀取 sqlite_master 中的 table SQL。"""
+
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = ?
+        """,
+        (table_name,),
+    ).fetchone()
+    if row is None:
+        return ""
+    return str(row[0])
 
 
 def ensure_post_migration_schema_guards(connection: sqlite3.Connection) -> None:

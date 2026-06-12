@@ -498,6 +498,7 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
         "bundle_manifest.json",
         "database_health.json",
         "target_inventory.json",
+        "cover_image_hosts.json",
         "target_runtime_states.json",
         "scan_summaries.json",
         "latest_scan_debug_summary.json",
@@ -544,6 +545,65 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
     assert "private-token" not in combined_text
     assert "https://www.facebook.com" not in combined_text
     assert r"C:\Users\alice" not in combined_text
+
+
+def test_support_bundle_cover_image_hosts_are_privacy_safe(tmp_path: Path) -> None:
+    """cover image host 樣本只輸出 hostname 統計，不輸出完整 URL 或 target 名稱。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+        name="private cover target",
+        group_cover_image_url=(
+            "https://scontent.xx.fbcdn.net/v/private-cover.jpg?token=secret"
+        ),
+    )
+    with SqliteConnection(paths.db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        TargetRepository(connection).save(target)
+        connection.execute(
+            """
+            INSERT INTO target_cover_image_refresh_state (
+                target_id, status, requested_at, last_attempted_at,
+                last_succeeded_at, last_failed_at, last_reported_url,
+                last_resolved_url, last_result, changed, error, updated_at
+            )
+            VALUES (?, 'idle', '', '', '', '',
+                    'https://lookaside.fbsbx.com/private-reported.jpg?token=secret',
+                    'https://example.com/private-rejected.jpg?token=secret',
+                    '', 0, '', '2026-05-01T00:00:00+00:00')
+            """,
+            (target.id,),
+        )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("cover_image_hosts.json").decode("utf-8"))
+        combined_text = "\n".join(
+            archive.read(name).decode("utf-8")
+            for name in sorted(archive.namelist())
+        )
+
+    assert payload["overall"]["accepted_host_counts"] == {
+        "lookaside.fbsbx.com": 1,
+        "scontent.xx.fbcdn.net": 1,
+    }
+    assert payload["overall"]["reject_reason_counts"] == {"host_not_allowed": 1}
+    assert "private cover target" not in combined_text
+    assert "private-cover.jpg" not in combined_text
+    assert "private-reported.jpg" not in combined_text
+    assert "private-rejected.jpg" not in combined_text
+    assert "example.com" not in combined_text
+    assert "token=secret" not in combined_text
+    assert target.id not in combined_text
 
 
 def test_support_bundle_log_tail_reads_only_bounded_tail(tmp_path: Path) -> None:

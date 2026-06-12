@@ -7,7 +7,9 @@ import sqlite3
 from pathlib import Path
 
 from facebook_monitor.persistence.migrations import MIGRATIONS
+from facebook_monitor.persistence.migrations import TARGETS_V35_TO_V36_COLUMNS
 from facebook_monitor.persistence.migrations import V12_TO_13_COLUMNS
+from facebook_monitor.persistence.migrations import V29_TO_V30_CHECKED_TABLES
 from facebook_monitor.persistence.migrations import migrate_26_to_27
 from facebook_monitor.persistence.migrations import migrate_27_to_28
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
@@ -36,6 +38,13 @@ def test_v12_to_v13_migration_owns_historical_repair_columns() -> None:
         "target_configs",
         "target_runtime_state",
     }
+
+
+def test_targets_check_rebuild_is_owned_by_v35_to_v36() -> None:
+    """targets 是 FK parent table，不得塞回 v29 child-table rebuild。"""
+
+    assert TARGETS_V35_TO_V36_COLUMNS
+    assert "targets" not in {spec.table_name for spec in V29_TO_V30_CHECKED_TABLES}
 
 
 def test_cover_refresh_diagnostics_are_owned_by_v27_to_v28() -> None:

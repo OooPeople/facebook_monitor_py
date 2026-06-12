@@ -147,6 +147,59 @@ V32_TO_33_COLUMNS = (
 )
 
 
+TARGETS_V35_TO_V36_COLUMNS = (
+    "id",
+    "name",
+    "target_kind",
+    "group_id",
+    "group_name",
+    "group_cover_image_url",
+    "parent_post_id",
+    "scope_id",
+    "canonical_url",
+    "metadata_status",
+    "metadata_error",
+    "enabled",
+    "paused",
+    "worker_mode",
+    "created_at",
+    "updated_at",
+)
+
+
+TARGETS_V35_TO_V36_CREATE_SQL_TEMPLATE = """
+CREATE TABLE {table_name} (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK (target_kind IN ('posts', 'comments')),
+    group_id TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    group_cover_image_url TEXT NOT NULL DEFAULT '',
+    parent_post_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    metadata_status TEXT NOT NULL DEFAULT 'resolved'
+        CHECK (metadata_status IN ('resolved', 'pending', 'failed')),
+    metadata_error TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    paused INTEGER NOT NULL CHECK (paused IN (0, 1)),
+    worker_mode TEXT NOT NULL CHECK (worker_mode IN ('headless', 'headed_compat')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+
+TARGETS_V36_ENUM_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("target_kind", ("posts", "comments")),
+    ("metadata_status", ("resolved", "pending", "failed")),
+    ("worker_mode", ("headless", "headed_compat")),
+)
+
+
+TARGETS_V36_BOOLEAN_CHECKS = ("enabled", "paused")
+
+
 def migrate_10_to_11(connection: sqlite3.Connection) -> None:
     """將舊 target-scoped config 搬到 group-scoped config。"""
 
@@ -783,6 +836,12 @@ def migrate_34_to_35(connection: sqlite3.Connection) -> None:
         add_column_if_missing(connection, column)
     _backfill_display_text_from_text(connection, "match_history")
     _backfill_display_text_from_text(connection, "latest_scan_items")
+
+
+def migrate_35_to_36(connection: sqlite3.Connection) -> None:
+    """重建 targets table，導入核心 enum / boolean CHECK constraints。"""
+
+    rebuild_targets_table_with_check_constraints(connection)
 
 
 def ensure_v32_logical_dedupe_schema(connection: sqlite3.Connection) -> None:
@@ -1566,6 +1625,7 @@ MIGRATIONS: dict[int, Migration] = {
     32: migrate_32_to_33,
     33: migrate_33_to_34,
     34: migrate_34_to_35,
+    35: migrate_35_to_36,
 }
 
 
@@ -1609,6 +1669,135 @@ def rebuild_table_with_check_constraints(
     )
     connection.execute(f"DROP TABLE {spec.table_name}")
     connection.execute(f"ALTER TABLE {temp_table} RENAME TO {spec.table_name}")
+
+
+def rebuild_targets_table_with_check_constraints(connection: sqlite3.Connection) -> None:
+    """以 parent-table-safe rebuild 將 targets 核心語義升成 DB CHECK。"""
+
+    if not table_exists(connection, "targets"):
+        return
+    violations = _targets_v36_check_violations(connection)
+    if violations:
+        raise RuntimeError(
+            "SQLite targets table contains values incompatible with v36 CHECK "
+            "constraints: "
+            + "; ".join(violations)
+        )
+
+    temp_table = "__targets_v36_checked"
+    old_foreign_keys_enabled = _foreign_keys_enabled(connection)
+    if connection.in_transaction:
+        connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    if _foreign_keys_enabled(connection):
+        raise RuntimeError("SQLite failed to disable foreign keys for targets rebuild")
+    try:
+        connection.execute(f"DROP TABLE IF EXISTS {temp_table}")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(TARGETS_V35_TO_V36_CREATE_SQL_TEMPLATE.format(table_name=temp_table))
+        columns_sql = ", ".join(TARGETS_V35_TO_V36_COLUMNS)
+        old_count = _table_row_count(connection, "targets")
+        connection.execute(
+            f"""
+            INSERT INTO {temp_table} ({columns_sql})
+            SELECT {columns_sql}
+            FROM targets
+            """
+        )
+        new_count = _table_row_count(connection, temp_table)
+        if new_count != old_count:
+            raise RuntimeError(
+                "SQLite targets rebuild copied an unexpected row count: "
+                f"old={old_count}, new={new_count}"
+            )
+        connection.execute("DROP TABLE targets")
+        connection.execute(f"ALTER TABLE {temp_table} RENAME TO targets")
+        _raise_for_foreign_key_check_failures(connection)
+        connection.execute("COMMIT")
+    except BaseException:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.execute(
+            f"PRAGMA foreign_keys = {'ON' if old_foreign_keys_enabled else 'OFF'}"
+        )
+
+
+def _targets_v36_check_violations(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """回傳 targets v36 CHECK preflight 發現的違規欄位摘要。"""
+
+    violations: list[str] = []
+    for field, allowed_values in TARGETS_V36_ENUM_CHECKS:
+        placeholders = ", ".join("?" for _ in allowed_values)
+        rows = connection.execute(
+            f"""
+            SELECT id
+            FROM targets
+            WHERE {field} NOT IN ({placeholders})
+               OR {field} IS NULL
+            ORDER BY id
+            LIMIT 5
+            """,
+            allowed_values,
+        ).fetchall()
+        if rows:
+            violations.append(_target_violation_summary(field, rows))
+    for field in TARGETS_V36_BOOLEAN_CHECKS:
+        rows = connection.execute(
+            f"""
+            SELECT id
+            FROM targets
+            WHERE {field} NOT IN (0, 1)
+               OR {field} IS NULL
+            ORDER BY id
+            LIMIT 5
+            """
+        ).fetchall()
+        if rows:
+            violations.append(_target_violation_summary(field, rows))
+    return tuple(violations)
+
+
+def _target_violation_summary(field: str, rows: list[sqlite3.Row]) -> str:
+    """將 target CHECK 違規列成短摘要，避免 migration 只回模糊 IntegrityError。"""
+
+    row_ids = ", ".join(str(_row_first_value(row)) for row in rows)
+    return f"targets.{field} invalid row id(s): {row_ids}"
+
+
+def _row_first_value(row: sqlite3.Row) -> object:
+    """讀取 sqlite Row / tuple 的第一個欄位值。"""
+
+    try:
+        return row[0]
+    except (IndexError, TypeError):
+        return ""
+
+
+def _table_row_count(connection: sqlite3.Connection, table_name: str) -> int:
+    """回傳 migration table row count。"""
+
+    row = connection.execute(f"SELECT COUNT(1) FROM {table_name}").fetchone()
+    return int(row[0] if row is not None else 0)
+
+
+def _foreign_keys_enabled(connection: sqlite3.Connection) -> bool:
+    """回傳目前 SQLite foreign_keys pragma 是否啟用。"""
+
+    row = connection.execute("PRAGMA foreign_keys").fetchone()
+    return bool(row[0] if row is not None else 0)
+
+
+def _raise_for_foreign_key_check_failures(connection: sqlite3.Connection) -> None:
+    """確認 parent-table rebuild 沒留下 foreign key violation。"""
+
+    rows = connection.execute("PRAGMA foreign_key_check").fetchmany(5)
+    if rows:
+        details = ", ".join(
+            f"{row[0]} rowid={row[1]} parent={row[2]} fk={row[3]}" for row in rows
+        )
+        raise RuntimeError(f"SQLite foreign_key_check failed after targets rebuild: {details}")
 
 
 def ensure_v30_rebuilt_table_indexes(connection: sqlite3.Connection) -> None:
@@ -1775,6 +1964,8 @@ __all__ = [
     "migrate_32_to_33",
     "migrate_33_to_34",
     "migrate_34_to_35",
+    "migrate_35_to_36",
+    "rebuild_targets_table_with_check_constraints",
     "rebuild_table_with_check_constraints",
     "run_known_migrations",
 ]

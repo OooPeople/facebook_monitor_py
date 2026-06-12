@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
 
 
@@ -33,3 +35,41 @@ def test_sanitize_facebook_image_url_rejects_unsafe_urls() -> None:
         result = sanitize_facebook_image_url(value)
         assert not result.ok, value
         assert result.url == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    (
+        ("", "empty"),
+        ("https:///cover.jpg", "host_missing"),
+        ("https://[::1", "parse_error"),
+        ("http://scontent.xx.fbcdn.net/cover.jpg", "non_https"),
+        ("https://example.com/cover.jpg", "host_not_allowed"),
+        ("https://fbcdn.net.evil.test/cover.jpg", "host_not_allowed"),
+        ("https://user:pass@scontent.xx.fbcdn.net/cover.jpg", "userinfo_not_allowed"),
+        ("https://scontent.xx.fbcdn.net:8443/cover.jpg", "port_not_allowed"),
+        ("https://scontent.xx.fbcdn.net:bad/cover.jpg", "port_parse_error"),
+        ("javascript:alert(1)", "non_https"),
+    ),
+)
+def test_sanitize_facebook_image_url_reports_reject_reason(
+    value: str,
+    reason: str,
+) -> None:
+    """reject reason 是後續 host sample diagnostics 的穩定分類。"""
+
+    result = sanitize_facebook_image_url(value)
+
+    assert not result.ok
+    assert result.reason == reason
+
+
+def test_sanitize_facebook_image_url_normalizes_host_boundaries() -> None:
+    """大小寫 host、trailing dot 與 :443 不應造成合法 CDN URL 被誤拒。"""
+
+    result = sanitize_facebook_image_url(
+        "https://SCONTENT.xx.FBCDN.net.:443/v/cover.jpg?stp=dst-jpg"
+    )
+
+    assert result.ok
+    assert result.url == "https://scontent.xx.fbcdn.net/v/cover.jpg?stp=dst-jpg"

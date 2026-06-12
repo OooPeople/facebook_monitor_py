@@ -18,18 +18,19 @@ CREATE TABLE IF NOT EXISTS schema_metadata (
 CREATE TABLE IF NOT EXISTS targets (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    target_kind TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK (target_kind IN ('posts', 'comments')),
     group_id TEXT NOT NULL,
     group_name TEXT NOT NULL,
     group_cover_image_url TEXT NOT NULL DEFAULT '',
     parent_post_id TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     canonical_url TEXT NOT NULL,
-    metadata_status TEXT NOT NULL DEFAULT 'resolved',
+    metadata_status TEXT NOT NULL DEFAULT 'resolved'
+        CHECK (metadata_status IN ('resolved', 'pending', 'failed')),
     metadata_error TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL,
-    paused INTEGER NOT NULL,
-    worker_mode TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    paused INTEGER NOT NULL CHECK (paused IN (0, 1)),
+    worker_mode TEXT NOT NULL CHECK (worker_mode IN ('headless', 'headed_compat')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

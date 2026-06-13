@@ -35,9 +35,9 @@ from facebook_monitor.facebook.sort_runtime import ensure_preferred_feed_sort
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
 from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable

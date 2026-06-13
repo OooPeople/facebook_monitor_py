@@ -116,11 +116,6 @@ class TargetApplicationService:
 
         return self.registry_service.delete_target(target_id)
 
-    def refresh_target_group_name(self, target_id: str, group_name: str) -> TargetDescriptor:
-        """以 scheduler metadata refresh 結果補齊 target 顯示名稱。"""
-
-        return self.registry_service.refresh_target_group_name(target_id, group_name)
-
     def refresh_target_group_metadata(
         self,
         target_id: str,
@@ -364,21 +359,6 @@ class TargetApplicationService:
             page_id=page_id,
         )
 
-    def try_mark_target_running(
-        self,
-        target_id: str,
-        worker_id: str,
-        *,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """嘗試取得單一 target scan lock；已 running 時記錄 skip reason。"""
-
-        return self.runtime_service.try_mark_target_running(
-            target_id,
-            worker_id,
-            page_id=page_id,
-        )
-
     def try_claim_target_running(
         self,
         target_id: str,
@@ -424,25 +404,6 @@ class TargetApplicationService:
             reloaded_at=reloaded_at,
         )
 
-    def mark_target_page_reloaded_if_owner(
-        self,
-        target_id: str,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-        reloaded_at: datetime | None = None,
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才記錄 resident page reload/goto。"""
-
-        return self.runtime_service.mark_target_page_reloaded_if_owner(
-            target_id,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
-            reloaded_at=reloaded_at,
-        )
-
     def guarded_mark_target_page_reloaded(
         self,
         target_id: str,
@@ -474,23 +435,6 @@ class TargetApplicationService:
         return self.runtime_service.record_target_heartbeat(
             target_id,
             worker_id=worker_id,
-            page_id=page_id,
-        )
-
-    def record_target_heartbeat_if_owner(
-        self,
-        target_id: str,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才刷新 heartbeat。"""
-
-        return self.runtime_service.record_target_heartbeat_if_owner(
-            target_id,
-            worker_id=worker_id,
-            started_at=started_at,
             page_id=page_id,
         )
 
@@ -580,23 +524,6 @@ class TargetApplicationService:
 
         return self.runtime_service.mark_target_idle_if_not_running(target_id)
 
-    def mark_target_idle_if_owner(
-        self,
-        target_id: str,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才將 target 標回 idle。"""
-
-        return self.runtime_service.mark_target_idle_if_owner(
-            target_id,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
-        )
-
     def guarded_mark_target_idle(
         self,
         target_id: str,
@@ -647,25 +574,6 @@ class TargetApplicationService:
 
         return self.runtime_service.force_apply_scan_skip_decision(target_id, decision)
 
-    def apply_scan_skip_decision_if_owner(
-        self,
-        target_id: str,
-        decision: ScanSkipDecision,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才記錄 skipped scan state。"""
-
-        return self.runtime_service.apply_scan_skip_decision_if_owner(
-            target_id,
-            decision,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
-        )
-
     def guarded_apply_scan_skip_decision(
         self,
         target_id: str,
@@ -704,25 +612,6 @@ class TargetApplicationService:
         return self.runtime_service.force_mark_target_retriable_failure(
             target_id,
             decision,
-        )
-
-    def mark_target_retriable_failure_if_owner(
-        self,
-        target_id: str,
-        decision: ScanFailureDecision,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才記錄可重試失敗。"""
-
-        return self.runtime_service.mark_target_retriable_failure_if_owner(
-            target_id,
-            decision,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
         )
 
     def guarded_mark_target_retriable_failure(
@@ -774,29 +663,6 @@ class TargetApplicationService:
         return self.runtime_service.force_mark_target_error(
             target_id,
             error,
-            failure_reason=failure_reason,
-            failure_count=failure_count,
-        )
-
-    def mark_target_error_if_owner(
-        self,
-        target_id: str,
-        error: str,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-        failure_reason: str = "",
-        failure_count: int = 0,
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才將 target 標記為 error。"""
-
-        return self.runtime_service.mark_target_error_if_owner(
-            target_id,
-            error,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
             failure_reason=failure_reason,
             failure_count=failure_count,
         )
@@ -857,27 +723,6 @@ class TargetApplicationService:
             target_id,
             decision,
             error,
-        )
-
-    def apply_scan_failure_decision_if_owner(
-        self,
-        target_id: str,
-        decision: ScanFailureDecision,
-        error: str,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        page_id: str = "",
-    ) -> TargetRuntimeState | None:
-        """只有目前 running owner 相同時，才套用 failure decision。"""
-
-        return self.runtime_service.apply_scan_failure_decision_if_owner(
-            target_id,
-            decision,
-            error,
-            worker_id=worker_id,
-            started_at=started_at,
-            page_id=page_id,
         )
 
     def guarded_apply_scan_failure_decision(

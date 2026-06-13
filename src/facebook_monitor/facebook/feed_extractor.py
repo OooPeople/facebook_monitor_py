@@ -13,7 +13,6 @@ from dataclasses import replace
 from typing import Any
 
 from facebook_monitor.core.dedupe import aliases_overlap
-from facebook_monitor.core.dedupe import build_legacy_text_fingerprint
 from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
 )
@@ -144,19 +143,6 @@ class FeedSeenStopState:
     seen_count: int = 0
     new_count: int = 0
     triggered: bool = False
-
-
-def normalize_text_fingerprint(raw_text: str) -> str:
-    """產生不含原文保存的 fallback 文字 fingerprint。"""
-
-    return build_legacy_text_fingerprint(raw_text)
-
-
-def extract_post_like_items(page: Any, max_items: int) -> list[ExtractedItem]:
-    """從目前 Facebook 頁面抽取最小可見貼文候選資料。"""
-
-    items, _meta = extract_post_like_items_with_meta(page, max_items)
-    return items
 
 
 def extract_post_like_items_with_meta(
@@ -344,13 +330,6 @@ def normalize_debug_metadata(item: Any) -> dict[str, Any]:
         "expandCount",
     )
     return {key: item.get(key) for key in keys if item.get(key) not in (None, "")}
-
-
-def get_scroll_position(page: Any) -> tuple[int, int]:
-    """取得目前頁面的捲動位置與文件高度，用於匿名診斷。"""
-
-    payload = get_scroll_metrics(page)
-    return int(payload.get("scrollY") or 0), int(payload.get("scrollHeight") or 0)
 
 
 def collect_items_with_diagnostics(

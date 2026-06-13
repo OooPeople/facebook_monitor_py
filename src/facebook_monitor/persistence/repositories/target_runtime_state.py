@@ -592,23 +592,6 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(state.target_id)
 
-    def save_stale_running_error_if_unchanged(
-        self,
-        state: TargetRuntimeState,
-        *,
-        worker_id: str,
-        started_at: datetime,
-        stale_before: datetime,
-    ) -> TargetRuntimeState | None:
-        """相容舊呼叫端：只在 stale running owner 未變時保存 error state。"""
-
-        return self.save_stale_running_state_if_unchanged(
-            state,
-            worker_id=worker_id,
-            started_at=started_at,
-            stale_before=stale_before,
-        )
-
     def get(self, target_id: str) -> TargetRuntimeState | None:
         """依 target id 查詢 runtime state。"""
 

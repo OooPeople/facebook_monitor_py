@@ -18,6 +18,20 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",
     ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
 )
+APPLICATION_RUNTIME_SERVICE_FILES = (
+    ROOT / "src/facebook_monitor/application/services.py",
+    ROOT / "src/facebook_monitor/application/target_runtime_service.py",
+)
+REMOVED_APPLICATION_RUNTIME_ALIASES = {
+    "apply_scan_failure_decision_if_owner",
+    "apply_scan_skip_decision_if_owner",
+    "mark_target_error_if_owner",
+    "mark_target_idle_if_owner",
+    "mark_target_page_reloaded_if_owner",
+    "mark_target_retriable_failure_if_owner",
+    "record_target_heartbeat_if_owner",
+    "try_mark_target_running",
+}
 UNGUARDED_RUNTIME_METHODS = {
     "apply_scan_failure_decision",
     "apply_scan_skip_decision",
@@ -152,6 +166,36 @@ def test_formal_runtime_paths_do_not_call_unguarded_runtime_methods() -> None:
             if node.attr not in UNGUARDED_RUNTIME_METHODS:
                 continue
             violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.attr}")
+
+    assert violations == []
+
+
+def test_runtime_services_do_not_define_removed_alias_methods() -> None:
+    """application runtime surface 只保留 claim/guarded 正式名稱。"""
+
+    violations: list[str] = []
+    for path in APPLICATION_RUNTIME_SERVICE_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name in REMOVED_APPLICATION_RUNTIME_ALIASES:
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.name}")
+
+    assert violations == []
+
+
+def test_formal_runtime_paths_do_not_call_removed_runtime_aliases() -> None:
+    """正式 worker/scheduler path 不回到舊的 alias 名稱。"""
+
+    violations: list[str] = []
+    for path in FORMAL_RUNTIME_BOUNDARY_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr in REMOVED_APPLICATION_RUNTIME_ALIASES:
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.attr}")
 
     assert violations == []
 

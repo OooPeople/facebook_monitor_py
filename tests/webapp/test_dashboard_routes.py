@@ -1067,7 +1067,7 @@ def test_index_renders_scan_guard_skip_reason(tmp_path: Path) -> None:
             )
         )
         app_context.services.targets.mark_target_running(target.id, "worker-a")
-        locked_state = app_context.services.targets.try_mark_target_running(
+        locked_state = app_context.services.targets.try_claim_target_running(
             target.id,
             "worker-b",
         )

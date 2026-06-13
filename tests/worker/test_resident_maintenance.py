@@ -43,12 +43,13 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeMetadataBrowserContext
+from tests.worker.resident_main_test_helpers import FakeMetadataLocator
 from tests.worker.resident_main_test_helpers import FakeMetadataPage
 from tests.worker.resident_main_test_helpers import FakeLoggedOutMetadataBrowserContext
 from tests.worker.resident_main_test_helpers import FakeShutdownMetadataBrowserContext
 
 
-class FakeUnavailableMetadataLocator:
+class FakeUnavailableMetadataLocator(FakeMetadataLocator):
     """Facebook outage/error page 測試用 locator。"""
 
     async def inner_text(self, *, timeout: int) -> str:

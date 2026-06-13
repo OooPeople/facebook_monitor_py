@@ -81,7 +81,10 @@ def test_metadata_refresh_updates_rename_modal_display_name(tmp_path: Path) -> N
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
     pending_payload = client.get(f"/api/targets/{target.id}/card").json()
     with SqliteApplicationContext(db_path) as app_context:
-        app_context.services.targets.refresh_target_group_name(target.id, "票券測試社團")
+        app_context.services.targets.refresh_target_group_metadata(
+            target.id,
+            group_name="票券測試社團",
+        )
     refreshed_payload = client.get(f"/api/targets/{target.id}/card").json()
     index_response = client.get("/")
 

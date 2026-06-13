@@ -517,7 +517,7 @@ def test_target_scan_guard_records_skip_reason(tmp_path: Path) -> None:
         )
         app.services.targets.restart_target_monitoring(target.id)
         app.services.targets.mark_target_running(target.id, "worker-a")
-        locked_state = app.services.targets.try_mark_target_running(target.id, "worker-b")
+        locked_state = app.services.targets.try_claim_target_running(target.id, "worker-b")
         state = app.repositories.runtime_states.get(target.id)
 
     assert locked_state is None

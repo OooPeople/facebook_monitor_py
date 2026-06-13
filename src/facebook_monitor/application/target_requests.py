@@ -72,9 +72,6 @@ class UpsertCommentsTargetRequest:
     config: TargetConfigPatch = field(default_factory=TargetConfigPatch)
 
 
-TargetConfigRequest = UpsertGroupPostsTargetRequest | UpsertCommentsTargetRequest
-
-
 @dataclass(frozen=True)
 class UpdateTargetConfigRequest:
     """更新單一 target config 所需輸入。"""

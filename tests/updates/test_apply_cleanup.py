@@ -8,11 +8,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import pytest
 
 from facebook_monitor.updates.apply import apply_loaded_pending_update_file
-from facebook_monitor.updates.apply import _backup_folder_name
-from facebook_monitor.updates.apply import _cleanup_old_backup_dirs
-from facebook_monitor.updates.apply import _prepare_empty_dir
 from facebook_monitor.updates.apply import UpdaterApplyResult
+from facebook_monitor.updates.apply_cleanup import _backup_folder_name
 from facebook_monitor.updates.apply_cleanup import _cleanup_applied_update
+from facebook_monitor.updates.apply_cleanup import _cleanup_old_backup_dirs
+from facebook_monitor.updates.apply_cleanup import _prepare_empty_dir
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 
 
@@ -202,7 +202,7 @@ def test_apply_loaded_pending_update_file_logs_cleanup_warnings(
         fake_apply_pending_update_locked,
     )
     monkeypatch.setattr(
-        "facebook_monitor.updates.apply._cleanup_applied_update",
+        "facebook_monitor.updates.apply_cleanup._cleanup_applied_update",
         fake_cleanup_applied_update,
     )
 

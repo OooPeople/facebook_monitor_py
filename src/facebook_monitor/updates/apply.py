@@ -24,21 +24,14 @@ from facebook_monitor.runtime.instance_lock import acquire_app_instance_lock
 from facebook_monitor.runtime.update_operation_lock import ensure_update_operation_lock
 from facebook_monitor.runtime.update_operation_lock import UpdateOperationLock
 from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
+from facebook_monitor.updates import apply_cleanup as _apply_cleanup
+from facebook_monitor.updates import apply_zip as _apply_zip
 from facebook_monitor.updates.apply_app_tree import find_staging_app_root
 from facebook_monitor.updates.apply_app_tree import validate_current_app_root
 from facebook_monitor.updates.apply_app_tree import validate_staging_app_root
-from facebook_monitor.updates.apply_cleanup import BACKUP_DIR_NAME
-from facebook_monitor.updates.apply_cleanup import BACKUP_RETENTION_COUNT
-from facebook_monitor.updates.apply_cleanup import STAGING_DIR_NAME
-from facebook_monitor.updates.apply_cleanup import _backup_folder_name
-from facebook_monitor.updates.apply_cleanup import _cleanup_applied_update
-from facebook_monitor.updates.apply_cleanup import _cleanup_old_backup_dirs
-from facebook_monitor.updates.apply_cleanup import _prepare_empty_dir
 from facebook_monitor.updates.apply_replacement import backup_current_app_files
 from facebook_monitor.updates.apply_replacement import replace_app_files
 from facebook_monitor.updates.apply_replacement import restore_backup
-from facebook_monitor.updates.apply_zip import safe_extract_zip
-from facebook_monitor.updates.apply_zip import validate_macos_zip_executable_bits
 from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
@@ -251,10 +244,10 @@ def _cleanup_loaded_pending_update_file(
 
     return (
         *_write_consumed_pending_update_marker(pending, path),
-        *_cleanup_applied_update(path, pending),
-        *_cleanup_old_backup_dirs(
-            pending.runtime_dir / BACKUP_DIR_NAME,
-            keep_count=BACKUP_RETENTION_COUNT,
+        *_apply_cleanup._cleanup_applied_update(path, pending),
+        *_apply_cleanup._cleanup_old_backup_dirs(
+            pending.runtime_dir / _apply_cleanup.BACKUP_DIR_NAME,
+            keep_count=_apply_cleanup.BACKUP_RETENTION_COUNT,
             preserve=result.backup_dir,
         ),
     )
@@ -414,15 +407,17 @@ def _prepare_update_stage(pending: PendingUpdate) -> PreparedUpdateStage:
     """解壓並驗證更新包 staging，尚不觸碰目前 app files。"""
 
     layout_policy = detect_layout_policy(pending.app_base_dir)
-    validate_macos_zip_executable_bits(
+    _apply_zip.validate_macos_zip_executable_bits(
         pending.zip_path,
         layout_policy=layout_policy,
     )
-    staging_dir = _prepare_empty_dir(
-        pending.runtime_dir / STAGING_DIR_NAME / sanitize_release_asset_name(pending.version),
+    staging_dir = _apply_cleanup._prepare_empty_dir(
+        pending.runtime_dir
+        / _apply_cleanup.STAGING_DIR_NAME
+        / sanitize_release_asset_name(pending.version),
         work_root=pending.runtime_dir,
     )
-    safe_extract_zip(pending.zip_path, staging_dir)
+    _apply_zip.safe_extract_zip(pending.zip_path, staging_dir)
     staging_app_root = find_staging_app_root(
         staging_dir,
         layout_policy=layout_policy,
@@ -450,8 +445,10 @@ def _replace_current_app_from_stage(
         layout_policy=prepared.layout_policy,
         data_dir=pending.data_dir,
     )
-    backup_dir = _prepare_empty_dir(
-        pending.runtime_dir / BACKUP_DIR_NAME / _backup_folder_name(pending.version),
+    backup_dir = _apply_cleanup._prepare_empty_dir(
+        pending.runtime_dir
+        / _apply_cleanup.BACKUP_DIR_NAME
+        / _apply_cleanup._backup_folder_name(pending.version),
         work_root=pending.runtime_dir,
     )
     backup_current_app_files(

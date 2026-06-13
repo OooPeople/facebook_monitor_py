@@ -198,7 +198,7 @@ def test_apply_loaded_pending_update_file_consumed_marker_blocks_cleanup_failure
         return ("pending:EACCES",)
 
     monkeypatch.setattr(
-        "facebook_monitor.updates.apply._cleanup_applied_update",
+        "facebook_monitor.updates.apply_cleanup._cleanup_applied_update",
         fake_cleanup_applied_update,
     )
 
@@ -240,7 +240,7 @@ def test_apply_loaded_pending_update_file_consumed_fallback_blocks_marker_failur
         return ("pending:EACCES",)
 
     monkeypatch.setattr(
-        "facebook_monitor.updates.apply._cleanup_applied_update",
+        "facebook_monitor.updates.apply_cleanup._cleanup_applied_update",
         fake_cleanup_applied_update,
     )
     monkeypatch.setattr(

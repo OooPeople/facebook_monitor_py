@@ -14,7 +14,7 @@ from facebook_monitor.facebook.sort_results import SORT_NATIVE_STAGE_CLICK_CONTR
 from facebook_monitor.facebook.sort_results import SORT_OPTION_ROLES
 
 
-def _page_supports_native_sort_click(page: Any) -> bool:
+def page_supports_native_sort_click(page: Any) -> bool:
     """確認 page 至少有 locator trusted click 需要的 Playwright API。"""
 
     return all(
@@ -22,7 +22,7 @@ def _page_supports_native_sort_click(page: Any) -> bool:
         for attr in ("evaluate", "get_by_role", "locator", "wait_for_timeout")
     )
 
-def _sort_control_locators(page: Any, before_label: str) -> list[tuple[str, Any]]:
+def sort_control_locators(page: Any, before_label: str) -> list[tuple[str, Any]]:
     """依可靠度排序 control locator。"""
 
     pattern = re.compile(re.escape(before_label))
@@ -38,7 +38,7 @@ def _sort_control_locators(page: Any, before_label: str) -> list[tuple[str, Any]
     )
     return locators
 
-def _sort_option_locators(page: Any, preferred_label: str) -> list[tuple[str, Any]]:
+def sort_option_locators(page: Any, preferred_label: str) -> list[tuple[str, Any]]:
     """依可靠度排序 option locator，先 scoped 到 menu root 再退到 page。"""
 
     pattern = re.compile(re.escape(preferred_label))
@@ -50,7 +50,7 @@ def _sort_option_locators(page: Any, preferred_label: str) -> list[tuple[str, An
         locators.append((f"page_{role}", page.get_by_role(role, name=pattern)))
     return locators
 
-def _click_first_locator(
+def click_first_locator(
     locators: list[tuple[str, Any]],
     *,
     stage: str,
@@ -61,7 +61,7 @@ def _click_first_locator(
     last_error: Exception | None = None
     total_count = 0
     for locator_name, locator in locators:
-        count = _safe_locator_count(locator)
+        count = safe_locator_count(locator)
         total_count += count
         try:
             first = locator.first
@@ -75,7 +75,7 @@ def _click_first_locator(
         raise last_error
     raise RuntimeError(f"no locator candidates for {stage}: {total_count}")
 
-async def _click_first_locator_async(
+async def click_first_locator_async(
     locators: list[tuple[str, Any]],
     *,
     stage: str,
@@ -86,7 +86,7 @@ async def _click_first_locator_async(
     last_error: Exception | None = None
     total_count = 0
     for locator_name, locator in locators:
-        count = await _safe_locator_count_async(locator)
+        count = await safe_locator_count_async(locator)
         total_count += count
         try:
             first = locator.first
@@ -117,7 +117,7 @@ def _locator_click_diagnostics(
         "preferred_option_count": count,
     }
 
-def _safe_locator_count(locator: Any) -> int:
+def safe_locator_count(locator: Any) -> int:
     """安全取得 locator count；失敗時回傳 0 但不阻斷 click auto-wait。"""
 
     if not hasattr(locator, "count"):
@@ -127,7 +127,7 @@ def _safe_locator_count(locator: Any) -> int:
     except Exception:
         return 0
 
-async def _safe_locator_count_async(locator: Any) -> int:
+async def safe_locator_count_async(locator: Any) -> int:
     """async 版本：安全取得 locator count。"""
 
     if not hasattr(locator, "count"):

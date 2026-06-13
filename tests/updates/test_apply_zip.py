@@ -9,7 +9,7 @@ import zipfile
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from facebook_monitor.updates.apply import apply_pending_update
-from facebook_monitor.updates.apply import safe_extract_zip
+from facebook_monitor.updates.apply_zip import safe_extract_zip
 from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 from tests.helpers.macos_bundle import assert_zip_member_executable
 from tests.helpers.macos_bundle import write_path_to_zip_with_mode

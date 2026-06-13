@@ -175,7 +175,7 @@ def _normalize_diagnostic_value(value: object) -> object:
     return str(value)
 
 
-def _with_sort_diagnostics(
+def with_sort_diagnostics(
     result: SortAdjustResult,
     diagnostics: dict[str, Any],
 ) -> SortAdjustResult:

@@ -25,9 +25,9 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.redaction import redact_sensitive_text
 from facebook_monitor.facebook.group_metadata import GroupMetadata
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_profile
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.persistence.repositories.app_settings import TargetKeywordDefaultSettings
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.runtime.paths import default_runtime_paths

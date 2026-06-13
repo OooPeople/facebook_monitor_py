@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from facebook_monitor.facebook.sort_native_locators import _safe_locator_count
-from facebook_monitor.facebook.sort_native_locators import _safe_locator_count_async
+from facebook_monitor.facebook.sort_native_locators import safe_locator_count
+from facebook_monitor.facebook.sort_native_locators import safe_locator_count_async
 from facebook_monitor.facebook.sort_results import SORT_MENU_ROOT_SELECTOR
 from facebook_monitor.facebook.sort_results import SORT_NATIVE_STAGE_FIND_OPTION
 from facebook_monitor.facebook.sort_results import SORT_OPTION_WAIT_INTERVAL_MS
@@ -26,16 +26,7 @@ def _should_recover_sort_menu_before_fallback(diagnostics: dict[str, Any]) -> bo
         and diagnostics.get("menu_role") == SORT_MENU_ROOT_SELECTOR
     )
 
-def _record_sort_menu_recovery(
-    diagnostics: dict[str, Any],
-    recovered: bool,
-) -> None:
-    """把 fallback 前 recovery 結果寫回 native diagnostics。"""
-
-    if recovered:
-        diagnostics["fallback_recovery"] = "escape"
-
-def _recover_sort_menu_before_fallback(
+def recover_sort_menu_before_js_fallback(
     page: Any,
     diagnostics: dict[str, Any],
 ) -> bool:
@@ -53,9 +44,10 @@ def _recover_sort_menu_before_fallback(
             page.wait_for_timeout(SORT_OPTION_WAIT_INTERVAL_MS)
     except Exception:
         return False
+    diagnostics["fallback_recovery"] = "escape"
     return True
 
-async def _recover_sort_menu_before_fallback_async(
+async def recover_sort_menu_before_js_fallback_async(
     page: Any,
     diagnostics: dict[str, Any],
 ) -> bool:
@@ -73,30 +65,31 @@ async def _recover_sort_menu_before_fallback_async(
             await page.wait_for_timeout(SORT_OPTION_WAIT_INTERVAL_MS)
     except Exception:
         return False
+    diagnostics["fallback_recovery"] = "escape"
     return True
 
-def _menu_root_diagnostics(page: Any, preferred_label: str) -> dict[str, Any]:
+def menu_root_diagnostics(page: Any, preferred_label: str) -> dict[str, Any]:
     """檢查 preferred option 所在 menu root 是否已可見。"""
 
     try:
         root = page.locator(SORT_MENU_ROOT_SELECTOR).filter(has_text=preferred_label)
-        count = _safe_locator_count(root)
+        count = safe_locator_count(root)
         if count > 0:
             return {"menu_opened": True, "menu_role": SORT_MENU_ROOT_SELECTOR}
     except Exception:
         pass
     return {"menu_opened": False}
 
-def _sort_menu_snapshot_diagnostics(page: Any, preferred_label: str) -> dict[str, Any]:
+def sort_menu_snapshot_diagnostics(page: Any, preferred_label: str) -> dict[str, Any]:
     """native option 失敗時擷取選單與候選文字。"""
 
-    diagnostics = _menu_root_diagnostics(page, preferred_label)
+    diagnostics = menu_root_diagnostics(page, preferred_label)
     candidate_texts = _collect_visible_sort_candidate_texts(page)
     if candidate_texts:
         diagnostics["menu_candidate_texts"] = candidate_texts
     return diagnostics
 
-async def _menu_root_diagnostics_async(
+async def menu_root_diagnostics_async(
     page: Any,
     preferred_label: str,
 ) -> dict[str, Any]:
@@ -104,20 +97,20 @@ async def _menu_root_diagnostics_async(
 
     try:
         root = page.locator(SORT_MENU_ROOT_SELECTOR).filter(has_text=preferred_label)
-        count = await _safe_locator_count_async(root)
+        count = await safe_locator_count_async(root)
         if count > 0:
             return {"menu_opened": True, "menu_role": SORT_MENU_ROOT_SELECTOR}
     except Exception:
         pass
     return {"menu_opened": False}
 
-async def _sort_menu_snapshot_diagnostics_async(
+async def sort_menu_snapshot_diagnostics_async(
     page: Any,
     preferred_label: str,
 ) -> dict[str, Any]:
     """async 版本：native option 失敗時擷取選單與候選文字。"""
 
-    diagnostics = await _menu_root_diagnostics_async(page, preferred_label)
+    diagnostics = await menu_root_diagnostics_async(page, preferred_label)
     candidate_texts = await _collect_visible_sort_candidate_texts_async(page)
     if candidate_texts:
         diagnostics["menu_candidate_texts"] = candidate_texts

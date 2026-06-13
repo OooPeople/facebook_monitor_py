@@ -300,7 +300,7 @@ def test_record_failure_with_guard_does_not_fallback_after_owner_changed(
             )
         )
         target = app.services.targets.restart_target_monitoring(target.id)
-        assert app.services.targets.try_mark_target_running(
+        assert app.services.targets.try_claim_target_running(
             target.id,
             "current-worker",
             page_id="current-page",

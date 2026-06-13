@@ -346,7 +346,7 @@ def test_mark_target_queued_only_updates_active_non_running_state(
         )
         app.services.targets.restart_target_monitoring(active_target.id)
         app.services.targets.restart_target_monitoring(running_target.id)
-        running_state = app.services.targets.try_mark_target_running(
+        running_state = app.services.targets.try_claim_target_running(
             running_target.id,
             "worker-running",
         )
@@ -378,7 +378,7 @@ def test_mark_target_queued_only_updates_active_non_running_state(
     assert stopped_queued.enqueue_reason == ""
 
 
-def test_try_mark_target_running_claims_only_active_non_running_state(
+def test_try_claim_target_running_claims_only_active_non_running_state(
     tmp_path: Path,
 ) -> None:
     """running claim 必須由 DB conditional update 原子判定。"""
@@ -398,17 +398,17 @@ def test_try_mark_target_running_claims_only_active_non_running_state(
             )
         )
         app.services.targets.restart_target_monitoring(active_target.id)
-        claimed = app.services.targets.try_mark_target_running(
+        claimed = app.services.targets.try_claim_target_running(
             active_target.id,
             "worker-a",
             page_id="page-a",
         )
-        duplicate = app.services.targets.try_mark_target_running(
+        duplicate = app.services.targets.try_claim_target_running(
             active_target.id,
             "worker-b",
             page_id="page-b",
         )
-        stopped_claim = app.services.targets.try_mark_target_running(
+        stopped_claim = app.services.targets.try_claim_target_running(
             stopped_target.id,
             "worker-c",
         )
@@ -431,17 +431,17 @@ def test_try_mark_target_running_claims_only_active_non_running_state(
     assert "target_not_active" in stopped_state.last_skip_reason
 
 
-def test_try_claim_target_running_alias_preserves_scan_lock_semantics(
+def test_try_claim_target_running_preserves_scan_lock_semantics(
     tmp_path: Path,
 ) -> None:
-    """try_claim alias 必須維持原子 claim 與 duplicate rejection 語義。"""
+    """try_claim 必須維持原子 claim 與 duplicate rejection 語義。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
-                group_id="claim-alias",
-                canonical_url="https://www.facebook.com/groups/claim-alias",
+                group_id="claim-guard",
+                canonical_url="https://www.facebook.com/groups/claim-guard",
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
@@ -466,17 +466,17 @@ def test_try_claim_target_running_alias_preserves_scan_lock_semantics(
     assert loaded.scan_guard_count == 1
 
 
-def test_guarded_runtime_aliases_ignore_late_worker(
+def test_guarded_runtime_methods_ignore_late_worker(
     tmp_path: Path,
 ) -> None:
-    """guarded aliases 不可讓舊 owner 覆蓋較新的 running attempt。"""
+    """guarded methods 不可讓舊 owner 覆蓋較新的 running attempt。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
-                group_id="guarded-alias",
-                canonical_url="https://www.facebook.com/groups/guarded-alias",
+                group_id="guarded-methods",
+                canonical_url="https://www.facebook.com/groups/guarded-methods",
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
@@ -569,17 +569,17 @@ def test_guarded_runtime_aliases_ignore_late_worker(
     assert loaded.last_skip_reason == ""
 
 
-def test_guarded_retriable_failure_alias_accepts_matching_owner(
+def test_guarded_retriable_failure_accepts_matching_owner(
     tmp_path: Path,
 ) -> None:
-    """guarded retriable failure alias 在 owner 相符時會回 idle 並保留 streak。"""
+    """guarded retriable failure 在 owner 相符時會回 idle 並保留 streak。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
-                group_id="guarded-retry-alias",
-                canonical_url="https://www.facebook.com/groups/guarded-retry-alias",
+                group_id="guarded-retry",
+                canonical_url="https://www.facebook.com/groups/guarded-retry",
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
@@ -612,17 +612,17 @@ def test_guarded_retriable_failure_alias_accepts_matching_owner(
     assert updated.consecutive_failure_count == 1
 
 
-def test_force_runtime_aliases_explicitly_override_running_owner(
+def test_force_runtime_methods_explicitly_override_running_owner(
     tmp_path: Path,
 ) -> None:
-    """force aliases 可覆寫 running owner，但語義必須由呼叫端顯式選用。"""
+    """force methods 可覆寫 running owner，但語義必須由呼叫端顯式選用。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
-                group_id="force-alias",
-                canonical_url="https://www.facebook.com/groups/force-alias",
+                group_id="force-methods",
+                canonical_url="https://www.facebook.com/groups/force-methods",
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
@@ -911,7 +911,7 @@ def test_runtime_transition_invariants_for_running_finish_and_stop(
 
         app.services.targets.restart_target_monitoring(idle_target.id)
         app.services.targets.clear_target_scan_request(idle_target.id)
-        idle_running = app.services.targets.try_mark_target_running(
+        idle_running = app.services.targets.try_claim_target_running(
             idle_target.id,
             "worker-idle",
         )
@@ -919,7 +919,7 @@ def test_runtime_transition_invariants_for_running_finish_and_stop(
         idle_finished = app.services.targets.mark_target_idle(idle_target.id)
 
         app.services.targets.restart_target_monitoring(error_target.id)
-        error_running = app.services.targets.try_mark_target_running(
+        error_running = app.services.targets.try_claim_target_running(
             error_target.id,
             "worker-error",
         )
@@ -930,7 +930,7 @@ def test_runtime_transition_invariants_for_running_finish_and_stop(
             failure_count=1,
         )
 
-        stopped_claim = app.services.targets.try_mark_target_running(
+        stopped_claim = app.services.targets.try_claim_target_running(
             stopped_target.id,
             "worker-stop",
         )
@@ -968,7 +968,7 @@ def test_owner_guarded_idle_transition_ignores_late_worker(
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
-        stale_running = app.services.targets.try_mark_target_running(
+        stale_running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-old",
             page_id="page-old",
@@ -976,12 +976,12 @@ def test_owner_guarded_idle_transition_ignores_late_worker(
         assert stale_running is not None
         assert stale_running.last_started_at is not None
         app.services.targets.restart_target_monitoring(target.id)
-        current_running = app.services.targets.try_mark_target_running(
+        current_running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-new",
             page_id="page-new",
         )
-        stale_update = app.services.targets.mark_target_idle_if_owner(
+        stale_update = app.services.targets.guarded_mark_target_idle(
             target.id,
             worker_id="worker-old",
             started_at=stale_running.last_started_at,
@@ -1012,7 +1012,7 @@ def test_owner_guarded_heartbeat_and_page_reload_ignore_late_worker(
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
-        old_running = app.services.targets.try_mark_target_running(
+        old_running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-old",
             page_id="page-old",
@@ -1020,27 +1020,27 @@ def test_owner_guarded_heartbeat_and_page_reload_ignore_late_worker(
         assert old_running is not None
         assert old_running.last_started_at is not None
         app.services.targets.restart_target_monitoring(target.id)
-        new_running = app.services.targets.try_mark_target_running(
+        new_running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-new",
             page_id="page-new",
         )
         assert new_running is not None
         assert new_running.last_started_at is not None
-        stale_heartbeat = app.services.targets.record_target_heartbeat_if_owner(
+        stale_heartbeat = app.services.targets.guarded_record_target_heartbeat(
             target.id,
             worker_id="worker-old",
             started_at=old_running.last_started_at,
             page_id="page-old",
         )
-        stale_page_reload = app.services.targets.mark_target_page_reloaded_if_owner(
+        stale_page_reload = app.services.targets.guarded_mark_target_page_reloaded(
             target.id,
             worker_id="worker-old",
             started_at=old_running.last_started_at,
             page_id="page-old",
             reloaded_at=reloaded_at,
         )
-        current_page_reload = app.services.targets.mark_target_page_reloaded_if_owner(
+        current_page_reload = app.services.targets.guarded_mark_target_page_reloaded(
             target.id,
             worker_id="worker-new",
             started_at=new_running.last_started_at,
@@ -1073,7 +1073,7 @@ def test_runtime_skip_reason_patch_does_not_overwrite_running_owner(
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
-        running = app.services.targets.try_mark_target_running(
+        running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-new",
             page_id="page-new",
@@ -1105,7 +1105,7 @@ def test_display_next_due_patch_does_not_overwrite_running_owner(
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
-        running = app.services.targets.try_mark_target_running(
+        running = app.services.targets.try_claim_target_running(
             target.id,
             "worker-new",
             page_id="page-new",

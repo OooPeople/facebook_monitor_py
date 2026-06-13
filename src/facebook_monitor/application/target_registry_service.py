@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from facebook_monitor.application.target_config_service import TargetConfigService
+from facebook_monitor.application.target_display import clean_target_display_name
 from facebook_monitor.application.target_display import is_generated_group_comments_display_name
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
@@ -22,7 +23,6 @@ from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.facebook.group_metadata_validation import has_polluted_group_cover_image_url
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
-from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 
 
@@ -47,8 +47,8 @@ class TargetRegistryService:
     def normalize_target_names(self, target: TargetDescriptor) -> TargetDescriptor:
         """清理已保存 target 名稱並寫回，避免通知數前綴散到各輸出面。"""
 
-        normalized_name = clean_facebook_group_name(target.name)
-        normalized_group_name = clean_facebook_group_name(target.group_name)
+        normalized_name = _clean_persisted_target_name(target.name)
+        normalized_group_name = _clean_persisted_target_name(target.group_name)
         if normalized_name == target.name and normalized_group_name == target.group_name:
             return target
         updated_target = replace(
@@ -66,14 +66,6 @@ class TargetRegistryService:
         deleted = self.targets.delete(target_id)
         if not deleted:
             raise ValueError(f"Target not found: {target_id}")
-
-    def refresh_target_group_name(self, target_id: str, group_name: str) -> TargetDescriptor:
-        """以 metadata refresh 結果補齊 target group name。"""
-
-        return self.refresh_target_group_metadata(
-            target_id,
-            group_name=group_name,
-        )
 
     def refresh_target_group_metadata(
         self,
@@ -212,13 +204,13 @@ class TargetRegistryService:
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
-        request_name = clean_facebook_group_name(name)
+        request_name = _clean_persisted_target_name(name)
         if not request_name:
             raise ValueError("target name must not be empty")
         updated_target = replace(
             target,
             name=request_name,
-            group_name=clean_facebook_group_name(target.group_name),
+            group_name=_clean_persisted_target_name(target.group_name),
             metadata_status=TargetMetadataStatus.RESOLVED,
             metadata_error="",
             updated_at=utc_now(),
@@ -233,12 +225,12 @@ class TargetRegistryService:
         """建立或更新 group posts target，供 capture script 可重複執行。"""
 
         existing = self.targets.find_by_kind_scope(TargetKind.POSTS, request.group_id)
-        request_name = clean_facebook_group_name(request.name)
+        request_name = _clean_persisted_target_name(request.name)
         request_group_name = _normalize_group_metadata_name(request.group_name)
         request_cover_image_url = _normalize_metadata_url(request.group_cover_image_url)
         if existing:
             existing = self.normalize_target_names(existing)
-            existing_name = clean_facebook_group_name(existing.name)
+            existing_name = _clean_persisted_target_name(existing.name)
             existing_group_name = _normalize_group_metadata_name(existing.group_name)
             existing_cover_image_url = _existing_cover_image_url_or_empty(existing)
             next_name = request_name or existing_name
@@ -297,12 +289,12 @@ class TargetRegistryService:
             canonical_url=request.canonical_url,
         )
         existing = self.targets.find_by_kind_scope(TargetKind.COMMENTS, target_probe.scope_id)
-        request_name = clean_facebook_group_name(request.name)
+        request_name = _clean_persisted_target_name(request.name)
         request_group_name = _normalize_group_metadata_name(request.group_name)
         request_cover_image_url = _normalize_metadata_url(request.group_cover_image_url)
         if existing:
             existing = self.normalize_target_names(existing)
-            existing_name = clean_facebook_group_name(existing.name)
+            existing_name = _clean_persisted_target_name(existing.name)
             existing_group_name = _normalize_group_metadata_name(existing.group_name)
             existing_cover_image_url = _existing_cover_image_url_or_empty(existing)
             next_name = request_name or existing_name
@@ -362,10 +354,10 @@ class TargetRegistryService:
         return target
 
 
-def clean_facebook_group_name(value: str) -> str:
-    """清理準備保存的 Facebook 社團名稱。"""
+def _clean_persisted_target_name(value: str) -> str:
+    """清理準備保存的 Facebook target 名稱。"""
 
-    return clean_facebook_page_title(value)
+    return clean_target_display_name(value)
 
 
 def _normalize_metadata_error(value: str) -> str:
@@ -380,7 +372,7 @@ def _normalize_metadata_error(value: str) -> str:
 def _normalize_group_metadata_name(value: str, *, strict: bool = False) -> str:
     """整理 Facebook-derived group name；錯誤頁名稱不得進入 metadata。"""
 
-    normalized = clean_facebook_group_name(value)
+    normalized = _clean_persisted_target_name(value)
     if normalized and is_invalid_facebook_group_name(normalized):
         if strict:
             raise InvalidTargetMetadataError("Facebook 回傳錯誤頁，未更新 target metadata")

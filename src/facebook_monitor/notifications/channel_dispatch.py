@@ -1,6 +1,6 @@
 """通知通道實際分發。
 
-職責：保存 sender protocol、單筆 outbox event 發送與 notification event
+職責：保存單筆 outbox event 發送與 notification event
 記錄。channel registry 屬於 core notification channels。
 """
 
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
 
 from facebook_monitor.application.context import ApplicationContext
 import facebook_monitor.core.notification_channels as notification_channels
@@ -18,42 +17,18 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
-from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
-from facebook_monitor.notifications.ntfy import NtfyResult
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 
 
 __all__ = [
-    "DesktopSender",
-    "DiscordSender",
-    "NtfySender",
     "dispatch_notification_outbox_entry",
     "record_failed_notification_event_for_outbox_error",
     "record_notification_event",
 ]
-
-
-class NtfySender(Protocol):
-    """定義可注入的 ntfy sender 介面。"""
-
-    def __call__(self, config: NtfyConfig, title: str, message: str, /) -> NtfyResult:
-        """送出 ntfy 通知並回傳結果。"""
-
-
-class DesktopSender(Protocol):
-    """定義可注入的桌面通知 sender 介面。"""
-
-    def __call__(self, title: str, message: str, /) -> DesktopNotificationResult:
-        """送出桌面通知並回傳結果。"""
-
-
-class DiscordSender(Protocol):
-    """定義可注入的 Discord sender 介面。"""
-
-    def __call__(self, config: DiscordConfig, title: str, message: str, /) -> DiscordResult:
-        """送出 Discord webhook 通知並回傳結果。"""
 
 
 @dataclass(frozen=True)

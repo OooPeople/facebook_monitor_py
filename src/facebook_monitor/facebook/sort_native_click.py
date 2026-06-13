@@ -9,15 +9,17 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from facebook_monitor.facebook.sort_menu_diagnostics import _menu_root_diagnostics
-from facebook_monitor.facebook.sort_menu_diagnostics import _menu_root_diagnostics_async
-from facebook_monitor.facebook.sort_menu_diagnostics import _sort_menu_snapshot_diagnostics
-from facebook_monitor.facebook.sort_menu_diagnostics import _sort_menu_snapshot_diagnostics_async
-from facebook_monitor.facebook.sort_native_locators import _click_first_locator
-from facebook_monitor.facebook.sort_native_locators import _click_first_locator_async
-from facebook_monitor.facebook.sort_native_locators import _page_supports_native_sort_click
-from facebook_monitor.facebook.sort_native_locators import _sort_control_locators
-from facebook_monitor.facebook.sort_native_locators import _sort_option_locators
+from facebook_monitor.facebook.sort_menu_diagnostics import menu_root_diagnostics
+from facebook_monitor.facebook.sort_menu_diagnostics import menu_root_diagnostics_async
+from facebook_monitor.facebook.sort_menu_diagnostics import sort_menu_snapshot_diagnostics
+from facebook_monitor.facebook.sort_menu_diagnostics import (
+    sort_menu_snapshot_diagnostics_async,
+)
+from facebook_monitor.facebook.sort_native_locators import click_first_locator
+from facebook_monitor.facebook.sort_native_locators import click_first_locator_async
+from facebook_monitor.facebook.sort_native_locators import page_supports_native_sort_click
+from facebook_monitor.facebook.sort_native_locators import sort_control_locators
+from facebook_monitor.facebook.sort_native_locators import sort_option_locators
 from facebook_monitor.facebook.sort_results import COMMENT_SORT_LABELS
 from facebook_monitor.facebook.sort_results import COMMENT_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_results import FEED_SORT_LABELS
@@ -40,6 +42,20 @@ from facebook_monitor.facebook.sort_results import SORT_REASON_UPDATED_TO_PREFER
 from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_CURRENT_LABEL_SCRIPT
 from facebook_monitor.facebook.sort_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
+
+
+_FEED_NATIVE_SORT_SPEC = NativeSortSpec(
+    target_kind="posts",
+    preferred_label=FEED_SORT_NEWEST_LABEL,
+    labels=FEED_SORT_LABELS,
+    current_label_script=FEED_SORT_CURRENT_LABEL_SCRIPT,
+)
+_COMMENT_NATIVE_SORT_SPEC = NativeSortSpec(
+    target_kind="comments",
+    preferred_label=COMMENT_SORT_NEWEST_LABEL,
+    labels=COMMENT_SORT_LABELS,
+    current_label_script=COMMENT_SORT_CURRENT_LABEL_SCRIPT,
+)
 
 
 def _build_sort_result(
@@ -98,59 +114,27 @@ def _native_sort_base_diagnostics(spec: NativeSortSpec) -> dict[str, Any]:
 def try_native_feed_sort_click(page: Any) -> NativeSortAttempt:
     """優先用 Playwright trusted click 切 posts sort，失敗時交回 JS fallback。"""
 
-    return _try_native_sort_click(
-        page,
-        NativeSortSpec(
-            target_kind="posts",
-            preferred_label=FEED_SORT_NEWEST_LABEL,
-            labels=FEED_SORT_LABELS,
-            current_label_script=FEED_SORT_CURRENT_LABEL_SCRIPT,
-        ),
-    )
+    return _try_native_sort_click(page, _FEED_NATIVE_SORT_SPEC)
 
 def try_native_comment_sort_click(page: Any) -> NativeSortAttempt:
     """優先用 Playwright trusted click 切 comments sort，失敗時交回 JS fallback。"""
 
-    return _try_native_sort_click(
-        page,
-        NativeSortSpec(
-            target_kind="comments",
-            preferred_label=COMMENT_SORT_NEWEST_LABEL,
-            labels=COMMENT_SORT_LABELS,
-            current_label_script=COMMENT_SORT_CURRENT_LABEL_SCRIPT,
-        ),
-    )
+    return _try_native_sort_click(page, _COMMENT_NATIVE_SORT_SPEC)
 
 async def try_native_feed_sort_click_async(page: Any) -> NativeSortAttempt:
     """async resident main 使用的 posts sort native click path。"""
 
-    return await _try_native_sort_click_async(
-        page,
-        NativeSortSpec(
-            target_kind="posts",
-            preferred_label=FEED_SORT_NEWEST_LABEL,
-            labels=FEED_SORT_LABELS,
-            current_label_script=FEED_SORT_CURRENT_LABEL_SCRIPT,
-        ),
-    )
+    return await _try_native_sort_click_async(page, _FEED_NATIVE_SORT_SPEC)
 
 async def try_native_comment_sort_click_async(page: Any) -> NativeSortAttempt:
     """async resident main 使用的 comments sort native click path。"""
 
-    return await _try_native_sort_click_async(
-        page,
-        NativeSortSpec(
-            target_kind="comments",
-            preferred_label=COMMENT_SORT_NEWEST_LABEL,
-            labels=COMMENT_SORT_LABELS,
-            current_label_script=COMMENT_SORT_CURRENT_LABEL_SCRIPT,
-        ),
-    )
+    return await _try_native_sort_click_async(page, _COMMENT_NATIVE_SORT_SPEC)
 
 def _try_native_sort_click(page: Any, spec: NativeSortSpec) -> NativeSortAttempt:
     """使用 Playwright locator/trusted click 嘗試完成排序調整。"""
 
-    if not _page_supports_native_sort_click(page):
+    if not page_supports_native_sort_click(page):
         return NativeSortAttempt(result=None, diagnostics={})
     diagnostics = _native_sort_base_diagnostics(spec)
     try:
@@ -193,7 +177,7 @@ def _try_native_sort_click(page: Any, spec: NativeSortSpec) -> NativeSortAttempt
         option_info = _click_preferred_sort_option(page, spec.preferred_label)
         diagnostics.update(option_info)
     except Exception as exc:
-        diagnostics.update(_sort_menu_snapshot_diagnostics(page, spec.preferred_label))
+        diagnostics.update(sort_menu_snapshot_diagnostics(page, spec.preferred_label))
         return NativeSortAttempt(
             result=None,
             diagnostics=_native_failure_diagnostics(
@@ -234,7 +218,7 @@ def _try_native_sort_click(page: Any, spec: NativeSortSpec) -> NativeSortAttempt
 async def _try_native_sort_click_async(page: Any, spec: NativeSortSpec) -> NativeSortAttempt:
     """async 版本的 Playwright locator/trusted click 排序調整。"""
 
-    if not _page_supports_native_sort_click(page):
+    if not page_supports_native_sort_click(page):
         return NativeSortAttempt(result=None, diagnostics={})
     diagnostics = _native_sort_base_diagnostics(spec)
     try:
@@ -278,7 +262,7 @@ async def _try_native_sort_click_async(page: Any, spec: NativeSortSpec) -> Nativ
         diagnostics.update(option_info)
     except Exception as exc:
         diagnostics.update(
-            await _sort_menu_snapshot_diagnostics_async(page, spec.preferred_label)
+            await sort_menu_snapshot_diagnostics_async(page, spec.preferred_label)
         )
         return NativeSortAttempt(
             result=None,
@@ -332,25 +316,25 @@ def _native_failure_diagnostics(
 def _click_sort_control(page: Any, before_label: str) -> dict[str, Any]:
     """用 role/text locator 點開排序控制。"""
 
-    return _click_first_locator(
-        _sort_control_locators(page, before_label),
+    return click_first_locator(
+        sort_control_locators(page, before_label),
         stage=SORT_NATIVE_STAGE_CLICK_CONTROL,
     )
 
 async def _click_sort_control_async(page: Any, before_label: str) -> dict[str, Any]:
     """async 版本：用 role/text locator 點開排序控制。"""
 
-    return await _click_first_locator_async(
-        _sort_control_locators(page, before_label),
+    return await click_first_locator_async(
+        sort_control_locators(page, before_label),
         stage=SORT_NATIVE_STAGE_CLICK_CONTROL,
     )
 
 def _click_preferred_sort_option(page: Any, preferred_label: str) -> dict[str, Any]:
     """在 menu scope 內優先點擊 preferred sort option。"""
 
-    diagnostics = _menu_root_diagnostics(page, preferred_label)
-    option_info = _click_first_locator(
-        _sort_option_locators(page, preferred_label),
+    diagnostics = menu_root_diagnostics(page, preferred_label)
+    option_info = click_first_locator(
+        sort_option_locators(page, preferred_label),
         stage=SORT_NATIVE_STAGE_FIND_OPTION,
         wait_timeout_ms=SORT_OPTION_WAIT_TIMEOUT_MS,
     )
@@ -366,9 +350,9 @@ async def _click_preferred_sort_option_async(
 ) -> dict[str, Any]:
     """async 版本：在 menu scope 內優先點擊 preferred sort option。"""
 
-    diagnostics = await _menu_root_diagnostics_async(page, preferred_label)
-    option_info = await _click_first_locator_async(
-        _sort_option_locators(page, preferred_label),
+    diagnostics = await menu_root_diagnostics_async(page, preferred_label)
+    option_info = await click_first_locator_async(
+        sort_option_locators(page, preferred_label),
         stage=SORT_NATIVE_STAGE_FIND_OPTION,
         wait_timeout_ms=SORT_OPTION_WAIT_TIMEOUT_MS,
     )

@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from facebook_monitor.facebook.sort_menu_diagnostics import _recover_sort_menu_before_fallback
-from facebook_monitor.facebook.sort_menu_diagnostics import _recover_sort_menu_before_fallback_async
-from facebook_monitor.facebook.sort_menu_diagnostics import _record_sort_menu_recovery
+from facebook_monitor.facebook.sort_menu_diagnostics import recover_sort_menu_before_js_fallback
+from facebook_monitor.facebook.sort_menu_diagnostics import (
+    recover_sort_menu_before_js_fallback_async,
+)
 from facebook_monitor.facebook.sort_native_click import try_native_comment_sort_click
 from facebook_monitor.facebook.sort_native_click import try_native_comment_sort_click_async
 from facebook_monitor.facebook.sort_native_click import try_native_feed_sort_click
@@ -19,9 +20,9 @@ from facebook_monitor.facebook.sort_results import COMMENT_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_results import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_results import SORT_METHOD_JS_FALLBACK
 from facebook_monitor.facebook.sort_results import SortAdjustResult
-from facebook_monitor.facebook.sort_results import _with_sort_diagnostics
 from facebook_monitor.facebook.sort_results import build_disabled_sort_adjust_result
 from facebook_monitor.facebook.sort_results import normalize_sort_adjust_result
+from facebook_monitor.facebook.sort_results import with_sort_diagnostics
 from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_ADJUST_SCRIPT
 from facebook_monitor.facebook.sort_scripts import FEED_SORT_ADJUST_SCRIPT
 
@@ -36,10 +37,7 @@ def ensure_preferred_feed_sort(page: Any, *, enabled: bool) -> SortAdjustResult:
     if native_attempt.result is not None:
         return native_attempt.result
 
-    _record_sort_menu_recovery(
-        native_attempt.diagnostics,
-        _recover_sort_menu_before_fallback(page, native_attempt.diagnostics),
-    )
+    recover_sort_menu_before_js_fallback(page, native_attempt.diagnostics)
     result = page.evaluate(FEED_SORT_ADJUST_SCRIPT, FEED_SORT_NEWEST_LABEL)
     fallback_result = normalize_sort_adjust_result(
         result,
@@ -58,10 +56,7 @@ def ensure_preferred_comment_sort(page: Any, *, enabled: bool) -> SortAdjustResu
     if native_attempt.result is not None:
         return native_attempt.result
 
-    _record_sort_menu_recovery(
-        native_attempt.diagnostics,
-        _recover_sort_menu_before_fallback(page, native_attempt.diagnostics),
-    )
+    recover_sort_menu_before_js_fallback(page, native_attempt.diagnostics)
     result = page.evaluate(COMMENT_SORT_ADJUST_SCRIPT, COMMENT_SORT_NEWEST_LABEL)
     fallback_result = normalize_sort_adjust_result(
         result,
@@ -80,12 +75,9 @@ async def ensure_preferred_feed_sort_async(page: Any, *, enabled: bool) -> SortA
     if native_attempt.result is not None:
         return native_attempt.result
 
-    _record_sort_menu_recovery(
+    await recover_sort_menu_before_js_fallback_async(
+        page,
         native_attempt.diagnostics,
-        await _recover_sort_menu_before_fallback_async(
-            page,
-            native_attempt.diagnostics,
-        ),
     )
     result = await page.evaluate(FEED_SORT_ADJUST_SCRIPT, FEED_SORT_NEWEST_LABEL)
     fallback_result = normalize_sort_adjust_result(
@@ -109,12 +101,9 @@ async def ensure_preferred_comment_sort_async(
     if native_attempt.result is not None:
         return native_attempt.result
 
-    _record_sort_menu_recovery(
+    await recover_sort_menu_before_js_fallback_async(
+        page,
         native_attempt.diagnostics,
-        await _recover_sort_menu_before_fallback_async(
-            page,
-            native_attempt.diagnostics,
-        ),
     )
     result = await page.evaluate(COMMENT_SORT_ADJUST_SCRIPT, COMMENT_SORT_NEWEST_LABEL)
     fallback_result = normalize_sort_adjust_result(
@@ -136,4 +125,4 @@ def _with_fallback_diagnostics(
         "method": SORT_METHOD_JS_FALLBACK,
         "fallback_used": True,
     }
-    return _with_sort_diagnostics(result, diagnostics)
+    return with_sort_diagnostics(result, diagnostics)

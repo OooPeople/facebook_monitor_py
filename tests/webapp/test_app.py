@@ -15,10 +15,10 @@ from starlette.requests import Request
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import RequestBodyTooLarge
 from facebook_monitor.webapp.app import _read_request_body_with_limit
-from facebook_monitor.webapp.app import parse_keywords_text
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.version import APP_VERSION

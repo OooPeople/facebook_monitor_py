@@ -5,9 +5,6 @@ from __future__ import annotations
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import TargetConfig
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.desktop_format import build_compact_notification_body
@@ -18,6 +15,9 @@ from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.ntfy_format import build_ntfy_match_notification_payload
 from facebook_monitor.notifications.payload import MatchNotificationFields
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 
 
 def send_manual_test_notification(

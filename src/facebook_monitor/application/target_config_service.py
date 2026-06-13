@@ -8,7 +8,6 @@ from __future__ import annotations
 from facebook_monitor.application.target_config_merge import build_target_config_from_patch
 from facebook_monitor.application.target_config_merge import merge_target_config_patch
 from facebook_monitor.application.target_requests import TargetConfigPatch
-from facebook_monitor.application.target_requests import TargetConfigRequest
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -51,15 +50,6 @@ class TargetConfigService:
 
         return build_target_config_from_patch(target_id, patch)
 
-    def build_config_from_request(
-        self,
-        target_id: str,
-        request: TargetConfigRequest,
-    ) -> TargetConfig:
-        """將 target 建立 request 轉成 target-scoped config。"""
-
-        return self.build_config_from_patch(target_id, request.config)
-
     def merge_config_patch(
         self,
         existing_config: TargetConfig,
@@ -68,15 +58,6 @@ class TargetConfigService:
         """將 config patch 合併到既有 target-scoped config。"""
 
         return merge_target_config_patch(existing_config, patch)
-
-    def merge_config_request(
-        self,
-        existing_config: TargetConfig,
-        request: TargetConfigRequest,
-    ) -> TargetConfig:
-        """將 upsert request 合併到既有 target-scoped config。"""
-
-        return self.merge_config_patch(existing_config, request.config)
 
     def build_or_merge_config_for_target(
         self,

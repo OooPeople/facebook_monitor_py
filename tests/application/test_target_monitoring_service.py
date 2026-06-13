@@ -557,7 +557,7 @@ def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
             updated_at=now - timedelta(seconds=240),
         )
         app.repositories.runtime_states.save(stale_snapshot)
-        refreshed = app.services.targets.record_target_heartbeat_if_owner(
+        refreshed = app.services.targets.guarded_record_target_heartbeat(
             target.id,
             worker_id="worker",
             started_at=running.last_started_at,
@@ -569,7 +569,7 @@ def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
             active_worker_id="",
             updated_at=now,
         )
-        committed = app.repositories.runtime_states.save_stale_running_error_if_unchanged(
+        committed = app.repositories.runtime_states.save_stale_running_state_if_unchanged(
             stale_error,
             worker_id="worker",
             started_at=running.last_started_at,

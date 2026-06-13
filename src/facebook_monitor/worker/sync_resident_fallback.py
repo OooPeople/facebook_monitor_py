@@ -229,7 +229,7 @@ def run_sync_resident_fallback_cycle(
             continue
 
         with SqliteApplicationContext(options.db_path) as app:
-            locked_state = app.services.targets.try_mark_target_running(target_id, worker_id)
+            locked_state = app.services.targets.try_claim_target_running(target_id, worker_id)
             if locked_state is not None and due_target.scan_requested:
                 app.services.targets.clear_target_scan_request_if_not_newer(
                     target_id,

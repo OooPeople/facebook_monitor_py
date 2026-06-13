@@ -33,6 +33,7 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
+from facebook_monitor.worker.resident_scan_db import RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
@@ -222,6 +223,56 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
     assert state.consecutive_failure_count == 0
 
 
+def test_resident_main_scan_connection_uses_short_busy_timeout(
+    tmp_path: Path,
+) -> None:
+    """resident scan callable 取得的 DB connection 應使用短 busy timeout。"""
+
+    db_path = tmp_path / "app.db"
+    observed_timeout_ms = -1
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def inspect_scan_db_timeout(**kwargs: Any) -> PostsScanSummary:
+        nonlocal observed_timeout_ms
+        row = kwargs["app"].repositories.runtime_states.connection.execute(
+            "PRAGMA busy_timeout"
+        ).fetchone()
+        observed_timeout_ms = int(row[0])
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    summary = asyncio.run(
+        run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            scan_page=inspect_scan_db_timeout,
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+    )
+
+    assert summary.success_count == 1
+    assert observed_timeout_ms == RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
+
+
 def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
     tmp_path: Path,
 ) -> None:
@@ -243,7 +294,7 @@ def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
         )
         app.services.targets.restart_target_monitoring(running.id)
         app.services.targets.restart_target_monitoring(errored.id)
-        app.services.targets.try_mark_target_running(
+        app.services.targets.try_claim_target_running(
             running.id,
             "other-worker",
             page_id="other-page",

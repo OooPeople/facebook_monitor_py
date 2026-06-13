@@ -2,24 +2,10 @@
 
 from __future__ import annotations
 
-from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.resident_main_executor_types import AsyncResidentPageLike
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
-
-
-_RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS = 100
-
-
-def _set_resident_scan_db_busy_timeout(
-    app: ApplicationContext,
-    timeout_ms: int,
-) -> None:
-    """降低 resident scan event-loop DB connection 的 lock 等待時間。"""
-
-    bounded_timeout = max(int(timeout_ms), 0)
-    app.repositories.runtime_states.connection.execute(f"PRAGMA busy_timeout = {bounded_timeout}")
 
 
 async def prepare_resident_main_page(

@@ -24,8 +24,6 @@ from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.facebook.browser_capture import BrowserPageSnapshot as BrowserPageSnapshot
-from facebook_monitor.facebook.browser_capture import CaptureSelection as CaptureSelection
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.facebook.browser_capture import select_capture_route
 from facebook_monitor.facebook.browser_capture import snapshot_browser_pages

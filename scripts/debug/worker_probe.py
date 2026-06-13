@@ -1,13 +1,20 @@
+# ruff: noqa: E402
 """Debug tool：使用專用 profile 執行背景掃描可行性 probe。"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
@@ -15,24 +22,17 @@ from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.keyword_rules import evaluate_keyword_rules
+from facebook_monitor.facebook.extracted_item import make_item_key
+from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
+from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics
+from facebook_monitor.notifications.ntfy import NtfyConfig
+from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import default_runtime_paths
 from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
-
-if TYPE_CHECKING:
-    from scripts.debug.extractors_probe import ExtractRoundStats
-    from scripts.debug.extractors_probe import collect_items_with_diagnostics
-    from scripts.debug.extractors_probe import make_item_key
-    from scripts.debug.notifications_probe import NtfyConfig
-    from scripts.debug.notifications_probe import send_ntfy_notification
-else:
-    from extractors_probe import ExtractRoundStats
-    from extractors_probe import collect_items_with_diagnostics
-    from extractors_probe import make_item_key
-    from notifications_probe import NtfyConfig, send_ntfy_notification
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
 PROFILE_DIR = DEFAULT_RUNTIME_PATHS.profile_dir

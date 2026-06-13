@@ -26,9 +26,6 @@ from facebook_monitor.core.notification_channels import get_channel_definition
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failure_policy import is_runtime_failure_notification_terminal
 from facebook_monitor.core.scan_failure_policy import normalize_scan_failure_reason
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.channel_dispatch import dispatch_notification_outbox_entry
 from facebook_monitor.notifications.channel_dispatch import record_notification_event
 from facebook_monitor.notifications.channel_dispatch import (
@@ -50,6 +47,9 @@ from facebook_monitor.notifications.ntfy_format import build_ntfy_match_notifica
 from facebook_monitor.notifications.payload import MatchNotificationFields
 from facebook_monitor.notifications.payload import normalize_notification_single_line
 from facebook_monitor.notifications.safe_messages import safe_exception_message
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.core.user_messages import format_failure_reason
 
 

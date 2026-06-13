@@ -109,7 +109,7 @@ def run_one_shot_scheduler_loop(
         for due_target in due_targets:
             target_id = due_target.target_id
             with SqliteApplicationContext(options.db_path) as app:
-                locked_state = app.services.targets.try_mark_target_running(target_id, worker_id)
+                locked_state = app.services.targets.try_claim_target_running(target_id, worker_id)
                 if locked_state is not None and due_target.scan_requested:
                     app.services.targets.clear_target_scan_request_if_not_newer(
                         target_id,

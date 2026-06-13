@@ -36,11 +36,11 @@ from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePa
 from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
-from facebook_monitor.worker.resident_main_page_prepare import _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
-from facebook_monitor.worker.resident_main_page_prepare import _set_resident_scan_db_busy_timeout
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
+from facebook_monitor.worker.resident_scan_db import RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
+from facebook_monitor.worker.resident_scan_db import set_resident_scan_db_busy_timeout
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
@@ -268,7 +268,7 @@ async def _run_guarded_scan_and_commit_idle(
 
     commit_guard = _require_commit_guard(state)
     with SqliteApplicationContext(pool.options.db_path) as app:
-        _set_resident_scan_db_busy_timeout(app, _RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
+        set_resident_scan_db_busy_timeout(app, RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
         selected_scan_page = pool._select_scan_page(resident_target.target.target_kind)
         await pool._run_scan_with_heartbeat(
             selected_scan_page,

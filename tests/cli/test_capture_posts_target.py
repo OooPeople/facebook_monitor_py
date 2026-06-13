@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from facebook_monitor.facebook.browser_capture import BrowserPageSnapshot
+from facebook_monitor.facebook.browser_capture import select_capture_route
 from facebook_monitor.facebook.route_detection import RouteDetectionError
-from scripts.debug.capture_posts_target import BrowserPageSnapshot
-from scripts.debug.capture_posts_target import select_capture_route
 
 
 def test_select_capture_route_uses_valid_group_tab() -> None:

@@ -41,11 +41,11 @@ from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.channel_dispatch import DesktopSender
-from facebook_monitor.notifications.channel_dispatch import DiscordSender
-from facebook_monitor.notifications.channel_dispatch import NtfySender
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.outbox_service import queue_match_notifications_after_commit
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 
 

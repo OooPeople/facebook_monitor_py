@@ -592,6 +592,56 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(state.target_id)
 
+    def save_stale_queued_state_if_unchanged(
+        self,
+        state: TargetRuntimeState,
+        *,
+        expected_enqueued_at: datetime | None,
+        expected_updated_at: datetime,
+        stale_before: datetime,
+    ) -> TargetRuntimeState | None:
+        """只在 row 仍是 stale queued 時保存 recovery state。"""
+
+        expected_enqueued_at_text = encode_datetime(expected_enqueued_at)
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                runtime_status = ?,
+                last_error = ?,
+                last_skip_reason = ?,
+                enqueue_reason = ?,
+                active_worker_id = ?,
+                active_page_id = ?,
+                updated_at = ?
+            WHERE target_id = ?
+              AND desired_state = ?
+              AND runtime_status = ?
+              AND ((last_enqueued_at IS NULL AND ? IS NULL) OR last_enqueued_at = ?)
+              AND updated_at = ?
+              AND COALESCE(last_enqueued_at, updated_at) <= ?
+            """,
+            (
+                state.runtime_status.value,
+                state.last_error,
+                state.last_skip_reason,
+                state.enqueue_reason,
+                state.active_worker_id,
+                state.active_page_id,
+                encode_datetime(state.updated_at),
+                state.target_id,
+                TargetDesiredState.ACTIVE.value,
+                TargetRuntimeStatus.QUEUED.value,
+                expected_enqueued_at_text,
+                expected_enqueued_at_text,
+                encode_datetime(expected_updated_at),
+                encode_datetime(stale_before),
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(state.target_id)
+
     def get(self, target_id: str) -> TargetRuntimeState | None:
         """依 target id 查詢 runtime state。"""
 

@@ -63,6 +63,7 @@ _default_templates.env.globals["input_limits"] = input_limits
 
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+BOUNDED_RETENTION_MAINTENANCE_READ_PATHS = frozenset({"/", "/settings"})
 CSRF_FORM_FIELD = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
 LOCAL_UI_CONTENT_SECURITY_POLICY = "; ".join(
@@ -171,7 +172,10 @@ def create_app(
     ) -> Response:
         """在低頻 read path 嘗試 housekeeping，避免完全依賴 scheduler tick。"""
 
-        if request.method == "GET" and request.url.path in {"/", "/settings", "/health"}:
+        if (
+            request.method == "GET"
+            and request.url.path in BOUNDED_RETENTION_MAINTENANCE_READ_PATHS
+        ):
             run_bounded_retention_maintenance_for_db(request.app.state.db_path)
         return await call_next(request)
 

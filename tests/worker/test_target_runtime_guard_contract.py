@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAL_RUNTIME_BOUNDARY_FILES = (
+    ROOT / "src/facebook_monitor/scheduler/runtime_recovery.py",
     ROOT / "src/facebook_monitor/scheduler/one_shot_loop.py",
     ROOT / "src/facebook_monitor/worker/resident_main.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor.py",

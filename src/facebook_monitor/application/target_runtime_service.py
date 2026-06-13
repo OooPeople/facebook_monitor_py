@@ -924,6 +924,7 @@ class TargetRuntimeService:
 
         current_time = now or utc_now()
         stale_after = max(stale_after_seconds, 1)
+        stale_before = current_time - timedelta(seconds=stale_after)
         recovered: list[TargetRuntimeState] = []
         for state in self.runtime_states.list_all():
             if state.runtime_status != TargetRuntimeStatus.QUEUED:
@@ -944,8 +945,14 @@ class TargetRuntimeService:
                 active_page_id="",
                 updated_at=current_time,
             )
-            self.runtime_states.save(recovered_state)
-            recovered.append(recovered_state)
+            committed_state = self.runtime_states.save_stale_queued_state_if_unchanged(
+                recovered_state,
+                expected_enqueued_at=state.last_enqueued_at,
+                expected_updated_at=state.updated_at,
+                stale_before=stale_before,
+            )
+            if committed_state is not None:
+                recovered.append(committed_state)
         return tuple(recovered)
 
     def request_target_scan(self, target_id: str) -> TargetRuntimeState:

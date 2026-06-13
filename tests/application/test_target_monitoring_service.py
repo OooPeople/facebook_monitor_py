@@ -585,6 +585,103 @@ def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
     assert loaded.last_error == ""
 
 
+def test_stale_queued_recovery_does_not_overwrite_refreshed_queue(
+    tmp_path: Path,
+) -> None:
+    """queued recovery 的條件更新不可覆蓋已重新入隊的 target。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-queued-race",
+                canonical_url="https://www.facebook.com/groups/stale-queued-race",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        queued_state = app.services.targets.mark_target_queued(target.id, "first_queue")
+        stale_snapshot = replace(
+            queued_state,
+            last_enqueued_at=now - timedelta(seconds=240),
+            updated_at=now - timedelta(seconds=240),
+        )
+        app.repositories.runtime_states.save(stale_snapshot)
+        refreshed_queue = replace(
+            stale_snapshot,
+            last_enqueued_at=now,
+            enqueue_reason="new_queue",
+            updated_at=now,
+        )
+        app.repositories.runtime_states.save(refreshed_queue)
+        stale_idle = replace(
+            stale_snapshot,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            enqueue_reason="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_queued_state_if_unchanged(
+            stale_idle,
+            expected_enqueued_at=stale_snapshot.last_enqueued_at,
+            expected_updated_at=stale_snapshot.updated_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert committed is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.QUEUED
+    assert loaded.enqueue_reason == "new_queue"
+
+
+def test_stale_queued_recovery_does_not_restart_stopped_target(
+    tmp_path: Path,
+) -> None:
+    """queued snapshot 已被停止時，recovery 不可把 target 寫回 idle active row。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-queued-stopped",
+                canonical_url="https://www.facebook.com/groups/stale-queued-stopped",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        queued_state = app.services.targets.mark_target_queued(target.id, "first_queue")
+        stale_snapshot = replace(
+            queued_state,
+            last_enqueued_at=now - timedelta(seconds=240),
+            updated_at=now - timedelta(seconds=240),
+        )
+        app.repositories.runtime_states.save(stale_snapshot)
+        stopped_state = replace(
+            stale_snapshot,
+            desired_state=TargetDesiredState.STOPPED,
+            updated_at=stale_snapshot.updated_at,
+        )
+        app.repositories.runtime_states.save(stopped_state)
+        stale_idle = replace(
+            stale_snapshot,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            enqueue_reason="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_queued_state_if_unchanged(
+            stale_idle,
+            expected_enqueued_at=stale_snapshot.last_enqueued_at,
+            expected_updated_at=stale_snapshot.updated_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert committed is None
+    assert loaded is not None
+    assert loaded.desired_state == TargetDesiredState.STOPPED
+    assert loaded.runtime_status == TargetRuntimeStatus.QUEUED
+
+
 def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) -> None:
     """排隊過久的 target 會回到 idle 並保留立即掃描請求。"""
 
@@ -619,6 +716,43 @@ def test_recover_stale_queued_targets_returns_to_idle_for_retry(tmp_path: Path) 
     assert loaded.runtime_status == TargetRuntimeStatus.IDLE
     assert loaded.scan_requested_at is not None
     assert "監視項目排隊等待過久" in loaded.last_skip_reason
+
+
+def test_recover_stale_queued_targets_uses_updated_at_for_legacy_queue_time(
+    tmp_path: Path,
+) -> None:
+    """舊 queued row 若沒有 last_enqueued_at，會用 updated_at 判斷 stale。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="legacy-queued",
+                canonical_url="https://www.facebook.com/groups/legacy-queued",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.request_target_scan(target.id)
+        queued_state = app.services.targets.mark_target_queued(target.id, "manual_request")
+        app.repositories.runtime_states.save(
+            replace(
+                queued_state,
+                last_enqueued_at=None,
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+
+        recovered = app.services.targets.recover_stale_queued_targets(
+            stale_after_seconds=180,
+            now=now,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert len(recovered) == 1
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded.scan_requested_at is not None
 
 
 def test_delete_target_does_not_touch_other_targets(tmp_path: Path) -> None:

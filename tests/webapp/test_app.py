@@ -126,11 +126,11 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     assert payload["python_version"]
 
 
-def test_web_ui_read_path_runs_bounded_retention_maintenance(
+def test_health_endpoint_does_not_run_bounded_retention_maintenance(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Web UI read path 也會低頻觸發 bounded retention。"""
+    """Health check 只供 launcher 探測，不應有 housekeeping 副作用。"""
 
     calls: list[Path] = []
 
@@ -146,6 +146,56 @@ def test_web_ui_read_path_runs_bounded_retention_maintenance(
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
 
     response = client.get("/health")
+
+    assert response.status_code == 200
+    assert calls == []
+
+
+def test_web_ui_read_path_runs_bounded_retention_maintenance(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """主要 Web UI read path 仍會低頻觸發 bounded retention。"""
+
+    calls: list[Path] = []
+
+    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
+        calls.append(db_path)
+        return 0
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
+        fake_run_bounded_retention_maintenance_for_db,
+    )
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert calls == [db_path]
+
+
+def test_settings_read_path_runs_bounded_retention_maintenance(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Settings read path 仍是明確 housekeeping 觸發點。"""
+
+    calls: list[Path] = []
+
+    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
+        calls.append(db_path)
+        return 0
+
+    monkeypatch.setattr(
+        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
+        fake_run_bounded_retention_maintenance_for_db,
+    )
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get("/settings")
 
     assert response.status_code == 200
     assert calls == [db_path]

@@ -28,7 +28,6 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker import resident_main as resident_main_module
 from facebook_monitor.worker import resident_main_executor as resident_main_executor_module
 from facebook_monitor.worker.resident_main import _publish_display_next_due_at
-from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
@@ -38,6 +37,9 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import record_skipped_scan
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
+from tests.worker.resident_main_cycle_harness import (
+    run_resident_main_cycle_harness as run_resident_main_cycle,
+)
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext

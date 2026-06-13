@@ -10,6 +10,7 @@ from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.schema import initialize_schema
 
+from tests.persistence.sqlite_test_helpers import save_target_config_for_test
 from tests.persistence.sqlite_test_helpers import target_config_repository
 
 
@@ -27,7 +28,8 @@ def test_target_config_repository_reads_target_scoped_config(tmp_path: Path) -> 
         )
         TargetRepository(connection).save(target)
         repo = target_config_repository(connection)
-        repo.save_legacy_target_config_for_migration(
+        save_target_config_for_test(
+            connection,
             target.id,
             TargetConfig(
                 target_id=target.id,
@@ -59,5 +61,5 @@ def test_target_config_repository_does_not_expose_group_config_api(tmp_path: Pat
         assert not hasattr(repo, "get_for_group")
         assert hasattr(repo, "save_for_target")
         assert hasattr(repo, "get_for_target")
-        assert hasattr(repo, "save_legacy_target_config_for_migration")
-        assert hasattr(repo, "get_legacy_target_config_for_migration")
+        assert not hasattr(repo, "save_legacy_target_config_for_migration")
+        assert not hasattr(repo, "get_legacy_target_config_for_migration")

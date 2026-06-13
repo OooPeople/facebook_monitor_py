@@ -15,7 +15,6 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
-from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
@@ -25,6 +24,9 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_cycle_harness import (
+    run_resident_main_cycle_harness as run_resident_main_cycle,
+)
 
 
 def test_resident_main_page_reload_keeps_same_group_feed_sorting_url() -> None:

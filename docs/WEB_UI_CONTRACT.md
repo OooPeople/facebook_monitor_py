@@ -17,13 +17,13 @@
 - 貼文 / 留言模式 chip 是 target kind 分類標籤，不是執行狀態 badge，也不得與 `已啟用` / `已停止` 混淆。
 - 右側結果 panel header 可顯示最近一輪 scan cycle result；這是掃描結果摘要，不是錯誤或使用者停止狀態。
 - 最近通知摘要不放在 target card header；通知狀態由 notification events、outbox diagnostics 與相關 read model 承接。
-- 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API legacy key 相容性以 `docs/ARCHITECTURE.md#web-ui-語義` 為準。
+- 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；route / presenter payload 對外使用 `recorded_at`。
 
 ## Sidebar Layout 與 Group Template
 
 - Sidebar layout UI 呈現與操作順序來自 sidebar read model；不得在前端把 visual order 解讀成 scheduler 掃描順序。
 - 缺失 placement 顯示在未分組區；前端呈現這個 fallback 時不得自行補寫 layout state。
-- 調整順序與 group placement UI 只收集使用者意圖；實際保存、相容 API 與資料 owner 語義以 `docs/ARCHITECTURE.md#sidebar-layout-與-group-template` 為準。
+- 調整順序與 group placement UI 只收集使用者意圖；實際保存與資料 owner 語義以 `docs/ARCHITECTURE.md#sidebar-layout-與-group-template` 為準。
 - Group template UI 必須把套用呈現為破壞性批次覆蓋操作，要求使用者確認，並避免暗示它是 target config fallback。
 - Sidebar group start / stop 控制只呈現批次套用 target start / stop；不得暗示存在 group-scoped runtime state。
 

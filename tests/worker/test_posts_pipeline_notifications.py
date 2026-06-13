@@ -198,7 +198,7 @@ def test_scan_posts_page_records_all_enabled_notification_channels(
         return NtfyResult(ok=True, status_code=200, message="sent")
 
     def fake_desktop_sender(title: str, message: str) -> DesktopNotificationResult:
-        """記錄 desktop payload，避免測試真的叫 PowerShell。"""
+        """記錄 desktop payload，避免測試真的送桌面通知。"""
 
         desktop_payloads.append((title, message))
         return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")

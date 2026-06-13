@@ -165,7 +165,7 @@ def test_refresh_target_group_cover_image_does_not_overwrite_custom_name(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        updated = app.services.targets.refresh_target_group_cover_image(
+        updated = app.services.target_cover_image_refresh.refresh_target_cover_image_url(
             target.id,
             "https://scontent.xx.fbcdn.net/new.jpg",
         )
@@ -222,7 +222,7 @@ def test_refresh_target_group_cover_image_rejects_generic_facebook_logo(
             )
         )
         with pytest.raises(InvalidTargetMetadataError):
-            app.services.targets.refresh_target_group_cover_image(
+            app.services.target_cover_image_refresh.refresh_target_cover_image_url(
                 target.id,
                 "https://static.facebook.com/images/logos/facebook_2x.png",
             )
@@ -404,22 +404,22 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        first = app.services.targets.request_target_cover_image_refresh(
+        first = app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
-        second = app.services.targets.request_target_cover_image_refresh(
+        second = app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
         state = app.repositories.cover_image_refreshes.get(target.id)
-        app.services.targets.refresh_target_group_cover_image(
+        app.services.target_cover_image_refresh.refresh_target_cover_image_url(
             target.id,
             "https://scontent.xx.fbcdn.net/new.jpg",
         )
-        stale = app.services.targets.request_target_cover_image_refresh(
+        stale = app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -436,6 +436,35 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
     assert state.last_result == "queued"
     assert state.changed is False
     assert stale.status == "ignored_stale_url"
+
+
+def test_legacy_target_cover_image_refresh_facade_delegates_to_service(
+    tmp_path: Path,
+) -> None:
+    """舊 target facade cover refresh API 仍委派到正式 service。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+
+        result = app.services.targets.request_target_cover_image_refresh(
+            target.id,
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
+            min_interval_seconds=21600,
+        )
+        state = app.repositories.cover_image_refreshes.get(target.id)
+
+    assert result.status == "queued"
+    assert result.queued
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.PENDING
+    assert state.last_reported_url == "https://scontent.xx.fbcdn.net/old.jpg"
 
 
 def test_restart_target_monitoring_keeps_polluted_metadata_for_maintenance(

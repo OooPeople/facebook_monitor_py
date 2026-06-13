@@ -19,43 +19,6 @@ def _build_scroll_script(body: str) -> str:
 SCROLL_HELPERS_SCRIPT = r"""
 () => {
   const getWindowScrollY = () => Math.round(Number(window.scrollY) || 0);
-  const isVisibleElement = (element) => {
-    if (!(element instanceof HTMLElement)) return false;
-    const rect = element.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-    const style = window.getComputedStyle(element);
-    return style.visibility !== "hidden" && style.display !== "none";
-  };
-  const isScrollableElement = (element) => {
-    if (!(element instanceof HTMLElement)) return false;
-    const style = window.getComputedStyle(element);
-    const overflowY = String(style.overflowY || style.overflow || "").toLowerCase();
-    const allowsScroll = /auto|scroll|overlay/.test(overflowY);
-    const scrollHeight = Number(element.scrollHeight) || 0;
-    const clientHeight = Number(element.clientHeight) || 0;
-    return allowsScroll && scrollHeight > clientHeight + 24;
-  };
-  const findScrollableAncestor = (element) => {
-    let current = element instanceof HTMLElement ? element.parentElement : null;
-    let depth = 0;
-    while (current instanceof HTMLElement && depth < 12) {
-      if (isScrollableElement(current)) return current;
-      current = current.parentElement;
-      depth += 1;
-    }
-    return null;
-  };
-  const getSelectorElementsByOrder = (scope, selectors) => {
-    const elements = [];
-    const root = scope && typeof scope.querySelectorAll === "function" ? scope : document;
-    for (const selector of Array.isArray(selectors) ? selectors : []) {
-      for (const element of root.querySelectorAll(selector)) {
-        if (element instanceof HTMLElement) elements.push(element);
-      }
-    }
-    return elements;
-  };
-  const getCurrentScanTarget = () => ({ kind: "posts" });
   const getDocumentScrollElement = () => {
     const candidates = [
       document.scrollingElement,
@@ -64,24 +27,7 @@ SCROLL_HELPERS_SCRIPT = r"""
     ];
     return candidates.find((element) => element instanceof HTMLElement) || null;
   };
-  const getCommentScrollElement = () => {
-    for (const anchor of getSelectorElementsByOrder(document, [
-      'a[href*="comment_id="]',
-      'a[href*="/comments/"]',
-    ])) {
-      if (!(anchor instanceof HTMLAnchorElement)) continue;
-      if (!isVisibleElement(anchor)) continue;
-      const scrollableAncestor = findScrollableAncestor(anchor);
-      if (scrollableAncestor) return scrollableAncestor;
-    }
-    return null;
-  };
-  const getLoadMoreScrollTarget = () => {
-    if (getCurrentScanTarget().kind === "comments") {
-      return getCommentScrollElement() || getDocumentScrollElement();
-    }
-    return getDocumentScrollElement();
-  };
+  const getLoadMoreScrollTarget = () => getDocumentScrollElement();
   const getScrollTargetTop = (target) => {
     if (target instanceof HTMLElement) {
       return Math.round(Number(target.scrollTop) || 0);
@@ -144,8 +90,6 @@ SCROLL_HELPERS_SCRIPT = r"""
   const performConfiguredLoadMore = () => performScrollLoad();
   return {
     getWindowScrollY,
-    isScrollableElement,
-    findScrollableAncestor,
     getLoadMoreScrollTarget,
     getScrollTargetTop,
     getScrollTargetDebugMetrics,

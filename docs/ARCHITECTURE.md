@@ -74,8 +74,8 @@
 - Windows desktop notification 的正式路徑由目前 process 內的 Win32 `Shell_NotifyIconW` tray owner 送出，使用 bundled / source tree 的 `facebook-monitor-tray.ico` / `facebook-monitor.ico`，不再以 PowerShell process 與系統 information icon 作為正式路徑。Windows icon asset 尺寸需求歸 `packaging/assets/README.md` 管理。
 - macOS frozen `.app` 的正式桌面通知主路徑由 `Facebook Monitor.app` 母程序提供 AF_UNIX socket，worker 以 UTF-8 JSON 傳 title/body/identifier，再由母程序用 UserNotifications、app icon 與系統預設通知音效送出。若 macOS 拒絕主 app UserNotifications identity，sender 會保留 `desktop_failed:macos_permission_denied`，提示使用者允許 `Facebook Monitor` 通知，不改走第二個 app identity。直接呼叫 launcher 的 `--facebook-monitor-notify` 只保留為沒有母程序 socket 時的 frozen fallback / debug path。macOS source mode 沒有 bundle 時保留 `osascript` fallback；不支援的平台回傳結構化失敗，不讓 scan pipeline crash。
 - Discord webhook 使用傳統 `content` payload 與 `allowed_mentions.parse=[]`；內容本文保留多行純文字格式並 escape Discord Markdown，命中規則只列在 `命中：` 欄位，Facebook 連結直接顯示 URL。Components V2 曾是較理想的頻道內排版選項，但手機通知 preview 無法穩定顯示必要摘要，因此正式路徑不使用 Components V2。
-- ntfy topic / Discord webhook 在 UI 明文顯示是刻意產品語義，讓使用者能確認輸入值是否正確；這不代表 DB 也保存明文。
-- SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存；application、worker 與 Web UI 的 domain model 維持明文。
+- Web UI 的 notification endpoint 呈現採 saved-secret masked 語義：新增或替換時使用者在表單輸入明文；保存後 target 設定與 sidebar template 不把 ntfy topic / Discord webhook 原文回填到 HTML，只顯示保留/清除語義。server-side application、worker 與 Web UI form model 可在請求處理時使用明文 domain value；HTML、redirect/error、diagnostics 與 support bundle 不輸出 endpoint / token。
+- SQLite 內的 notification secrets 由 repository boundary 以 `cryptography` Fernet 加密保存。
 - 目前加密欄位是 `target_configs.ntfy_topic`、`target_configs.discord_webhook`、`sidebar_group_config_templates.ntfy_topic`、`sidebar_group_config_templates.discord_webhook`、`global_notification_settings.ntfy_topic`、`global_notification_settings.discord_webhook` 與 `notification_outbox.endpoint`；`global_notification_settings` 只保留給既有 DB / secret storage 相容性，不再作為 Web UI 全域通知預設入口。
 - 密文以 `enc:v1:` prefix 保存，讓 repository 能辨識密文與 legacy plaintext rows；舊版 plaintext rows 可讀回，正常重新保存時會改寫為密文。
 - encryption key 放在 DB 同層的 `secrets.key`，正式 application context 依 DB 路徑載入或建立 key。
@@ -124,7 +124,7 @@
 - 社團縮圖載入失敗時，UI 上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
 - dashboard revision 是 partial update 的觸發來源；Web UI 以 batch payload 更新 sidebar 與 target cards。
-- 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API 暫留 `notified_at` legacy key 作相容。
+- 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API payload 對外使用 `recorded_at`，DB 欄位仍沿用歷史名稱 `notified_at` 作為內部 persistence 欄位。
 - dashboard / target card / hit records read model 需要對 inactive 或 paused 的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；active fatal invariant 仍應回報阻擋或 degraded 狀態。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
@@ -134,7 +134,7 @@
 - Sidebar layout 只影響 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
 - Sidebar group、target placement 與 group template write 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
 - 排序保存必須用單一 layout command 同時更新 group order 與 target placements；缺失 placement 採 lazy fallback 顯示在未分組區，dashboard read model 不得為缺失 placement 寫入 DB。
-- 舊平面 target order API 只能用在沒有 grouped placement 的相容情境；已有 grouped placement 時不得打平 sidebar 狀態。
+- Sidebar 排序保存不提供舊平面 target order API；正式 Web UI 以單一 layout command 保存 group order 與 target placements。
 - Group template 只是批次套用工具，不是 config fallback owner；正式 target config 仍只讀寫 `target_configs[target_id]`。
 - 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；通知設定使用系統預設，不自動繼承全域通知或任一 target，既有 group template 不跟著全域設定靜默覆蓋。
 - Group template 套用是破壞性批次覆蓋操作，必須經使用者確認並在 application transaction 內完成。

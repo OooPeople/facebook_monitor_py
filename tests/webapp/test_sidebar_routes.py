@@ -148,39 +148,14 @@ def test_sidebar_placements_api_rejects_duplicate_ungrouped_sections(tmp_path: P
     assert response.json()["detail"] == "排序資料不可包含重複群組區塊"
 
 
-def test_flat_sidebar_order_api_rejects_when_targets_are_grouped(tmp_path: Path) -> None:
-    """舊平面排序 API 不可在已有 group placement 時打平 sidebar 狀態。"""
+def test_flat_sidebar_order_api_is_removed(tmp_path: Path) -> None:
+    """舊平面 target order API 已移除；正式保存只走 layout API。"""
 
     db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app_context:
-        first = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="111",
-                canonical_url="https://www.facebook.com/groups/111",
-            )
-        )
-        second = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="222",
-                canonical_url="https://www.facebook.com/groups/222",
-            )
-        )
-        group = app_context.services.sidebar_layout.create_group("已分組")
-        app_context.services.sidebar_layout.save_placements(
-            [(group.id, [first.id]), (None, [second.id])]
-        )
-
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
-    response = client.post(
-        "/api/sidebar/order",
-        json={"target_ids": [second.id, first.id]},
-    )
+    response = client.post("/api/sidebar/order", json={"target_ids": []})
 
-    assert response.status_code == 400
-    assert "已有群組排序狀態" in response.json()["detail"]
-    with SqliteApplicationContext(db_path) as app_context:
-        placements = app_context.repositories.sidebar_layout.list_placements()
-    assert placements[first.id].sidebar_group_id == group.id
+    assert response.status_code == 404
 
 
 def test_sidebar_api_errors_use_safe_traditional_chinese_messages(
@@ -214,9 +189,15 @@ def test_sidebar_api_errors_use_safe_traditional_chinese_messages(
         content="{",
         headers={"content-type": "application/json"},
     )
-    grouped_order = client.post(
-        "/api/sidebar/order",
-        json={"target_ids": [second.id, first.id]},
+    duplicate_layout = client.post(
+        "/api/sidebar/layout",
+        json={
+            "group_ids": [group.id],
+            "groups": [
+                {"group_id": group.id, "target_ids": [first.id]},
+                {"group_id": group.id, "target_ids": [second.id]},
+            ],
+        },
     )
     missing_group = client.patch(
         "/api/sidebar/groups/missing",
@@ -225,8 +206,8 @@ def test_sidebar_api_errors_use_safe_traditional_chinese_messages(
 
     assert invalid_json.status_code == 400
     assert invalid_json.json()["detail"] == "JSON 格式不正確"
-    assert grouped_order.status_code == 400
-    assert grouped_order.json()["detail"] == "已有群組排序狀態，請使用調整順序後的確認保存"
+    assert duplicate_layout.status_code == 400
+    assert duplicate_layout.json()["detail"] == "排序資料不可包含重複群組區塊"
     assert missing_group.status_code == 404
     assert missing_group.json()["detail"] == "找不到指定的 sidebar 群組"
 

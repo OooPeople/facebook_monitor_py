@@ -67,7 +67,6 @@ def send_desktop_notification(
         return _send_windows_desktop_notification(
             title=title,
             message=message,
-            command_runner=command_runner,
             native_sender=windows_native_sender,
         )
     if sys.platform == "darwin":
@@ -89,17 +88,10 @@ def _send_windows_desktop_notification(
     *,
     title: str,
     message: str,
-    command_runner: CommandRunner | None = None,
     native_sender: WindowsNativeNotificationSender | None = None,
 ) -> DesktopNotificationResult:
     """送出 Windows process-local native tray notification。"""
 
-    if command_runner is not None:
-        return _send_legacy_windows_desktop_notification_command(
-            title=title,
-            message=message,
-            command_runner=command_runner,
-        )
     sender = native_sender or _run_windows_native_notification
     try:
         sender(title, message)
@@ -113,25 +105,6 @@ def _send_windows_desktop_notification(
             ok=False,
             status_code=None,
             message="desktop_failed:windows_native_failed",
-        )
-    return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
-
-
-def _send_legacy_windows_desktop_notification_command(
-    *,
-    title: str,
-    message: str,
-    command_runner: CommandRunner,
-) -> DesktopNotificationResult:
-    """執行舊 PowerShell desktop notification command，供相容測試注入使用。"""
-
-    try:
-        command_runner(build_desktop_notification_command(title=title, message=message))
-    except Exception as exc:
-        return DesktopNotificationResult(
-            ok=False,
-            status_code=None,
-            message=safe_exception_message("desktop_failed", exc),
         )
     return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
 
@@ -204,33 +177,6 @@ def _send_macos_desktop_notification(
             message=safe_exception_message("desktop_failed", exc),
         )
     return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
-
-
-def build_desktop_notification_command(*, title: str, message: str) -> list[str]:
-    """建立 legacy PowerShell balloon tip 命令列。"""
-
-    escaped_title = _escape_powershell_single_quoted_text(title)
-    escaped_body = _escape_powershell_single_quoted_text(message)
-    script = (
-        "Add-Type -AssemblyName System.Windows.Forms; "
-        "Add-Type -AssemblyName System.Drawing; "
-        "$notify = New-Object System.Windows.Forms.NotifyIcon; "
-        "$notify.Icon = [System.Drawing.SystemIcons]::Information; "
-        f"$notify.BalloonTipTitle = '{escaped_title}'; "
-        f"$notify.BalloonTipText = '{escaped_body}'; "
-        "$notify.Visible = $true; "
-        "$notify.ShowBalloonTip("
-        f"{PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_balloon_tip_milliseconds}); "
-        "Start-Sleep -Milliseconds "
-        f"{PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.desktop_cleanup_sleep_milliseconds}; "
-        "$notify.Dispose();"
-    )
-    return [
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        script,
-    ]
 
 
 def resolve_macos_native_notification_launcher() -> Path | None:
@@ -409,12 +355,6 @@ def build_macos_osascript_notification_command(*, title: str, message: str) -> l
         str(title or ""),
         str(message or ""),
     ]
-
-
-def _escape_powershell_single_quoted_text(value: str) -> str:
-    """轉義 PowerShell single-quoted string 內容。"""
-
-    return str(value or "").replace("'", "''")
 
 
 def _run_command(command: list[str]) -> None:

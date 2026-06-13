@@ -85,7 +85,6 @@ class FullHitRecordRow:
             ],
             "matched_at": self.matched_at,
             "recorded_at": self.recorded_at,
-            "notified_at": self.recorded_at,
             "notification_summary": self.notification_summary,
             "content": content,
             "content_segments": build_highlight_segment_dicts(

@@ -19,17 +19,6 @@ from facebook_monitor.webapp.sidebar_api import grouped_target_ids
 from facebook_monitor.webapp.sidebar_api import string_list
 
 
-def save_sidebar_order_use_case(
-    app_context: ApplicationContext,
-    *,
-    payload: dict[str, object],
-) -> int:
-    """保存平面 target order，供排序第一階段與 fallback 使用。"""
-
-    target_ids = string_list(payload.get("target_ids"))
-    return app_context.services.sidebar_layout.save_target_order(target_ids)
-
-
 def create_sidebar_group_use_case(
     app_context: ApplicationContext,
     *,

@@ -11,6 +11,9 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 
 from facebook_monitor.application.context import ApplicationContext
+from facebook_monitor.application.target_cover_image_refresh_service import (
+    CoverImageRefreshRequestResult,
+)
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetDescriptor
@@ -76,13 +79,22 @@ def register_target_metadata_routes(app: FastAPI) -> None:
         min_interval_seconds = (
             PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
         )
-        result = await run_web_app_context_operation(
-            request,
-            lambda app_context: app_context.services.targets.request_target_cover_image_refresh(
+
+        def request_refresh(
+            app_context: ApplicationContext,
+        ) -> CoverImageRefreshRequestResult:
+            """排程 cover image-only refresh，讓 route 不碰 target facade。"""
+
+            cover_refresh = app_context.services.target_cover_image_refresh
+            return cover_refresh.request_refresh_for_current_url(
                 target_id,
                 reported_url=reported_url,
                 min_interval_seconds=min_interval_seconds,
-            ),
+            )
+
+        result = await run_web_app_context_operation(
+            request,
+            request_refresh,
             operation_name="request_target_cover_image_refresh",
         )
         if result.status in {

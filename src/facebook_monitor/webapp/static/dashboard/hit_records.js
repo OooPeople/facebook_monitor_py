@@ -128,7 +128,7 @@ const renderHitRecords = (modal, payload, { append = false } = {}) => {
     appendHitRecordField(fields, "類型", item.item_type);
     appendHitRecordField(fields, "作者", item.author_name);
     appendHitRecordField(fields, "關鍵字", item.matched_keyword);
-    appendHitRecordField(fields, "記錄時間", item.recorded_at || item.notified_at);
+    appendHitRecordField(fields, "記錄時間", item.recorded_at);
     const contentBlock = document.createElement("div");
     contentBlock.className = "hit-record-content";
     const content = document.createElement("p");

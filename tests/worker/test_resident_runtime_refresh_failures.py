@@ -142,7 +142,7 @@ def test_resident_main_loop_keeps_non_active_cover_runtime_failure_pending(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -356,7 +356,7 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
         )
         app.services.targets.restart_target_monitoring(target.id)
         app.services.targets.clear_target_scan_request(target.id)
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -597,7 +597,7 @@ def test_paused_cover_runtime_failure_does_not_starve_active_scan(
         )
         app.services.targets.restart_target_monitoring(paused.id)
         app.services.targets.clear_target_scan_request(paused.id)
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             paused.id,
             reported_url="https://scontent.xx.fbcdn.net/paused.jpg",
             min_interval_seconds=21600,

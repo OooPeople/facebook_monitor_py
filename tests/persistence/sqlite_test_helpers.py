@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.persistence.repositories.global_notification_settings import (
     GlobalNotificationSettingsRepository,
 )
@@ -21,6 +22,25 @@ def target_config_repository(connection: sqlite3.Connection) -> TargetConfigRepo
     """測試用明文 secret codec；正式路徑由 application context 注入加密 codec。"""
 
     return TargetConfigRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC)
+
+
+def save_target_config_for_test(
+    connection: sqlite3.Connection,
+    target_id: str,
+    config: TargetConfig,
+) -> TargetConfig:
+    """用正式 repository API 建立 target config fixture。"""
+
+    return target_config_repository(connection).save_for_target_id(target_id, config)
+
+
+def get_target_config_for_test(
+    connection: sqlite3.Connection,
+    target_id: str,
+) -> TargetConfig | None:
+    """用正式 repository API 讀取 target config fixture。"""
+
+    return target_config_repository(connection).get_for_target_id(target_id)
 
 
 def global_notification_settings_repository(

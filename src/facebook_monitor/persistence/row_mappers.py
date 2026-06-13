@@ -6,7 +6,6 @@ import json
 import sqlite3
 
 from facebook_monitor.core.models import ItemKind
-from facebook_monitor.core.models import LegacyTargetConfig
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
@@ -63,34 +62,6 @@ def target_config_from_row(row: sqlite3.Row, *, id_column: str) -> TargetConfig:
 
     return TargetConfig(
         target_id=row[id_column],
-        include_keywords=decode_keywords(row["include_keywords"]),
-        include_keyword_groups=(
-            decode_include_keyword_groups(row["include_keyword_groups"])
-            if _row_has_column(row, "include_keyword_groups")
-            else ()
-        ),
-        exclude_keywords=decode_keywords(row["exclude_keywords"]),
-        exclude_ignore_phrases=decode_keywords(row["exclude_ignore_phrases"]),
-        min_refresh_sec=row["min_refresh_sec"],
-        max_refresh_sec=row["max_refresh_sec"],
-        jitter_enabled=bool(row["jitter_enabled"]),
-        fixed_refresh_sec=row["fixed_refresh_sec"],
-        max_items_per_scan=row["max_items_per_scan"],
-        auto_load_more=bool(row["auto_load_more"]),
-        auto_adjust_sort=bool(row["auto_adjust_sort"]),
-        enable_desktop_notification=bool(row["enable_desktop_notification"]),
-        enable_ntfy=bool(row["enable_ntfy"]),
-        ntfy_topic=row["ntfy_topic"],
-        enable_discord_notification=bool(row["enable_discord_notification"]),
-        discord_webhook=row["discord_webhook"],
-    )
-
-
-def legacy_target_config_from_row(row: sqlite3.Row) -> LegacyTargetConfig:
-    """將舊版 target_configs row 轉為 migration-only DTO。"""
-
-    return LegacyTargetConfig(
-        target_id=row["target_id"],
         include_keywords=decode_keywords(row["include_keywords"]),
         include_keyword_groups=(
             decode_include_keyword_groups(row["include_keyword_groups"])

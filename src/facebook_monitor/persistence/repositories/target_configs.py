@@ -9,10 +9,8 @@ from facebook_monitor.core.keyword_groups import flatten_include_keyword_groups
 from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.notification_channels import transform_notification_endpoints
-from facebook_monitor.core.models import LegacyTargetConfig
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.persistence.row_mappers import legacy_target_config_from_row
 from facebook_monitor.persistence.row_mappers import target_config_from_row
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
@@ -157,31 +155,7 @@ class TargetConfigRepository:
             configs[config.target_id] = config
         return configs
 
-    def save_legacy_target_config_for_migration(
-        self,
-        target_id: str,
-        config: TargetConfig,
-    ) -> None:
-        """相容舊測試與 fixture 的 target_configs 寫入 helper。"""
-
-        self.save_for_target_id(target_id, config)
-
-    def get_legacy_target_config_for_migration(self, target_id: str) -> LegacyTargetConfig | None:
-        """依 target id 查詢 target-scoped migration DTO。"""
-
-        row = self.connection.execute(
-            "SELECT * FROM target_configs WHERE target_id = ?", (target_id,)
-        ).fetchone()
-        if not row:
-            return None
-        return self._decrypt_legacy_target_config(legacy_target_config_from_row(row))
-
     def _decrypt_target_config(self, config: TargetConfig) -> TargetConfig:
         """還原 repository 對外回傳的 target notification secrets。"""
-
-        return transform_notification_endpoints(config, self.secret_codec.decrypt)
-
-    def _decrypt_legacy_target_config(self, config: LegacyTargetConfig) -> LegacyTargetConfig:
-        """還原 migration helper DTO 內的 notification secrets。"""
 
         return transform_notification_endpoints(config, self.secret_codec.decrypt)

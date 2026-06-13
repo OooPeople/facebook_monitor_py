@@ -202,7 +202,8 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     assert full_payload["total_count"] == 3
     assert full_payload["items"][0]["sequence_number"] == 2
     assert full_payload["items"][0]["item_type"] == "留言"
-    assert full_payload["items"][0]["notified_at"]
+    assert full_payload["items"][0]["recorded_at"]
+    assert "notified_at" not in full_payload["items"][0]
     assert "notification_summary" in full_payload["items"][0]
     assert full_payload["items"][0]["content"] == "留言也有票券關鍵字\n補充第二行"
     assert full_payload["items"][0]["content_preview"] == "留言也有票券關鍵字 補充第二行"
@@ -211,6 +212,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         encoding="utf-8"
     )
     assert "通知狀態" not in hit_records_js
+    assert "item.notified_at" not in hit_records_js
     assert sidebar_response.status_code == 200
     sidebar_payload = sidebar_response.json()
     assert sidebar_payload["items"][0]["target_id"] == first_target.id

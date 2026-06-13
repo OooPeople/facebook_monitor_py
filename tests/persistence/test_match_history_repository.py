@@ -78,10 +78,10 @@ def test_match_history_repository_counts_offsets_and_clears_by_target(
         assert history.count_by_target(second_target.id) == 1
 
 
-def test_match_history_repository_refreshes_duplicates_and_keeps_global_limit(
+def test_match_history_repository_refreshes_duplicates_and_keeps_target_limit(
     tmp_path: Path,
 ) -> None:
-    """查看紀錄重複 key 刷新到最新，且全域最多保留 10 筆。"""
+    """查看紀錄重複 key 刷新到最新，且單一 target 最多保留 10 筆。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -130,6 +130,56 @@ def test_match_history_repository_refreshes_duplicates_and_keeps_global_limit(
         assert history.count_by_target(target.id) == 10
         assert [entry for entry in entries if entry.item_key == "item-2"][0].text == "刷新後的命中"
         assert len([entry for entry in entries if entry.item_key == "item-2"]) == 1
+
+
+def test_match_history_repository_prunes_all_target_limits_independently(
+    tmp_path: Path,
+) -> None:
+    """all-target retention 對每個 target 各自套用上限，不作全域打平。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        targets = TargetRepository(connection)
+        history = MatchHistoryRepository(connection)
+        base_time = utc_now()
+        first_target = TargetDescriptor.for_group_posts(
+            group_id="111",
+            canonical_url="https://www.facebook.com/groups/111",
+        )
+        second_target = TargetDescriptor.for_group_posts(
+            group_id="222",
+            canonical_url="https://www.facebook.com/groups/222",
+        )
+        targets.save(first_target)
+        targets.save(second_target)
+        for target in (first_target, second_target):
+            for index in range(3):
+                history.add(
+                    MatchHistoryEntry(
+                        target_id=target.id,
+                        group_id=target.group_id,
+                        item_kind=ItemKind.POST,
+                        item_key=f"{target.group_id}-{index}",
+                        text=f"命中 {index}",
+                        include_rule="票",
+                        notified_at=base_time + timedelta(seconds=index),
+                        created_at=base_time + timedelta(seconds=index),
+                    )
+                )
+
+        deleted = history.prune_all_target_limits(limit=2)
+
+        assert deleted == 2
+        assert [entry.item_key for entry in history.list_by_target(first_target.id)] == [
+            "111-2",
+            "111-1",
+        ]
+        assert [entry.item_key for entry in history.list_by_target(second_target.id)] == [
+            "222-2",
+            "222-1",
+        ]
 
 
 def test_match_history_repository_preserves_latest_scan_display_order(

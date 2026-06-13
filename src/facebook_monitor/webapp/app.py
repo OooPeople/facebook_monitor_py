@@ -134,7 +134,7 @@ def create_app(
         """管理 Web UI 啟動與關閉時的背景 scheduler 生命週期。"""
 
         with SqliteApplicationContext(app_instance.state.db_path) as app_context:
-            app_context.repositories.match_history.prune_global_limit()
+            app_context.repositories.match_history.prune_all_target_limits()
         run_bounded_retention_maintenance_for_db(app_instance.state.db_path)
         if app_instance.state.reset_runtime_data_on_startup:
             with SqliteApplicationContext(app_instance.state.db_path) as app_context:

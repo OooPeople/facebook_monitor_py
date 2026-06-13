@@ -338,7 +338,8 @@ def queue_polluted_cover_image_refresh_candidates(options: ResidentRuntimeOption
             for target in targets:
                 if target.id not in eligible_target_ids:
                     continue
-                result = app.services.targets.request_target_cover_image_refresh(
+                cover_refresh = app.services.target_cover_image_refresh
+                result = cover_refresh.request_refresh_for_current_url(
                     target.id,
                     reported_url=target.group_cover_image_url,
                     min_interval_seconds=(
@@ -370,7 +371,7 @@ def list_eligible_pending_cover_image_refreshes(
     batch_limit = max(normalized_limit * 4, normalized_limit, 1)
     while len(selected_states) < normalized_limit:
         with SqliteApplicationContext(options.db_path) as app:
-            states = app.services.targets.list_pending_cover_image_refreshes(
+            states = app.services.target_cover_image_refresh.list_pending(
                 limit=batch_limit,
                 exclude_target_ids=tuple(inspected_target_ids),
             )
@@ -535,7 +536,7 @@ async def refresh_target_group_cover_image_from_context(
             return False
         current_url = target.group_cover_image_url.strip()
         if current_url != reported_url:
-            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
+            app.services.target_cover_image_refresh.mark_stale_skipped(
                 target_id,
                 current_url=current_url,
                 reported_url=reported_url,
@@ -543,7 +544,7 @@ async def refresh_target_group_cover_image_from_context(
             )
             return False
         group_id = target.group_id
-        if not app.services.targets.mark_target_cover_image_refresh_attempted(
+        if not app.services.target_cover_image_refresh.mark_attempted(
             target_id,
             reported_url=reported_url,
             requested_at=state.requested_at,
@@ -572,7 +573,7 @@ async def refresh_target_group_cover_image_from_context(
             reported_url=reported_url,
         ):
             with SqliteApplicationContext(options.db_path) as app:
-                app.services.targets.mark_target_cover_image_refresh_succeeded(
+                app.services.target_cover_image_refresh.mark_succeeded(
                     target_id,
                     resolved_url="",
                     changed=True,
@@ -599,7 +600,7 @@ async def refresh_target_group_cover_image_from_context(
             return False
         current_url = target.group_cover_image_url.strip()
         if current_url != reported_url:
-            app.services.targets.mark_target_cover_image_refresh_stale_skipped(
+            app.services.target_cover_image_refresh.mark_stale_skipped(
                 target_id,
                 current_url=current_url,
                 reported_url=reported_url,
@@ -609,19 +610,19 @@ async def refresh_target_group_cover_image_from_context(
         normalized_cover_image_url = cover_image_url.strip()
         changed = normalized_cover_image_url != current_url
         try:
-            app.services.targets.refresh_target_group_cover_image(
+            app.services.target_cover_image_refresh.refresh_target_cover_image_url(
                 target_id,
                 normalized_cover_image_url,
             )
         except InvalidTargetMetadataError as exc:
-            app.services.targets.mark_target_cover_image_refresh_failed(
+            app.services.target_cover_image_refresh.mark_failed(
                 target_id,
                 str(exc),
                 reported_url=reported_url,
                 requested_at=state.requested_at,
             )
             return False
-        app.services.targets.mark_target_cover_image_refresh_succeeded(
+        app.services.target_cover_image_refresh.mark_succeeded(
             target_id,
             resolved_url=normalized_cover_image_url,
             changed=changed,
@@ -648,7 +649,10 @@ def clear_polluted_cover_image_url_if_current(
             return False
         if not has_polluted_group_cover_image_url(current_url):
             return False
-        updated = app.services.targets.refresh_target_group_cover_image(target_id, "")
+        updated = app.services.target_cover_image_refresh.refresh_target_cover_image_url(
+            target_id,
+            "",
+        )
     return not updated.group_cover_image_url
 
 
@@ -674,7 +678,7 @@ def mark_target_cover_image_refresh_failed(
     with SqliteApplicationContext(options.db_path) as app:
         if app.repositories.targets.get(target_id) is None:
             return
-        app.services.targets.mark_target_cover_image_refresh_failed(
+        app.services.target_cover_image_refresh.mark_failed(
             target_id,
             error,
             reported_url=reported_url,

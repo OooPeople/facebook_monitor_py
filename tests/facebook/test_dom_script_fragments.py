@@ -305,6 +305,8 @@ def test_scroll_fragments_keep_responsibility_markers() -> None:
 
     assert "getLoadMoreScrollTarget" in SCROLL_HELPERS_FRAGMENT
     assert "performConfiguredLoadMore" in SCROLL_LOAD_MORE_FRAGMENT
+    assert "getCommentScrollElement" not in SCROLL_HELPERS_FRAGMENT
+    assert "comment_id=" not in SCROLL_HELPERS_FRAGMENT
     assert "collectCommentScrollTargets" in COMMENT_SCROLL_HELPERS_FRAGMENT
     assert "comment_nested_scroll" in COMMENT_SCROLL_LOAD_MORE_FRAGMENT
     assert "window.__facebookMonitorScanRuntime" in BEGIN_COMMENT_LOAD_MORE_GUARD_FRAGMENT

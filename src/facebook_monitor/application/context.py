@@ -15,6 +15,9 @@ from threading import RLock
 from facebook_monitor.application.scan_recording_service import ScanRecordingService
 from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.sidebar_layout_service import SidebarLayoutService
+from facebook_monitor.application.target_cover_image_refresh_service import (
+    TargetCoverImageRefreshService,
+)
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
@@ -85,6 +88,7 @@ class ServiceBundle:
     """保存 application service 入口。"""
 
     targets: TargetApplicationService
+    target_cover_image_refresh: TargetCoverImageRefreshService
     scans: ScanRecordingService
     sidebar_layout: SidebarLayoutService
 
@@ -158,19 +162,21 @@ def build_repositories(
 def build_services(repositories: RepositoryBundle) -> ServiceBundle:
     """用 repository bundle 建立 application service bundle。"""
 
+    targets_service = TargetApplicationService(
+        targets=repositories.targets,
+        configs=repositories.configs,
+        cover_image_refreshes=repositories.cover_image_refreshes,
+        runtime_states=repositories.runtime_states,
+        dedupe_state=repositories.dedupe_state,
+        seen_items=repositories.seen_items,
+        logical_items=repositories.logical_items,
+        scan_scope_state=repositories.scan_scope_state,
+        notification_dedupe=repositories.notification_dedupe,
+        notification_outbox=repositories.notification_outbox,
+    )
     return ServiceBundle(
-        targets=TargetApplicationService(
-            targets=repositories.targets,
-            configs=repositories.configs,
-            cover_image_refreshes=repositories.cover_image_refreshes,
-            runtime_states=repositories.runtime_states,
-            dedupe_state=repositories.dedupe_state,
-            seen_items=repositories.seen_items,
-            logical_items=repositories.logical_items,
-            scan_scope_state=repositories.scan_scope_state,
-            notification_dedupe=repositories.notification_dedupe,
-            notification_outbox=repositories.notification_outbox,
-        ),
+        targets=targets_service,
+        target_cover_image_refresh=targets_service.cover_image_refresh_service,
         scans=ScanRecordingService(scan_runs=repositories.scan_runs),
         sidebar_layout=SidebarLayoutService(
             targets=repositories.targets,

@@ -183,8 +183,7 @@ async (preferredLabel) => {
     return match ? match[1] : "";
   };
   const isSupportedGroupPage = () => location.hostname === "www.facebook.com" && Boolean(getCurrentGroupId());
-  const getCurrentScanTarget = () => ({
-    kind: "posts",
+  const getCurrentFeedSortTarget = () => ({
     groupId: getCurrentGroupId(),
     supported: isSupportedGroupPage(),
   });
@@ -315,30 +314,21 @@ async (preferredLabel) => {
     }
     return count;
   };
-  const getPreferredSortLabelForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "posts" ? (preferredLabel || __FEED_SORT_NEWEST_LABEL__) : "";
+  const getPreferredFeedSortLabel = () => preferredLabel || __FEED_SORT_NEWEST_LABEL__;
+  const findPreferredFeedSortMenuOption = () => {
+    return findFeedSortMenuOption(getPreferredFeedSortLabel());
   };
-  const getCurrentSortControlForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "posts" ? getCurrentFeedSortControl() : { label: "", control: null };
-  };
-  const findPreferredSortMenuOptionForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return findFeedSortMenuOption(getPreferredSortLabelForScanTarget(scanTarget));
-  };
-  const waitForPreferredSortOptionForScanTarget = async (
-    scanTarget = getCurrentScanTarget(),
+  const waitForPreferredFeedSortOption = async (
     timeoutMs = __SORT_OPTION_WAIT_TIMEOUT_MS__,
     intervalMs = __SORT_OPTION_WAIT_INTERVAL_MS__,
   ) => {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
     while (Date.now() <= deadline) {
-      const option = findPreferredSortMenuOptionForScanTarget(scanTarget);
+      const option = findPreferredFeedSortMenuOption();
       if (option instanceof HTMLElement) return option;
       await sleep(intervalMs);
     }
     return null;
-  };
-  const getCurrentScanSortLabel = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "posts" ? getCurrentFeedSortLabel() : "";
   };
   const suppressMutationsForMs = (ms, reason = "") => {
     window.__facebookMonitorMutationSuppression = {
@@ -347,9 +337,9 @@ async (preferredLabel) => {
     };
   };
 
-  const scanTarget = getCurrentScanTarget();
-  const preferredSortLabel = getPreferredSortLabelForScanTarget(scanTarget);
-  if (!scanTarget?.supported) {
+  const feedSortTarget = getCurrentFeedSortTarget();
+  const preferredSortLabel = getPreferredFeedSortLabel();
+  if (!feedSortTarget.supported) {
     return {
       attempted: false,
       changed: false,
@@ -365,7 +355,7 @@ async (preferredLabel) => {
     };
   }
 
-  const before = getCurrentSortControlForScanTarget(scanTarget);
+  const before = getCurrentFeedSortControl();
   if (before.label === preferredSortLabel) {
     return {
       attempted: false,
@@ -398,7 +388,7 @@ async (preferredLabel) => {
 
   suppressMutationsForMs(__SORT_MUTATION_SUPPRESSION_MS__, __SORT_MUTATION_SUPPRESSION_REASON__);
   clickFacebookControl(before.control);
-  const option = await waitForPreferredSortOptionForScanTarget(scanTarget);
+  const option = await waitForPreferredFeedSortOption();
   const menuRootCount = countVisibleMenuRootsForLabel(preferredSortLabel);
   if (!(option instanceof HTMLElement)) {
     return {
@@ -406,7 +396,7 @@ async (preferredLabel) => {
       changed: false,
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
-      afterLabel: getCurrentScanSortLabel(scanTarget),
+      afterLabel: getCurrentFeedSortLabel(),
       reason: __SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__,
       mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
       mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
@@ -420,7 +410,7 @@ async (preferredLabel) => {
   }
   clickFacebookControl(option);
   await sleep(900);
-  const afterLabel = getCurrentScanSortLabel(scanTarget);
+  const afterLabel = getCurrentFeedSortLabel();
   return {
     attempted: true,
     changed: afterLabel === preferredSortLabel && before.label !== afterLabel,
@@ -492,8 +482,7 @@ async (preferredLabel) => {
     if (location.hostname !== "www.facebook.com") return false;
     return /^\\/groups\\/[^/?#]+\\/(posts?|permalink)\\/[^/?#]+/i.test(location.pathname || "");
   };
-  const getCurrentScanTarget = () => ({
-    kind: "comments",
+  const getCurrentCommentSortTarget = () => ({
     supported: isGroupPostPermalinkPage(),
   });
   const isVisibleElement = (element) => {
@@ -641,30 +630,21 @@ async (preferredLabel) => {
     }
     return count;
   };
-  const getPreferredSortLabelForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "comments" ? (preferredLabel || __COMMENT_SORT_NEWEST_LABEL__) : "";
+  const getPreferredCommentSortLabel = () => preferredLabel || __COMMENT_SORT_NEWEST_LABEL__;
+  const findPreferredCommentSortMenuOption = () => {
+    return findCommentSortMenuOption(getPreferredCommentSortLabel());
   };
-  const getCurrentSortControlForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "comments" ? getCurrentCommentSortControl() : { label: "", control: null };
-  };
-  const findPreferredSortMenuOptionForScanTarget = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "comments" ? findCommentSortMenuOption(getPreferredSortLabelForScanTarget(scanTarget)) : null;
-  };
-  const waitForPreferredSortOptionForScanTarget = async (
-    scanTarget = getCurrentScanTarget(),
+  const waitForPreferredCommentSortOption = async (
     timeoutMs = __COMMENT_SORT_OPTION_WAIT_TIMEOUT_MS__,
     intervalMs = __COMMENT_SORT_OPTION_WAIT_INTERVAL_MS__,
   ) => {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
     while (Date.now() <= deadline) {
-      const option = findPreferredSortMenuOptionForScanTarget(scanTarget);
+      const option = findPreferredCommentSortMenuOption();
       if (option instanceof HTMLElement) return option;
       await sleep(intervalMs);
     }
     return null;
-  };
-  const getCurrentScanSortLabel = (scanTarget = getCurrentScanTarget()) => {
-    return scanTarget?.kind === "comments" ? getCurrentCommentSortLabel() : "";
   };
   const suppressMutationsForMs = (ms, reason = "") => {
     window.__facebookMonitorMutationSuppression = {
@@ -673,9 +653,9 @@ async (preferredLabel) => {
     };
   };
 
-  const scanTarget = getCurrentScanTarget();
-  const preferredSortLabel = getPreferredSortLabelForScanTarget(scanTarget);
-  if (!scanTarget?.supported) {
+  const commentSortTarget = getCurrentCommentSortTarget();
+  const preferredSortLabel = getPreferredCommentSortLabel();
+  if (!commentSortTarget.supported) {
     return {
       attempted: false,
       changed: false,
@@ -691,7 +671,7 @@ async (preferredLabel) => {
     };
   }
 
-  const before = getCurrentSortControlForScanTarget(scanTarget);
+  const before = getCurrentCommentSortControl();
   if (before.label === preferredSortLabel) {
     return {
       attempted: false,
@@ -724,7 +704,7 @@ async (preferredLabel) => {
 
   suppressMutationsForMs(__SORT_MUTATION_SUPPRESSION_MS__, __SORT_MUTATION_SUPPRESSION_REASON__);
   clickFacebookControl(before.control);
-  const option = await waitForPreferredSortOptionForScanTarget(scanTarget);
+  const option = await waitForPreferredCommentSortOption();
   const menuRootCount = countVisibleMenuRootsForLabel(preferredSortLabel);
   if (!(option instanceof HTMLElement)) {
     return {
@@ -732,7 +712,7 @@ async (preferredLabel) => {
       changed: false,
       preferredLabel: preferredSortLabel,
       beforeLabel: before.label,
-      afterLabel: getCurrentScanSortLabel(scanTarget),
+      afterLabel: getCurrentCommentSortLabel(),
       reason: __SORT_REASON_PREFERRED_SORT_OPTION_NOT_FOUND__,
       mutationSuppressionMs: __SORT_MUTATION_SUPPRESSION_MS__,
       mutationSuppressionReason: __SORT_MUTATION_SUPPRESSION_REASON__,
@@ -746,7 +726,7 @@ async (preferredLabel) => {
   }
   clickFacebookControl(option);
   await sleep(900);
-  const afterLabel = getCurrentScanSortLabel(scanTarget);
+  const afterLabel = getCurrentCommentSortLabel();
   return {
     attempted: true,
     changed: afterLabel === preferredSortLabel && before.label !== afterLabel,

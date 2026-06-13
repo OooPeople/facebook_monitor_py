@@ -39,7 +39,8 @@ from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import TargetRuntimeStateRepository
 from facebook_monitor.persistence.schema import initialize_schema
 
-from tests.persistence.sqlite_test_helpers import target_config_repository
+from tests.persistence.sqlite_test_helpers import save_target_config_for_test
+from tests.persistence.sqlite_test_helpers import get_target_config_for_test
 from tests.persistence.sqlite_test_helpers import global_notification_settings_repository
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 
@@ -112,13 +113,8 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             enable_discord_notification=True,
             discord_webhook="https://discord.com/api/webhooks/example",
         )
-        target_config_repository(connection).save_legacy_target_config_for_migration(
-            target.id,
-            config,
-        )
-        loaded_config = target_config_repository(connection).get_legacy_target_config_for_migration(
-            target.id
-        )
+        save_target_config_for_test(connection, target.id, config)
+        loaded_config = get_target_config_for_test(connection, target.id)
 
         assert loaded_config is not None
         assert loaded_config.target_id == target.id

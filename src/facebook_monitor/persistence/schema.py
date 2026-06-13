@@ -13,34 +13,33 @@ from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
 SCHEMA_VERSION = 36
 MIN_SUPPORTED_SCHEMA_VERSION = 10
-REQUIRED_CURRENT_SCHEMA_TABLES = frozenset(
-    {
-        "schema_metadata",
-        "targets",
-        "target_configs",
-        "seen_items",
-        "target_dedupe_state",
-        "logical_items",
-        "logical_item_aliases",
-        "scan_scope_state",
-        "match_history",
-        "match_history_matches",
-        "latest_scan_items",
-        "latest_scan_item_matches",
-        "scan_runs",
-        "notification_events",
-        "notification_dedupe",
-        "notification_outbox",
-        "target_runtime_state",
-        "target_cover_image_refresh_state",
-        "global_notification_settings",
-        "app_settings",
-        "sidebar_groups",
-        "sidebar_target_placements",
-        "sidebar_group_config_templates",
-        "dashboard_revision",
-    }
+CURRENT_SCHEMA_TABLES = (
+    "schema_metadata",
+    "targets",
+    "target_configs",
+    "seen_items",
+    "target_dedupe_state",
+    "logical_items",
+    "logical_item_aliases",
+    "scan_scope_state",
+    "scan_runs",
+    "latest_scan_items",
+    "latest_scan_item_matches",
+    "match_history",
+    "match_history_matches",
+    "notification_events",
+    "notification_dedupe",
+    "notification_outbox",
+    "target_runtime_state",
+    "target_cover_image_refresh_state",
+    "global_notification_settings",
+    "app_settings",
+    "sidebar_groups",
+    "sidebar_target_placements",
+    "sidebar_group_config_templates",
+    "dashboard_revision",
 )
+REQUIRED_CURRENT_SCHEMA_TABLES = frozenset(CURRENT_SCHEMA_TABLES)
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:

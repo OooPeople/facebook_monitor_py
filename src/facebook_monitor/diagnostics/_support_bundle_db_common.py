@@ -7,6 +7,7 @@ import sqlite3
 from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
 from facebook_monitor.diagnostics._support_bundle_redaction import _freeform_summary
 from facebook_monitor.diagnostics._support_bundle_utils import _json_list
+from facebook_monitor.persistence.schema import CURRENT_SCHEMA_TABLES
 
 
 def _row_text(row: sqlite3.Row, column: str) -> str:
@@ -54,32 +55,7 @@ def _include_keyword_group_summary(value: str) -> dict[str, int]:
     }
 
 
-_SUPPORT_COUNT_TABLES = (
-    "schema_metadata",
-    "targets",
-    "target_configs",
-    "seen_items",
-    "target_dedupe_state",
-    "logical_items",
-    "logical_item_aliases",
-    "scan_scope_state",
-    "scan_runs",
-    "latest_scan_items",
-    "latest_scan_item_matches",
-    "match_history",
-    "match_history_matches",
-    "notification_events",
-    "notification_dedupe",
-    "notification_outbox",
-    "target_runtime_state",
-    "target_cover_image_refresh_state",
-    "global_notification_settings",
-    "app_settings",
-    "sidebar_groups",
-    "sidebar_target_placements",
-    "sidebar_group_config_templates",
-    "dashboard_revision",
-)
+_SUPPORT_COUNT_TABLES = CURRENT_SCHEMA_TABLES
 
 
 __all__ = [

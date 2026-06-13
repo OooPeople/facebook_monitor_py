@@ -237,6 +237,42 @@ def test_comment_sort_fallback_fixture_accepts_description_text_option() -> None
     assert metadata["clicked_option_text"] == "由新到舊"
 
 
+def test_feed_sort_fallback_fixture_reports_unsupported_route() -> None:
+    """posts sort fallback 在非 group feed route 保留 route_check 診斷。"""
+
+    metadata = _evaluate_sort_metadata(
+        url="https://www.facebook.com/profile.php?id=123",
+        html="""<!doctype html><html lang="zh-Hant"><body></body></html>""",
+        script=FEED_SORT_ADJUST_SCRIPT,
+        preferred_label=FEED_SORT_NEWEST_LABEL,
+    )
+
+    assert metadata["attempted"] is False
+    assert metadata["changed"] is False
+    assert metadata["reason"] == "unsupported_scan_target"
+    assert metadata["target_kind"] == "posts"
+    assert metadata["failure_stage"] == "route_check"
+    assert metadata["preferred_label"] == FEED_SORT_NEWEST_LABEL
+
+
+def test_comment_sort_fallback_fixture_reports_unsupported_route() -> None:
+    """comments sort fallback 在非 post permalink route 保留 route_check 診斷。"""
+
+    metadata = _evaluate_sort_metadata(
+        url=f"https://www.facebook.com/groups/{GROUP_ID}",
+        html="""<!doctype html><html lang="zh-Hant"><body></body></html>""",
+        script=COMMENT_SORT_ADJUST_SCRIPT,
+        preferred_label=COMMENT_SORT_NEWEST_LABEL,
+    )
+
+    assert metadata["attempted"] is False
+    assert metadata["changed"] is False
+    assert metadata["reason"] == "unsupported_scan_target"
+    assert metadata["target_kind"] == "comments"
+    assert metadata["failure_stage"] == "route_check"
+    assert metadata["preferred_label"] == COMMENT_SORT_NEWEST_LABEL
+
+
 def _evaluate_sort_metadata(
     *,
     url: str,

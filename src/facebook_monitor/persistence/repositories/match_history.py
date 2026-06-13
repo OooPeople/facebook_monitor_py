@@ -145,8 +145,8 @@ class MatchHistoryRepository:
         )
         return int(cursor.rowcount)
 
-    def prune_global_limit(self, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
-        """相容舊呼叫：對所有 target 執行 target-scoped retention。"""
+    def prune_all_target_limits(self, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
+        """對所有 target 執行 target-scoped match history retention。"""
 
         target_rows = self.connection.execute(
             "SELECT DISTINCT target_id FROM match_history"
@@ -155,6 +155,11 @@ class MatchHistoryRepository:
             self.prune_target_limit(str(row["target_id"]), limit=limit)
             for row in target_rows
         )
+
+    def prune_global_limit(self, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
+        """相容舊呼叫：委派正式 all-target retention 名稱。"""
+
+        return self.prune_all_target_limits(limit=limit)
 
     def list_by_target(
         self,

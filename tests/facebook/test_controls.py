@@ -500,14 +500,17 @@ def test_feed_sort_labels_match_product_labels() -> None:
 
 
 def test_sort_script_uses_exact_feed_option_chain() -> None:
-    """排序選項判斷需保留 JS 的 scan target 與 known label chain。"""
+    """排序選項判斷需保留 feed 專用 target 與 known label chain。"""
 
     assert "isSortMenuOptionForLabel" in FEED_SORT_ADJUST_SCRIPT
     assert "optionLabels.includes(text)" in FEED_SORT_ADJUST_SCRIPT
-    assert "const getCurrentScanTarget" in FEED_SORT_ADJUST_SCRIPT
-    assert "getPreferredSortLabelForScanTarget" in FEED_SORT_ADJUST_SCRIPT
-    assert "getCurrentSortControlForScanTarget" in FEED_SORT_ADJUST_SCRIPT
-    assert "findPreferredSortMenuOptionForScanTarget" in FEED_SORT_ADJUST_SCRIPT
+    assert "const getCurrentFeedSortTarget" in FEED_SORT_ADJUST_SCRIPT
+    assert "getPreferredFeedSortLabel" in FEED_SORT_ADJUST_SCRIPT
+    assert "getCurrentFeedSortControl" in FEED_SORT_ADJUST_SCRIPT
+    assert "findPreferredFeedSortMenuOption" in FEED_SORT_ADJUST_SCRIPT
+    assert "ForScanTarget" not in FEED_SORT_ADJUST_SCRIPT
+    assert "const getCurrentScanTarget" not in FEED_SORT_ADJUST_SCRIPT
+    assert "const scanTarget" not in FEED_SORT_ADJUST_SCRIPT
     assert "unsupported_scan_target" in FEED_SORT_ADJUST_SCRIPT
     assert 'suppressMutationsForMs(3200, "auto_adjust_sort")' in FEED_SORT_ADJUST_SCRIPT
     assert "getSelectorElementsByOrder" in FEED_SORT_ADJUST_SCRIPT
@@ -519,8 +522,13 @@ def test_comment_sort_labels_and_script_match_product_semantics() -> None:
     assert COMMENT_SORT_NEWEST_LABEL == "由新到舊"
     assert COMMENT_SORT_LABELS == ("由新到舊", "最相關", "所有留言")
     assert "isLikelyCommentSortOptionText" in COMMENT_SORT_ADJUST_SCRIPT
+    assert "const getCurrentCommentSortTarget" in COMMENT_SORT_ADJUST_SCRIPT
+    assert "getPreferredCommentSortLabel" in COMMENT_SORT_ADJUST_SCRIPT
     assert "getCurrentCommentSortControl" in COMMENT_SORT_ADJUST_SCRIPT
     assert "findCommentSortMenuOption" in COMMENT_SORT_ADJUST_SCRIPT
+    assert "ForScanTarget" not in COMMENT_SORT_ADJUST_SCRIPT
+    assert "const getCurrentScanTarget" not in COMMENT_SORT_ADJUST_SCRIPT
+    assert "const scanTarget" not in COMMENT_SORT_ADJUST_SCRIPT
     assert "最新的留言顯示在最上方" in COMMENT_SORT_ADJUST_SCRIPT
     assert 'suppressMutationsForMs(3200, "auto_adjust_sort")' in COMMENT_SORT_ADJUST_SCRIPT
 
@@ -528,7 +536,7 @@ def test_comment_sort_labels_and_script_match_product_semantics() -> None:
 def test_comment_sort_script_waits_and_keeps_failure_candidates() -> None:
     """comments sort 失敗時需留下選單候選文字，並避免固定短等待。"""
 
-    assert "waitForPreferredSortOptionForScanTarget" in COMMENT_SORT_ADJUST_SCRIPT
+    assert "waitForPreferredCommentSortOption" in COMMENT_SORT_ADJUST_SCRIPT
     assert "timeoutMs = 1800" in COMMENT_SORT_ADJUST_SCRIPT
     assert "intervalMs = 120" in COMMENT_SORT_ADJUST_SCRIPT
     assert "await sleep(360)" not in COMMENT_SORT_ADJUST_SCRIPT
@@ -1132,12 +1140,13 @@ def test_scroll_script_uses_target_by_and_restore_snapshot() -> None:
     """auto_load_more 不應退回單純 window.scrollBy，需有 target 與 restore 語義。"""
 
     assert "getLoadMoreScrollTarget" in SCROLL_LOAD_MORE_SCRIPT
-    assert "isScrollableElement" in SCROLL_LOAD_MORE_SCRIPT
-    assert "findScrollableAncestor" in SCROLL_LOAD_MORE_SCRIPT
+    assert "getDocumentScrollElement" in SCROLL_LOAD_MORE_SCRIPT
     assert "scrollTargetBy" in SCROLL_LOAD_MORE_SCRIPT
     assert "performConfiguredLoadMore" in SCROLL_LOAD_MORE_SCRIPT
     assert "getLoadMoreMode" in SCROLL_LOAD_MORE_SCRIPT
     assert "movedDistance" in SCROLL_LOAD_MORE_SCRIPT
+    assert "getCommentScrollElement" not in SCROLL_LOAD_MORE_SCRIPT
+    assert "comment_id=" not in SCROLL_LOAD_MORE_SCRIPT
     assert "window.__facebookMonitorLoadMoreSnapshot" in RESTORE_LOAD_MORE_SCROLL_SNAPSHOT_SCRIPT
 
 

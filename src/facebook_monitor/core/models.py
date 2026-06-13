@@ -347,50 +347,6 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class LegacyTargetConfig:
-    """保存舊版 target-scoped config row，僅供 migration fallback 轉換使用。"""
-
-    target_id: str
-    include_keywords: tuple[str, ...] = ()
-    include_keyword_groups: tuple[IncludeKeywordGroup, ...] = ()
-    exclude_keywords: tuple[str, ...] = ()
-    exclude_ignore_phrases: tuple[str, ...] = ()
-    min_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
-    max_refresh_sec: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
-    jitter_enabled: bool = PYTHON_TARGET_CONFIG_DEFAULTS.jitter_enabled
-    fixed_refresh_sec: int | None = PYTHON_TARGET_CONFIG_DEFAULTS.fixed_refresh_sec
-    max_items_per_scan: int = PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
-    auto_load_more: bool = PYTHON_TARGET_CONFIG_DEFAULTS.auto_load_more
-    auto_adjust_sort: bool = PYTHON_TARGET_CONFIG_DEFAULTS.auto_adjust_sort
-    enable_desktop_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_desktop_notification
-    enable_ntfy: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_ntfy
-    ntfy_topic: str = PYTHON_TARGET_CONFIG_DEFAULTS.ntfy_topic
-    enable_discord_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification
-    discord_webhook: str = PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook
-
-    def to_target_config(self, *, target_id: str | None = None) -> TargetConfig:
-        """將舊 target-scoped row 轉成正式 target-scoped config。"""
-
-        from facebook_monitor.core.notification_channels import copy_notification_settings
-
-        config = TargetConfig(
-            target_id=target_id or self.target_id,
-            include_keywords=self.include_keywords,
-            include_keyword_groups=self.include_keyword_groups,
-            exclude_keywords=self.exclude_keywords,
-            exclude_ignore_phrases=self.exclude_ignore_phrases,
-            min_refresh_sec=self.min_refresh_sec,
-            max_refresh_sec=self.max_refresh_sec,
-            jitter_enabled=self.jitter_enabled,
-            fixed_refresh_sec=self.fixed_refresh_sec,
-            max_items_per_scan=self.max_items_per_scan,
-            auto_load_more=self.auto_load_more,
-            auto_adjust_sort=self.auto_adjust_sort,
-        )
-        return copy_notification_settings(config, self)
-
-
-@dataclass(frozen=True)
 class GlobalNotificationSettings:
     """保存舊版全域通知設定資料，保留給 migration / secret storage 相容性。"""
 

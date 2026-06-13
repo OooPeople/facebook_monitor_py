@@ -17,7 +17,6 @@ from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.worker.resident_main import run_resident_main_cycle
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
@@ -25,6 +24,9 @@ from facebook_monitor.worker.scan_finalize import record_skipped_scan
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_cycle_harness import (
+    run_resident_main_cycle_harness as run_resident_main_cycle,
+)
 
 
 def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) -> None:

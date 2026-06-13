@@ -659,7 +659,7 @@ def test_cover_refresh_skips_ineligible_pending_job_without_starving_next_target
                 group_cover_image_url=generic_logo,
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             blocked.id,
             reported_url=generic_logo,
             min_interval_seconds=21600,
@@ -673,7 +673,7 @@ def test_cover_refresh_skips_ineligible_pending_job_without_starving_next_target
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             eligible.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -1013,7 +1013,7 @@ def test_resident_scheduler_tick_refreshes_cover_image_without_renaming_target(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -1094,12 +1094,12 @@ def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
-        app.services.targets.refresh_target_group_cover_image(
+        app.services.target_cover_image_refresh.refresh_target_cover_image_url(
             target.id,
             "https://scontent.xx.fbcdn.net/manual-new.jpg",
         )
@@ -1176,17 +1176,17 @@ def test_cover_image_refresh_stale_worker_does_not_clear_newer_request(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
         )
         stale_worker_state = app.repositories.cover_image_refreshes.get(target.id)
-        app.services.targets.refresh_target_group_cover_image(
+        app.services.target_cover_image_refresh.refresh_target_cover_image_url(
             target.id,
             "https://scontent.xx.fbcdn.net/new-current.jpg",
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/new-current.jpg",
             min_interval_seconds=21600,
@@ -1233,7 +1233,7 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,
@@ -1315,7 +1315,7 @@ def test_resident_scheduler_tick_keeps_cover_refresh_pending_on_shutdown(
                 group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
             )
         )
-        app.services.targets.request_target_cover_image_refresh(
+        app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,

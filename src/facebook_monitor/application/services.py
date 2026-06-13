@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
 from facebook_monitor.application import target_requests as _target_requests
 from facebook_monitor.application.target_config_service import TargetConfigService
+from facebook_monitor.application.target_cover_image_refresh_service import (
+    CoverImageRefreshRequestResult,
+    TargetCoverImageRefreshService,
+)
 from facebook_monitor.application.target_monitoring_commands import (
     ResetTargetNotificationStateResult,
 )
@@ -19,7 +22,6 @@ from facebook_monitor.application.target_registry_service import TargetRegistryS
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
-from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetConfig
@@ -45,15 +47,6 @@ from facebook_monitor.persistence.repositories.target_runtime_state import (
     TargetRuntimeStateRepository,
 )
 from facebook_monitor.persistence.repositories.targets import TargetRepository
-
-
-@dataclass(frozen=True)
-class CoverImageRefreshRequestResult:
-    """描述 UI 壞圖上報轉成背景刷新排程的結果。"""
-
-    status: CoverImageRefreshRequestStatus
-    queued: bool = False
-    reason: str = ""
 
 
 class TargetApplicationService:
@@ -91,6 +84,11 @@ class TargetApplicationService:
             targets=targets,
             configs=self.config_service,
             runtime=self.runtime_service,
+        )
+        self.cover_image_refresh_service = TargetCoverImageRefreshService(
+            targets=targets,
+            cover_image_refreshes=cover_image_refreshes,
+            registry=self.registry_service,
         )
         self.monitoring_commands = TargetMonitoringCommands(
             targets=targets,
@@ -140,7 +138,7 @@ class TargetApplicationService:
     ) -> TargetDescriptor:
         """只更新 target 社團封面圖 URL，不覆蓋名稱或 metadata status。"""
 
-        return self.registry_service.refresh_target_group_cover_image(
+        return self.cover_image_refresh_service.refresh_target_cover_image_url(
             target_id,
             group_cover_image_url,
         )
@@ -154,31 +152,10 @@ class TargetApplicationService:
     ) -> CoverImageRefreshRequestResult:
         """依 UI 壞圖 hint 排程 image-only cover refresh。"""
 
-        target = self.targets.get(target_id)
-        if target is None:
-            return CoverImageRefreshRequestResult(
-                status=CoverImageRefreshRequestStatus.NOT_FOUND,
-                reason="target_not_found",
-            )
-        normalized_reported_url = reported_url.strip()
-        if not normalized_reported_url:
-            return CoverImageRefreshRequestResult(
-                status=CoverImageRefreshRequestStatus.INVALID_URL,
-                reason="missing_reported_url",
-            )
-        if normalized_reported_url != target.group_cover_image_url.strip():
-            return CoverImageRefreshRequestResult(
-                status=CoverImageRefreshRequestStatus.IGNORED_STALE_URL,
-                reason="reported_url_is_not_current",
-            )
-        status = self.cover_image_refreshes.request_refresh(
-            target_id=target.id,
-            reported_url=normalized_reported_url,
+        return self.cover_image_refresh_service.request_refresh_for_current_url(
+            target_id,
+            reported_url=reported_url,
             min_interval_seconds=min_interval_seconds,
-        )
-        return CoverImageRefreshRequestResult(
-            status=status,
-            queued=status == CoverImageRefreshRequestStatus.QUEUED,
         )
 
     def list_pending_cover_image_refreshes(
@@ -189,7 +166,7 @@ class TargetApplicationService:
     ) -> list[TargetCoverImageRefreshState]:
         """列出等待 resident worker 消化的 image-only cover refresh jobs。"""
 
-        return self.cover_image_refreshes.list_pending(
+        return self.cover_image_refresh_service.list_pending(
             limit=limit,
             exclude_target_ids=exclude_target_ids,
         )
@@ -203,7 +180,7 @@ class TargetApplicationService:
     ) -> bool:
         """記錄 target cover image refresh 已開始嘗試。"""
 
-        return self.cover_image_refreshes.mark_attempted(
+        return self.cover_image_refresh_service.mark_attempted(
             target_id,
             reported_url=reported_url,
             requested_at=requested_at,
@@ -221,7 +198,7 @@ class TargetApplicationService:
     ) -> bool:
         """標記 target cover image refresh 成功。"""
 
-        return self.cover_image_refreshes.mark_succeeded(
+        return self.cover_image_refresh_service.mark_succeeded(
             target_id,
             resolved_url=resolved_url,
             changed=changed,
@@ -240,7 +217,7 @@ class TargetApplicationService:
     ) -> bool:
         """現行圖片 URL 已非 UI 上報 URL 時，清除過期 cover refresh job。"""
 
-        return self.cover_image_refreshes.mark_stale_skipped(
+        return self.cover_image_refresh_service.mark_stale_skipped(
             target_id,
             current_url=current_url,
             reported_url=reported_url,
@@ -258,7 +235,7 @@ class TargetApplicationService:
     ) -> bool:
         """標記 target cover image refresh 失敗。"""
 
-        return self.cover_image_refreshes.mark_failed(
+        return self.cover_image_refresh_service.mark_failed(
             target_id,
             error,
             result=result,

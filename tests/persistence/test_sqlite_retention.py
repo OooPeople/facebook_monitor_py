@@ -39,7 +39,8 @@ from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepos
 from facebook_monitor.persistence.repositories.scan_scope_state import ScanScopeStateRepository
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
-from tests.persistence.sqlite_test_helpers import target_config_repository
+from tests.persistence.sqlite_test_helpers import save_target_config_for_test
+from tests.persistence.sqlite_test_helpers import get_target_config_for_test
 from tests.persistence.sqlite_test_helpers import global_notification_settings_repository
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 from tests.persistence.sqlite_test_helpers import table_count
@@ -61,7 +62,8 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
             group_name="test group",
         )
         TargetRepository(connection).save(target)
-        target_config_repository(connection).save_legacy_target_config_for_migration(
+        save_target_config_for_test(
+            connection,
             target.id,
             TargetConfig(target_id=target.id),
         )
@@ -148,10 +150,7 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert table_count(connection, "seen_items") == 0
         assert not ScanScopeStateRepository(connection).is_initialized(target.scope_id)
         assert TargetRepository(connection).get(target.id) is not None
-        assert (
-            target_config_repository(connection).get_legacy_target_config_for_migration(target.id)
-            is not None
-        )
+        assert get_target_config_for_test(connection, target.id) is not None
         assert TargetRuntimeStateRepository(connection).get(target.id) is not None
         assert global_notification_settings_repository(connection).get().ntfy_topic == "phase0test"
         assert AppSettingsRepository(connection).get_theme() == "dark"

@@ -15,7 +15,6 @@ import httpx
 
 from facebook_monitor.notifications.desktop import build_macos_native_notification_payload
 from facebook_monitor.notifications.desktop import build_macos_osascript_notification_command
-from facebook_monitor.notifications.desktop import build_desktop_notification_command
 from facebook_monitor.notifications.desktop import parse_macos_native_notification_result
 from facebook_monitor.notifications.desktop import resolve_macos_parent_notification_socket
 from facebook_monitor.notifications.desktop import send_macos_native_notification_payload_to_socket
@@ -219,63 +218,36 @@ def test_send_desktop_notification_sanitizes_windows_native_exception(
     assert "private notification body" not in result.message
 
 
-def test_send_desktop_notification_keeps_legacy_powershell_injected_runner(
+def test_send_desktop_notification_ignores_windows_command_runner(
     monkeypatch: Any,
 ) -> None:
-    """legacy command runner injection 仍保留 PowerShell escape contract。"""
+    """Windows desktop sender 不再支援 PowerShell command_runner fallback。"""
 
-    calls: list[list[str]] = []
+    native_calls: list[tuple[str, str]] = []
+    command_calls: list[list[str]] = []
 
     def fake_runner(command: list[str]) -> None:
-        """記錄命令，避免測試真的發桌面通知。"""
+        """若 Windows 還走 command_runner，測試應失敗。"""
 
-        calls.append(command)
+        command_calls.append(command)
+
+    def fake_native_sender(title: str, message: str) -> None:
+        """記錄 native sender 呼叫，避免測試真的發桌面通知。"""
+
+        native_calls.append((title, message))
 
     monkeypatch.setattr("sys.platform", "win32")
     result = send_desktop_notification(
         "Facebook keyword match",
         "作者: O'Neil",
         command_runner=fake_runner,
+        windows_native_sender=fake_native_sender,
     )
 
     assert result.ok
     assert result.message == "desktop_sent"
-    command = calls[0]
-    assert command[:3] == ["powershell", "-NoProfile", "-Command"]
-    assert "System.Windows.Forms.NotifyIcon" in command[3]
-    assert "O''Neil" in command[3]
-
-
-def test_build_desktop_notification_command_escapes_single_quotes() -> None:
-    """PowerShell single-quoted string 會轉義單引號。"""
-
-    command = build_desktop_notification_command(title="A'B", message="C'D")
-
-    assert "$notify.BalloonTipTitle = 'A''B';" in command[3]
-    assert "$notify.BalloonTipText = 'C''D';" in command[3]
-
-
-def test_send_desktop_notification_sanitizes_legacy_runner_exception(
-    monkeypatch: Any,
-) -> None:
-    """legacy command runner 例外訊息不得把通知內容或 command 寫進診斷。"""
-
-    def failing_runner(_command: list[str]) -> None:
-        """模擬 runner 例外內含通知內容。"""
-
-        raise RuntimeError("failed to show private notification body")
-
-    monkeypatch.setattr("sys.platform", "win32")
-
-    result = send_desktop_notification(
-        "Facebook keyword match",
-        "private notification body",
-        command_runner=failing_runner,
-    )
-
-    assert not result.ok
-    assert result.message == "desktop_failed:RuntimeError"
-    assert "private notification body" not in result.message
+    assert native_calls == [("Facebook keyword match", "作者: O'Neil")]
+    assert command_calls == []
 
 
 def test_resolve_macos_native_notification_launcher_uses_frozen_app_bundle(

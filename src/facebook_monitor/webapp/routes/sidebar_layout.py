@@ -10,30 +10,11 @@ from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.routes.sidebar_common import sidebar_bad_request
 from facebook_monitor.webapp.sidebar_use_cases import save_sidebar_group_order_use_case
 from facebook_monitor.webapp.sidebar_use_cases import save_sidebar_layout_use_case
-from facebook_monitor.webapp.sidebar_use_cases import save_sidebar_order_use_case
 from facebook_monitor.webapp.sidebar_use_cases import save_sidebar_placements_use_case
 
 
 def register_sidebar_layout_routes(app: FastAPI) -> None:
     """註冊 sidebar order / placement routes。"""
-
-    @app.post("/api/sidebar/order")
-    async def save_sidebar_order(request: Request) -> dict[str, object]:
-        """保存平面 target order，供排序第一階段與 fallback 使用。"""
-
-        payload = await json_object_payload(request)
-        try:
-            updated_count = await run_web_app_context_operation(
-                request,
-                lambda app_context: save_sidebar_order_use_case(
-                    app_context,
-                    payload=payload,
-                ),
-                operation_name="sidebar.save_target_order",
-            )
-        except ValueError as exc:
-            raise sidebar_bad_request(exc) from exc
-        return {"ok": True, "updated_count": updated_count}
 
     @app.post("/api/sidebar/groups/order")
     async def save_sidebar_group_order(request: Request) -> dict[str, object]:

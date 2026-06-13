@@ -25,9 +25,7 @@ def test_collect_cover_image_host_report_counts_hosts_and_reject_reasons(
             group_id="111",
             canonical_url="https://www.facebook.com/groups/111",
             name="private target",
-            group_cover_image_url=(
-                "https://scontent.xx.fbcdn.net/v/private-cover.jpg?token=secret"
-            ),
+            group_cover_image_url="https://static.facebook.com/images/logos/facebook_2x.png",
         )
         TargetRepository(connection).save(target)
         connection.execute(
@@ -50,14 +48,16 @@ def test_collect_cover_image_host_report_counts_hosts_and_reject_reasons(
     assert payload["available"] is True
     overall = cast(dict[str, object], payload["overall"])
     assert overall["value_count"] == 3
-    assert overall["accepted_count"] == 2
-    assert overall["rejected_count"] == 1
+    assert overall["accepted_count"] == 1
+    assert overall["rejected_count"] == 2
     assert overall["accepted_host_counts"] == {
         "lookaside.fbsbx.com": 1,
-        "scontent.xx.fbcdn.net": 1,
     }
-    assert overall["accepted_suffix_counts"] == {"fbcdn.net": 1, "fbsbx.com": 1}
-    assert overall["reject_reason_counts"] == {"host_not_allowed": 1}
+    assert overall["accepted_suffix_counts"] == {"fbsbx.com": 1}
+    assert overall["reject_reason_counts"] == {
+        "generic_facebook_asset": 1,
+        "host_not_allowed": 1,
+    }
     payload_text = str(payload)
     assert "private-cover.jpg" not in payload_text
     assert "example.com" not in payload_text

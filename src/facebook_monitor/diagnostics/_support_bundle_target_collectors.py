@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 from facebook_monitor.diagnostics._support_bundle_db_common import _include_keyword_group_summary
 from facebook_monitor.diagnostics._support_bundle_db_common import _row_freeform_summary
 from facebook_monitor.diagnostics._support_bundle_db_common import _row_int
@@ -72,6 +73,8 @@ def _target_inventory_payload(
         kind_counts[kind] += 1
         status_key = f"enabled={int(row['enabled'] or 0)};paused={int(row['paused'] or 0)}"
         status_counts[status_key] += 1
+        cover_image_url = str(row["group_cover_image_url"] or "")
+        cover_image_result = sanitize_facebook_group_cover_image_url(cover_image_url)
         targets.append(
             {
                 "target": target_alias,
@@ -83,7 +86,11 @@ def _target_inventory_payload(
                 "metadata_error": _freeform_summary(str(row["metadata_error"] or "")),
                 "name_length": len(str(row["name"] or "")),
                 "group_name_length": len(str(row["group_name"] or "")),
-                "has_cover_image_url": bool(str(row["group_cover_image_url"] or "")),
+                "has_cover_image_url": bool(cover_image_url),
+                "has_valid_cover_image_url": cover_image_result.ok,
+                "cover_image_reject_reason": (
+                    "" if cover_image_result.ok else cover_image_result.reason
+                ),
                 "created_at": str(row["created_at"] or ""),
                 "updated_at": str(row["updated_at"] or ""),
                 "config": _target_config_summary(row),

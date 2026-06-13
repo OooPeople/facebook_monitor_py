@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
@@ -113,20 +114,113 @@ class TargetRepository:
         status: TargetMetadataStatus,
         *,
         limit: int,
+        exclude_ids: tuple[str, ...] = (),
     ) -> list[TargetDescriptor]:
         """列出指定 metadata 狀態的 target，供 resident worker 消化 pending job。"""
 
         normalized_limit = max(int(limit), 0)
         if normalized_limit <= 0:
             return []
+        exclude_clause, exclude_params = _exclude_ids_clause(exclude_ids)
         rows = self.connection.execute(
-            """
+            f"""
             SELECT * FROM targets
             WHERE metadata_status = ?
+            {exclude_clause}
             ORDER BY updated_at, created_at
             LIMIT ?
             """,
-            (status.value, normalized_limit),
+            (
+                status.value,
+                *exclude_params,
+                normalized_limit,
+            ),
         ).fetchall()
         return [target_from_row(row) for row in rows]
+
+    def list_polluted_group_name_candidates(
+        self,
+        *,
+        limit: int,
+        retry_failed_before: datetime,
+        exclude_ids: tuple[str, ...] = (),
+    ) -> list[TargetDescriptor]:
+        """列出名稱 metadata 已知遭 Facebook 錯誤頁污染的修復候選。"""
+
+        normalized_limit = max(int(limit), 0)
+        if normalized_limit <= 0:
+            return []
+        exclude_clause, exclude_params = _exclude_ids_clause(exclude_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM targets
+            WHERE (lower(name) = ? OR lower(group_name) = ?)
+              AND metadata_status != ?
+              AND (metadata_status != ? OR updated_at <= ?)
+              {exclude_clause}
+            ORDER BY updated_at, created_at
+            LIMIT ?
+            """,
+            (
+                "facebook | error",
+                "facebook | error",
+                TargetMetadataStatus.PENDING.value,
+                TargetMetadataStatus.FAILED.value,
+                encode_datetime(retry_failed_before),
+                *exclude_params,
+                normalized_limit,
+            ),
+        ).fetchall()
+        return [target_from_row(row) for row in rows]
+
+    def list_polluted_group_cover_image_candidates(
+        self,
+        *,
+        limit: int,
+        exclude_ids: tuple[str, ...] = (),
+    ) -> list[TargetDescriptor]:
+        """列出只有封面圖為 Facebook 通用圖的 image-only refresh 候選。"""
+
+        normalized_limit = max(int(limit), 0)
+        if normalized_limit <= 0:
+            return []
+        exclude_clause, exclude_params = _exclude_ids_clause(exclude_ids)
+        rows = self.connection.execute(
+            f"""
+            SELECT * FROM targets
+            WHERE (
+                lower(group_cover_image_url) LIKE ?
+                OR lower(group_cover_image_url) LIKE ?
+                OR lower(group_cover_image_url) LIKE ?
+            )
+              AND lower(name) != ?
+              AND lower(group_name) != ?
+              AND metadata_status != ?
+              {exclude_clause}
+            ORDER BY updated_at, created_at
+            LIMIT ?
+            """,
+            (
+                "https://static.facebook.com/images/logos/%",
+                "https://facebook.com/images/logos/%",
+                "https://%.facebook.com/images/logos/%",
+                "facebook | error",
+                "facebook | error",
+                TargetMetadataStatus.PENDING.value,
+                *exclude_params,
+                normalized_limit,
+            ),
+        ).fetchall()
+        return [target_from_row(row) for row in rows]
+
+
+def _exclude_ids_clause(exclude_ids: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+    """建立 target id 排除條件，避免 candidate 來源重複。"""
+
+    normalized_ids = tuple(str(target_id or "").strip() for target_id in exclude_ids)
+    normalized_ids = tuple(target_id for target_id in normalized_ids if target_id)
+    if not normalized_ids:
+        return "", ()
+    placeholders = ",".join("?" for _ in normalized_ids)
+    return f"AND id NOT IN ({placeholders})", normalized_ids
 

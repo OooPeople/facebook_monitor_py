@@ -11,7 +11,7 @@ import sqlite3
 from urllib.parse import urlsplit
 
 from facebook_monitor.core.external_url_policy import FACEBOOK_IMAGE_ALLOWED_HOST_SUFFIXES
-from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
+from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 
 
 COVER_IMAGE_HOST_SOURCE_FIELDS = (
@@ -98,7 +98,7 @@ def _record_cover_image_value(stats: _HostStats, value: object) -> None:
     if not raw:
         stats.empty_count += 1
         return
-    result = sanitize_facebook_image_url(raw)
+    result = sanitize_facebook_group_cover_image_url(raw)
     if not result.ok:
         stats.rejected_count += 1
         stats.reject_reason_counts[result.reason or "unknown"] += 1

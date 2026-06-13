@@ -15,6 +15,7 @@ from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
 from facebook_monitor.core.keyword_rules import KeywordEvaluation
 from facebook_monitor.core.keyword_rules import KeywordGroupMatchResult
@@ -37,6 +38,7 @@ from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
+from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.channel_dispatch import DesktopSender
@@ -450,7 +452,7 @@ def _record_match_notification_side_effects(
     history_entry = MatchHistoryEntry(
         target_id=target.id,
         group_id=target.group_id,
-        group_name=target.group_name,
+        group_name=_match_history_group_name(target),
         item_kind=item.item_kind,
         parent_post_id=item.parent_post_id,
         comment_id=item.comment_id,
@@ -493,6 +495,15 @@ def _record_match_notification_side_effects(
         discord_sender=discord_notification_sender,
     )
     return history_entry, notification_payload
+
+
+def _match_history_group_name(target: TargetDescriptor) -> str:
+    """回傳 match history 用 group metadata，污染名稱才退回 target display fallback。"""
+
+    group_name = str(target.group_name or "").strip()
+    if group_name and not is_invalid_facebook_group_name(group_name):
+        return group_name
+    return format_target_display_name(target)
 
 
 def _record_success_scan_snapshot(

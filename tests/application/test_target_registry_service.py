@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_registry_service import InvalidTargetMetadataError
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
@@ -14,8 +17,12 @@ from facebook_monitor.application.target_requests import UpdateTargetConfigReque
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetDesiredState
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import ItemKind
 
 
 def test_create_target_and_record_scan_through_application_context(tmp_path: Path) -> None:
@@ -168,6 +175,221 @@ def test_refresh_target_group_cover_image_does_not_overwrite_custom_name(
     assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/new.jpg"
 
 
+def test_refresh_target_group_metadata_rejects_error_page_metadata(
+    tmp_path: Path,
+) -> None:
+    """metadata refresh 不可把 Facebook 錯誤頁 title 與 logo 寫入 target。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="原社團",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        with pytest.raises(InvalidTargetMetadataError):
+            app.services.targets.refresh_target_group_metadata(
+                target.id,
+                group_name="Facebook | Error",
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+                overwrite_name=True,
+            )
+        loaded = app.repositories.targets.get(target.id)
+
+    assert loaded is not None
+    assert loaded.name == "原社團"
+    assert loaded.group_name == "原社團"
+    assert loaded.group_cover_image_url == "https://scontent.xx.fbcdn.net/old.jpg"
+
+
+def test_refresh_target_group_cover_image_rejects_generic_facebook_logo(
+    tmp_path: Path,
+) -> None:
+    """image-only refresh 不可把 Facebook 通用 logo 當作社團封面。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        with pytest.raises(InvalidTargetMetadataError):
+            app.services.targets.refresh_target_group_cover_image(
+                target.id,
+                "https://static.facebook.com/images/logos/facebook_2x.png",
+            )
+        loaded = app.repositories.targets.get(target.id)
+
+    assert loaded is not None
+    assert loaded.group_cover_image_url == "https://scontent.xx.fbcdn.net/old.jpg"
+
+
+def test_upsert_group_posts_target_ignores_error_page_metadata(
+    tmp_path: Path,
+) -> None:
+    """capture/upsert 入口收到錯誤頁 metadata 時只丟棄，不保存污染值。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="Facebook | Error",
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+
+    assert target.name == "group:222518561920110:posts"
+    assert target.group_name == ""
+    assert target.group_cover_image_url == ""
+
+
+def test_upsert_group_posts_target_recovers_existing_error_page_metadata(
+    tmp_path: Path,
+) -> None:
+    """既有 target 已被錯誤頁污染時，下一次有效 metadata upsert 會修回。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+
+        updated = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/group-cover.jpg",
+            )
+        )
+
+    assert updated.name == "測試社團"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
+
+
+def test_upsert_group_posts_target_clears_existing_generic_logo(
+    tmp_path: Path,
+) -> None:
+    """既有 target 的 Facebook 通用 logo 不應被後續 upsert 保留下來。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+
+        updated = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                group_name="測試社團",
+            )
+        )
+
+    assert updated.name == "測試社團"
+    assert updated.group_cover_image_url == ""
+
+
+def test_refresh_target_group_metadata_clears_existing_generic_logo_without_new_cover(
+    tmp_path: Path,
+) -> None:
+    """full metadata refresh 若沒有新封面，也不可保留既有 Facebook 通用 logo。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+
+        updated = app.services.targets.refresh_target_group_metadata(
+            target.id,
+            group_name="測試社團",
+            group_cover_image_url="",
+        )
+
+    assert updated.name == "測試社團"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == ""
+
+
+def test_refresh_target_group_metadata_drops_existing_polluted_group_name_without_new_name(
+    tmp_path: Path,
+) -> None:
+    """full metadata refresh 只有新封面時，也不可保留既有污染 group name。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_name="Facebook | Error",
+            )
+        )
+
+        updated = app.services.targets.refresh_target_group_metadata(
+            target.id,
+            group_name="",
+            group_cover_image_url="https://scontent.xx.fbcdn.net/group-cover.jpg",
+        )
+
+    assert updated.group_name == ""
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
+
+
 def test_cover_image_load_failure_request_uses_url_scoped_throttle(
     tmp_path: Path,
 ) -> None:
@@ -214,6 +436,60 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
     assert state.last_result == "queued"
     assert state.changed is False
     assert stale.status == "ignored_stale_url"
+
+
+def test_restart_target_monitoring_keeps_polluted_metadata_for_maintenance(
+    tmp_path: Path,
+) -> None:
+    """開始監看不修 metadata；污染資料由 resident maintenance 低頻修復。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-1:ntfy",
+                target_id=target.id,
+                item_key="item-1",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+
+        updated = app.services.targets.restart_target_monitoring(target.id)
+        outbox_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_outbox WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert updated.name == "Facebook | Error"
+    assert updated.group_name == "Facebook | Error"
+    assert (
+        updated.group_cover_image_url
+        == "https://static.facebook.com/images/logos/facebook_2x.png"
+    )
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert updated.metadata_error == ""
+    assert updated.enabled is True
+    assert updated.paused is False
+    assert outbox_count == 1
 
 
 def test_upsert_group_posts_target_can_clear_existing_config(tmp_path: Path) -> None:

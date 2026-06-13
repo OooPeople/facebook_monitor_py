@@ -21,9 +21,12 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_BROWSER_RUNTIME_DEFAULTS
-from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
+from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.facebook.browser_capture import get_start_page
+from facebook_monitor.facebook.group_metadata_validation import body_mentions_unavailable_page
+from facebook_monitor.facebook.group_metadata_validation import final_url_matches_expected_group
+from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 
 
@@ -108,7 +111,15 @@ async def resolve_group_metadata_with_context(
             body_text = await page.locator("body").inner_text(timeout=10000)
             if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                 raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
-            group_name = clean_facebook_page_title(await page.title())
+            page_title = await page.title()
+            group_name = clean_facebook_page_title(page_title)
+            _ensure_valid_group_metadata_page(
+                canonical_url=canonical_url,
+                final_url=getattr(page, "url", ""),
+                page_title=page_title,
+                group_name=group_name,
+                body_text=body_text,
+            )
             cover_image_url = await _extract_cover_image_url_async(page)
         finally:
             await page.close()
@@ -144,6 +155,14 @@ async def resolve_group_cover_image_with_context(
             body_text = await page.locator("body").inner_text(timeout=10000)
             if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                 raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
+            _ensure_valid_group_metadata_page(
+                canonical_url=canonical_url,
+                final_url=getattr(page, "url", ""),
+                page_title=await page.title(),
+                group_name="",
+                body_text=body_text,
+                require_group_name=False,
+            )
             cover_image_url = await _extract_cover_image_url_async(page)
         finally:
             await page.close()
@@ -199,7 +218,15 @@ def resolve_group_metadata_with_profile(
                     body_text = page.locator("body").inner_text(timeout=10000)
                     if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                         raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
-                    group_name = clean_facebook_page_title(page.title())
+                    page_title = page.title()
+                    group_name = clean_facebook_page_title(page_title)
+                    _ensure_valid_group_metadata_page(
+                        canonical_url=canonical_url,
+                        final_url=getattr(page, "url", ""),
+                        page_title=page_title,
+                        group_name=group_name,
+                        body_text=body_text,
+                    )
                     cover_image_url = _extract_cover_image_url_sync(page)
                 finally:
                     context.close()
@@ -251,8 +278,32 @@ def _extract_cover_image_url_sync(page: object) -> str:
 def _normalize_cover_image_url(value: object) -> str:
     """整理 extractor 回傳值，避免非 URL 內容進入 metadata。"""
 
-    result = sanitize_facebook_image_url(value)
+    result = sanitize_facebook_group_cover_image_url(value)
     return result.url if result.ok else ""
+
+
+def _ensure_valid_group_metadata_page(
+    *,
+    canonical_url: str,
+    final_url: object,
+    page_title: str,
+    group_name: str,
+    body_text: str,
+    require_group_name: bool = True,
+) -> None:
+    """拒絕 Facebook 錯誤頁或導向到非目標社團的 metadata。"""
+
+    if body_mentions_unavailable_page(body_text):
+        raise GroupMetadataError("Facebook 回傳無法使用的頁面，未更新 target metadata")
+    if not final_url_matches_expected_group(
+        final_url=final_url,
+        canonical_url=canonical_url,
+    ):
+        raise GroupMetadataError("Facebook 導向非目標社團頁，未更新 target metadata")
+    if is_invalid_facebook_group_name(page_title) or is_invalid_facebook_group_name(group_name):
+        raise GroupMetadataError("Facebook 回傳錯誤頁，未更新 target metadata")
+    if require_group_name and not group_name:
+        raise GroupMetadataError("無法自動抓取社團名稱，請稍後重試或填入自訂顯示名稱")
 
 
 _COVER_IMAGE_EXTRACTOR_SCRIPT = """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -27,6 +28,8 @@ from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
+from facebook_monitor.worker.resident_maintenance import METADATA_REFRESH_TARGET_LIMIT_PER_TICK
+from facebook_monitor.worker.resident_maintenance import refresh_pending_target_cover_images
 from facebook_monitor.worker.resident_maintenance import refresh_requested_target_metadata
 from facebook_monitor.worker.resident_maintenance import refresh_target_group_cover_image_from_context
 from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
@@ -40,8 +43,74 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeMetadataBrowserContext
+from tests.worker.resident_main_test_helpers import FakeMetadataPage
 from tests.worker.resident_main_test_helpers import FakeLoggedOutMetadataBrowserContext
 from tests.worker.resident_main_test_helpers import FakeShutdownMetadataBrowserContext
+
+
+class FakeUnavailableMetadataLocator:
+    """Facebook outage/error page 測試用 locator。"""
+
+    async def inner_text(self, *, timeout: int) -> str:
+        """回傳 Facebook 錯誤頁 body text。"""
+
+        return "This page isn't available right now"
+
+
+class FakeUnavailableMetadataPage(FakeMetadataPage):
+    """metadata repair 測試用 Facebook 錯誤頁。"""
+
+    def locator(self, selector: str) -> FakeUnavailableMetadataLocator:
+        """回傳錯誤頁 body locator。"""
+
+        return FakeUnavailableMetadataLocator()
+
+    async def title(self) -> str:
+        """回傳 outage 期間觀察到的錯誤頁 title。"""
+
+        return "Facebook | Error"
+
+    async def evaluate(self, script: str) -> str:
+        """回傳 outage 期間觀察到的 Facebook 通用 logo。"""
+
+        return "https://static.facebook.com/images/logos/facebook_2x.png"
+
+
+class FakeUnavailableMetadataBrowserContext:
+    """metadata repair 測試用 Facebook 錯誤頁 context。"""
+
+    def __init__(self) -> None:
+        self.pages: list[FakeUnavailableMetadataPage] = []
+
+    async def new_page(self) -> FakeUnavailableMetadataPage:
+        """建立錯誤頁 fake page。"""
+
+        page = FakeUnavailableMetadataPage()
+        self.pages.append(page)
+        return page
+
+
+class FakeNoCoverMetadataPage(FakeMetadataPage):
+    """cover image refresh 測試用：頁面可開啟但沒有可用封面。"""
+
+    async def evaluate(self, script: str) -> str:
+        """回傳空封面 URL。"""
+
+        return ""
+
+
+class FakeNoCoverMetadataBrowserContext:
+    """cover image refresh 測試用無封面 context。"""
+
+    def __init__(self) -> None:
+        self.pages: list[FakeNoCoverMetadataPage] = []
+
+    async def new_page(self) -> FakeNoCoverMetadataPage:
+        """建立無封面 fake page。"""
+
+        page = FakeNoCoverMetadataPage()
+        self.pages.append(page)
+        return page
 
 
 def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: Path) -> None:
@@ -109,6 +178,530 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
+
+
+def test_resident_scheduler_tick_repairs_polluted_metadata_during_maintenance(
+    tmp_path: Path,
+) -> None:
+    """polluted metadata 會被既有 maintenance tick 修復，不掛在 due enqueue 前。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+                group_cover_image_url=(
+                    "https://static.facebook.com/images/logos/facebook_2x.png"
+                ),
+            )
+        )
+
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+    assert refreshed_count == 1
+    assert updated is not None
+    assert updated.name == "測試社團"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
+    assert updated.metadata_status == TargetMetadataStatus.RESOLVED
+    assert updated.metadata_error == ""
+
+
+def test_polluted_metadata_refresh_preserves_custom_target_name(
+    tmp_path: Path,
+) -> None:
+    """自動 metadata repair 只修 Facebook group metadata，不覆蓋使用者自訂名稱。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+            )
+        )
+        app.repositories.targets.save(replace(target, group_name="Facebook | Error"))
+
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+    assert refreshed_count == 1
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
+
+
+def test_pending_metadata_refresh_takes_priority_over_polluted_candidate(
+    tmp_path: Path,
+) -> None:
+    """metadata pending 會先吃掉每 tick limit，polluted auto candidate 等下一輪。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        pending = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="pending",
+                canonical_url="https://www.facebook.com/groups/pending",
+            )
+        )
+        polluted = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="polluted",
+                canonical_url="https://www.facebook.com/groups/polluted",
+            )
+        )
+        app.services.targets.mark_target_metadata_refresh_pending(pending.id)
+        app.repositories.targets.save(
+            replace(
+                polluted,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+            )
+        )
+
+    context = FakeMetadataBrowserContext()
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=context,
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        loaded_pending = app.repositories.targets.get(pending.id)
+        loaded_polluted = app.repositories.targets.get(polluted.id)
+    assert refreshed_count == 1
+    assert len(context.pages) == 1
+    assert loaded_pending is not None
+    assert loaded_pending.metadata_status == TargetMetadataStatus.RESOLVED
+    assert loaded_polluted is not None
+    assert loaded_polluted.name == "Facebook | Error"
+
+
+def test_pending_metadata_refresh_skips_ineligible_rows_without_starving_next_target(
+    tmp_path: Path,
+) -> None:
+    """舊 ineligible pending target 不應擋住後續可執行 metadata refresh。"""
+
+    db_path = tmp_path / "app.db"
+    blocked_ids: list[str] = []
+    with SqliteApplicationContext(db_path) as app:
+        for index in range(METADATA_REFRESH_TARGET_LIMIT_PER_TICK * 4):
+            blocked = app.services.targets.upsert_group_posts_target(
+                UpsertGroupPostsTargetRequest(
+                    group_id=f"blocked-pending-{index}",
+                    canonical_url=f"https://www.facebook.com/groups/blocked-pending-{index}",
+                )
+            )
+            app.services.targets.mark_target_metadata_refresh_pending(blocked.id)
+            app.services.targets.mark_target_error(blocked.id, "terminal error")
+            blocked_ids.append(blocked.id)
+        eligible = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="eligible-pending",
+                canonical_url="https://www.facebook.com/groups/eligible-pending",
+            )
+        )
+        app.services.targets.mark_target_metadata_refresh_pending(eligible.id)
+
+    context = FakeMetadataBrowserContext()
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=context,
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        blocked_targets = [app.repositories.targets.get(target_id) for target_id in blocked_ids]
+        loaded_eligible = app.repositories.targets.get(eligible.id)
+    assert refreshed_count == 1
+    assert len(context.pages) == 1
+    assert all(target is not None for target in blocked_targets)
+    assert all(
+        target.metadata_status == TargetMetadataStatus.PENDING
+        for target in blocked_targets
+        if target is not None
+    )
+    assert loaded_eligible is not None
+    assert loaded_eligible.metadata_status == TargetMetadataStatus.RESOLVED
+    assert loaded_eligible.name == "測試社團"
+
+
+def test_failed_polluted_metadata_refresh_is_throttled(
+    tmp_path: Path,
+) -> None:
+    """剛失敗的 polluted metadata 不應每個 maintenance tick 立刻重試。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="polluted",
+                canonical_url="https://www.facebook.com/groups/polluted",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+            )
+        )
+        app.services.targets.mark_target_metadata_refresh_failed(
+            target.id,
+            "Facebook 回傳錯誤頁",
+        )
+
+    context = FakeMetadataBrowserContext()
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=context,
+        )
+    )
+
+    assert refreshed_count == 0
+    assert context.pages == []
+
+
+def test_polluted_metadata_refresh_skips_ineligible_rows_without_starving_next_target(
+    tmp_path: Path,
+) -> None:
+    """舊 ineligible 污染 target 不應擋住後續可執行 metadata repair。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        blocked = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="blocked",
+                canonical_url="https://www.facebook.com/groups/blocked",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                blocked,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+            )
+        )
+        app.services.targets.mark_target_error(blocked.id, "terminal error")
+        eligible = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="eligible",
+                canonical_url="https://www.facebook.com/groups/eligible",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                eligible,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+            )
+        )
+
+    context = FakeMetadataBrowserContext()
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=context,
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        blocked_after = app.repositories.targets.get(blocked.id)
+        eligible_after = app.repositories.targets.get(eligible.id)
+    assert refreshed_count == 1
+    assert len(context.pages) == 1
+    assert blocked_after is not None
+    assert blocked_after.name == "Facebook | Error"
+    assert eligible_after is not None
+    assert eligible_after.name == "測試社團"
+    assert eligible_after.group_name == "測試社團"
+
+
+def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
+    tmp_path: Path,
+) -> None:
+    """metadata repair 失敗只標 metadata failed，不改 scan failure 三次停用語義。"""
+
+    db_path = tmp_path / "app.db"
+    scan_calls = 0
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+                enabled=True,
+                paused=False,
+            )
+        )
+
+    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+        """metadata failure 不應阻擋正式 due scan。"""
+
+        nonlocal scan_calls
+        scan_calls += 1
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_page,
+        )
+        await executor.start()
+        try:
+            metadata_context = FakeUnavailableMetadataBrowserContext()
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                browser_context=metadata_context,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+            await target_queue.join()
+        finally:
+            await executor.stop()
+
+        assert summary.selected_count == 1
+        assert summary.metadata_refresh_count == 0
+        assert len(metadata_context.pages) == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.runtime_states.get(target.id)
+    assert scan_calls == 1
+    assert updated is not None
+    assert updated.metadata_status == TargetMetadataStatus.FAILED
+    assert "無法使用" in updated.metadata_error
+    assert state is not None
+    assert state.consecutive_failure_count == 0
+
+
+def test_cover_only_generic_logo_is_queued_for_image_refresh(
+    tmp_path: Path,
+) -> None:
+    """封面通用圖只走 image-only refresh，不覆蓋 target 名稱。"""
+
+    db_path = tmp_path / "app.db"
+    generic_logo = "https://static.facebook.com/images/logos/facebook_2x.png"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="測試社團",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_cover_image_url=generic_logo,
+            )
+        )
+
+    refreshed_count = asyncio.run(
+        refresh_pending_target_cover_images(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert refreshed_count == 1
+    assert updated is not None
+    assert updated.name == "我的自訂名稱"
+    assert updated.group_name == "測試社團"
+    assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.IDLE
+
+
+def test_cover_only_generic_logo_is_cleared_when_no_new_cover_is_found(
+    tmp_path: Path,
+) -> None:
+    """generic logo refresh 即使抓不到新封面，也要清掉既有污染 URL。"""
+
+    db_path = tmp_path / "app.db"
+    generic_logo = "https://static.facebook.com/images/logos/facebook_2x.png"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                name="我的自訂名稱",
+                group_name="測試社團",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                group_cover_image_url=generic_logo,
+            )
+        )
+
+    refreshed_count = asyncio.run(
+        refresh_pending_target_cover_images(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeNoCoverMetadataBrowserContext(),
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        updated = app.repositories.targets.get(target.id)
+        state = app.repositories.cover_image_refreshes.get(target.id)
+    assert refreshed_count == 1
+    assert updated is not None
+    assert updated.group_cover_image_url == ""
+    assert state is not None
+    assert state.status == TargetCoverImageRefreshStatus.IDLE
+    assert state.changed is True
+
+
+def test_cover_refresh_skips_ineligible_pending_job_without_starving_next_target(
+    tmp_path: Path,
+) -> None:
+    """舊 ineligible pending cover job 不應卡住後續可執行 cover refresh。"""
+
+    db_path = tmp_path / "app.db"
+    generic_logo = "https://static.facebook.com/images/logos/facebook_2x.png"
+    with SqliteApplicationContext(db_path) as app:
+        blocked = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="blocked-cover",
+                canonical_url="https://www.facebook.com/groups/blocked-cover",
+                group_name="阻擋社團",
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                blocked,
+                group_cover_image_url=generic_logo,
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            blocked.id,
+            reported_url=generic_logo,
+            min_interval_seconds=21600,
+        )
+        app.services.targets.mark_target_error(blocked.id, "terminal error")
+        eligible = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="eligible-cover",
+                canonical_url="https://www.facebook.com/groups/eligible-cover",
+                group_name="可修社團",
+                group_cover_image_url="https://scontent.xx.fbcdn.net/old.jpg",
+            )
+        )
+        app.services.targets.request_target_cover_image_refresh(
+            eligible.id,
+            reported_url="https://scontent.xx.fbcdn.net/old.jpg",
+            min_interval_seconds=21600,
+        )
+
+    refreshed_count = asyncio.run(
+        refresh_pending_target_cover_images(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+        )
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        blocked_state = app.repositories.cover_image_refreshes.get(blocked.id)
+        eligible_state = app.repositories.cover_image_refreshes.get(eligible.id)
+        blocked_after = app.repositories.targets.get(blocked.id)
+        eligible_after = app.repositories.targets.get(eligible.id)
+    assert refreshed_count == 1
+    assert blocked_state is not None
+    assert blocked_state.status == TargetCoverImageRefreshStatus.PENDING
+    assert eligible_state is not None
+    assert eligible_state.status == TargetCoverImageRefreshStatus.IDLE
+    assert blocked_after is not None
+    assert blocked_after.group_cover_image_url == generic_logo
+    assert eligible_after is not None
+    assert eligible_after.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
 
 
 def test_metadata_refresh_defers_while_failure_retry_scan_is_pending(

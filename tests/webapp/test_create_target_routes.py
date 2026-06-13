@@ -140,6 +140,58 @@ def test_dashboard_does_not_render_unsafe_group_cover_thumbnail(tmp_path: Path) 
     assert unsafe_url not in response.text
 
 
+def test_dashboard_does_not_render_generic_facebook_logo_thumbnail(
+    tmp_path: Path,
+) -> None:
+    """舊 DB 中的 Facebook 通用 logo 不可被當作社團縮圖顯示。"""
+
+    db_path = tmp_path / "app.db"
+    generic_logo = "https://static.facebook.com/images/logos/facebook_2x.png"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110/",
+            )
+        )
+        app_context.repositories.targets.save(
+            replace(target, group_cover_image_url=generic_logo)
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert generic_logo not in response.text
+
+
+def test_dashboard_does_not_render_polluted_facebook_error_name(tmp_path: Path) -> None:
+    """舊 DB 中的 Facebook 錯誤頁名稱不可出現在 dashboard HTML。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110/",
+            )
+        )
+        app_context.repositories.targets.save(
+            replace(
+                target,
+                name="Facebook | Error",
+                group_name="Facebook | Error",
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Facebook | Error" not in response.text
+    assert "222518561920110" in response.text
+
+
 def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     """Web UI 會依 Facebook group URL 自動建立 posts target 並補社團名稱。"""
 

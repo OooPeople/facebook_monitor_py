@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from typing import cast
@@ -858,6 +859,177 @@ def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(
 
     assert sent_count == 1
     assert in_transaction_during_send == [False]
+
+
+def test_outbox_dispatch_refreshes_polluted_match_group_line(
+    tmp_path: Path,
+) -> None:
+    """pending match outbox 投遞前會用目前 target 顯示名稱修正舊社團欄位。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+
+    def fake_ntfy_sender(
+        _config: NtfyConfig,
+        _title: str,
+        message: str,
+    ) -> NtfyResult:
+        """記錄實際送出的 ntfy 本文。"""
+
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:post:old-name:ntfy",
+                target_id=target.id,
+                item_key="post:old-name",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="社團：Facebook | Error\n本文",
+                endpoint="phase0test",
+            )
+        )
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+
+    assert sent_count == 1
+    assert sent_messages == ["社團：測試社團\n本文"]
+
+
+def test_outbox_dispatch_refreshes_only_first_match_group_header_with_channel_format(
+    tmp_path: Path,
+) -> None:
+    """舊 match outbox 只修 metadata header，且套用實際通道格式。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+
+    def fake_discord_sender(
+        _config: DiscordConfig,
+        _title: str,
+        message: str,
+    ) -> DiscordResult:
+        """記錄實際送出的 Discord 本文。"""
+
+        sent_messages.append(message)
+        return DiscordResult(ok=True, status_code=204, message="discord_sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(
+                    enable_discord_notification=True,
+                    discord_webhook="https://discord.com/api/webhooks/1234567890/token",
+                ),
+            )
+        )
+        app.repositories.targets.save(
+            replace(
+                target,
+                name="我的 <測試>\n名稱",
+                group_name="測試社團",
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:post:discord-old-name:discord",
+                target_id=target.id,
+                item_key="post:discord-old-name",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DISCORD,
+                title="title",
+                message="社團：Facebook | Error\n社團：正文不要改",
+                endpoint="https://discord.com/api/webhooks/1234567890/token",
+            )
+        )
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            discord_sender=fake_discord_sender,
+        )
+
+    assert sent_count == 1
+    assert sent_messages == ["社團：我的 \\<測試\\> 名稱\n社團：正文不要改"]
+
+
+def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
+    tmp_path: Path,
+) -> None:
+    """舊 runtime failure pending row 投遞前也會修正污染 target 名稱。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+
+    def fake_ntfy_sender(
+        _config: NtfyConfig,
+        _title: str,
+        message: str,
+    ) -> NtfyResult:
+        """記錄實際送出的 ntfy 本文。"""
+
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    enable_ntfy=True,
+                    ntfy_topic="runtime-test",
+                ),
+            )
+        )
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:runtime-failure:terminal:ntfy",
+                target_id=target.id,
+                item_key="runtime-failure:terminal",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="掃描狀態發生錯誤",
+                message=(
+                    "監視項目: Facebook | Error | "
+                    "錯誤類型: 未分類錯誤 | 連續次數: 3"
+                ),
+                endpoint="runtime-test",
+                event_kind=NotificationEventKind.RUNTIME_FAILURE,
+                source_scan_run_id=130,
+                failure_reason=UNKNOWN_REASON,
+                failure_count=3,
+            )
+        )
+
+        sent_count = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+
+    assert sent_count == 1
+    assert sent_messages == [
+        "監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3"
+    ]
 
 
 def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(

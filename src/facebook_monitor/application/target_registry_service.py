@@ -12,7 +12,7 @@ from facebook_monitor.application.target_display import is_generated_group_comme
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
-from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
+from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
@@ -20,8 +20,14 @@ from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.facebook.group_metadata_validation import has_polluted_group_cover_image_url
+from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+
+
+class InvalidTargetMetadataError(ValueError):
+    """表示 Facebook-derived metadata 不應寫入 target。"""
 
 
 class TargetRegistryService:
@@ -82,8 +88,8 @@ class TargetRegistryService:
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
-        request_group_name = clean_facebook_group_name(group_name)
-        request_cover_image_url = _normalize_metadata_url(group_cover_image_url)
+        request_group_name = _normalize_group_metadata_name(group_name, strict=True)
+        request_cover_image_url = _normalize_metadata_url(group_cover_image_url, strict=True)
         if not request_group_name and not request_cover_image_url:
             return target
 
@@ -91,7 +97,10 @@ class TargetRegistryService:
         if request_group_name:
             should_update_name = overwrite_name or (
                 target.target_kind == TargetKind.POSTS
-                and is_generated_group_posts_name(target.name, target.group_id)
+                and (
+                    is_generated_group_posts_name(target.name, target.group_id)
+                    or is_invalid_facebook_group_name(target.name)
+                )
             )
             should_update_name = should_update_name or (
                 target.target_kind == TargetKind.COMMENTS
@@ -102,6 +111,11 @@ class TargetRegistryService:
                         target.group_id,
                         target.parent_post_id,
                     )
+                    or is_generated_group_comments_display_name(
+                        target.name,
+                        parent_post_id=target.parent_post_id,
+                    )
+                    or is_invalid_facebook_group_name(target.name)
                 )
             )
         next_name = target.name
@@ -117,8 +131,11 @@ class TargetRegistryService:
         updated_target = replace(
             target,
             name=next_name,
-            group_name=request_group_name or target.group_name,
-            group_cover_image_url=request_cover_image_url or target.group_cover_image_url,
+            group_name=request_group_name or _normalize_group_metadata_name(target.group_name),
+            group_cover_image_url=_next_metadata_cover_image_url(
+                target,
+                request_cover_image_url,
+            ),
             metadata_status=TargetMetadataStatus.RESOLVED,
             metadata_error="",
             updated_at=utc_now(),
@@ -136,8 +153,16 @@ class TargetRegistryService:
         target = self.targets.get(target_id)
         if target is None:
             raise ValueError(f"Target not found: {target_id}")
-        request_cover_image_url = _normalize_metadata_url(group_cover_image_url)
+        request_cover_image_url = _normalize_metadata_url(group_cover_image_url, strict=True)
         if not request_cover_image_url:
+            if has_polluted_group_cover_image_url(target.group_cover_image_url):
+                updated_target = replace(
+                    target,
+                    group_cover_image_url="",
+                    updated_at=utc_now(),
+                )
+                self.targets.save(updated_target)
+                return updated_target
             return target
         updated_target = replace(
             target,
@@ -209,24 +234,28 @@ class TargetRegistryService:
 
         existing = self.targets.find_by_kind_scope(TargetKind.POSTS, request.group_id)
         request_name = clean_facebook_group_name(request.name)
-        request_group_name = clean_facebook_group_name(request.group_name)
+        request_group_name = _normalize_group_metadata_name(request.group_name)
         request_cover_image_url = _normalize_metadata_url(request.group_cover_image_url)
         if existing:
             existing = self.normalize_target_names(existing)
             existing_name = clean_facebook_group_name(existing.name)
-            existing_group_name = clean_facebook_group_name(existing.group_name)
+            existing_group_name = _normalize_group_metadata_name(existing.group_name)
+            existing_cover_image_url = _existing_cover_image_url_or_empty(existing)
             next_name = request_name or existing_name
             if (
                 not request_name
                 and request_group_name
-                and is_generated_group_posts_name(existing.name, existing.group_id)
+                and (
+                    is_generated_group_posts_name(existing.name, existing.group_id)
+                    or is_invalid_facebook_group_name(existing.name)
+                )
             ):
                 next_name = request_group_name
             target = replace(
                 existing,
                 name=next_name,
                 group_name=request_group_name or existing_group_name,
-                group_cover_image_url=request_cover_image_url or existing.group_cover_image_url,
+                group_cover_image_url=request_cover_image_url or existing_cover_image_url,
                 canonical_url=request.canonical_url,
                 metadata_status=(
                     TargetMetadataStatus.RESOLVED
@@ -269,12 +298,13 @@ class TargetRegistryService:
         )
         existing = self.targets.find_by_kind_scope(TargetKind.COMMENTS, target_probe.scope_id)
         request_name = clean_facebook_group_name(request.name)
-        request_group_name = clean_facebook_group_name(request.group_name)
+        request_group_name = _normalize_group_metadata_name(request.group_name)
         request_cover_image_url = _normalize_metadata_url(request.group_cover_image_url)
         if existing:
             existing = self.normalize_target_names(existing)
             existing_name = clean_facebook_group_name(existing.name)
-            existing_group_name = clean_facebook_group_name(existing.group_name)
+            existing_group_name = _normalize_group_metadata_name(existing.group_name)
+            existing_cover_image_url = _existing_cover_image_url_or_empty(existing)
             next_name = request_name or existing_name
             if (
                 not request_name
@@ -289,6 +319,7 @@ class TargetRegistryService:
                         existing.name,
                         parent_post_id=existing.parent_post_id,
                     )
+                    or is_invalid_facebook_group_name(existing.name)
                 )
             ):
                 next_name = generated_group_comments_display_name(
@@ -299,7 +330,7 @@ class TargetRegistryService:
                 existing,
                 name=next_name,
                 group_name=request_group_name or existing_group_name,
-                group_cover_image_url=request_cover_image_url or existing.group_cover_image_url,
+                group_cover_image_url=request_cover_image_url or existing_cover_image_url,
                 canonical_url=request.canonical_url,
                 metadata_status=(
                     TargetMetadataStatus.RESOLVED
@@ -346,8 +377,43 @@ def _normalize_metadata_error(value: str) -> str:
     return normalized[:500]
 
 
-def _normalize_metadata_url(value: str) -> str:
+def _normalize_group_metadata_name(value: str, *, strict: bool = False) -> str:
+    """整理 Facebook-derived group name；錯誤頁名稱不得進入 metadata。"""
+
+    normalized = clean_facebook_group_name(value)
+    if normalized and is_invalid_facebook_group_name(normalized):
+        if strict:
+            raise InvalidTargetMetadataError("Facebook 回傳錯誤頁，未更新 target metadata")
+        return ""
+    return normalized
+
+
+def _normalize_metadata_url(value: str, *, strict: bool = False) -> str:
     """整理 Facebook metadata URL，避免空白與控制字元進 DB。"""
 
-    result = sanitize_facebook_image_url(value)
+    raw = str(value or "").strip()
+    result = sanitize_facebook_group_cover_image_url(raw)
+    if raw and not result.ok and strict:
+        raise InvalidTargetMetadataError(
+            "Facebook 回傳不可作為社團封面的圖片，未更新 target metadata"
+        )
     return result.url if result.ok else ""
+
+
+def _existing_cover_image_url_or_empty(target: TargetDescriptor) -> str:
+    """回傳既有封面 URL；已知錯誤頁通用圖視為空值。"""
+
+    if has_polluted_group_cover_image_url(target.group_cover_image_url):
+        return ""
+    return target.group_cover_image_url
+
+
+def _next_metadata_cover_image_url(
+    target: TargetDescriptor,
+    request_cover_image_url: str,
+) -> str:
+    """決定 metadata refresh 後要保存的封面 URL，避免保留通用錯誤圖。"""
+
+    if request_cover_image_url:
+        return request_cover_image_url
+    return _existing_cover_image_url_or_empty(target)

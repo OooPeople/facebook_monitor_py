@@ -17,6 +17,13 @@ FACEBOOK_IMAGE_ALLOWED_HOST_SUFFIXES = (
     "facebook.com",
 )
 
+FACEBOOK_GENERIC_IMAGE_PATH_PREFIXES = (
+    "/images/logos/",
+)
+FACEBOOK_GENERIC_IMAGE_HOST_SUFFIXES = (
+    "facebook.com",
+)
+
 
 @dataclass(frozen=True)
 class ExternalUrlValidationResult:
@@ -56,6 +63,34 @@ def sanitize_facebook_image_url(value: object) -> ExternalUrlValidationResult:
         ok=True,
         url=urlunsplit(("https", host, parsed.path, parsed.query, "")),
     )
+
+
+def sanitize_facebook_group_cover_image_url(value: object) -> ExternalUrlValidationResult:
+    """只允許可作為 Facebook 社團封面圖的 HTTPS URL。"""
+
+    result = sanitize_facebook_image_url(value)
+    if not result.ok:
+        return result
+    if is_generic_facebook_image_url(result.url):
+        return ExternalUrlValidationResult(ok=False, reason="generic_facebook_asset")
+    return result
+
+
+def is_generic_facebook_image_url(value: object) -> bool:
+    """判斷 URL 是否為 Facebook 通用品牌圖，而不是 target 封面。"""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    path = parsed.path.casefold()
+    if not any(_host_matches_suffix(host, suffix) for suffix in FACEBOOK_GENERIC_IMAGE_HOST_SUFFIXES):
+        return False
+    return any(path.startswith(prefix) for prefix in FACEBOOK_GENERIC_IMAGE_PATH_PREFIXES)
 
 
 def _host_matches_suffix(host: str, suffix: str) -> bool:

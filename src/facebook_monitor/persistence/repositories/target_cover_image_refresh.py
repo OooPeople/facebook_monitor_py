@@ -85,20 +85,40 @@ class TargetCoverImageRefreshRepository:
         )
         return CoverImageRefreshRequestStatus.QUEUED
 
-    def list_pending(self, *, limit: int) -> list[TargetCoverImageRefreshState]:
+    def list_pending(
+        self,
+        *,
+        limit: int,
+        exclude_target_ids: tuple[str, ...] = (),
+    ) -> list[TargetCoverImageRefreshState]:
         """列出等待 worker 消化的 cover image refresh jobs。"""
 
         normalized_limit = max(int(limit), 0)
         if normalized_limit <= 0:
             return []
+        normalized_exclude_ids = tuple(
+            str(target_id or "").strip() for target_id in exclude_target_ids
+        )
+        normalized_exclude_ids = tuple(
+            target_id for target_id in normalized_exclude_ids if target_id
+        )
+        exclude_clause = ""
+        if normalized_exclude_ids:
+            placeholders = ",".join("?" for _ in normalized_exclude_ids)
+            exclude_clause = f"AND target_id NOT IN ({placeholders})"
         rows = self.connection.execute(
-            """
+            f"""
             SELECT * FROM target_cover_image_refresh_state
             WHERE status = ?
+            {exclude_clause}
             ORDER BY requested_at, updated_at
             LIMIT ?
             """,
-            (TargetCoverImageRefreshStatus.PENDING.value, normalized_limit),
+            (
+                TargetCoverImageRefreshStatus.PENDING.value,
+                *normalized_exclude_ids,
+                normalized_limit,
+            ),
         ).fetchall()
         return [_cover_refresh_state_from_row(row) for row in rows]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 from facebook_monitor.core.external_url_policy import sanitize_facebook_image_url
 
 
@@ -73,3 +74,37 @@ def test_sanitize_facebook_image_url_normalizes_host_boundaries() -> None:
 
     assert result.ok
     assert result.url == "https://scontent.xx.fbcdn.net/v/cover.jpg?stp=dst-jpg"
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://scontent.xx.fbcdn.net/v/t39.30808-6/group-cover.jpg?stp=dst-jpg",
+        "https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=123",
+    ),
+)
+def test_sanitize_facebook_group_cover_image_url_accepts_cover_hosts(url: str) -> None:
+    """社團封面 URL policy 不應誤擋合法 Facebook CDN cover URL。"""
+
+    result = sanitize_facebook_group_cover_image_url(url)
+
+    assert result.ok
+    assert result.url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://static.facebook.com/images/logos/facebook_2x.png",
+        "https://www.facebook.com/images/logos/facebook_2x.png",
+        "https://facebook.com/images/logos/facebook_2x.png",
+    ),
+)
+def test_sanitize_facebook_group_cover_image_url_rejects_generic_logo(url: str) -> None:
+    """社團封面 URL policy 不接受 Facebook 錯誤頁的通用品牌圖。"""
+
+    result = sanitize_facebook_group_cover_image_url(url)
+
+    assert not result.ok
+    assert result.url == ""
+    assert result.reason == "generic_facebook_asset"

@@ -49,7 +49,7 @@
 - target 建立 / 更新正式入口是 `upsert_group_posts_target(...)` 與 `upsert_comments_target(...)`。
 - Python 預設值集中於 `core/defaults.py`；Web UI、service、worker 不另寫一套。
 - `targets.group_cover_image_url` 只服務 Web UI 社團縮圖顯示，不參與 scan、seen/baseline 或 notification 判斷。
-- cover image URL 自動刷新採被動即時策略：只有 dashboard/browser 判定縮圖載入失敗時，才送出輕量 hint 並排 image-only refresh job。主動低頻背景刷新目前明確不做，因為使用者未開 dashboard 時壞縮圖沒有產品影響，且定期開 Facebook 頁面會增加 session 與資源負擔。
+- cover image URL 自動刷新採被動即時策略：只有 dashboard/browser 判定縮圖載入失敗時，才送出輕量 hint 並排 image-only refresh job。主動低頻背景刷新目前明確不做，因為使用者未開 dashboard 時壞縮圖沒有產品影響，且定期開 Facebook 頁面會增加 session 與資源負擔。唯一例外是 Facebook outage 已知會把封面污染成通用品牌圖；resident maintenance 可把這類既有污染 URL 排入同一條 image-only flow，且不得改動 target 顯示名稱。
 - cover image refresh 狀態 owner 是 `target_cover_image_refresh_state`。該狀態不得混用 `targets.metadata_status`，避免 UI 把縮圖維護誤解成名稱 metadata refresh。失敗時保留舊 URL，result/error 可由 DB state 查詢。
 
 ## Scan Pipeline

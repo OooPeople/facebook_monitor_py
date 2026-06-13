@@ -25,6 +25,10 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
+from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
+from facebook_monitor.diagnostics._support_bundle_target_collectors import (
+    _target_inventory_payload,
+)
 from facebook_monitor.diagnostics._support_bundle_retention import prune_old_support_bundles
 from facebook_monitor.diagnostics._support_bundle_db_common import _SUPPORT_COUNT_TABLES
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
@@ -92,6 +96,31 @@ def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:
         ).fetchone()
     assert topic_row["ntfy_topic"] == "legacy-plaintext-topic"
     assert marker_row is None
+
+
+def test_target_inventory_marks_generic_facebook_logo_as_invalid_cover(
+    tmp_path: Path,
+) -> None:
+    """target inventory 需區分有 URL 與可作為有效封面的 URL。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+            group_cover_image_url="https://static.facebook.com/images/logos/facebook_2x.png",
+        )
+        TargetRepository(connection).save(target)
+
+    payload = _target_inventory_payload(db_path, _SupportBundleAliases())
+    targets = payload["targets"]
+
+    assert isinstance(targets, list)
+    assert targets[0]["has_cover_image_url"] is True
+    assert targets[0]["has_valid_cover_image_url"] is False
+    assert targets[0]["cover_image_reject_reason"] == "generic_facebook_asset"
 
 
 def test_support_bundle_hashes_invariant_row_ids(tmp_path: Path) -> None:

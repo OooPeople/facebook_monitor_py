@@ -204,6 +204,46 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert app.repositories.notification_outbox.list_pending() == []
 
 
+def test_finalize_scan_items_sanitizes_polluted_match_history_group_name(
+    tmp_path: Path,
+) -> None:
+    """match history 不應保存 Facebook 錯誤頁名稱。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="Facebook | Error",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:polluted-name",
+                    alias_keys=("post:polluted-name",),
+                    group_id="123",
+                    text="這是一篇票券貼文",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+        )
+        history = app.repositories.match_history.list_by_target(target.id)
+
+    assert len(history) == 1
+    assert history[0].group_name == "group:123:posts"
+
+
 def test_finalize_scan_items_persists_display_text_for_visible_results(
     tmp_path: Path,
 ) -> None:

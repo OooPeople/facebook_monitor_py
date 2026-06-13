@@ -10,6 +10,7 @@ from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import generated_group_comments_display_name
 from facebook_monitor.core.models import is_generated_group_comments_name
 from facebook_monitor.core.models import is_generated_group_posts_name
+from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 
 
@@ -29,6 +30,10 @@ def format_target_display_name(
     raw_target_name = str(target.name or "").strip()
     target_name = clean_target_display_name(raw_target_name)
     group_name = clean_target_display_name(target.group_name)
+    if is_invalid_facebook_group_name(target_name):
+        target_name = ""
+    if is_invalid_facebook_group_name(group_name):
+        group_name = ""
     if target.target_kind == TargetKind.COMMENTS:
         return _format_comments_target_display_name(
             target,

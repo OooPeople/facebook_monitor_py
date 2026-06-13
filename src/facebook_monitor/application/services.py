@@ -190,10 +190,14 @@ class TargetApplicationService:
         self,
         *,
         limit: int,
+        exclude_target_ids: tuple[str, ...] = (),
     ) -> list[TargetCoverImageRefreshState]:
         """列出等待 resident worker 消化的 image-only cover refresh jobs。"""
 
-        return self.cover_image_refreshes.list_pending(limit=limit)
+        return self.cover_image_refreshes.list_pending(
+            limit=limit,
+            exclude_target_ids=exclude_target_ids,
+        )
 
     def mark_target_cover_image_refresh_attempted(
         self,

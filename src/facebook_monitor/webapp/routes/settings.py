@@ -4,39 +4,30 @@ from __future__ import annotations
 
 import platform
 import sys
-from typing import Annotated
 
 from fastapi import FastAPI
-from fastapi import Form
-from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from facebook_monitor.core.user_messages import format_failure_message_text
-from facebook_monitor.core.user_messages import format_notification_event_message
-from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.updates.release_check import check_github_release_updates
 from facebook_monitor.updates.download import download_and_verify_update
 from facebook_monitor.updates.download import reveal_in_file_manager
 from facebook_monitor.updates.handoff import write_pending_update
 from facebook_monitor.updates.launcher import launch_temp_updater
-from facebook_monitor.webapp.request_payloads import json_object_payload
 from facebook_monitor.webapp.dependencies import redirect_settings_with_error
 from facebook_monitor.webapp.dependencies import redirect_settings_with_message
-from facebook_monitor.webapp.profile_session import ProfileSessionError
-from facebook_monitor.webapp.settings_view import build_settings_template_context
-from facebook_monitor.webapp.settings_use_cases import (
-    clear_failed_notifications_for_settings,
+from facebook_monitor.webapp.routes.settings_diagnostics_routes import (
+    register_settings_diagnostics_routes,
 )
-from facebook_monitor.webapp.settings_use_cases import close_facebook_profile_for_settings
-from facebook_monitor.webapp.settings_use_cases import create_support_bundle_for_settings
-from facebook_monitor.webapp.settings_use_cases import open_facebook_profile_for_settings
-from facebook_monitor.webapp.settings_use_cases import parse_target_keyword_defaults_for_settings
-from facebook_monitor.webapp.settings_use_cases import save_target_keyword_defaults_for_settings
-from facebook_monitor.webapp.settings_use_cases import save_theme_preference_for_settings
+from facebook_monitor.webapp.routes.settings_preferences_routes import (
+    register_settings_preference_routes,
+)
+from facebook_monitor.webapp.routes.settings_profile_routes import (
+    register_settings_profile_routes,
+)
+from facebook_monitor.webapp.settings_view import build_settings_template_context
 from facebook_monitor.webapp.settings_update_use_cases import apply_update_for_settings
 from facebook_monitor.webapp.settings_update_use_cases import build_settings_update_context
 from facebook_monitor.webapp.settings_update_use_cases import download_and_apply_update_for_settings
@@ -47,6 +38,10 @@ from facebook_monitor.webapp.settings_update_use_cases import SettingsUpdateCont
 
 def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     """註冊 settings / notification / profile routes。"""
+
+    register_settings_preference_routes(app)
+    register_settings_diagnostics_routes(app)
+    register_settings_profile_routes(app)
 
     @app.get("/settings")
     async def settings(request: Request) -> object:
@@ -68,37 +63,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 feedback=feedback,
                 error=error,
             ),
-        )
-
-    @app.post("/settings/theme")
-    async def update_theme(request: Request) -> dict[str, str]:
-        """保存 Web UI theme preference，避免 auto-port 時遺失主題。"""
-
-        payload = await json_object_payload(request)
-        theme = str(payload.get("theme", "")).strip()
-        if theme not in {"light", "dark"}:
-            raise HTTPException(status_code=400, detail="invalid theme")
-        return {"theme": await save_theme_preference_for_settings(request, theme)}
-
-    @app.post("/settings/target-keywords")
-    async def update_target_keyword_defaults(
-        request: Request,
-        exclude_keywords: Annotated[str, Form()] = "",
-        exclude_ignore_phrases: Annotated[str, Form()] = "",
-    ) -> RedirectResponse:
-        """更新新增 target 時套用的關鍵字預設值。"""
-
-        try:
-            settings = parse_target_keyword_defaults_for_settings(
-                exclude_keywords=exclude_keywords,
-                exclude_ignore_phrases=exclude_ignore_phrases,
-            )
-        except ValueError as exc:
-            return redirect_settings_with_error(str(exc))
-        await save_target_keyword_defaults_for_settings(request, settings)
-        return redirect_settings_with_message(
-            "關鍵字預設值已保存",
-            feedback="target_keyword_defaults_saved",
         )
 
     @app.post("/settings/updates/download")
@@ -168,57 +132,6 @@ def register_settings_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 "shutdown_requested": outcome.shutdown_requested,
             }
         )
-
-    @app.post("/settings/notifications/clear-failed")
-    async def clear_failed_notification_outbox_route(request: Request) -> RedirectResponse:
-        """手動清除 failed notification outbox rows，不影響 pending rows。"""
-
-        try:
-            cleared_count = await clear_failed_notifications_for_settings(request)
-        except Exception as exc:
-            return redirect_settings_with_error(
-                "清除失敗通知失敗："
-                + format_notification_event_message(
-                    safe_exception_message("notification_clear_failed", exc)
-                )
-            )
-        return redirect_settings_with_message(
-            f"已清除失敗通知 {cleared_count} 筆",
-            feedback="notification_clear_failed_finished",
-        )
-
-    @app.post("/settings/support-bundle")
-    async def download_support_bundle(request: Request) -> object:
-        """建立並下載 redacted support bundle。"""
-
-        try:
-            result = await create_support_bundle_for_settings(request)
-        except Exception as exc:
-            return redirect_settings_with_error(
-                "支援診斷包建立失敗：" + format_failure_message_text(str(exc))
-            )
-        return FileResponse(
-            result.path,
-            media_type="application/zip",
-            filename=result.filename,
-        )
-
-    @app.post("/settings/facebook/open")
-    async def open_facebook_profile(request: Request) -> RedirectResponse:
-        """開啟 Facebook automation profile 設定視窗。"""
-
-        try:
-            await open_facebook_profile_for_settings(request)
-        except ProfileSessionError as exc:
-            return redirect_settings_with_error(format_failure_message_text(str(exc)))
-        return redirect_settings_with_message("Facebook 設定視窗已開啟")
-
-    @app.post("/settings/facebook/close")
-    async def close_facebook_profile(request: Request) -> RedirectResponse:
-        """關閉 Facebook automation profile 設定視窗。"""
-
-        await close_facebook_profile_for_settings(request)
-        return redirect_settings_with_message("Facebook 設定視窗已關閉")
 
 
 def _build_settings_update_context(request: Request) -> SettingsUpdateContext:

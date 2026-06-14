@@ -19,8 +19,8 @@ from facebook_monitor.application.target_monitoring_commands import (
 )
 from facebook_monitor.application.target_monitoring_commands import TargetMonitoringCommands
 from facebook_monitor.application.target_registry_service import TargetRegistryService
-from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import ScanSkipDecision
+from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.core.models import TargetCoverImageRefreshResult

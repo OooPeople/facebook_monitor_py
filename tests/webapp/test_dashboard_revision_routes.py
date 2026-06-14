@@ -111,6 +111,23 @@ def test_dashboard_revision_endpoint_ignores_temporary_sqlite_lock(
     assert response.status_code == 503
 
 
+def test_dashboard_page_uses_dashboard_route_view_loader_seam(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Dashboard page read model seam 留在 routes.dashboard，避免 split 後失控。"""
+
+    def raise_locked(*args: object, **kwargs: object) -> object:
+        raise DashboardReadUnavailable("database is locked")
+
+    monkeypatch.setattr(dashboard_routes, "get_dashboard_view", raise_locked)
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/")
+
+    assert response.status_code == 503
+
+
 def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -128,6 +145,23 @@ def test_dashboard_sidebar_endpoint_ignores_temporary_sqlite_lock(
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
 
     response = client.get("/api/sidebar")
+
+    assert response.status_code == 503
+
+
+def test_dashboard_card_uses_dashboard_route_target_card_loader_seam(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Target card partial read model seam 留在 routes.dashboard。"""
+
+    def raise_locked(*args: object, **kwargs: object) -> object:
+        raise DashboardReadUnavailable("database is locked")
+
+    monkeypatch.setattr(dashboard_routes, "get_target_card", raise_locked)
+    client = TestClient(create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile"))
+
+    response = client.get("/api/targets/missing/card")
 
     assert response.status_code == 503
 

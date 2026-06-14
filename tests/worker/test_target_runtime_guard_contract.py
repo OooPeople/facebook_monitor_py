@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
+
+from facebook_monitor.persistence.repositories.target_runtime_state import (
+    TargetRuntimeStateRepository,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_DIR = ROOT / "src/facebook_monitor"
+APPLICATION_DIR = ROOT / "src/facebook_monitor/application"
+TARGET_RUNTIME_MODULE_FILES = tuple(sorted(APPLICATION_DIR.glob("target_runtime_*.py")))
+FORMAL_RUNTIME_FACADE_MODULE = "target_runtime_service"
+PACKAGE_SOURCE_FILES = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/scheduler/runtime_recovery.py",
     ROOT / "src/facebook_monitor/scheduler/one_shot_loop.py",
@@ -20,9 +30,23 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
 )
 APPLICATION_RUNTIME_SERVICE_FILES = (
-    ROOT / "src/facebook_monitor/application/services.py",
-    ROOT / "src/facebook_monitor/application/target_runtime_service.py",
+    APPLICATION_DIR / "services.py",
+    *TARGET_RUNTIME_MODULE_FILES,
 )
+FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_MODULES = {
+    path.stem
+    for path in TARGET_RUNTIME_MODULE_FILES
+    if path.stem != FORMAL_RUNTIME_FACADE_MODULE
+}
+FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_FULL_MODULES = {
+    f"facebook_monitor.application.{module}"
+    for module in FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_MODULES
+}
+PUBLIC_RUNTIME_FACADE_SYMBOLS = {
+    "ScanSkipDecision",
+    "StaleRunningRecovery",
+    "TargetRuntimeService",
+}
 REMOVED_APPLICATION_RUNTIME_ALIASES = {
     "apply_scan_failure_decision_if_owner",
     "apply_scan_skip_decision_if_owner",
@@ -104,6 +128,32 @@ ALLOWED_EXPLICIT_NONE_SCAN_COMMIT_GUARDS = {
         "record_guarded_scan_failure_for_db",
     ),
 }
+SQL_WRITE_PREFIXES = ("INSERT INTO", "UPDATE", "DELETE FROM", "REPLACE INTO")
+ALLOWED_TARGET_RUNTIME_STATE_SQL_WRITES = {
+    (
+        "src/facebook_monitor/worker/resident_main.py",
+        "_write_display_next_due_at_best_effort",
+        (
+            "UPDATE target_runtime_state "
+            "SET display_next_due_at = ?, updated_at = ? "
+            "WHERE target_id = ?"
+        ),
+    ),
+}
+READ_ONLY_RUNTIME_STATE_REPOSITORY_METHODS = {
+    "get",
+    "list_all",
+    "list_by_targets",
+    "list_desired_active",
+}
+MUTATING_RUNTIME_STATE_REPOSITORY_METHODS = {
+    name
+    for name, member in inspect.getmembers(
+        TargetRuntimeStateRepository,
+        inspect.isfunction,
+    )
+    if not name.startswith("_") and name not in READ_ONLY_RUNTIME_STATE_REPOSITORY_METHODS
+}
 
 
 class _CallContextVisitor(ast.NodeVisitor):
@@ -133,6 +183,59 @@ class _CallContextVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+class _RuntimeStateRepositoryAliasVisitor(ast.NodeVisitor):
+    """收集指向 runtime state repository 的本地 alias 名稱。"""
+
+    def __init__(self) -> None:
+        self.aliases: set[str] = set()
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        self._record_targets(node.targets, node.value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        if node.value is not None:
+            self._record_targets((node.target,), node.value)
+        self.generic_visit(node)
+
+    def _record_targets(self, targets: tuple[ast.expr, ...] | list[ast.expr], value: ast.AST) -> None:
+        if not _is_runtime_state_repository_expr(value):
+            return
+        for target in targets:
+            if isinstance(target, ast.Name):
+                self.aliases.add(target.id)
+
+
+class _SqlWriteVisitor(ast.NodeVisitor):
+    """收集 raw SQL write 與所在函式 context。"""
+
+    def __init__(self) -> None:
+        self.context: list[str] = []
+        self.writes: list[tuple[int, str, str]] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        self.context.append(node.name)
+        self.generic_visit(node)
+        self.context.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self.context.append(node.name)
+        self.generic_visit(node)
+        self.context.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+        self.context.append(node.name)
+        self.generic_visit(node)
+        self.context.pop()
+
+    def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802
+        if isinstance(node.value, str):
+            statement = _target_runtime_state_sql_write_statement(node.value)
+            if statement:
+                self.writes.append((node.lineno, ".".join(self.context), statement))
+        self.generic_visit(node)
+
+
 def _attribute_path(node: ast.AST) -> tuple[str, ...]:
     """把 attribute chain 轉成可比對的名稱序列。"""
 
@@ -153,6 +256,70 @@ def _called_name(node: ast.Call) -> str:
     if isinstance(node.func, ast.Attribute):
         return node.func.attr
     return ""
+
+
+def _resolved_import_from_module(path: Path, node: ast.ImportFrom) -> str:
+    """解析 absolute / relative import module，供 import guard 統一比對。"""
+
+    module = node.module or ""
+    if node.level == 0:
+        return module
+    package_parts = path.relative_to(ROOT / "src").with_suffix("").parts[:-1]
+    parent_count = max(node.level - 1, 0)
+    base_parts = package_parts[: max(len(package_parts) - parent_count, 0)]
+    module_parts = tuple(part for part in module.split(".") if part)
+    return ".".join((*base_parts, *module_parts))
+
+
+def _runtime_subservice_import_guard_files() -> tuple[Path, ...]:
+    """列出不得直接 import runtime 子服務的 production modules。"""
+
+    return tuple(
+        path
+        for path in PACKAGE_SOURCE_FILES
+        if not (
+            path.parent == APPLICATION_DIR
+            and (
+                path.stem.startswith("target_runtime_")
+                or path.stem == FORMAL_RUNTIME_FACADE_MODULE
+            )
+        )
+    )
+
+
+def _is_runtime_state_repository_expr(node: ast.AST) -> bool:
+    """判斷 expression 是否指向 app.repositories.runtime_states。"""
+
+    path_parts = _attribute_path(node)
+    return len(path_parts) >= 2 and path_parts[-2:] == ("repositories", "runtime_states")
+
+
+def _target_runtime_state_sql_write_statement(value: str) -> str:
+    """回傳 raw SQL 對 target_runtime_state 的 normalized write statement。"""
+
+    normalized = " ".join(value.strip().split())
+    upper = normalized.upper()
+    if "TARGET_RUNTIME_STATE" not in upper:
+        return ""
+    for prefix in SQL_WRITE_PREFIXES:
+        expected = f"{prefix} TARGET_RUNTIME_STATE"
+        if upper.startswith(expected):
+            return normalized
+    return ""
+
+
+def _is_runtime_state_repository_mutator_call(
+    path_parts: tuple[str, ...],
+    *,
+    aliases: set[str],
+) -> bool:
+    """判斷呼叫是否直接使用 runtime repository mutator。"""
+
+    if not path_parts or path_parts[-1] not in MUTATING_RUNTIME_STATE_REPOSITORY_METHODS:
+        return False
+    if len(path_parts) >= 2 and path_parts[-2] == "runtime_states":
+        return True
+    return len(path_parts) >= 2 and path_parts[-2] in aliases
 
 
 def test_formal_runtime_paths_do_not_call_unguarded_runtime_methods() -> None:
@@ -197,6 +364,57 @@ def test_formal_runtime_paths_do_not_call_removed_runtime_aliases() -> None:
                 continue
             if node.attr in REMOVED_APPLICATION_RUNTIME_ALIASES:
                 violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.attr}")
+
+    assert violations == []
+
+
+def test_non_runtime_modules_do_not_import_runtime_subservices() -> None:
+    """非 runtime 子服務 module 不得繞過 TargetRuntimeService facade。"""
+
+    violations: list[str] = []
+    for path in _runtime_subservice_import_guard_files():
+        relative_path = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = _resolved_import_from_module(path, node)
+                if module == "facebook_monitor.application":
+                    for alias in node.names:
+                        if alias.name.startswith("target_runtime_"):
+                            violations.append(
+                                f"{relative_path}:{node.lineno}:from {module} "
+                                f"import {alias.name}"
+                            )
+                    continue
+                if module in FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_FULL_MODULES:
+                    for alias in node.names:
+                        violations.append(
+                            f"{relative_path}:{node.lineno}:from {module} "
+                            f"import {alias.name}"
+                        )
+                    continue
+                if module == "facebook_monitor.application.target_runtime_service":
+                    for alias in node.names:
+                        if alias.name in PUBLIC_RUNTIME_FACADE_SYMBOLS:
+                            continue
+                        violations.append(
+                            f"{relative_path}:{node.lineno}:from {module} "
+                            f"import {alias.name}"
+                        )
+                    continue
+                if module.startswith("facebook_monitor.application.target_runtime_"):
+                    for alias in node.names:
+                        violations.append(
+                            f"{relative_path}:{node.lineno}:from {module} "
+                            f"import {alias.name}"
+                        )
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if not alias.name.startswith(
+                        "facebook_monitor.application.target_runtime_"
+                    ):
+                        continue
+                    violations.append(f"{relative_path}:{node.lineno}:import {alias.name}")
 
     assert violations == []
 
@@ -274,18 +492,42 @@ def _is_unguarded_commit_guard_value(node: ast.AST) -> bool:
     return False
 
 
-def test_formal_runtime_paths_do_not_write_runtime_state_directly() -> None:
-    """runtime state 寫回必須集中在 service，避免熱路徑繞過 owner guard。"""
+def test_formal_runtime_paths_do_not_mutate_runtime_state_repository_directly() -> None:
+    """runtime state mutating writes 必須集中在 service，避免繞過 owner guard。"""
 
     violations: list[str] = []
     for path in FORMAL_RUNTIME_BOUNDARY_FILES:
         relative_path = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        alias_visitor = _RuntimeStateRepositoryAliasVisitor()
+        alias_visitor.visit(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             path_parts = _attribute_path(node.func)
-            if len(path_parts) >= 2 and path_parts[-2:] == ("runtime_states", "save"):
-                violations.append(f"{relative_path}:{node.lineno}:runtime_states.save")
+            if _is_runtime_state_repository_mutator_call(
+                path_parts,
+                aliases=alias_visitor.aliases,
+            ):
+                violations.append(
+                    f"{relative_path}:{node.lineno}:{'.'.join(path_parts)}"
+                )
+
+    assert violations == []
+
+
+def test_formal_runtime_paths_do_not_write_runtime_state_raw_sql_without_allowlist() -> None:
+    """raw SQL 寫 runtime state 必須是明確 allowlisted 的 UI-only 例外。"""
+
+    violations: list[str] = []
+    for path in FORMAL_RUNTIME_BOUNDARY_FILES:
+        relative_path = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        visitor = _SqlWriteVisitor()
+        visitor.visit(tree)
+        for lineno, context, statement in visitor.writes:
+            if (relative_path, context, statement) in ALLOWED_TARGET_RUNTIME_STATE_SQL_WRITES:
+                continue
+            violations.append(f"{relative_path}:{lineno}:{context}:{statement}")
 
     assert violations == []

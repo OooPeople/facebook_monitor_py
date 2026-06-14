@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetDesiredState
@@ -11,6 +13,7 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.core.scan_failure_policy import decide_scan_failure
 
 
 def test_target_runtime_state_default_is_stopped() -> None:
@@ -99,6 +102,28 @@ def test_success_idle_resets_failure_streak(tmp_path: Path) -> None:
     assert state is not None
     assert state.consecutive_failure_reason == ""
     assert state.consecutive_failure_count == 0
+
+
+def test_scan_failure_apply_rejects_missing_target(tmp_path: Path) -> None:
+    """failure decision 寫回未知 target 時應由 service 明確拒絕。"""
+
+    decision = decide_scan_failure("page_load_timeout", source="playwright")
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        with pytest.raises(ValueError, match="Target not found"):
+            app.services.targets.apply_scan_failure_decision(
+                "missing-target",
+                decision,
+                "timeout",
+            )
+        with pytest.raises(ValueError, match="Target not found"):
+            app.services.targets.guarded_apply_scan_failure_decision(
+                "missing-target",
+                decision,
+                "timeout",
+                worker_id="worker",
+                started_at=utc_now(),
+            )
 
 
 def test_scan_skip_streak_escalates_on_third_skip(tmp_path: Path) -> None:

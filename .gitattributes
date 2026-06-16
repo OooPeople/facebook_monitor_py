@@ -1,2 +1,12 @@
+* text=auto eol=lf
+
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary
+*.zip binary
+
 src/facebook_monitor/webapp/static/vendor/sortablejs/sortable.esm.js text eol=lf
 src/facebook_monitor/webapp/static/vendor/sortablejs/LICENSE text eol=lf

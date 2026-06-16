@@ -75,7 +75,7 @@
 
 ### 驗證分級與回報用語
 
-- 快速 / 聚焦檢查：只跑受影響 pytest、單一路徑 ruff / mypy、static JS syntax、compileall、probe 或特定 smoke。適用於內圈開發與窄範圍修正；回報時必須列出實際命令，並明講這不是上傳完整檢查。
+- 快速 / 聚焦檢查：只跑受影響 pytest、單一路徑 ruff / mypy、static JS syntax、compileall、probe 或特定 smoke。一般開發、文件整理與窄範圍修正預設使用這一層；若改到 DB / migration、scheduler、worker、release/update、dependency、Web middleware 或其他高風險邊界，需自行升級到相對應的測試切片、ruff、mypy 或 audit。回報時必須列出實際命令，並明講這不是上傳完整檢查。
 - 本機上傳前完整檢查：環境已同步時執行 `.\scripts\uv.ps1 run python scripts\admin\release_validation.py --skip-sync`；若 dependency、`uv.lock`、workflow 或驗證腳本有變更，改跑不帶 `--skip-sync` 的 release validation 或先執行 locked sync。此層可回報「本機上傳前完整檢查通過」，不得寫成「GitHub CI 通過」。
 - GitHub CI：只有 GitHub Actions 對該 commit / PR 實際完成且綠燈，才可回報「GitHub CI 通過」。本機 release validation 是 CI 對齊的前置檢查，不等同遠端 CI 已通過。
 - Release validation：`scripts/admin/release_validation.py` 是 release 前本機可重現檢查，預設包含 `pip-audit`。使用 `--skip-audit` 時只能回報為離線 / 臨時快速檢查；使用 `--include-artifacts --skip-artifact-manifest` 時只能回報為 pre-finalize artifact 檢查，不可稱為 upload-ready。

@@ -38,6 +38,28 @@ class FakeBoundedRetentionRunner:
         return True
 
 
+class SchemaAwareBoundedRetentionRunner:
+    """記錄 maintenance 觸發時 app DB 是否已完成 schema 初始化。"""
+
+    def __init__(self) -> None:
+        self.observed_app_settings_table: list[bool] = []
+
+    def trigger(self, db_path: Path) -> bool:
+        """以唯讀方式確認 request read path 已先建立 schema。"""
+
+        with SqliteApplicationContext(db_path, initialize_schema_on_enter=False) as app_context:
+            row = app_context.repositories.targets.connection.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table'
+                    AND name = 'app_settings'
+                """
+            ).fetchone()
+        self.observed_app_settings_table.append(row is not None)
+        return True
+
+
 def test_parse_keywords_text_dedupes_and_trims() -> None:
     """Web UI keyword parser 會去除空白與重複值。"""
 
@@ -171,6 +193,23 @@ def test_web_ui_read_path_runs_bounded_retention_maintenance(
 
     assert response.status_code == 200
     assert runner.triggered_paths == [db_path]
+
+
+def test_web_ui_read_path_triggers_maintenance_after_schema_initialization(
+    tmp_path: Path,
+) -> None:
+    """首次讀空 DB 時，housekeeping 不可搶在 dashboard schema 初始化前執行。"""
+
+    db_path = tmp_path / "app.db"
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    runner = SchemaAwareBoundedRetentionRunner()
+    app.state.bounded_retention_maintenance_runner = runner
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert runner.observed_app_settings_table == [True]
 
 
 def test_settings_read_path_runs_bounded_retention_maintenance(

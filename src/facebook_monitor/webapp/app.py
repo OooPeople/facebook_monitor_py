@@ -160,9 +160,12 @@ def create_app(
             yield
         finally:
             try:
-                app_instance.state.profile_manager.close()
+                await app_instance.state.bounded_retention_maintenance_runner.wait_until_idle()
             finally:
-                app_instance.state.scheduler_manager.stop()
+                try:
+                    app_instance.state.profile_manager.close()
+                finally:
+                    app_instance.state.scheduler_manager.stop()
 
     app = FastAPI(title="Facebook Monitor Local UI", lifespan=lifespan)
 
@@ -171,16 +174,18 @@ def create_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        """在低頻 read path 嘗試 housekeeping，避免完全依賴 scheduler tick。"""
+        """成功讀取頁面後嘗試 housekeeping，避免搶在空 DB schema 初始化前執行。"""
 
+        response = await call_next(request)
         if (
             request.method == "GET"
             and request.url.path in BOUNDED_RETENTION_MAINTENANCE_READ_PATHS
+            and response.status_code < 500
         ):
             request.app.state.bounded_retention_maintenance_runner.trigger(
                 request.app.state.db_path
             )
-        return await call_next(request)
+        return response
 
     app.state.db_path = db_path
     app.state.profile_dir = profile_dir

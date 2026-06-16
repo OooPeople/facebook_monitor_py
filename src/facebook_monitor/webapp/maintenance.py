@@ -36,6 +36,14 @@ class BoundedRetentionMaintenanceRunner:
         self._task = asyncio.create_task(self._run(db_path))
         return True
 
+    async def wait_until_idle(self) -> None:
+        """等待目前已排入的 cleanup 完成，供 app shutdown 收尾。"""
+
+        task = self._task
+        if task is None:
+            return
+        await task
+
     async def _run(self, db_path: Path) -> None:
         """在 background thread 執行 blocking SQLite housekeeping。"""
 

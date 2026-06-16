@@ -33,6 +33,7 @@
 - Web UI 呈現、互動一致性、sidebar layout 或 route / presenter 邊界：更新 `docs/WEB_UI_CONTRACT.md`；若會影響 target state、scheduler、notification、dedupe 或 persistence，主語義仍要更新 `docs/ARCHITECTURE.md`。
 - Web UI vendored frontend file 來源、版本、license 或 checksum：更新 `src/facebook_monitor/webapp/static/vendor/frontend-vendor.manifest.json` 與 `docs/frontend-vendor.md`。
 - 工程審查範圍、review 輸出格式或 handoff 要求：更新 `docs/ENGINEERING_REVIEW.md`，必要時只在 `AGENTS.md` 保留短索引。
+- 驗證分級、CI 對齊命令與回報用語：更新 `docs/tooling.md`，並只在 `AGENTS.md` 保留短 guardrail；本機最近驗證摘要若存在，必須沿用同一套分級名稱。
 - 文件職責邊界或文件索引：更新本文件，並只在 README / AGENTS 保留必要入口。
 - 安裝與日常操作：更新 README 的摘要與 `docs/USAGE.md` 的詳細步驟。
 - scripts / CLI 搬移或新增：更新 `docs/tooling.md`。

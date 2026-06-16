@@ -47,9 +47,9 @@ def parse_args() -> argparse.Namespace:
         help="Skip uv sync --locked when the environment is already prepared.",
     )
     parser.add_argument(
-        "--include-audit",
+        "--skip-audit",
         action="store_true",
-        help="Also run pip-audit; this may require network access or advisory DB access.",
+        help="Skip pip-audit when running offline or intentionally reproducing non-audit checks.",
     )
     parser.add_argument(
         "--include-artifacts",
@@ -163,7 +163,7 @@ def validation_steps(
     *,
     skip_sync: bool,
     git_checkout: bool,
-    include_audit: bool = False,
+    include_audit: bool = True,
     include_artifacts: bool = False,
     require_artifact_manifest: bool = True,
     artifact_platform: str = "windows",
@@ -295,6 +295,26 @@ def validate_cli_args(args: argparse.Namespace) -> str | None:
     return None
 
 
+def completion_message(args: argparse.Namespace) -> str:
+    """依 skip flags 建立不會誤導為 CI / upload-ready 的完成訊息。"""
+
+    qualifiers: list[str] = []
+    if args.skip_sync:
+        qualifiers.append("uv sync skipped")
+    if args.skip_audit:
+        qualifiers.append("pip-audit skipped; not CI/upload complete")
+    if args.include_artifacts and args.skip_artifact_manifest:
+        qualifiers.append("artifact manifest skipped; not upload-ready")
+    label = (
+        "Local release validation with artifact checks passed"
+        if args.include_artifacts
+        else "Local release validation passed"
+    )
+    if not qualifiers:
+        return f"{label}."
+    return f"{label} ({'; '.join(qualifiers)})."
+
+
 def main() -> int:
     """CLI entrypoint：依序執行 release validation。"""
 
@@ -307,7 +327,9 @@ def main() -> int:
     git_checkout = is_git_checkout()
     if not git_checkout:
         print("非 Git checkout，已跳過 git diff --check。")
-    if args.include_audit:
+    if args.skip_audit:
+        print("已跳過 pip-audit；CI 仍會執行 dependency audit。")
+    else:
         print("已啟用 pip-audit；此步驟可能需要網路或 advisory DB。")
     if args.include_artifacts:
         print(f"已啟用 {args.artifact_platform} release artifact 一致性檢查。")
@@ -316,7 +338,7 @@ def main() -> int:
     for step in validation_steps(
         skip_sync=args.skip_sync,
         git_checkout=git_checkout,
-        include_audit=args.include_audit,
+        include_audit=not bool(args.skip_audit),
         include_artifacts=args.include_artifacts,
         require_artifact_manifest=not bool(args.skip_artifact_manifest),
         artifact_platform=args.artifact_platform,
@@ -326,7 +348,7 @@ def main() -> int:
         return_code = run_step(step)
         if return_code != 0:
             return return_code
-    print("\nRelease validation passed.")
+    print(f"\n{completion_message(args)}")
     return 0
 
 

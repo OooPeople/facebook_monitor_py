@@ -46,6 +46,8 @@
 ## 工作規則
 
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
+- 驗證要分清楚「快速 / 聚焦檢查」、「本機上傳前完整檢查」、「release artifact 檢查」與「GitHub CI」。快速檢查可跑受影響 tests、ruff、mypy、static JS 或 `git diff --check`，但回報時必須明講「只跑快速/局部檢查，不代表上傳完整驗證」。使用者提到「上傳」、「CI」、「GitHub checks」、「完整」、「所有上傳會跑的測試」時，必須先對照 `.github/workflows/ci.yml` 與 `docs/tooling.md#驗證分級與回報用語`，再跑對應完整驗證；不得把 target tests 或跳過 audit 的結果說成完整通過。
+- 本機上傳前完整檢查入口是 `.\scripts\uv.ps1 run python scripts\admin\release_validation.py --skip-sync`（環境已同步時）；若 dependency、`uv.lock`、workflow 或驗證腳本本身有變更，改跑不帶 `--skip-sync` 的 release validation 或先執行 locked sync。`--skip-audit`、`--skip-release-validation`、`--skip-artifact-manifest` 只允許離線、臨時快速檢查或 pre-finalize build 階段使用；回報必須列出實際 command 與 skip flags，不得用來回覆上傳/CI 是否會過。
 - 讀取或修改 `.md` 時使用 UTF-8。
 - 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 不得新增新的 `phase_*` script；檔名必須反映角色與用途。

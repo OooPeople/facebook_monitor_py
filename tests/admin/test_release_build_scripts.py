@@ -51,7 +51,7 @@ def test_windows_release_build_steps_cover_full_artifact_flow() -> None:
         "pyinstaller windows onedir",
         "create windows release zip",
         "validate windows artifact",
-        "full release validation",
+        "pre-finalize release validation",
     ]
     artifact_step = next(step for step in steps if step.label == "validate windows artifact")
     assert "--require-manifest" not in artifact_step.command
@@ -60,7 +60,9 @@ def test_windows_release_build_steps_cover_full_artifact_flow() -> None:
     assert PYINSTALLER_REQUIREMENT in install_step.command
     verify_step = next(step for step in steps if step.label == "verify pyinstaller version")
     assert "PyInstaller" in verify_step.command[-1]
-    full_step = next(step for step in steps if step.label == "full release validation")
+    full_step = next(
+        step for step in steps if step.label == "pre-finalize release validation"
+    )
     assert "--include-artifacts" in full_step.command
     assert "--skip-artifact-manifest" in full_step.command
     assert "windows" in full_step.command
@@ -82,12 +84,12 @@ def test_windows_release_build_steps_can_skip_install_and_full_validation() -> N
     assert "install pyinstaller" not in labels
     assert "verify pyinstaller version" in labels
     assert "install playwright chromium" not in labels
-    assert "full release validation" not in labels
+    assert "pre-finalize release validation" not in labels
     assert "validate windows artifact" in labels
 
 
 def test_windows_release_build_steps_pass_signer_subject() -> None:
-    """Windows signer subject 應傳給 artifact 與 full validation。"""
+    """Windows signer subject 應傳給 artifact 與 pre-finalize validation。"""
 
     steps = build_windows_release.build_steps(
         _windows_args(expected_signer_subject="Example Publisher"),
@@ -95,7 +97,9 @@ def test_windows_release_build_steps_pass_signer_subject() -> None:
     )
 
     artifact_step = next(step for step in steps if step.label == "validate windows artifact")
-    full_step = next(step for step in steps if step.label == "full release validation")
+    full_step = next(
+        step for step in steps if step.label == "pre-finalize release validation"
+    )
     assert "--expected-signer-subject" in artifact_step.command
     assert "Example Publisher" in artifact_step.command
     assert "--expected-signer-subject" in full_step.command
@@ -115,7 +119,7 @@ def test_macos_release_build_steps_cover_full_artifact_flow() -> None:
         "pyinstaller macos onedir",
         "create macos release zip",
         "validate macos artifact",
-        "full release validation",
+        "pre-finalize release validation",
     ]
     artifact_step = next(step for step in steps if step.label == "validate macos artifact")
     assert "--platform" in artifact_step.command
@@ -125,7 +129,9 @@ def test_macos_release_build_steps_cover_full_artifact_flow() -> None:
     assert PYINSTALLER_REQUIREMENT in install_step.command
     verify_step = next(step for step in steps if step.label == "verify pyinstaller version")
     assert "PyInstaller" in verify_step.command[-1]
-    full_step = next(step for step in steps if step.label == "full release validation")
+    full_step = next(
+        step for step in steps if step.label == "pre-finalize release validation"
+    )
     assert "--artifact-platform" in full_step.command
     assert "macos-arm64" in full_step.command
     assert "--skip-artifact-manifest" in full_step.command
@@ -147,5 +153,5 @@ def test_macos_release_build_steps_can_skip_install_and_full_validation() -> Non
     assert "install pyinstaller" not in labels
     assert "verify pyinstaller version" in labels
     assert "install playwright chromium" not in labels
-    assert "full release validation" not in labels
+    assert "pre-finalize release validation" not in labels
     assert "validate macos artifact" in labels

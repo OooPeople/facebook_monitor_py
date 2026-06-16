@@ -31,21 +31,21 @@ def test_validation_steps_keep_git_diff_in_git_checkout() -> None:
     assert "git diff --check" in [step.label for step in steps]
 
 
-def test_validation_steps_include_pip_audit_only_when_requested() -> None:
-    """pip-audit 是 release validation 的 opt-in dependency audit。"""
+def test_validation_steps_include_pip_audit_by_default() -> None:
+    """release validation 預設覆蓋 CI 的 dependency audit。"""
 
     default_steps = release_validation.validation_steps(
         skip_sync=True,
         git_checkout=True,
     )
-    audit_steps = release_validation.validation_steps(
+    no_audit_steps = release_validation.validation_steps(
         skip_sync=True,
         git_checkout=True,
-        include_audit=True,
+        include_audit=False,
     )
 
-    assert "pip-audit" not in [step.label for step in default_steps]
-    assert "pip-audit" in [step.label for step in audit_steps]
+    assert "pip-audit" in [step.label for step in default_steps]
+    assert "pip-audit" not in [step.label for step in no_audit_steps]
 
 
 def test_validation_steps_use_project_mypy_config() -> None:
@@ -224,6 +224,39 @@ def test_validation_steps_pass_artifact_platform_to_artifact_validation() -> Non
     artifact_step = next(step for step in artifact_steps if step.label == "release artifacts")
     assert "--platform" in artifact_step.command
     assert "macos-arm64" in artifact_step.command
+
+
+def test_completion_message_reports_skipped_audit_as_non_ci_complete() -> None:
+    """skip audit 的完成訊息不可被誤讀為上傳完整檢查。"""
+
+    message = release_validation.completion_message(
+        argparse.Namespace(
+            skip_sync=True,
+            skip_audit=True,
+            include_artifacts=False,
+            skip_artifact_manifest=False,
+        )
+    )
+
+    assert "Local release validation passed" in message
+    assert "uv sync skipped" in message
+    assert "pip-audit skipped; not CI/upload complete" in message
+
+
+def test_completion_message_reports_skipped_artifact_manifest_as_not_upload_ready() -> None:
+    """skip manifest 的 artifact validation 只能算 pre-finalize 檢查。"""
+
+    message = release_validation.completion_message(
+        argparse.Namespace(
+            skip_sync=False,
+            skip_audit=False,
+            include_artifacts=True,
+            skip_artifact_manifest=True,
+        )
+    )
+
+    assert message.startswith("Local release validation with artifact checks passed")
+    assert "artifact manifest skipped; not upload-ready" in message
 
 
 def test_validate_cli_args_rejects_signer_without_artifacts() -> None:

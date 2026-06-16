@@ -138,7 +138,7 @@ zip 解開後的 root 是 `facebook-monitor/`。macOS zip 會在 root 放 `READM
 3. 執行對應 PyInstaller spec。
 4. 建立平台 zip 與同名 `.sha256`。
 5. 跑不要求 manifest 的平台 artifact validation。
-6. 跑不要求 manifest 的 release validation。
+6. 跑不要求 manifest 的 pre-finalize release validation。
 
 常用選項：
 
@@ -152,13 +152,15 @@ macOS build script 也支援 `--expected-tag`、`--skip-pyinstaller-install`、`
 
 ## 驗證
 
+正式上傳 GitHub Release asset 前，只有在平台 build、signed manifest finalize、`release_validation.py --include-artifacts`、對應平台 `release_artifact_validation.py --require-manifest`、frozen updater smoke，以及必要人工 smoke 都完成後，才可回報「上傳前完整檢查通過」。平台 build script 內建的不要求 manifest validation 只能回報為「平台 build / pre-finalize validation 通過」，不可視為 release upload-ready。
+
 一般 release validation：
 
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py
 ```
 
-環境已同步時可加 `--skip-sync`；需要 dependency advisory 檢查時可加 `--include-audit` 執行 `pip-audit`。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace 或 conflict marker 時 fail。
+環境已同步時可加 `--skip-sync`；預設會執行 `pip-audit` 以對齊 CI dependency audit，只有離線或刻意重現非 audit 檢查時才加 `--skip-audit`。若使用 `--skip-release-validation`、`--skip-artifact-manifest`、`--skip-audit` 或尚未做人工 Facebook login / metadata resolver / posts-comments scan / notification smoke，必須在 release note、handoff 或任務狀態中列為未完成驗證。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace 或 conflict marker 時 fail。
 
 需要連 artifact 一起驗時：
 

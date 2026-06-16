@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-release-validation",
         action="store_true",
-        help="Skip full release_validation.py after artifact validation.",
+        help="Skip pre-finalize release_validation.py after artifact validation.",
     )
     return parser.parse_args()
 
@@ -120,7 +120,7 @@ def build_steps(args: argparse.Namespace, *, version: str = APP_VERSION) -> list
     if not args.skip_release_validation:
         steps.append(
             ReleaseBuildStep(
-                "full release validation",
+                "pre-finalize release validation",
                 python_command(
                     "scripts/admin/release_validation.py",
                     "--include-artifacts",

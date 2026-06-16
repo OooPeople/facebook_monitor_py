@@ -82,6 +82,7 @@
 
 - 是否有覆蓋正常路徑、失敗路徑、stale/race、migration/backcompat、UI route/JS contract、worker end-to-end 的測試。
 - 測試是否真的驗證語義，不只是確認函式被呼叫。
+- 回報驗證時必須使用 `docs/tooling.md#驗證分級與回報用語` 的層級名稱，列出實際 command 與 skip flags；不得把快速 / 聚焦檢查、跳過 audit 或跳過 manifest 的結果稱為 CI 或上傳前完整檢查。
 - 若未跑某類測試，必須說明原因與剩餘風險。
 
 ### 11. 文件、打包與操作

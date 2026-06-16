@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime
 
@@ -15,6 +16,14 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 
 
+@dataclass(frozen=True)
+class QueueAdmissionResult:
+    """描述 queue admission 是否由本輪 conditional update 實際提交。"""
+
+    committed: bool
+    state: TargetRuntimeState
+
+
 class TargetRuntimeOwnershipService:
     """協調 target running ownership 與 owner guarded runtime writes。"""
 
@@ -22,7 +31,12 @@ class TargetRuntimeOwnershipService:
         self._access = access
 
     def mark_target_queued(self, target_id: str, reason: str) -> TargetRuntimeState:
-        """標記單一 target 已進入 executor queue，等待 worker slot。"""
+        """嘗試標記 queued；需判斷 admission 成功時請改用 try_mark_target_queued。"""
+
+        return self.try_mark_target_queued(target_id, reason).state
+
+    def try_mark_target_queued(self, target_id: str, reason: str) -> QueueAdmissionResult:
+        """嘗試將 target 放入 queue，並回報本輪 DB admission 是否成功。"""
 
         self._access.require_target(target_id)
         self._access.ensure_runtime_state(target_id)
@@ -32,8 +46,11 @@ class TargetRuntimeOwnershipService:
             enqueued_at=utc_now(),
         )
         if state is None:
-            return self._access.ensure_runtime_state(target_id)
-        return state
+            return QueueAdmissionResult(
+                committed=False,
+                state=self._access.ensure_runtime_state(target_id),
+            )
+        return QueueAdmissionResult(committed=True, state=state)
 
     def mark_target_running(
         self,

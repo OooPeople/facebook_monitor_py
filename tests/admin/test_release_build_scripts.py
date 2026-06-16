@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
+from scripts.admin import _release_build
 from scripts.admin import build_macos_release
 from scripts.admin import build_windows_release
 from scripts.admin._release_build import PYINSTALLER_REQUIREMENT
+from scripts.admin.sign_release_manifest import PRIVATE_KEY_ENV
 
 
 def _windows_args(**overrides: object) -> argparse.Namespace:
@@ -104,6 +107,41 @@ def test_windows_release_build_steps_pass_signer_subject() -> None:
     assert "Example Publisher" in artifact_step.command
     assert "--expected-signer-subject" in full_step.command
     assert "Example Publisher" in full_step.command
+
+
+def test_release_private_key_default_path_is_outside_repo() -> None:
+    """release signing 私鑰預設位置不可在 checkout 內被 tooling 自動採用。"""
+
+    default_path = _release_build.DEFAULT_PRIVATE_KEY_FILE.resolve(strict=False)
+    repo_root = _release_build.ROOT.resolve()
+
+    assert not default_path.is_relative_to(repo_root)
+
+
+def test_release_private_key_args_do_not_auto_use_legacy_repo_local_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """未指定私鑰時，只採用 repo 外預設檔，不再讀 docs/local legacy path。"""
+
+    missing_default = tmp_path / "missing" / "release.private-key.b64"
+    monkeypatch.setattr(_release_build, "DEFAULT_PRIVATE_KEY_FILE", missing_default)
+
+    assert _release_build.private_key_args(None) == ()
+
+
+def test_release_private_key_args_prefers_env_over_repo_external_default(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """env 私鑰存在時，不可注入 repo 外預設檔而遮蔽 env fallback。"""
+
+    default_key = tmp_path / "release.private-key.b64"
+    default_key.write_text("default-key", encoding="utf-8")
+    monkeypatch.setattr(_release_build, "DEFAULT_PRIVATE_KEY_FILE", default_key)
+    monkeypatch.setenv(PRIVATE_KEY_ENV, "env-key")
+
+    assert _release_build.private_key_args(None) == ()
 
 
 def test_macos_release_build_steps_cover_full_artifact_flow() -> None:

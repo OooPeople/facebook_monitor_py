@@ -19,6 +19,7 @@ from facebook_monitor.application.target_monitoring_commands import (
 )
 from facebook_monitor.application.target_monitoring_commands import TargetMonitoringCommands
 from facebook_monitor.application.target_registry_service import TargetRegistryService
+from facebook_monitor.application.target_runtime_service import QueueAdmissionResult
 from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
@@ -306,9 +307,14 @@ class TargetApplicationService:
         return self.runtime_service.ensure_runtime_state(target_id)
 
     def mark_target_queued(self, target_id: str, reason: str) -> TargetRuntimeState:
-        """標記單一 target 已進入 executor queue，等待 worker slot。"""
+        """嘗試標記 queued；需判斷 admission 成功時請改用 try_mark_target_queued。"""
 
         return self.runtime_service.mark_target_queued(target_id, reason)
+
+    def try_mark_target_queued(self, target_id: str, reason: str) -> QueueAdmissionResult:
+        """嘗試排入 executor queue，回傳本輪 DB admission 是否成功。"""
+
+        return self.runtime_service.try_mark_target_queued(target_id, reason)
 
     def mark_target_running(
         self,

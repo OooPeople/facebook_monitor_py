@@ -292,6 +292,24 @@ def test_unsafe_dashboard_fetches_use_shared_csrf_helper() -> None:
     assert "const requestJson" not in sidebar_layout_js
 
 
+def test_hit_records_clear_refreshes_dashboard_from_read_model() -> None:
+    """清空命中紀錄後 sidebar/card 應由 dashboard read model 更新，不在 JS 推導。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    hit_records_js = (dashboard_dir / "hit_records.js").read_text(encoding="utf-8")
+    main_js = (dashboard_dir / "main.js").read_text(encoding="utf-8")
+
+    assert "renderSidebarStatus" not in hit_records_js
+    assert "data-sidebar-status" not in hit_records_js
+    assert "refreshDashboard" in hit_records_js
+    assert 'import { saveScrollPosition } from "/static/dashboard/state.js";' in hit_records_js
+    assert "saveScrollPosition();\n  window.location.reload();" in hit_records_js
+    assert 'import { applyDashboardPartialUpdate } from "/static/dashboard/partial_updates.js";' in (
+        main_js
+    )
+    assert "refreshDashboard: () => applyDashboardPartialUpdate(state)" in main_js
+
+
 def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
     """漢堡選單維持向右展開，但需脫離 sidebar scroll layer 避免被裁切。"""
 

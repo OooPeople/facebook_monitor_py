@@ -7,8 +7,8 @@ from pathlib import Path
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
 
 
-def test_dashboard_partial_update_reloads_when_sidebar_layout_signature_changes() -> None:
-    """partial update 不可用平面 sidebar items 覆蓋已改變的 group/order 結構。"""
+def test_dashboard_partial_update_reloads_when_sidebar_shell_signature_changes() -> None:
+    """partial update 不可覆蓋已改變的 sidebar structure / template shell。"""
 
     partial_updates_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
@@ -18,8 +18,11 @@ def test_dashboard_partial_update_reloads_when_sidebar_layout_signature_changes(
     )
 
     assert "data-sidebar-layout-signature" in sidebar_template
+    assert "data-sidebar-template-signature" in sidebar_template
     assert "payload.layout_signature" in partial_updates_js
+    assert "payload.template_signature" in partial_updates_js
     assert "sidebarLayoutSignature" in partial_updates_js
+    assert "sidebarTemplateSignature" in partial_updates_js
     assert "partial_update_requires_reload:target_list_changed" in partial_updates_js
 
 

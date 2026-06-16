@@ -1,6 +1,6 @@
 import { csrfHeaders } from "/static/dashboard/csrf.js";
 import { confirmDialog } from "/static/dashboard/dialogs.js";
-import { renderSidebarStatus } from "/static/dashboard/sidebar_status.js";
+import { saveScrollPosition } from "/static/dashboard/state.js";
 import {
   bindDialogDismiss,
   formatClientErrorMessage,
@@ -9,14 +9,15 @@ import {
 
 const pageSize = 50;
 const previewEmptyStates = {
-  hitRecordsPreview: {
-    title: "尚無命中紀錄",
-    description: "符合關鍵字的貼文或留言會保存於此。",
-  },
   hitRecordsModal: {
     title: "尚無命中紀錄",
     description: "符合關鍵字的內容會出現在這裡，且可從原文連結回到 Facebook。",
   },
+};
+
+const reloadDashboardPreservingScroll = () => {
+  saveScrollPosition();
+  window.location.reload();
 };
 
 const createPreviewEmpty = ({ title, description }) => {
@@ -70,18 +71,7 @@ const focusHitRecordsInitialControl = (modal) => {
   modal.querySelector("[data-close-hit-records]")?.focus({ preventScroll: true });
 };
 
-const updateHitCount = (targetId, totalCount) => {
-  document.querySelectorAll(`[data-hit-count="${targetId}"]`).forEach((node) => {
-    node.textContent = String(totalCount);
-  });
-  document.querySelectorAll(`[data-sidebar-status="${targetId}"]`).forEach((node) => {
-    const baseStatus = node.dataset.sidebarBaseStatus || "";
-    const detail = totalCount > 0 ? `命中 ${totalCount} 筆` : node.dataset.sidebarDefaultDetail || "";
-    renderSidebarStatus(node, {
-      baseStatus,
-      statusDetail: detail,
-    });
-  });
+const updateHitRecordModalTotal = (targetId, totalCount) => {
   document
     .querySelectorAll(`[data-hit-records-modal="${targetId}"] [data-hit-records-total]`)
     .forEach((node) => {
@@ -107,7 +97,7 @@ const updatePageStatus = (modal, payload, renderedCount) => {
 const renderHitRecords = (modal, payload, { append = false } = {}) => {
   const list = modal.querySelector("[data-hit-records-list]");
   if (!list) return;
-  updateHitCount(String(payload.target_id || ""), Number(payload.total_count || 0));
+  updateHitRecordModalTotal(String(payload.target_id || ""), Number(payload.total_count || 0));
   if (!append) {
     list.replaceChildren();
   }
@@ -179,7 +169,7 @@ const loadHitRecords = async (modal, targetId, { append = false } = {}) => {
   renderHitRecords(modal, await response.json(), { append });
 };
 
-export const setupHitRecords = ({ showToast }) => {
+export const setupHitRecords = ({ showToast, refreshDashboard } = {}) => {
   document.querySelectorAll("[data-view-records-button]").forEach((button) => {
     button.addEventListener("click", () => {
       const targetId = button.dataset.targetId || "";
@@ -220,10 +210,11 @@ export const setupHitRecords = ({ showToast }) => {
           throw new Error("清空紀錄失敗");
         }
         renderHitRecords(modal, await response.json());
-        const target = document.getElementById(`target-${targetId}`);
-        const hitPanel = target?.querySelector('[data-preview-panel="hits"]');
-        if (hitPanel) {
-          hitPanel.replaceChildren(createPreviewEmpty(previewEmptyStates.hitRecordsPreview));
+        try {
+          await refreshDashboard?.();
+        } catch (_error) {
+          reloadDashboardPreservingScroll();
+          return;
         }
         showToast("命中紀錄已清空", "success");
       } catch (error) {

@@ -32,6 +32,17 @@ SENSITIVE_RELEASE_PATH_PARTS = frozenset(
         "sessions",
     }
 )
+WINDOWS_RESERVED_PATH_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
+WINDOWS_FORBIDDEN_PATH_CHARS = frozenset('<>"|?*')
 
 
 def is_dangerous_root(path: Path) -> bool:
@@ -101,6 +112,51 @@ def zip_member_is_symlink(info: zipfile.ZipInfo) -> bool:
 
     mode = (info.external_attr >> 16) & 0o170000
     return mode == stat.S_IFLNK
+
+
+def validate_zip_member_path(
+    filename: str,
+    *,
+    reason: str = "zip_member_path_unsafe",
+) -> PurePosixPath:
+    """正規化 zip member path，並拒絕跨平台落地語義不安全的名稱。"""
+
+    normalized = filename.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or ".." in path.parts
+        or os.path.isabs(normalized)
+    ):
+        raise ValueError(reason)
+    for part in path.parts:
+        if _zip_member_path_part_is_unsafe(part):
+            raise ValueError(reason)
+    return path
+
+
+def normalized_zip_member_key(path: PurePosixPath) -> str:
+    """回傳 zip member 重複檢查用 key，對 Windows 落地名稱採 case-insensitive。"""
+
+    return path.as_posix().casefold()
+
+
+def _zip_member_path_part_is_unsafe(part: str) -> bool:
+    """檢查單一 zip path component 是否會在 Windows / POSIX 產生危險語義。"""
+
+    if part in {"", "."}:
+        return True
+    if any(ord(char) < 32 for char in part):
+        return True
+    if any(char in WINDOWS_FORBIDDEN_PATH_CHARS for char in part):
+        return True
+    if ":" in part:
+        return True
+    if part[-1:] in {" ", "."}:
+        return True
+    stem = part.split(".", 1)[0].casefold()
+    return stem in WINDOWS_RESERVED_PATH_NAMES
 
 
 def decode_zip_symlink_target(

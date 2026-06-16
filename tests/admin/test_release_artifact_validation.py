@@ -1020,6 +1020,99 @@ def test_validate_release_artifacts_rejects_member_under_symlink(
     assert any("zip member path unsafe" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_windows_unsafe_member_names(
+    tmp_path: Path,
+) -> None:
+    """release gate 需套用和 runtime extraction 相同的 Windows unsafe path 規則。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        archive.writestr("facebook-monitor/AUX.txt", "unsafe")
+        archive.writestr("facebook-monitor/file:stream.txt", "unsafe")
+        archive.writestr("facebook-monitor/bad*name.txt", "unsafe")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip member path unsafe" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_case_insensitive_duplicate_members(
+    tmp_path: Path,
+) -> None:
+    """release gate 需拒絕 Windows case-insensitive 會互相覆蓋的 member。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        archive.writestr("facebook-monitor/Readme.txt", "first")
+        archive.writestr("facebook-monitor/readme.TXT", "second")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip duplicate entry" in message for message in result.messages)
+
+
 def test_validate_release_artifacts_rejects_oversized_symlink_target(
     tmp_path: Path,
 ) -> None:

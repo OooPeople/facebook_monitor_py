@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import plistlib
 from pathlib import PurePosixPath
 import subprocess
@@ -44,8 +43,10 @@ from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
 from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import is_macho_arm64
+from facebook_monitor.updates.validation import normalized_zip_member_key
 from facebook_monitor.updates.validation import plist_value_is_true
 from facebook_monitor.updates.validation import resolve_zip_symlink_target
+from facebook_monitor.updates.validation import validate_zip_member_path
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
 from facebook_monitor.updates.validation import zip_member_is_symlink
 from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
@@ -450,21 +451,28 @@ def _validated_zip_names(
 
     members = archive.infolist()
     names: set[str] = set()
+    normalized_path_keys: set[str] = set()
     paths: set[PurePosixPath] = set()
     symlink_paths: set[PurePosixPath] = set()
     total_uncompressed = 0
     if len(members) > MAX_ZIP_ENTRIES:
         messages.append("zip too many entries")
     for member in members:
-        normalized = member.filename.replace("\\", "/")
-        path = PurePosixPath(normalized)
-        if path.is_absolute() or ".." in path.parts or os.path.isabs(normalized):
+        try:
+            path = validate_zip_member_path(member.filename)
+        except ValueError:
             messages.append(f"zip member path unsafe: {member.filename}")
             continue
+        normalized = path.as_posix()
         if normalized in names:
             messages.append(f"zip duplicate entry: {normalized}")
             continue
+        path_key = normalized_zip_member_key(path)
+        if path_key in normalized_path_keys:
+            messages.append(f"zip duplicate entry: {normalized}")
+            continue
         names.add(normalized)
+        normalized_path_keys.add(path_key)
         paths.add(path)
         if zip_member_is_symlink(member):
             symlink_paths.add(path)

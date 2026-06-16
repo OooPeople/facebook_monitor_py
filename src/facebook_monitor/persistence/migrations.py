@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
+from facebook_monitor.persistence.schema_repair import repair_duplicate_target_scopes
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
 from facebook_monitor.persistence.sqlite_codec import encode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import encode_keywords
@@ -402,9 +403,9 @@ def migrate_15_to_16(connection: sqlite3.Connection) -> None:
 
 
 def migrate_16_to_17(connection: sqlite3.Connection) -> None:
-    """標記 target scope uniqueness migration；實際 index 建立由 schema 統一收尾。"""
+    """合併歷史重複 target scope，讓 post-migration guard 只負責建 index。"""
 
-    return None
+    repair_duplicate_target_scopes(connection)
 
 
 def migrate_17_to_18(connection: sqlite3.Connection) -> None:

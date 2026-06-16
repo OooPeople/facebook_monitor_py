@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin._release_build import DEFAULT_PRIVATE_KEY_FILE
 from scripts.admin.create_release_manifest import create_release_manifest
 from scripts.admin.release_artifact_validation import validate_release_artifacts
+from scripts.admin.sign_release_manifest import PRIVATE_KEY_ENV
 from scripts.admin.sign_release_manifest import sign_release_manifest
 
 
@@ -57,7 +59,7 @@ def parse_args() -> argparse.Namespace:
         "--private-key-file",
         type=Path,
         default=None,
-        help="Ed25519 private key file. Defaults to docs/local path when present.",
+        help="Ed25519 private key file. Defaults to repo-external local signing path when present.",
     )
     parser.add_argument("--private-key-b64", default="")
     parser.add_argument(
@@ -121,7 +123,10 @@ def finalize_release_manifest(
     sign_release_manifest(
         manifest_path=manifest_path,
         private_key_b64=private_key_b64,
-        private_key_file=_resolve_private_key_file(private_key_file),
+        private_key_file=_resolve_private_key_file(
+            private_key_file,
+            private_key_b64=private_key_b64,
+        ),
         output=signature_path,
         force=force,
     )
@@ -224,11 +229,19 @@ def _validate_sha256_sidecar(zip_path: Path) -> None:
         raise ValueError(f"release_manifest_sha256_mismatch:{sha_path.name}")
 
 
-def _resolve_private_key_file(private_key_file: Path | None) -> Path | None:
-    """回傳私鑰檔；未指定時沿用本機 ignored release-signing 預設檔。"""
+def _resolve_private_key_file(
+    private_key_file: Path | None,
+    *,
+    private_key_b64: str,
+) -> Path | None:
+    """回傳私鑰檔；CLI/env key 缺席時才採用 repo 外預設檔。"""
 
     if private_key_file is not None:
         return private_key_file
+    if private_key_b64.strip():
+        return None
+    if os.environ.get(PRIVATE_KEY_ENV, "").strip():
+        return None
     if DEFAULT_PRIVATE_KEY_FILE.is_file():
         return DEFAULT_PRIVATE_KEY_FILE
     return None

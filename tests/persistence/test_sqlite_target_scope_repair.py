@@ -25,7 +25,7 @@ from facebook_monitor.persistence.repositories.target_cover_image_refresh import
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import TargetRuntimeStateRepository
 from facebook_monitor.persistence.schema import initialize_schema
-from facebook_monitor.persistence.schema import repair_duplicate_target_scopes
+from facebook_monitor.persistence.schema_repair import repair_duplicate_target_scopes
 
 from tests.persistence.sqlite_test_helpers import target_config_repository
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository

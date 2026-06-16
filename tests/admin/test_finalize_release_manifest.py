@@ -10,12 +10,14 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import scripts.admin.finalize_release_manifest as finalize_release_manifest_module
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.trust import TRUSTED_RELEASE_PUBLIC_KEYS
 from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin.finalize_release_manifest import finalize_release_manifest
+from scripts.admin.sign_release_manifest import PRIVATE_KEY_ENV
 
 
 def _release_key_pair() -> tuple[str, str]:
@@ -129,6 +131,134 @@ def test_finalize_release_manifest_accepts_single_platform_release(
     payload = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert result.platforms == ("windows",)
     assert [asset["platform"] for asset in payload["assets"]] == ["windows"]
+
+
+def test_finalize_release_manifest_prefers_cli_key_b64_over_default_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI b64 私鑰不可被本機 repo 外預設檔覆蓋。"""
+
+    private_key_b64, public_key_b64 = _release_key_pair()
+    default_private_key_b64, _ = _release_key_pair()
+    default_key_path = tmp_path / "release.private-key.b64"
+    default_key_path.write_text(default_private_key_b64, encoding="utf-8")
+    monkeypatch.setattr(
+        finalize_release_manifest_module,
+        "DEFAULT_PRIVATE_KEY_FILE",
+        default_key_path,
+    )
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = _write_release_asset(
+        dist_dir,
+        "facebook-monitor-0.1.0-windows-portable.zip",
+    )
+
+    result = finalize_release_manifest(
+        version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
+        dist_dir=dist_dir,
+        key_id="test-key",
+        private_key_b64=private_key_b64,
+        validate_artifacts=False,
+        force=True,
+    )
+
+    verified = verify_release_manifest(
+        manifest_bytes=result.manifest_path.read_bytes(),
+        signature_bytes=result.signature_path.read_bytes(),
+        expected_version="0.1.0",
+        expected_repository="OooPeople/facebook_monitor_py",
+        expected_asset_name=zip_path.name,
+        expected_platform="windows",
+        trusted_public_keys={"test-key": public_key_b64},
+    )
+    assert verified.asset.sha256 == calculate_sha256(zip_path)
+
+
+def test_finalize_release_manifest_prefers_explicit_file_over_env_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """明確指定的私鑰檔應優先於環境變數。"""
+
+    file_private_key_b64, file_public_key_b64 = _release_key_pair()
+    env_private_key_b64, _ = _release_key_pair()
+    private_key_path = tmp_path / "explicit.private-key.b64"
+    private_key_path.write_text(file_private_key_b64, encoding="utf-8")
+    monkeypatch.setenv(PRIVATE_KEY_ENV, env_private_key_b64)
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = _write_release_asset(
+        dist_dir,
+        "facebook-monitor-0.1.0-windows-portable.zip",
+    )
+
+    result = finalize_release_manifest(
+        version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
+        dist_dir=dist_dir,
+        key_id="test-key",
+        private_key_file=private_key_path,
+        validate_artifacts=False,
+        force=True,
+    )
+
+    verified = verify_release_manifest(
+        manifest_bytes=result.manifest_path.read_bytes(),
+        signature_bytes=result.signature_path.read_bytes(),
+        expected_version="0.1.0",
+        expected_repository="OooPeople/facebook_monitor_py",
+        expected_asset_name=zip_path.name,
+        expected_platform="windows",
+        trusted_public_keys={"test-key": file_public_key_b64},
+    )
+    assert verified.asset.sha256 == calculate_sha256(zip_path)
+
+
+def test_finalize_release_manifest_prefers_env_key_over_default_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """環境變數私鑰不可被本機 repo 外預設檔覆蓋。"""
+
+    env_private_key_b64, env_public_key_b64 = _release_key_pair()
+    default_private_key_b64, _ = _release_key_pair()
+    default_key_path = tmp_path / "release.private-key.b64"
+    default_key_path.write_text(default_private_key_b64, encoding="utf-8")
+    monkeypatch.setattr(
+        finalize_release_manifest_module,
+        "DEFAULT_PRIVATE_KEY_FILE",
+        default_key_path,
+    )
+    monkeypatch.setenv(PRIVATE_KEY_ENV, env_private_key_b64)
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = _write_release_asset(
+        dist_dir,
+        "facebook-monitor-0.1.0-windows-portable.zip",
+    )
+
+    result = finalize_release_manifest(
+        version="0.1.0",
+        repository="OooPeople/facebook_monitor_py",
+        dist_dir=dist_dir,
+        key_id="test-key",
+        validate_artifacts=False,
+        force=True,
+    )
+
+    verified = verify_release_manifest(
+        manifest_bytes=result.manifest_path.read_bytes(),
+        signature_bytes=result.signature_path.read_bytes(),
+        expected_version="0.1.0",
+        expected_repository="OooPeople/facebook_monitor_py",
+        expected_asset_name=zip_path.name,
+        expected_platform="windows",
+        trusted_public_keys={"test-key": env_public_key_b64},
+    )
+    assert verified.asset.sha256 == calculate_sha256(zip_path)
 
 
 def test_finalize_release_manifest_rejects_unexpected_release_zip(

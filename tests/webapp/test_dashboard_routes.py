@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -1031,6 +1033,7 @@ def test_dashboard_partial_payload_changes_sidebar_layout_signature_for_groups(
     page_response = client.get("/")
     first_payload = client.get("/api/dashboard-cards").json()
     first_signature = first_payload["sidebar"]["layout_signature"]
+    first_template_signature = first_payload["sidebar"]["template_signature"]
 
     with SqliteApplicationContext(db_path) as app_context:
         app_context.services.sidebar_layout.save_placements(
@@ -1043,14 +1046,66 @@ def test_dashboard_partial_payload_changes_sidebar_layout_signature_for_groups(
         app_context.services.sidebar_layout.rename_group(group.id, "重新命名")
     renamed_payload = client.get("/api/dashboard-cards").json()
 
+    with SqliteApplicationContext(db_path) as app_context:
+        template = app_context.services.sidebar_layout.get_template_or_default(group.id)
+        app_context.services.sidebar_layout.save_template(
+            replace(
+                template,
+                include_keywords=("模板更新",),
+                updated_at=template.updated_at + timedelta(seconds=1),
+            )
+        )
+    template_payload = client.get("/api/dashboard-cards").json()
+
     assert page_response.status_code == 200
     assert f'data-sidebar-layout-signature="{first_signature}"' in page_response.text
+    assert f'data-sidebar-template-signature="{first_template_signature}"' in page_response.text
     assert first_signature
+    assert first_template_signature
     assert second_signature != first_signature
     assert renamed_payload["sidebar"]["layout_signature"] != second_signature
+    assert template_payload["sidebar"]["layout_signature"] == renamed_payload["sidebar"][
+        "layout_signature"
+    ]
+    assert (
+        template_payload["sidebar"]["template_signature"]
+        != renamed_payload["sidebar"]["template_signature"]
+    )
     assert [item["target_id"] for item in second_payload["sidebar"]["items"]] == [
         first.id,
         second.id,
+    ]
+
+
+def test_dashboard_sidebar_template_signature_is_stable_without_template_row(
+    tmp_path: Path,
+) -> None:
+    """缺少 template row 的舊資料不應讓 sidebar partial payload 每次讀取都漂移。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                group_name="舊資料社團",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("舊群組")
+        app_context.services.sidebar_layout.save_placements([(group.id, [target.id])])
+        app_context.repositories.sidebar_layout.connection.execute(
+            "DELETE FROM sidebar_group_config_templates WHERE sidebar_group_id = ?",
+            (group.id,),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    first_payload = client.get("/api/dashboard-cards").json()
+    second_payload = client.get("/api/dashboard-cards").json()
+
+    assert first_payload["sidebar"]["template_signature"]
+    assert first_payload["sidebar"]["template_signature"] == second_payload["sidebar"][
+        "template_signature"
     ]
 
 

@@ -44,6 +44,7 @@ def validate_database_invariants(
     violations.extend(_range_violations(connection))
     violations.extend(_datetime_violations(connection))
     violations.extend(_runtime_state_violations(connection))
+    violations.extend(_duplicate_target_scope_violations(connection))
     return tuple(violations)
 
 
@@ -195,3 +196,31 @@ def _runtime_state_violations(
         for row in idle_worker_rows
     )
     return violations
+
+
+def _duplicate_target_scope_violations(
+    connection: sqlite3.Connection,
+) -> list[DatabaseInvariantViolation]:
+    """回報 target kind/scope 重複，不在 invariant checker 內修資料。"""
+
+    rows = connection.execute(
+        """
+        SELECT target_kind, scope_id, GROUP_CONCAT(id, ',') AS target_ids, COUNT(*) AS count
+        FROM targets
+        GROUP BY target_kind, scope_id
+        HAVING count > 1
+        ORDER BY target_kind, scope_id
+        """
+    ).fetchall()
+    return [
+        DatabaseInvariantViolation(
+            table="targets",
+            row_id=str(row["target_ids"]),
+            field="scope_id",
+            message=(
+                "duplicate target scope "
+                f"{row['target_kind']}:{row['scope_id']} count={row['count']}"
+            ),
+        )
+        for row in rows
+    ]

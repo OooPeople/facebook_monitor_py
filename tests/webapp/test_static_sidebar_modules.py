@@ -413,3 +413,19 @@ def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> No
     assert ".sidebar-status .sidebar-status-token" in sidebar_css
 
 
+def test_sidebar_template_save_reloads_dashboard_shell() -> None:
+    """模板儲存成功後需 reload，避免 server-coerced template modal 留在舊狀態。"""
+
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
+    save_block = sidebar_layout_js.split(
+        'modal.querySelector("[data-sidebar-template-save]")?.addEventListener("click"',
+        1,
+    )[1].split('modal.querySelectorAll("[data-sidebar-template-apply]")', 1)[0]
+
+    assert "/template" in save_block
+    assert 'showToast?.("群組模板已儲存", "success");' in save_block
+    assert "reloadDashboardPreservingScroll();" in save_block
+
+

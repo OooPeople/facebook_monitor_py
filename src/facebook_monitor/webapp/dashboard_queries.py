@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
@@ -45,6 +46,8 @@ from facebook_monitor.webapp.read_model_context import read_application_context
 from facebook_monitor.webapp.read_model_context import (
     raise_dashboard_read_unavailable_if_locked,
 )
+
+_MISSING_SIDEBAR_TEMPLATE_UPDATED_AT = datetime.fromtimestamp(0, tz=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -609,9 +612,12 @@ def _sidebar_templates_by_group(
         group_id = group.id
 
         def read_template() -> SidebarGroupConfigTemplate:
-            return (
-                app_context.repositories.sidebar_layout.get_template(group_id)
-                or SidebarGroupConfigTemplate(sidebar_group_id=group_id)
+            template = app_context.repositories.sidebar_layout.get_template(group_id)
+            if template is not None:
+                return template
+            return SidebarGroupConfigTemplate(
+                sidebar_group_id=group_id,
+                updated_at=_MISSING_SIDEBAR_TEMPLATE_UPDATED_AT,
             )
 
         templates[group.id] = read_mapper_value(

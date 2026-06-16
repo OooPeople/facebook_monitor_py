@@ -184,6 +184,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
     card_response = client.get(f"/api/targets/{first_target.id}/card")
     revision_before_clear = client.get("/api/dashboard-revision").json()["revision"]
     clear_response = client.delete(f"/api/targets/{first_target.id}/hit-records")
+    dashboard_after_clear_response = client.get("/api/dashboard-cards")
     revision_after_clear = client.get("/api/dashboard-revision").json()["revision"]
 
     assert preview_response.status_code == 200
@@ -240,6 +241,14 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         "deleted_count": 3,
         "total_count": 0,
     }
+    dashboard_after_clear = dashboard_after_clear_response.json()
+    sidebar_item_after_clear = dashboard_after_clear["sidebar"]["items"][0]
+    card_after_clear = dashboard_after_clear["cards"][0]
+    assert sidebar_item_after_clear["target_id"] == first_target.id
+    assert sidebar_item_after_clear["hit_count"] == 0
+    assert "命中 1 筆" not in sidebar_item_after_clear["status_detail"]
+    assert card_after_clear["target_id"] == first_target.id
+    assert card_after_clear["hit_record_total_count"] == 0
     assert revision_before_clear != revision_after_clear
     with SqliteApplicationContext(db_path) as app_context:
         assert app_context.repositories.match_history.count_by_target(first_target.id) == 0

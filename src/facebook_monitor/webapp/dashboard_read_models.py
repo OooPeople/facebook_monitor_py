@@ -78,6 +78,24 @@ class DashboardViewModel:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+    @property
+    def sidebar_template_signature(self) -> str:
+        """回傳 sidebar group template 版本簽章，避免 partial update 留下 stale modal。"""
+
+        payload = [
+            {
+                "group_id": group.dom_group_id,
+                "template_updated_at": (
+                    group.template.updated_at.isoformat()
+                    if group.template is not None
+                    else ""
+                ),
+            }
+            for group in self.sidebar_groups
+        ]
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True)
 class DashboardReadResult:

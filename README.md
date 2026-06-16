@@ -78,15 +78,15 @@ uv run facebook-monitor
 
 ## 驗證
 
-常用完整驗證：
+本機上傳前完整檢查的 canonical 入口：
 
 ```powershell
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py
-.\scripts\uv.ps1 run pytest -q
-.\scripts\uv.ps1 run python -m compileall -q src scripts tests
-.\scripts\uv.ps1 run ruff check src scripts tests
-git diff --check
 ```
+
+只有在環境已同步，且 dependency、`uv.lock`、workflow 或驗證腳本本身沒有變更時，才可加 `--skip-sync`；若上述任一項有變更，請維持不帶 `--skip-sync`，或先完成 locked sync。
+
+快速 / 聚焦檢查、release artifact 檢查、GitHub CI 對照與回報用語請以 [docs/tooling.md#驗證分級與回報用語](docs/tooling.md#驗證分級與回報用語) 為準。不要把單項 `pytest`、`ruff`、`node --check` 或 `git diff --check` 結果描述成完整驗證或 CI 通過。
 
 ## 安全注意事項
 

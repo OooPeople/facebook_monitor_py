@@ -343,17 +343,42 @@ class ExecutorWorkerPool:
                 await self._add_counters(ExecutorCounters(skipped_count=1))
                 continue
 
-            def operation() -> None:
+            def operation() -> bool:
                 with SqliteApplicationContext(self.options.db_path) as app:
-                    app.services.targets.mark_target_queued(due_target.target_id, reason)
+                    admission = app.services.targets.try_mark_target_queued(
+                        due_target.target_id,
+                        reason,
+                    )
+                    if not admission.committed:
+                        return False
                     if due_target.scan_requested:
                         app.services.targets.clear_target_scan_request_if_not_newer(
                             due_target.target_id,
                             due_target.scan_requested_at,
                         )
+                    return True
 
             try:
-                await self._run_db_operation_with_retry("mark_target_queued", operation)
+                queued = await self._run_db_operation_with_retry(
+                    "mark_target_queued",
+                    operation,
+                )
+                if not queued:
+                    logger.info(
+                        "resident_target_enqueue_skipped target_id=%s reason=%s "
+                        "due_at=%s scan_requested=%s",
+                        due_target.target_id,
+                        "runtime_queue_guard_rejected",
+                        due_target.due_at.isoformat(),
+                        due_target.scan_requested,
+                    )
+                    await self._record_guard_skip(
+                        due_target.target_id,
+                        "scan_guard_skipped: runtime_queue_guard_rejected",
+                    )
+                    await self._add_counters(ExecutorCounters(skipped_count=1))
+                    await self.target_queue.release_reserved(due_target.target_id)
+                    continue
                 if not await self.target_queue.publish_reserved(queue_item):
                     raise RuntimeError(
                         "reserved target queue item disappeared before publish: "

@@ -58,8 +58,8 @@ def test_sidebar_layout_api_saves_group_order_and_placements_atomically(tmp_path
     assert placements[second.id].sidebar_group_id == second_group.id
 
 
-def test_sidebar_group_order_api_rejects_duplicate_group_ids(tmp_path: Path) -> None:
-    """sidebar group order API 不接受重複 group id。"""
+def test_sidebar_group_order_api_is_legacy_tombstone(tmp_path: Path) -> None:
+    """舊分段 group order API 已退役，不可再寫入 sidebar state。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -69,11 +69,11 @@ def test_sidebar_group_order_api_rejects_duplicate_group_ids(tmp_path: Path) -> 
     client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
     response = client.post(
         "/api/sidebar/groups/order",
-        json={"group_ids": [first_group.id, second_group.id, first_group.id]},
+        json={"group_ids": [second_group.id, first_group.id]},
     )
 
-    assert response.status_code == 400
-    assert "重複群組" in response.json()["detail"]
+    assert response.status_code == 410
+    assert response.json()["detail"] == "sidebar layout API moved"
     with SqliteApplicationContext(db_path) as app_context:
         groups = app_context.repositories.sidebar_layout.list_groups()
     assert [group.id for group in groups] == [first_group.id, second_group.id]
@@ -115,8 +115,8 @@ def test_sidebar_layout_api_rejects_duplicate_group_sections(tmp_path: Path) -> 
     assert response.json()["detail"] == "排序資料不可包含重複群組區塊"
 
 
-def test_sidebar_placements_api_rejects_duplicate_ungrouped_sections(tmp_path: Path) -> None:
-    """sidebar placements API 不接受多個未分組 section。"""
+def test_sidebar_placements_api_is_legacy_tombstone(tmp_path: Path) -> None:
+    """舊分段 placement API 已退役，不可再寫入 sidebar state。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -138,14 +138,29 @@ def test_sidebar_placements_api_rejects_duplicate_ungrouped_sections(tmp_path: P
         "/api/sidebar/placements",
         json={
             "groups": [
-                {"group_id": None, "target_ids": [first.id]},
-                {"group_id": None, "target_ids": [second.id]},
+                {"group_id": None, "target_ids": [second.id, first.id]},
             ],
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "排序資料不可包含重複群組區塊"
+    assert response.status_code == 410
+    assert response.json()["detail"] == "sidebar layout API moved"
+    with SqliteApplicationContext(db_path) as app_context:
+        placements = app_context.repositories.sidebar_layout.list_placements()
+    assert first.id not in placements
+    assert second.id not in placements
+
+
+def test_legacy_sidebar_layout_routes_are_hidden_from_openapi(tmp_path: Path) -> None:
+    """退役的分段 sidebar write routes 不應再出現在正式 API schema。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    paths = client.get("/openapi.json").json()["paths"]
+
+    assert "/api/sidebar/layout" in paths
+    assert "/api/sidebar/groups/order" not in paths
+    assert "/api/sidebar/placements" not in paths
 
 
 def test_flat_sidebar_order_api_is_removed(tmp_path: Path) -> None:

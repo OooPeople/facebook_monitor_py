@@ -216,6 +216,71 @@ def test_resident_enqueue_publishes_item_after_runtime_queued(
     asyncio.run(run_test())
 
 
+def test_resident_enqueue_releases_reserved_item_when_db_admission_rejected(
+    tmp_path: Path,
+) -> None:
+    """DB admission 未實際 queued 時，不可 publish reserved queue item。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="queue-guard-error",
+                canonical_url="https://www.facebook.com/groups/queue-guard-error",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.mark_target_error(
+            target.id,
+            "terminal failure",
+            failure_reason="target_invalid",
+            failure_count=3,
+        )
+        requested = app.services.targets.request_target_scan(target.id)
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+
+        async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+            raise AssertionError("DB rejected queue admission should not publish to worker")
+
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=TargetSchedulePlanner(),
+            scan_page=fake_scan_page,
+        )
+        due_target = DueTarget(
+            target_id=target.id,
+            interval_seconds=60,
+            due_at=utc_now(),
+            scan_requested=True,
+            scan_requested_at=requested.scan_requested_at,
+        )
+
+        enqueued = await executor.enqueue_due_targets((due_target,))
+        queued_count, running_count, queued_ids = await target_queue.snapshot()
+        counters = await executor.take_counters()
+        with SqliteApplicationContext(db_path) as app:
+            loaded = app.repositories.runtime_states.get(target.id)
+
+        assert enqueued == 0
+        assert (queued_count, running_count, queued_ids) == (0, 0, ())
+        assert counters.skipped_count == 1
+        assert loaded is not None
+        assert loaded.runtime_status == TargetRuntimeStatus.ERROR
+        assert loaded.last_error == "terminal failure"
+        assert loaded.scan_requested_at == requested.scan_requested_at
+        assert "runtime_queue_guard_rejected" in loaded.last_skip_reason
+
+    asyncio.run(run_test())
+
+
 def test_resident_page_pool_page_id_guards_ignore_stale_attempt() -> None:
     """page pool stale page_id 不可釋放、覆寫或關閉目前 page ownership。"""
 

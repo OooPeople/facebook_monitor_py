@@ -104,7 +104,7 @@ class TargetRuntimeStateRepository:
                 updated_at = ?
             WHERE target_id = ?
               AND desired_state = ?
-              AND runtime_status != ?
+              AND runtime_status IN (?, ?)
             """,
             (
                 TargetRuntimeStatus.RUNNING.value,
@@ -115,7 +115,8 @@ class TargetRuntimeStateRepository:
                 started_at_text,
                 target_id,
                 TargetDesiredState.ACTIVE.value,
-                TargetRuntimeStatus.RUNNING.value,
+                TargetRuntimeStatus.IDLE.value,
+                TargetRuntimeStatus.QUEUED.value,
             ),
         )
         if cursor.rowcount != 1:
@@ -129,7 +130,7 @@ class TargetRuntimeStateRepository:
         reason: str,
         enqueued_at: datetime,
     ) -> TargetRuntimeState | None:
-        """只在 target 未 running 時標記 queued，避免覆蓋已被 worker claim 的狀態。"""
+        """只在 active idle target 標記 queued，避免覆蓋 terminal / owned state。"""
 
         enqueued_at_text = encode_datetime(enqueued_at)
         cursor = self.connection.execute(
@@ -146,7 +147,7 @@ class TargetRuntimeStateRepository:
                 updated_at = ?
             WHERE target_id = ?
               AND desired_state = ?
-              AND runtime_status != ?
+              AND runtime_status = ?
             """,
             (
                 TargetRuntimeStatus.QUEUED.value,
@@ -155,7 +156,7 @@ class TargetRuntimeStateRepository:
                 enqueued_at_text,
                 target_id,
                 TargetDesiredState.ACTIVE.value,
-                TargetRuntimeStatus.RUNNING.value,
+                TargetRuntimeStatus.IDLE.value,
             ),
         )
         if cursor.rowcount != 1:
@@ -691,6 +692,50 @@ class TargetRuntimeStateRepository:
 
         rows = self.connection.execute(
             "SELECT * FROM target_runtime_state ORDER BY updated_at"
+        ).fetchall()
+        return [runtime_state_from_row(row) for row in rows]
+
+    def list_stale_running_candidates(self, *, stale_before: datetime) -> list[TargetRuntimeState]:
+        """列出 stale running recovery 候選，避免全表 decode inactive corrupt rows。"""
+
+        stale_before_text = encode_datetime(stale_before)
+        rows = self.connection.execute(
+            """
+            SELECT * FROM target_runtime_state
+            WHERE runtime_status = ?
+              AND (
+                (last_heartbeat_at != '' AND last_heartbeat_at <= ?)
+                OR (last_heartbeat_at = '' AND updated_at <= ?)
+              )
+            ORDER BY updated_at
+            """,
+            (
+                TargetRuntimeStatus.RUNNING.value,
+                stale_before_text,
+                stale_before_text,
+            ),
+        ).fetchall()
+        return [runtime_state_from_row(row) for row in rows]
+
+    def list_stale_queued_candidates(self, *, stale_before: datetime) -> list[TargetRuntimeState]:
+        """列出 stale queued recovery 候選，避免全表 decode inactive corrupt rows。"""
+
+        stale_before_text = encode_datetime(stale_before)
+        rows = self.connection.execute(
+            """
+            SELECT * FROM target_runtime_state
+            WHERE runtime_status = ?
+              AND (
+                (last_enqueued_at != '' AND last_enqueued_at <= ?)
+                OR (last_enqueued_at = '' AND updated_at <= ?)
+              )
+            ORDER BY updated_at
+            """,
+            (
+                TargetRuntimeStatus.QUEUED.value,
+                stale_before_text,
+                stale_before_text,
+            ),
         ).fetchall()
         return [runtime_state_from_row(row) for row in rows]
 

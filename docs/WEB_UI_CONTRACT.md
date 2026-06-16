@@ -24,6 +24,7 @@
 - Sidebar layout UI 呈現與操作順序來自 sidebar read model；不得在前端把 visual order 解讀成 scheduler 掃描順序。
 - 缺失 placement 顯示在未分組區；前端呈現這個 fallback 時不得自行補寫 layout state。
 - 調整順序與 group placement UI 只收集使用者意圖；實際保存與資料 owner 語義以 `docs/ARCHITECTURE.md#sidebar-layout-與-group-template` 為準。
+- Sidebar 排序正式保存只走 `/api/sidebar/layout` 的單一 layout command；舊分段 write routes 只作 legacy tombstone，不得接回正式前端流程。
 - Group template UI 必須把套用呈現為破壞性批次覆蓋操作，要求使用者確認，並避免暗示它是 target config fallback。
 - Sidebar group start / stop 控制只呈現批次套用 target start / stop；不得暗示存在 group-scoped runtime state。
 

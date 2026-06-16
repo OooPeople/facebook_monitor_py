@@ -79,6 +79,56 @@ def test_next_smoke_update_version_is_newer_than_current_app() -> None:
     assert rc_smoke == "0.4.1"
 
 
+def test_write_smoke_manifest_does_not_override_cli_or_env_key_with_default_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """smoke manifest 簽章不應讓本機預設檔覆蓋 CLI b64 或 env key。"""
+
+    default_key_path = tmp_path / "default.private-key.b64"
+    default_key_path.write_text("default-key", encoding="utf-8")
+    monkeypatch.setattr(smoke_frozen_updater, "DEFAULT_PRIVATE_KEY_FILE", default_key_path)
+    monkeypatch.setenv(smoke_frozen_updater.PRIVATE_KEY_ENV, "env-key")
+    captured: list[tuple[str, Path | None]] = []
+
+    def fake_sign_release_manifest(**kwargs):
+        signature_path = kwargs["manifest_path"].with_name(
+            kwargs["manifest_path"].name + ".sig"
+        )
+        signature_path.write_text("signature", encoding="ascii")
+        captured.append((kwargs["private_key_b64"], kwargs["private_key_file"]))
+        return signature_path
+
+    monkeypatch.setattr(
+        smoke_frozen_updater,
+        "sign_release_manifest",
+        fake_sign_release_manifest,
+    )
+    updates_dir = tmp_path / "updates"
+    updates_dir.mkdir()
+    zip_path = updates_dir / "artifact.zip"
+    zip_path.write_bytes(b"zip")
+
+    smoke_frozen_updater._write_smoke_manifest(
+        updates_dir=updates_dir,
+        zip_path=zip_path,
+        version="0.1.1",
+        platform_key="windows",
+        private_key_file=None,
+        private_key_b64="cli-key",
+    )
+    smoke_frozen_updater._write_smoke_manifest(
+        updates_dir=updates_dir,
+        zip_path=zip_path,
+        version="0.1.2",
+        platform_key="windows",
+        private_key_file=None,
+        private_key_b64="",
+    )
+
+    assert captured == [("cli-key", None), ("", None)]
+
+
 def test_patch_smoke_app_version_updates_macos_info_plist(tmp_path: Path) -> None:
     """macOS smoke artifact 內的 `.app` 版本需對齊臨時 smoke update version。"""
 

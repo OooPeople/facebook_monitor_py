@@ -168,10 +168,18 @@ const updateRenameInput = (card, payload) => {
 const updateSidebar = (payload) => {
   const sidebarRoot = document.querySelector("[data-sidebar-layout]");
   const expectedSignature = String(payload.layout_signature || "");
+  const expectedTemplateSignature = String(payload.template_signature || "");
   if (
     expectedSignature
     && sidebarRoot?.dataset.sidebarLayoutSignature
     && sidebarRoot.dataset.sidebarLayoutSignature !== expectedSignature
+  ) {
+    return false;
+  }
+  if (
+    expectedTemplateSignature
+    && sidebarRoot?.dataset.sidebarTemplateSignature
+    && sidebarRoot.dataset.sidebarTemplateSignature !== expectedTemplateSignature
   ) {
     return false;
   }

@@ -43,6 +43,7 @@ FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_FULL_MODULES = {
     for module in FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_MODULES
 }
 PUBLIC_RUNTIME_FACADE_SYMBOLS = {
+    "QueueAdmissionResult",
     "ScanSkipDecision",
     "StaleRunningRecovery",
     "TargetRuntimeService",

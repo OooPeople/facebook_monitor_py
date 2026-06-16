@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from contextlib import closing
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.persistence.schema import initialize_schema
@@ -217,6 +221,47 @@ def test_initialize_schema_rejects_current_version_db_missing_target_constraints
             assert "targets." in str(exc)
         else:
             raise AssertionError("current schema missing targets CHECK should fail fast")
+
+
+def test_initialize_schema_rejects_current_version_duplicate_target_scopes(
+    tmp_path: Path,
+) -> None:
+    """current DB 若出現 duplicate scope，bootstrap 不可靜默合併資料。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        first = TargetDescriptor.for_group_posts(
+            group_id="duplicate-current",
+            canonical_url="https://www.facebook.com/groups/duplicate-current",
+        )
+        duplicate = replace(
+            first,
+            id="duplicate-current-copy",
+            created_at=first.created_at + timedelta(seconds=1),
+            updated_at=first.updated_at + timedelta(seconds=1),
+        )
+        repository = TargetRepository(connection)
+        repository.save(first)
+        repository.save(duplicate)
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        try:
+            initialize_schema(connection)
+        except RuntimeError as exc:
+            assert "duplicate target scopes" in str(exc)
+            assert "duplicate-current-copy" in str(exc)
+        else:
+            raise AssertionError("current duplicate target scopes should fail fast")
+        rows = connection.execute(
+            "SELECT id FROM targets WHERE scope_id = ? ORDER BY created_at, id",
+            (first.scope_id,),
+        ).fetchall()
+
+    assert [row["id"] for row in rows] == [first.id, duplicate.id]
 
 
 def test_initialize_schema_accepts_plain_sqlite_connection_for_current_db(

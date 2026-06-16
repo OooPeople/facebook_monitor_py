@@ -229,6 +229,48 @@ def test_database_invariants_report_required_runtime_updated_at(
     assert "datetime value is required" in formatted
 
 
+def test_database_invariants_report_duplicate_target_scopes(tmp_path: Path) -> None:
+    """duplicate target scope 應被 read-only invariant checker 回報而非修復。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="duplicate-invariant",
+                canonical_url="https://www.facebook.com/groups/duplicate-invariant",
+            )
+        )
+        connection = app.repositories.targets.connection
+        connection.execute("DROP INDEX idx_targets_kind_scope_unique")
+        connection.execute(
+            """
+            INSERT INTO targets (
+                id, name, target_kind, group_id, group_name, group_cover_image_url,
+                parent_post_id, scope_id, canonical_url, metadata_status, metadata_error,
+                enabled, paused, worker_mode, created_at, updated_at
+            )
+            SELECT
+                ?, name, target_kind, group_id, group_name, group_cover_image_url,
+                parent_post_id, scope_id, canonical_url, metadata_status, metadata_error,
+                enabled, paused, worker_mode, created_at, updated_at
+            FROM targets
+            WHERE id = ?
+            """,
+            ("duplicate-invariant-copy", target.id),
+        )
+
+        violations = validate_database_invariants(connection)
+        remaining_count = connection.execute(
+            "SELECT COUNT(1) AS count FROM targets WHERE scope_id = ?",
+            (target.scope_id,),
+        ).fetchone()["count"]
+
+    formatted = "\n".join(violation.format() for violation in violations)
+    assert "duplicate target scope" in formatted
+    assert "duplicate-invariant-copy" in formatted
+    assert remaining_count == 2
+
+
 def test_schema_contract_fields_exist_in_current_schema(tmp_path: Path) -> None:
     """schema contract 引用的欄位必須存在於 current schema。"""
 

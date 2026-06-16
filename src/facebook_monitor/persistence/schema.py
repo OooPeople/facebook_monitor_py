@@ -7,7 +7,6 @@ import sqlite3
 
 from facebook_monitor.persistence.current_schema import create_current_schema
 from facebook_monitor.persistence.current_schema import ensure_dashboard_revision_triggers
-from facebook_monitor.persistence.schema_repair import repair_duplicate_target_scopes
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
@@ -223,12 +222,40 @@ def has_existing_user_tables(connection: sqlite3.Connection) -> bool:
 def ensure_target_scope_unique_index(connection: sqlite3.Connection) -> None:
     """確保 target kind/scope 在資料庫層唯一，避免 target-scoped state 分裂。"""
 
-    repair_duplicate_target_scopes(connection)
+    _raise_duplicate_target_scopes(connection)
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_kind_scope_unique
         ON targets(target_kind, scope_id)
         """
+    )
+
+
+def _raise_duplicate_target_scopes(connection: sqlite3.Connection) -> None:
+    """current DB 若仍有重複 target scope，需走明確 repair/migration，不可靜默合併。"""
+
+    rows = connection.execute(
+        """
+        SELECT target_kind, scope_id, GROUP_CONCAT(id, ',') AS target_ids, COUNT(*) AS count
+        FROM targets
+        GROUP BY target_kind, scope_id
+        HAVING count > 1
+        ORDER BY target_kind, scope_id
+        """
+    ).fetchall()
+    if not rows:
+        return
+    details = "; ".join(
+        (
+            f"{row['target_kind']}:{row['scope_id']} "
+            f"count={row['count']} target_ids={row['target_ids']}"
+        )
+        for row in rows
+    )
+    raise RuntimeError(
+        "SQLite targets contain duplicate target scopes; run explicit repair before "
+        "creating idx_targets_kind_scope_unique: "
+        + details
     )
 
 

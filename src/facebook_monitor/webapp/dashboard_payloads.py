@@ -41,6 +41,7 @@ def serialize_sidebar_payload(dashboard: Any) -> dict[str, object]:
 
     return {
         "layout_signature": getattr(dashboard, "sidebar_layout_signature", ""),
+        "template_signature": getattr(dashboard, "sidebar_template_signature", ""),
         "items": [serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
     }
 

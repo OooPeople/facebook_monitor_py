@@ -21,7 +21,6 @@ from facebook_monitor.application.target_runtime_transitions import (
 )
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.core.scan_failure_policy import decide_scan_failure
@@ -59,14 +58,12 @@ class TargetRuntimeRecoveryService:
 
         current_time = now or utc_now()
         stale_after = max(stale_after_seconds, 1)
+        stale_before = current_time - timedelta(seconds=stale_after)
         recovered: list[StaleRunningRecovery] = []
-        for state in self._access.runtime_states.list_all():
-            if state.runtime_status != TargetRuntimeStatus.RUNNING:
-                continue
+        for state in self._access.runtime_states.list_stale_running_candidates(
+            stale_before=stale_before,
+        ):
             heartbeat_at = state.last_heartbeat_at or state.updated_at
-            if current_time - heartbeat_at <= timedelta(seconds=stale_after):
-                continue
-            stale_before = current_time - timedelta(seconds=stale_after)
             if state.last_started_at is None:
                 continue
             worker_id = state.active_worker_id
@@ -129,12 +126,9 @@ class TargetRuntimeRecoveryService:
         stale_after = max(stale_after_seconds, 1)
         stale_before = current_time - timedelta(seconds=stale_after)
         recovered: list[TargetRuntimeState] = []
-        for state in self._access.runtime_states.list_all():
-            if state.runtime_status != TargetRuntimeStatus.QUEUED:
-                continue
-            enqueued_at = state.last_enqueued_at or state.updated_at
-            if current_time - enqueued_at <= timedelta(seconds=stale_after):
-                continue
+        for state in self._access.runtime_states.list_stale_queued_candidates(
+            stale_before=stale_before,
+        ):
             recovered_state = stale_queued_recovered_state(
                 state,
                 stale_after_seconds=stale_after,

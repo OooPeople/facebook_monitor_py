@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -41,6 +42,7 @@ from facebook_monitor.versioning import parse_version
 from scripts.admin._release_build import DEFAULT_KEY_ID
 from scripts.admin._release_build import DEFAULT_PRIVATE_KEY_FILE
 from scripts.admin.create_release_manifest import create_release_manifest
+from scripts.admin.sign_release_manifest import PRIVATE_KEY_ENV
 from scripts.admin.sign_release_manifest import sign_release_manifest
 
 APP_DIR_NAME = "facebook-monitor"
@@ -74,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         "--private-key-file",
         type=Path,
         default=None,
-        help="Ed25519 private key file. Defaults to docs/local path when present, otherwise env.",
+        help="Ed25519 private key file. Defaults to repo-external local signing path when present.",
     )
     parser.add_argument(
         "--private-key-b64",
@@ -344,7 +346,12 @@ def _write_smoke_manifest(
         force=True,
     )
     resolved_private_key_file = private_key_file
-    if resolved_private_key_file is None and DEFAULT_PRIVATE_KEY_FILE.is_file():
+    if (
+        resolved_private_key_file is None
+        and not private_key_b64.strip()
+        and not os.environ.get(PRIVATE_KEY_ENV, "").strip()
+        and DEFAULT_PRIVATE_KEY_FILE.is_file()
+    ):
         resolved_private_key_file = DEFAULT_PRIVATE_KEY_FILE
     signature_path = sign_release_manifest(
         manifest_path=manifest_path,

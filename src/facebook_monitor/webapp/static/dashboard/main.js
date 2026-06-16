@@ -8,6 +8,7 @@ import { setupSettingsModals } from "/static/dashboard/modals.js";
 import { setupNextRefreshCountdowns } from "/static/dashboard/next_refresh_countdown.js";
 import { setupNotificationHelp } from "/static/dashboard/notification_help.js";
 import { setupNotificationTest } from "/static/dashboard/notification_test.js";
+import { applyDashboardPartialUpdate } from "/static/dashboard/partial_updates.js";
 import { setupRevisionClient } from "/static/dashboard/revision_client.js";
 import { setupSidebar } from "/static/dashboard/sidebar.js";
 import { setupSidebarLayout } from "/static/dashboard/sidebar_layout.js";
@@ -91,7 +92,10 @@ setupNotificationHelp();
 setupNotificationTest();
 setupPreviewTabs();
 setupKeywordTabs();
-setupHitRecords({ showToast });
+setupHitRecords({
+  showToast,
+  refreshDashboard: () => applyDashboardPartialUpdate(state),
+});
 setupSettingsModals();
 setupConfirmSubmitForms();
 setupFormSubmitTracking();

@@ -347,7 +347,7 @@ def test_scan_request_during_queued_survives_current_scan_finish(
 def test_mark_target_queued_only_updates_active_non_running_state(
     tmp_path: Path,
 ) -> None:
-    """queue patch 只允許 active target，避免 stopped target 短暫顯示 queued。"""
+    """queue patch 只允許 active idle target，避免覆蓋 running/error/stopped。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -363,6 +363,12 @@ def test_mark_target_queued_only_updates_active_non_running_state(
                 canonical_url="https://www.facebook.com/groups/running-queue",
             )
         )
+        error_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="error-queue",
+                canonical_url="https://www.facebook.com/groups/error-queue",
+            )
+        )
         stopped_target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="stopped-queue",
@@ -371,9 +377,16 @@ def test_mark_target_queued_only_updates_active_non_running_state(
         )
         app.services.targets.restart_target_monitoring(active_target.id)
         app.services.targets.restart_target_monitoring(running_target.id)
+        app.services.targets.restart_target_monitoring(error_target.id)
         running_state = app.services.targets.try_claim_target_running(
             running_target.id,
             "worker-running",
+        )
+        error_state = app.services.targets.mark_target_error(
+            error_target.id,
+            "terminal failure",
+            failure_reason="target_invalid",
+            failure_count=3,
         )
 
         active_queued = app.services.targets.mark_target_queued(
@@ -382,6 +395,10 @@ def test_mark_target_queued_only_updates_active_non_running_state(
         )
         running_queued = app.services.targets.mark_target_queued(
             running_target.id,
+            "manual_request",
+        )
+        error_queued = app.services.targets.mark_target_queued(
+            error_target.id,
             "manual_request",
         )
         stopped_queued = app.services.targets.mark_target_queued(
@@ -398,6 +415,11 @@ def test_mark_target_queued_only_updates_active_non_running_state(
     assert running_queued.runtime_status == TargetRuntimeStatus.RUNNING
     assert running_queued.active_worker_id == "worker-running"
 
+    assert error_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert error_queued.desired_state == TargetDesiredState.ACTIVE
+    assert error_queued.runtime_status == TargetRuntimeStatus.ERROR
+    assert error_queued.last_error == "terminal failure"
+
     assert stopped_queued.desired_state == TargetDesiredState.STOPPED
     assert stopped_queued.runtime_status == TargetRuntimeStatus.IDLE
     assert stopped_queued.enqueue_reason == ""
@@ -406,7 +428,7 @@ def test_mark_target_queued_only_updates_active_non_running_state(
 def test_try_claim_target_running_claims_only_active_non_running_state(
     tmp_path: Path,
 ) -> None:
-    """running claim 必須由 DB conditional update 原子判定。"""
+    """running claim 只允許 active idle/queued，由 DB conditional update 原子判定。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -422,7 +444,20 @@ def test_try_claim_target_running_claims_only_active_non_running_state(
                 canonical_url="https://www.facebook.com/groups/stopped",
             )
         )
+        error_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="error-claim",
+                canonical_url="https://www.facebook.com/groups/error-claim",
+            )
+        )
         app.services.targets.restart_target_monitoring(active_target.id)
+        app.services.targets.restart_target_monitoring(error_target.id)
+        app.services.targets.mark_target_error(
+            error_target.id,
+            "terminal failure",
+            failure_reason="target_invalid",
+            failure_count=3,
+        )
         claimed = app.services.targets.try_claim_target_running(
             active_target.id,
             "worker-a",
@@ -437,8 +472,13 @@ def test_try_claim_target_running_claims_only_active_non_running_state(
             stopped_target.id,
             "worker-c",
         )
+        error_claim = app.services.targets.try_claim_target_running(
+            error_target.id,
+            "worker-error",
+        )
         active_state = app.repositories.runtime_states.get(active_target.id)
         stopped_state = app.repositories.runtime_states.get(stopped_target.id)
+        error_state = app.repositories.runtime_states.get(error_target.id)
 
     assert claimed is not None
     assert claimed.runtime_status == TargetRuntimeStatus.RUNNING
@@ -446,6 +486,7 @@ def test_try_claim_target_running_claims_only_active_non_running_state(
     assert claimed.active_page_id == "page-a"
     assert duplicate is None
     assert stopped_claim is None
+    assert error_claim is None
     assert active_state is not None
     assert active_state.active_worker_id == "worker-a"
     assert active_state.last_skip_reason.startswith("scan_guard_skipped: target_already_running")
@@ -454,6 +495,11 @@ def test_try_claim_target_running_claims_only_active_non_running_state(
     assert stopped_state.desired_state == TargetDesiredState.STOPPED
     assert stopped_state.runtime_status == TargetRuntimeStatus.IDLE
     assert "target_not_active" in stopped_state.last_skip_reason
+    assert error_state is not None
+    assert error_state.desired_state == TargetDesiredState.ACTIVE
+    assert error_state.runtime_status == TargetRuntimeStatus.ERROR
+    assert error_state.last_error == "terminal failure"
+    assert "target_claim_conflict" in error_state.last_skip_reason
 
 
 def test_try_claim_target_running_preserves_scan_lock_semantics(

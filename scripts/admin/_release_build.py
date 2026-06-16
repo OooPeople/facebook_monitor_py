@@ -11,12 +11,13 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 
+from scripts.admin.sign_release_manifest import PRIVATE_KEY_ENV
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KEY_ID = "release-ed25519-2026q2"
-DEFAULT_PRIVATE_KEY_FILE = (
-    ROOT / "docs" / "local" / "release-signing" / f"{DEFAULT_KEY_ID}.private-key.b64"
-)
+DEFAULT_RELEASE_SIGNING_DIR = Path.home() / ".facebook-monitor" / "release-signing"
+DEFAULT_PRIVATE_KEY_FILE = DEFAULT_RELEASE_SIGNING_DIR / f"{DEFAULT_KEY_ID}.private-key.b64"
 PYINSTALLER_VERSION = "6.20.0"
 PYINSTALLER_REQUIREMENT = f"pyinstaller=={PYINSTALLER_VERSION}"
 
@@ -109,9 +110,11 @@ def command_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def private_key_args(private_key_file: Path | None) -> tuple[str, ...]:
-    """回傳 manifest signer 的私鑰參數；沒有檔案時改用環境變數 fallback。"""
+    """回傳 manifest signer 檔案參數；環境變數存在時不注入預設檔。"""
 
     if private_key_file is None:
+        if os.environ.get(PRIVATE_KEY_ENV, "").strip():
+            return ()
         candidate = DEFAULT_PRIVATE_KEY_FILE
         if not candidate.is_file():
             return ()

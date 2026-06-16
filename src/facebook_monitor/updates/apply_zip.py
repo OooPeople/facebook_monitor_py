@@ -13,7 +13,9 @@ from facebook_monitor.updates.platforms import macos_app_executable_staging_path
 from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
 from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
+from facebook_monitor.updates.validation import normalized_zip_member_key
 from facebook_monitor.updates.validation import resolve_zip_symlink_target
+from facebook_monitor.updates.validation import validate_zip_member_path
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
 from facebook_monitor.updates.validation import zip_member_is_symlink
 from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
@@ -41,9 +43,14 @@ def safe_extract_zip(
             raise ValueError("zip_too_many_entries")
         total_uncompressed = 0
         member_paths: dict[zipfile.ZipInfo, PurePosixPath] = {}
+        normalized_paths: set[str] = set()
         symlink_member_paths: set[PurePosixPath] = set()
         for member in members:
             member_path = _zip_member_relative_path(member)
+            member_key = normalized_zip_member_key(member_path)
+            if member_key in normalized_paths:
+                raise ValueError("zip_duplicate_member_path")
+            normalized_paths.add(member_key)
             member_paths[member] = member_path
             if zip_member_is_symlink(member):
                 symlink_member_paths.add(member_path)
@@ -206,10 +213,7 @@ def _extract_zip_member(
 def _zip_member_relative_path(member: zipfile.ZipInfo) -> PurePosixPath:
     """正規化 zip member path 並拒絕絕對路徑或 traversal。"""
 
-    member_path = PurePosixPath(member.filename.replace("\\", "/"))
-    if member_path.is_absolute() or ".." in member_path.parts:
-        raise ValueError("zip_member_path_unsafe")
-    return member_path
+    return validate_zip_member_path(member.filename)
 
 
 def _zip_member_target(destination: Path, member_path: PurePosixPath) -> Path:

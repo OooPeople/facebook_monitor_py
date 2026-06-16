@@ -41,6 +41,53 @@ def test_safe_extract_zip_rejects_path_traversal(tmp_path: Path) -> None:
         raise AssertionError("expected unsafe zip member to fail")
 
 
+def test_safe_extract_zip_rejects_windows_unsafe_member_names(tmp_path: Path) -> None:
+    """zip member path 不可含 Windows reserved / ADS / trailing dot-space 名稱。"""
+
+    unsafe_names = (
+        "facebook-monitor/CON/file.txt",
+        "facebook-monitor/aux.txt",
+        "facebook-monitor/file:stream.txt",
+        "facebook-monitor/trailing-dot./file.txt",
+        "facebook-monitor/trailing-space /file.txt",
+        "facebook-monitor/control-\x01.txt",
+        "facebook-monitor/star*.txt",
+        "facebook-monitor/question?.txt",
+        "facebook-monitor/angle<name>.txt",
+        "facebook-monitor/quote\"name.txt",
+        "facebook-monitor/pipe|name.txt",
+    )
+    for index, unsafe_name in enumerate(unsafe_names):
+        zip_path = tmp_path / f"bad-{index}.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr(unsafe_name, "bad")
+
+        try:
+            safe_extract_zip(zip_path, tmp_path / f"staging-{index}")
+        except ValueError as exc:
+            assert str(exc) == "zip_member_path_unsafe"
+        else:
+            raise AssertionError(f"expected unsafe zip member to fail: {unsafe_name}")
+
+
+def test_safe_extract_zip_rejects_case_insensitive_duplicate_members(
+    tmp_path: Path,
+) -> None:
+    """zip member path 重複檢查需符合 Windows case-insensitive 落地語義。"""
+
+    zip_path = tmp_path / "bad-duplicate.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/Readme.txt", "first")
+        archive.writestr("facebook-monitor/readme.TXT", "second")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_duplicate_member_path"
+    else:
+        raise AssertionError("expected duplicate zip member to fail")
+
+
 def test_safe_extract_zip_preserves_executable_bit(tmp_path: Path) -> None:
     """macOS updater 解壓 staging 時必須保留 executable bit。"""
 

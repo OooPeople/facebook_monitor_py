@@ -455,6 +455,7 @@ const setupTemplateModals = (showToast) => {
           payload: collectTemplatePayload(modal),
         });
         showToast?.("群組模板已儲存", "success");
+        reloadDashboardPreservingScroll();
       } catch (error) {
         showToast?.(
           `群組模板儲存失敗：${formatClientErrorMessage(error, "請稍後再試")}`,

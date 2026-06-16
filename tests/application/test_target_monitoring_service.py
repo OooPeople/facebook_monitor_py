@@ -583,6 +583,120 @@ def test_recover_stale_running_inactive_target_clears_owner_without_failure(
     assert loaded.last_skip_reason.startswith("stale_running_inactive_recovered")
 
 
+def test_recover_stale_running_targets_skips_inactive_corrupt_runtime_rows(
+    tmp_path: Path,
+) -> None:
+    """inactive runtime 壞 enum 不可讓 stale recovery 全表 decode crash。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        stale_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-active",
+                canonical_url="https://www.facebook.com/groups/stale-active",
+            )
+        )
+        corrupt_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-runtime-corrupt",
+            )
+        )
+        app.services.targets.restart_target_monitoring(stale_target.id)
+        stale_state = app.services.targets.mark_target_running(
+            stale_target.id,
+            "old-worker",
+        )
+        app.repositories.runtime_states.save(
+            replace(
+                stale_state,
+                last_heartbeat_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+        app.services.targets.pause_target_monitoring(corrupt_target.id)
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = 'invalid' WHERE target_id = ?",
+            (corrupt_target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        recovered = app.services.targets.recover_stale_running_targets(
+            stale_after_seconds=180,
+            now=now,
+        )
+        loaded_stale = app.repositories.runtime_states.get(stale_target.id)
+        corrupt_row = connection.execute(
+            "SELECT runtime_status FROM target_runtime_state WHERE target_id = ?",
+            (corrupt_target.id,),
+        ).fetchone()
+
+    assert len(recovered) == 1
+    assert loaded_stale is not None
+    assert loaded_stale.runtime_status == TargetRuntimeStatus.IDLE
+    assert corrupt_row["runtime_status"] == "invalid"
+
+
+def test_recover_stale_queued_targets_skips_inactive_corrupt_runtime_rows(
+    tmp_path: Path,
+) -> None:
+    """inactive runtime 壞 enum 不可讓 queued recovery 全表 decode crash。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        stale_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-queued-active",
+                canonical_url="https://www.facebook.com/groups/stale-queued-active",
+            )
+        )
+        corrupt_target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inactive-queued-runtime-corrupt",
+                canonical_url="https://www.facebook.com/groups/inactive-queued-runtime-corrupt",
+            )
+        )
+        app.services.targets.restart_target_monitoring(stale_target.id)
+        queued_state = app.services.targets.mark_target_queued(
+            stale_target.id,
+            "manual_request",
+        )
+        app.repositories.runtime_states.save(
+            replace(
+                queued_state,
+                last_enqueued_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+        app.services.targets.pause_target_monitoring(corrupt_target.id)
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_runtime_state SET runtime_status = 'invalid' WHERE target_id = ?",
+            (corrupt_target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        recovered = app.services.targets.recover_stale_queued_targets(
+            stale_after_seconds=180,
+            now=now,
+        )
+        loaded_stale = app.repositories.runtime_states.get(stale_target.id)
+        corrupt_row = connection.execute(
+            "SELECT runtime_status FROM target_runtime_state WHERE target_id = ?",
+            (corrupt_target.id,),
+        ).fetchone()
+
+    assert len(recovered) == 1
+    assert loaded_stale is not None
+    assert loaded_stale.runtime_status == TargetRuntimeStatus.IDLE
+    assert corrupt_row["runtime_status"] == "invalid"
+
+
 def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
     tmp_path: Path,
 ) -> None:

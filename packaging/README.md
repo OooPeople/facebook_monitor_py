@@ -69,8 +69,12 @@ dist/facebook-monitor-{version}-manifest.json.sig
 
 私鑰來源優先順序：
 
-1. `docs/local/release-signing/release-ed25519-2026q2.private-key.b64`
-2. `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64`
+1. `--private-key-b64 <base64>`
+2. `--private-key-file <path>`
+3. `FACEBOOK_MONITOR_RELEASE_PRIVATE_KEY_B64`
+4. repo 外本機預設：`~/.facebook-monitor/release-signing/release-ed25519-2026q2.private-key.b64`
+
+舊的 `docs/local/release-signing/...` checkout 內位置不再被 tooling 自動採用；若本機仍有舊檔，請移到 repo 外預設路徑，或短期以 `--private-key-file` 明確指定。不要把長期 release signing key 放在 repo tree 內，即使該路徑已被 `.gitignore` 忽略。
 
 `manifest_private_key_missing` 代表缺 release manifest 私鑰，不是 PyInstaller 打包失敗。
 
@@ -160,7 +164,7 @@ macOS build script 也支援 `--expected-tag`、`--skip-pyinstaller-install`、`
 .\scripts\uv.ps1 run python scripts\admin\release_validation.py
 ```
 
-環境已同步時可加 `--skip-sync`；預設會執行 `pip-audit` 以對齊 CI dependency audit，只有離線或刻意重現非 audit 檢查時才加 `--skip-audit`。若使用 `--skip-release-validation`、`--skip-artifact-manifest`、`--skip-audit` 或尚未做人工 Facebook login / metadata resolver / posts-comments scan / notification smoke，必須在 release note、handoff 或任務狀態中列為未完成驗證。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace 或 conflict marker 時 fail。
+只有在環境已同步，且 dependency、`uv.lock`、workflow 或驗證腳本沒有變更時，才可加 `--skip-sync`；預設會執行 `pip-audit` 以對齊 CI dependency audit，只有離線或刻意重現非 audit 檢查時才加 `--skip-audit`。若使用 `--skip-release-validation`、`--skip-artifact-manifest`、`--skip-audit` 或尚未做人工 Facebook login / metadata resolver / posts-comments scan / notification smoke，必須在 release note、handoff 或任務狀態中列為未完成驗證。非 Git checkout（例如 source zip）會跳過 `git diff --check` 並明確提示；Git checkout 內仍會執行且遇到 whitespace 或 conflict marker 時 fail。
 
 需要連 artifact 一起驗時：
 

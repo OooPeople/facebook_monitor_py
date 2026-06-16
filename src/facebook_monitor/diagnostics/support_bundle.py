@@ -7,8 +7,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from datetime import timezone
+import logging
+import os
 from pathlib import Path
+from typing import BinaryIO
+from typing import Callable
+from typing import Literal
+from typing import Any
 import uuid
 import zipfile
 
@@ -40,7 +47,10 @@ from facebook_monitor.diagnostics._support_bundle_writers import _BundleSectionS
 from facebook_monitor.diagnostics._support_bundle_writers import _write_json
 from facebook_monitor.diagnostics._support_bundle_writers import _write_json_section
 from facebook_monitor.diagnostics._support_bundle_writers import _write_text
-from facebook_monitor.diagnostics._support_bundle_writers import _write_text_section
+from facebook_monitor.diagnostics._support_bundle_writers import _write_text_section_from_collect
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,6 +59,152 @@ class SupportBundleResult:
 
     path: Path
     filename: str
+
+
+@dataclass(frozen=True)
+class _SupportBundleContext:
+    """保存 registry collector 需要的支援包上下文。"""
+
+    paths: RuntimePaths
+    generated_at: datetime
+    runtime_diagnostics_text: str
+    scheduler_state: dict[str, object]
+    aliases: _SupportBundleAliases
+
+
+@dataclass(frozen=True)
+class _SupportBundleSection:
+    """宣告一個 support bundle optional section。"""
+
+    name: str
+    filename: str
+    kind: Literal["json", "text"]
+    collect: Callable[[_SupportBundleContext], Any]
+
+
+_SUPPORT_BUNDLE_SECTIONS: tuple[_SupportBundleSection, ...] = (
+    _SupportBundleSection(
+        name="runtime_diagnostics",
+        filename="runtime_diagnostics.txt",
+        kind="text",
+        collect=lambda context: _runtime_diagnostics_text(
+            context.runtime_diagnostics_text,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="runtime_paths",
+        filename="runtime_paths.json",
+        kind="json",
+        collect=lambda context: _redacted_runtime_paths(context.paths),
+    ),
+    _SupportBundleSection(
+        name="database_summary",
+        filename="database_summary.json",
+        kind="json",
+        collect=lambda context: _database_summary_payload(context.paths.db_path),
+    ),
+    _SupportBundleSection(
+        name="database_health",
+        filename="database_health.json",
+        kind="json",
+        collect=lambda context: _database_health_payload(context.paths),
+    ),
+    _SupportBundleSection(
+        name="target_inventory",
+        filename="target_inventory.json",
+        kind="json",
+        collect=lambda context: _target_inventory_payload(
+            context.paths.db_path,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="cover_image_hosts",
+        filename="cover_image_hosts.json",
+        kind="json",
+        collect=lambda context: _cover_image_hosts_payload(context.paths.db_path),
+    ),
+    _SupportBundleSection(
+        name="target_runtime_states",
+        filename="target_runtime_states.json",
+        kind="json",
+        collect=lambda context: _target_runtime_states_payload(
+            context.paths.db_path,
+            context.aliases,
+            now=context.generated_at,
+        ),
+    ),
+    _SupportBundleSection(
+        name="scan_summaries",
+        filename="scan_summaries.json",
+        kind="json",
+        collect=lambda context: _scan_summaries_payload(
+            context.paths.db_path,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="latest_scan_debug_summary",
+        filename="latest_scan_debug_summary.json",
+        kind="json",
+        collect=lambda context: _latest_scan_debug_summary_payload(
+            context.paths.db_path,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="notification_diagnostics",
+        filename="notification_diagnostics.json",
+        kind="json",
+        collect=lambda context: _notification_diagnostics_payload(
+            context.paths.db_path,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="dedupe_summary",
+        filename="dedupe_summary.json",
+        kind="json",
+        collect=lambda context: _dedupe_summary_payload(
+            context.paths.db_path,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="profile_session",
+        filename="profile_session.json",
+        kind="json",
+        collect=lambda context: _profile_session_payload(context.paths),
+    ),
+    _SupportBundleSection(
+        name="maintenance_update_summary",
+        filename="maintenance_update_summary.json",
+        kind="json",
+        collect=lambda context: _maintenance_update_summary_payload(
+            context.paths,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="scheduler_state",
+        filename="scheduler_state.json",
+        kind="json",
+        collect=lambda context: _scheduler_state_payload(
+            context.scheduler_state,
+            context.aliases,
+        ),
+    ),
+    _SupportBundleSection(
+        name="log_tail",
+        filename="log_tail.json",
+        kind="json",
+        collect=lambda context: _log_tail_payload(
+            context.paths.logs_dir,
+            context.aliases,
+        ),
+    ),
+)
 
 
 def create_support_bundle(
@@ -69,8 +225,15 @@ def create_support_bundle(
     temp_path = bundle_dir / f".{filename}.{uuid.uuid4().hex}.tmp"
     aliases = _SupportBundleAliases()
     sections: list[_BundleSectionStatus] = []
+    context = _SupportBundleContext(
+        paths=paths,
+        generated_at=generated_at,
+        runtime_diagnostics_text=runtime_diagnostics_text,
+        scheduler_state=scheduler_state or {},
+        aliases=aliases,
+    )
     try:
-        with temp_path.open("xb") as raw_archive:
+        with _open_private_bundle_temp(temp_path) as raw_archive:
             with zipfile.ZipFile(raw_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 _write_text(
                     archive,
@@ -95,121 +258,7 @@ def create_support_bundle(
                         **_sanitize_app_metadata(app_metadata),
                     },
                 )
-                _write_text_section(
-                    archive,
-                    sections,
-                    name="runtime_diagnostics",
-                    filename="runtime_diagnostics.txt",
-                    content=_runtime_diagnostics_text(runtime_diagnostics_text, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="runtime_paths",
-                    filename="runtime_paths.json",
-                    collect=lambda: _redacted_runtime_paths(paths),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="database_summary",
-                    filename="database_summary.json",
-                    collect=lambda: _database_summary_payload(paths.db_path),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="database_health",
-                    filename="database_health.json",
-                    collect=lambda: _database_health_payload(paths),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="target_inventory",
-                    filename="target_inventory.json",
-                    collect=lambda: _target_inventory_payload(paths.db_path, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="cover_image_hosts",
-                    filename="cover_image_hosts.json",
-                    collect=lambda: _cover_image_hosts_payload(paths.db_path),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="target_runtime_states",
-                    filename="target_runtime_states.json",
-                    collect=lambda: _target_runtime_states_payload(
-                        paths.db_path,
-                        aliases,
-                        now=generated_at,
-                    ),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="scan_summaries",
-                    filename="scan_summaries.json",
-                    collect=lambda: _scan_summaries_payload(paths.db_path, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="latest_scan_debug_summary",
-                    filename="latest_scan_debug_summary.json",
-                    collect=lambda: _latest_scan_debug_summary_payload(
-                        paths.db_path,
-                        aliases,
-                    ),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="notification_diagnostics",
-                    filename="notification_diagnostics.json",
-                    collect=lambda: _notification_diagnostics_payload(
-                        paths.db_path,
-                        aliases,
-                    ),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="dedupe_summary",
-                    filename="dedupe_summary.json",
-                    collect=lambda: _dedupe_summary_payload(paths.db_path, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="profile_session",
-                    filename="profile_session.json",
-                    collect=lambda: _profile_session_payload(paths),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="maintenance_update_summary",
-                    filename="maintenance_update_summary.json",
-                    collect=lambda: _maintenance_update_summary_payload(paths, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="scheduler_state",
-                    filename="scheduler_state.json",
-                    collect=lambda: _scheduler_state_payload(scheduler_state or {}, aliases),
-                )
-                _write_json_section(
-                    archive,
-                    sections,
-                    name="log_tail",
-                    filename="log_tail.json",
-                    collect=lambda: _log_tail_payload(paths.logs_dir, aliases),
-                )
+                _write_registered_sections(archive, sections, context)
                 _write_json(
                     archive,
                     "bundle_manifest.json",
@@ -221,6 +270,7 @@ def create_support_bundle(
                     },
                 )
         temp_path.replace(bundle_path)
+        _apply_private_bundle_permissions(bundle_path)
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise
@@ -231,3 +281,52 @@ def create_support_bundle(
         preserve=(bundle_path,),
     )
     return SupportBundleResult(path=bundle_path, filename=filename)
+
+
+def _write_registered_sections(
+    archive: zipfile.ZipFile,
+    sections: list[_BundleSectionStatus],
+    context: _SupportBundleContext,
+) -> None:
+    """依 registry 順序寫入 optional sections，保留既有 failure isolation。"""
+
+    for section in _SUPPORT_BUNDLE_SECTIONS:
+        if section.kind == "text":
+            _write_text_section_from_collect(
+                archive,
+                sections,
+                name=section.name,
+                filename=section.filename,
+                collect=lambda section=section: section.collect(context),
+            )
+            continue
+        _write_json_section(
+            archive,
+            sections,
+            name=section.name,
+            filename=section.filename,
+            collect=lambda section=section: section.collect(context),
+        )
+
+
+def _apply_private_bundle_permissions(path: Path) -> None:
+    """Best-effort 將 support bundle artifact 設成僅 owner 可讀寫。"""
+
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.debug("failed to apply private support bundle permissions", exc_info=True)
+
+
+def _open_private_bundle_temp(path: Path) -> BinaryIO:
+    """以 private mode exclusive-create 開啟 temp bundle artifact。"""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(path, flags, 0o600)
+    try:
+        return os.fdopen(fd, "wb")
+    except Exception:
+        os.close(fd)
+        raise

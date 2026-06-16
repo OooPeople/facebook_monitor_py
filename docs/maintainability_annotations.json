@@ -35,6 +35,16 @@
       "path_glob": "src/facebook_monitor/facebook/sort_native_click.py",
       "category": "facebook_sort_behavior",
       "reason": "auto_adjust_sort native click state machine spans sync/async Playwright stages and diagnostics."
+    },
+    {
+      "path_glob": "src/facebook_monitor/application/services.py",
+      "category": "application_facade",
+      "reason": "TargetApplicationService should remain a composition facade; add product logic in focused services first."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/routes/hit_records.py",
+      "category": "route_hotspot",
+      "reason": "Hit records route is acceptable now, but future search/export/detail/bulk behavior should move into focused query/action services."
     }
   ]
 }

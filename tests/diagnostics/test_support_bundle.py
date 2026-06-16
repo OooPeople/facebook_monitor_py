@@ -188,6 +188,80 @@ def test_support_bundle_readme_marks_redaction_as_best_effort(tmp_path: Path) ->
     assert "review the extracted files before sharing" in readme
 
 
+def test_support_bundle_zip_uses_private_permissions_on_posix(tmp_path: Path) -> None:
+    """POSIX 上支援包 artifact 不應預設 group/world-readable。"""
+
+    if os.name == "nt":
+        pytest.skip("Windows chmod does not expose POSIX privacy bits reliably")
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    assert result.path.stat().st_mode & 0o077 == 0
+
+
+def test_support_bundle_temp_zip_is_created_with_private_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """temp bundle 應在 create 當下就是 private mode，不等事後 chmod。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    real_open = os.open
+    created_modes: list[int] = []
+
+    def recording_open(path: Path, flags: int, mode: int = 0o777) -> int:
+        created_modes.append(mode)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle.os.open",
+        recording_open,
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    assert result.path.is_file()
+    assert created_modes == [0o600]
+
+
+def test_support_bundle_permission_failure_does_not_block_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """final chmod 失敗只降級記錄，不應讓支援包建立失敗。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    chmod_calls: list[Path] = []
+
+    def fail_chmod(path: Path, _mode: int) -> None:
+        chmod_calls.append(path)
+        raise OSError("chmod unavailable")
+
+    monkeypatch.setattr(Path, "chmod", fail_chmod)
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    assert result.path.is_file()
+    assert chmod_calls == [result.path]
+
+
 def test_support_bundle_redacts_runtime_diagnostics_secrets(tmp_path: Path) -> None:
     """runtime diagnostics 內的 webhook、token 與使用者路徑不可原樣進支援包。"""
 
@@ -500,7 +574,28 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
     )
 
     with zipfile.ZipFile(result.path) as archive:
-        names = set(archive.namelist())
+        expected_names = [
+            "README.txt",
+            "metadata.json",
+            "runtime_diagnostics.txt",
+            "runtime_paths.json",
+            "database_summary.json",
+            "database_health.json",
+            "target_inventory.json",
+            "cover_image_hosts.json",
+            "target_runtime_states.json",
+            "scan_summaries.json",
+            "latest_scan_debug_summary.json",
+            "notification_diagnostics.json",
+            "dedupe_summary.json",
+            "profile_session.json",
+            "maintenance_update_summary.json",
+            "scheduler_state.json",
+            "log_tail.json",
+            "bundle_manifest.json",
+        ]
+        ordered_names = archive.namelist()
+        names = set(ordered_names)
         json_payloads = {
             name: json.loads(archive.read(name).decode("utf-8"))
             for name in names
@@ -517,27 +612,30 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
             archive.read("notification_diagnostics.json").decode("utf-8")
         )
         log_payload = json.loads(archive.read("log_tail.json").decode("utf-8"))
+        manifest = json.loads(archive.read("bundle_manifest.json").decode("utf-8"))
 
-    assert names == {
-        "README.txt",
-        "metadata.json",
-        "runtime_diagnostics.txt",
-        "runtime_paths.json",
-        "database_summary.json",
-        "bundle_manifest.json",
-        "database_health.json",
-        "target_inventory.json",
-        "cover_image_hosts.json",
-        "target_runtime_states.json",
-        "scan_summaries.json",
-        "latest_scan_debug_summary.json",
-        "notification_diagnostics.json",
-        "dedupe_summary.json",
-        "profile_session.json",
-        "maintenance_update_summary.json",
-        "scheduler_state.json",
-        "log_tail.json",
-    }
+    assert ordered_names == expected_names
+    assert names == set(expected_names)
+    assert [
+        (section["name"], section["file"])
+        for section in manifest["sections"]
+    ] == [
+        ("runtime_diagnostics", "runtime_diagnostics.txt"),
+        ("runtime_paths", "runtime_paths.json"),
+        ("database_summary", "database_summary.json"),
+        ("database_health", "database_health.json"),
+        ("target_inventory", "target_inventory.json"),
+        ("cover_image_hosts", "cover_image_hosts.json"),
+        ("target_runtime_states", "target_runtime_states.json"),
+        ("scan_summaries", "scan_summaries.json"),
+        ("latest_scan_debug_summary", "latest_scan_debug_summary.json"),
+        ("notification_diagnostics", "notification_diagnostics.json"),
+        ("dedupe_summary", "dedupe_summary.json"),
+        ("profile_session", "profile_session.json"),
+        ("maintenance_update_summary", "maintenance_update_summary.json"),
+        ("scheduler_state", "scheduler_state.json"),
+        ("log_tail", "log_tail.json"),
+    ]
     assert all(payload is not None for payload in json_payloads.values())
     assert scheduler_payload["queued_targets"] == ["target_001"]
     assert scan_payload["stop_reason_counts"] == {"extractor_failed": 1}
@@ -574,6 +672,84 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
     assert "private-token" not in combined_text
     assert "https://www.facebook.com" not in combined_text
     assert r"C:\Users\alice" not in combined_text
+
+
+def test_support_bundle_text_section_failure_is_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文字 collector 失敗時也應只標該 section unavailable。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    def fail_runtime_diagnostics(*_args, **_kwargs):
+        raise RuntimeError("private path E:\\PrivateProject\\CustomerName\\runtime.txt")
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle._runtime_diagnostics_text",
+        fail_runtime_diagnostics,
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        runtime_text = archive.read("runtime_diagnostics.txt").decode("utf-8")
+        manifest = json.loads(archive.read("bundle_manifest.json").decode("utf-8"))
+
+    section = next(
+        item for item in manifest["sections"] if item["name"] == "runtime_diagnostics"
+    )
+    assert "available: false" in runtime_text
+    assert "error: RuntimeError" in runtime_text
+    assert section["status"] == "unavailable"
+    assert section["error"] == "RuntimeError"
+    assert "CustomerName" not in runtime_text
+    assert "private path" not in json.dumps(manifest, ensure_ascii=False)
+
+
+def test_support_bundle_keeps_inactive_stale_running_recovery_reason_code(
+    tmp_path: Path,
+) -> None:
+    """inactive stale running cleanup reason 應保留為可行動的安全 code。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+    )
+    with SqliteConnection(paths.db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        TargetRepository(connection).save(target)
+        TargetRuntimeStateRepository(connection).save(
+            TargetRuntimeState(
+                target_id=target.id,
+                runtime_status=TargetRuntimeStatus.IDLE,
+                last_skip_reason=(
+                    "stale_running_inactive_recovered: running owner expired "
+                    "after 180 seconds"
+                ),
+            )
+        )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("target_runtime_states.json").decode("utf-8"))
+
+    assert payload["states"][0]["last_skip_reason"]["code"] == (
+        "stale_running_inactive_recovered"
+    )
 
 
 def test_support_bundle_cover_image_hosts_are_privacy_safe(tmp_path: Path) -> None:

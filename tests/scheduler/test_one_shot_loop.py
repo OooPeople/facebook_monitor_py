@@ -12,6 +12,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
@@ -339,6 +340,53 @@ def test_recover_stale_running_targets_requeues_stale_target(tmp_path: Path) -> 
         default_interval_seconds=60,
         now=now,
     ) == (target.id,)
+
+
+def test_recover_stale_running_inactive_target_does_not_record_scan_failure(
+    tmp_path: Path,
+) -> None:
+    """inactive target 的 stale running cleanup 不應產生 scan failure/run。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stopped-stale",
+                canonical_url="https://www.facebook.com/groups/stopped-stale",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        state = app.services.targets.mark_target_running(target.id, "dead-worker")
+        app.repositories.runtime_states.save(
+            replace(
+                state,
+                desired_state=TargetDesiredState.STOPPED,
+                last_heartbeat_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+
+    recovered_count = recover_stale_running_targets(db_path, stale_after_seconds=180)
+
+    with SqliteApplicationContext(db_path) as app:
+        loaded = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+    assert recovered_count == 1
+    assert loaded is not None
+    assert loaded.desired_state == TargetDesiredState.STOPPED
+    assert loaded.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded.scan_requested_at is None
+    assert loaded.active_worker_id == ""
+    assert latest_scan is None
+    assert (
+        list_schedulable_target_ids(
+            db_path,
+            default_interval_seconds=60,
+            now=now,
+        )
+        == ()
+    )
 
 
 def test_recover_stale_runtime_targets_requeues_stale_queued_target(tmp_path: Path) -> None:

@@ -184,6 +184,14 @@ def validation_steps(
                 "--cov-fail-under=80",
             ),
         ),
+        ValidationStep(
+            "frontend vendor manifest",
+            uv_command(
+                "run",
+                "python",
+                "scripts/admin/check_frontend_vendor_manifest.py",
+            ),
+        ),
         ValidationStep("mypy", uv_command("run", "mypy")),
         ValidationStep(
             "ruff",

@@ -9,7 +9,6 @@ from urllib.parse import parse_qs
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
-from pytest import MonkeyPatch
 from starlette.requests import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -20,9 +19,23 @@ from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.app import RequestBodyTooLarge
 from facebook_monitor.webapp.app import _read_request_body_with_limit
 from facebook_monitor.webapp.assets import ASSET_VERSION
+from facebook_monitor.webapp.maintenance import BoundedRetentionMaintenanceRunner
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.version import APP_VERSION
 from tests.webapp.app_test_helpers import create_app
+
+
+class FakeBoundedRetentionRunner:
+    """測試用 maintenance runner，確認 request 只觸發、不直接跑 cleanup。"""
+
+    def __init__(self) -> None:
+        self.triggered_paths: list[Path] = []
+
+    def trigger(self, db_path: Path) -> bool:
+        """記錄觸發路徑。"""
+
+        self.triggered_paths.append(db_path)
+        return True
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:
@@ -128,77 +141,99 @@ def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
 
 def test_health_endpoint_does_not_run_bounded_retention_maintenance(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
 ) -> None:
     """Health check 只供 launcher 探測，不應有 housekeeping 副作用。"""
 
-    calls: list[Path] = []
-
-    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
-        calls.append(db_path)
-        return 0
-
-    monkeypatch.setattr(
-        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
-        fake_run_bounded_retention_maintenance_for_db,
-    )
     db_path = tmp_path / "app.db"
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    runner = FakeBoundedRetentionRunner()
+    app.state.bounded_retention_maintenance_runner = runner
+    client = TestClient(app)
 
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert calls == []
+    assert runner.triggered_paths == []
 
 
 def test_web_ui_read_path_runs_bounded_retention_maintenance(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
 ) -> None:
-    """主要 Web UI read path 仍會低頻觸發 bounded retention。"""
+    """主要 Web UI read path 只觸發 background bounded retention runner。"""
 
-    calls: list[Path] = []
-
-    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
-        calls.append(db_path)
-        return 0
-
-    monkeypatch.setattr(
-        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
-        fake_run_bounded_retention_maintenance_for_db,
-    )
     db_path = tmp_path / "app.db"
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    runner = FakeBoundedRetentionRunner()
+    app.state.bounded_retention_maintenance_runner = runner
+    client = TestClient(app)
 
     response = client.get("/")
 
     assert response.status_code == 200
-    assert calls == [db_path]
+    assert runner.triggered_paths == [db_path]
 
 
 def test_settings_read_path_runs_bounded_retention_maintenance(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
 ) -> None:
-    """Settings read path 仍是明確 housekeeping 觸發點。"""
+    """Settings read path 仍是明確 housekeeping background trigger。"""
 
-    calls: list[Path] = []
-
-    def fake_run_bounded_retention_maintenance_for_db(db_path: Path) -> int:
-        calls.append(db_path)
-        return 0
-
-    monkeypatch.setattr(
-        "facebook_monitor.webapp.app.run_bounded_retention_maintenance_for_db",
-        fake_run_bounded_retention_maintenance_for_db,
-    )
     db_path = tmp_path / "app.db"
-    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    runner = FakeBoundedRetentionRunner()
+    app.state.bounded_retention_maintenance_runner = runner
+    client = TestClient(app)
 
     response = client.get("/settings")
 
     assert response.status_code == 200
-    assert calls == [db_path]
+    assert runner.triggered_paths == [db_path]
+
+
+def test_bounded_retention_runner_does_not_schedule_duplicate_task(
+    tmp_path: Path,
+) -> None:
+    """同一個 Web app process 內已有 cleanup task 時不重複排程。"""
+
+    calls: list[Path] = []
+
+    def fake_maintenance(db_path: Path) -> int:
+        calls.append(db_path)
+        return 0
+
+    async def run_test() -> None:
+        runner = BoundedRetentionMaintenanceRunner(fake_maintenance)
+        db_path = tmp_path / "app.db"
+
+        first = runner.trigger(db_path)
+        second = runner.trigger(db_path)
+        while runner.running:
+            await asyncio.sleep(0)
+
+        assert first is True
+        assert second is False
+        assert calls == [db_path]
+
+    asyncio.run(run_test())
+
+
+def test_bounded_retention_runner_swallows_background_failure(
+    tmp_path: Path,
+) -> None:
+    """background cleanup 失敗不可外溢到 request task。"""
+
+    def failing_maintenance(_db_path: Path) -> int:
+        raise RuntimeError("database locked")
+
+    async def run_test() -> None:
+        runner = BoundedRetentionMaintenanceRunner(failing_maintenance)
+
+        assert runner.trigger(tmp_path / "app.db") is True
+        while runner.running:
+            await asyncio.sleep(0)
+        assert not runner.running
+
+    asyncio.run(run_test())
 
 
 def test_mutating_routes_require_csrf_token_for_loopback_host(tmp_path: Path) -> None:

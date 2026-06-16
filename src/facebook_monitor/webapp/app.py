@@ -44,6 +44,7 @@ from facebook_monitor.webapp.dependencies import STATIC_DIR
 from facebook_monitor.webapp.dependencies import TEMPLATES_DIR
 from facebook_monitor.webapp.dependencies import default_group_name_resolver
 from facebook_monitor.webapp.dependencies import GroupMetadataResolver
+from facebook_monitor.webapp.maintenance import BoundedRetentionMaintenanceRunner
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionManager
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
@@ -176,7 +177,9 @@ def create_app(
             request.method == "GET"
             and request.url.path in BOUNDED_RETENTION_MAINTENANCE_READ_PATHS
         ):
-            run_bounded_retention_maintenance_for_db(request.app.state.db_path)
+            request.app.state.bounded_retention_maintenance_runner.trigger(
+                request.app.state.db_path
+            )
         return await call_next(request)
 
     app.state.db_path = db_path
@@ -184,6 +187,9 @@ def create_app(
     app.state.templates_dir = templates_dir
     app.state.static_dir = static_dir
     app.state.profile_manager = profile_manager or ProfileSessionManager()
+    app.state.bounded_retention_maintenance_runner = BoundedRetentionMaintenanceRunner(
+        run_bounded_retention_maintenance_for_db
+    )
     app.state.group_name_resolver = group_name_resolver or default_group_name_resolver
     app.state.scheduler_manager = scheduler_manager or BackgroundSchedulerManager()
     app.state.auto_start_scheduler = auto_start_scheduler

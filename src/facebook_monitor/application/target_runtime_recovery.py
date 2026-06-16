@@ -14,8 +14,12 @@ from facebook_monitor.application.target_runtime_transitions import (
     failure_decision_state,
 )
 from facebook_monitor.application.target_runtime_transitions import (
+    stale_running_inactive_recovered_state,
+)
+from facebook_monitor.application.target_runtime_transitions import (
     stale_queued_recovered_state,
 )
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
@@ -34,8 +38,9 @@ class StaleRunningRecovery:
     previous_started_at: datetime
     previous_page_id: str
     previous_heartbeat_at: datetime | None
-    decision: ScanFailureDecision
+    decision: ScanFailureDecision | None
     stale_after_seconds: float
+    record_failure: bool = True
 
 
 class TargetRuntimeRecoveryService:
@@ -67,17 +72,27 @@ class TargetRuntimeRecoveryService:
             worker_id = state.active_worker_id
             started_at = state.last_started_at
             page_id = state.active_page_id
-            decision = self._decide_stale_running_failure(state)
-            runtime_message = format_failure_message(
-                STALE_RUNNING_REASON,
-                f"worker heartbeat expired after {int(stale_after)} seconds",
-            )
-            recovered_state = failure_decision_state(
-                state,
-                decision,
-                runtime_message,
-                now=current_time,
-            )
+            if state.desired_state != TargetDesiredState.ACTIVE:
+                decision = None
+                record_failure = False
+                recovered_state = stale_running_inactive_recovered_state(
+                    state,
+                    stale_after_seconds=stale_after,
+                    now=current_time,
+                )
+            else:
+                decision = self._decide_stale_running_failure(state)
+                record_failure = True
+                runtime_message = format_failure_message(
+                    STALE_RUNNING_REASON,
+                    f"worker heartbeat expired after {int(stale_after)} seconds",
+                )
+                recovered_state = failure_decision_state(
+                    state,
+                    decision,
+                    runtime_message,
+                    now=current_time,
+                )
             committed_state = (
                 self._access.runtime_states.save_stale_running_state_if_unchanged(
                     recovered_state,
@@ -97,6 +112,7 @@ class TargetRuntimeRecoveryService:
                         previous_heartbeat_at=heartbeat_at,
                         decision=decision,
                         stale_after_seconds=stale_after,
+                        record_failure=record_failure,
                     )
                 )
         return tuple(recovered)

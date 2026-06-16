@@ -496,6 +496,8 @@ def test_recover_stale_running_targets_restarts_old_heartbeat(tmp_path: Path) ->
                 canonical_url="https://www.facebook.com/groups/222",
             )
         )
+        app.services.targets.restart_target_monitoring(stale_target.id)
+        app.services.targets.restart_target_monitoring(fresh_target.id)
         stale_state = app.services.targets.mark_target_running(stale_target.id, "old-worker")
         fresh_state = app.services.targets.mark_target_running(fresh_target.id, "new-worker")
         app.repositories.runtime_states.save(
@@ -531,8 +533,54 @@ def test_recover_stale_running_targets_restarts_old_heartbeat(tmp_path: Path) ->
     assert loaded_stale.consecutive_failure_reason == "stale_running"
     assert loaded_stale.consecutive_failure_count == 1
     assert recovered[0].previous_worker_id == "old-worker"
+    assert recovered[0].decision is not None
     assert recovered[0].decision.auto_restart
     assert loaded_fresh.runtime_status == TargetRuntimeStatus.RUNNING
+
+
+def test_recover_stale_running_inactive_target_clears_owner_without_failure(
+    tmp_path: Path,
+) -> None:
+    """stopped target 的 stale running corrupt row 只清 owner，不折算 scan failure。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stopped-stale",
+                canonical_url="https://www.facebook.com/groups/stopped-stale",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running_state = app.services.targets.mark_target_running(target.id, "old-worker")
+        app.repositories.runtime_states.save(
+            replace(
+                running_state,
+                desired_state=TargetDesiredState.STOPPED,
+                last_heartbeat_at=now - timedelta(seconds=240),
+                updated_at=now - timedelta(seconds=240),
+            )
+        )
+
+        recovered = app.services.targets.recover_stale_running_targets(
+            stale_after_seconds=180,
+            now=now,
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert len(recovered) == 1
+    assert recovered[0].decision is None
+    assert not recovered[0].record_failure
+    assert loaded is not None
+    assert loaded.desired_state == TargetDesiredState.STOPPED
+    assert loaded.runtime_status == TargetRuntimeStatus.IDLE
+    assert loaded.scan_requested_at is None
+    assert loaded.active_worker_id == ""
+    assert loaded.active_page_id == ""
+    assert loaded.consecutive_failure_reason == ""
+    assert loaded.consecutive_failure_count == 0
+    assert loaded.last_skip_reason.startswith("stale_running_inactive_recovered")
 
 
 def test_stale_running_recovery_does_not_overwrite_refreshed_owner(

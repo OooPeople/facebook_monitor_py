@@ -28,6 +28,7 @@
 
 - `core/`：資料模型、預設值、compiled keyword rules、dedupe、refresh policy。
 - `application/`：use cases、target registry/config/runtime、monitoring commands、scan recording。
+- `TargetApplicationService` 是 composition façade，只能委派 focused use case / service、做小型 result mapping 或交易邊界組合；新產品語義應先落在專責 service，再視需要由 façade 暴露。
 - `persistence/`：SQLite schema、migrations、repository、runtime data maintenance。
 - `facebook/`：Facebook route detection、permalink、DOM extraction、sort 與 scroll helper。
 - `worker/`：posts/comments scan pipeline、shared finalize、resident worker 與 fallback/debug workers。
@@ -56,8 +57,8 @@
 
 - Web UI `scan-once` 只排入 resident scheduler request，不直接啟動 browser scan。
 - `worker.resident_main` 是正式 queue-based resident 主路徑。
-- resident 啟動前會回收 stale runtime state，避免重啟後 target 永遠卡在 queued/running。
-- scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；先建立 target，再由 resident metadata refresh 補齊名稱。
+- resident 啟動前會回收 stale runtime state，避免重啟後 target 永遠卡在 queued/running；inactive target 的 stale running corrupt row 只清 runtime owner，不記成 scan failure 或 runtime failure notification。
+- scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；若同步 metadata resolver 被跳過或失敗，先建立 target 並標記 metadata pending，再由 resident metadata refresh 補齊名稱。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、keyword classification、match history、notification dedupe/outbox、latest scan snapshot 與 scan run commit。
 - 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；include keyword groups 採組內 OR、組間 AND，不展開笛卡兒積；通知沿用 `matched_keyword` 顯示成立的 include rules，group 診斷保留在 history、latest scan、diagnostics 與 UI highlight 資料中。
@@ -111,7 +112,7 @@
 - Runtime data maintenance 只清可重建 scan/debug 資料與可選的 legacy `seen_items` mirror；不得把 `notification_outbox` 當作一般 runtime/debug 資料清掉。bounded retention 另行清理 60 天外 logical/dedupe state 與短期 terminal outbox rows。
 - Local dedupe 採 60 天 bounded horizon：`logical_items` / `logical_item_aliases` 以 `last_seen_at` 保留 60 天，`notification_dedupe` 以 `last_deduped_at` 保留 60 天；超過 horizon 的舊 item 若再次出現，可能被視為新的可通知項目。
 - bounded retention 會短留 terminal outbox rows：`sent` / `skipped` 預設保留 7 天，`failed` / `processing_failed` 預設保留 14 天供診斷；`pending` / `processing_pending`、latest scan 仍引用的 logical item 與 active notification dedupe references 會被保護。
-- support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、schema/table counts、invariant summary 與 privacy-safe cover image host histogram；cover image host 診斷只輸出 hostname / suffix / reject reason counts，不輸出完整 URL、path、query、target id 或 target 名稱。產生時先寫同目錄 temp zip，成功後才發布正式 zip，retention 只清正式 support bundle。
+- support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、schema/table counts、invariant summary 與 privacy-safe cover image host histogram；cover image host 診斷只輸出 hostname / suffix / reject reason counts，不輸出完整 URL、path、query、target id 或 target 名稱。產生時先寫同目錄 temp zip，best-effort 設定 private file permission，成功後才發布正式 zip，retention 只清正式 support bundle。
 
 ## Web UI 語義
 
@@ -125,6 +126,7 @@
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
 - dashboard revision 是 partial update 的觸發來源；Web UI 以 batch payload 更新 sidebar 與 target cards。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API payload 對外使用 `recorded_at`，DB 欄位仍沿用歷史名稱 `notified_at` 作為內部 persistence 欄位。
+- hit records route 只負責 HTTP wiring；若未來新增 search、export、detail 或 bulk 行為，產品語義需先下沉到 query/export/detail/bulk service，不直接累積在 route registration。
 - dashboard / target card / hit records read model 需要對 inactive 或 paused 的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；active fatal invariant 仍應回報阻擋或 degraded 狀態。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。

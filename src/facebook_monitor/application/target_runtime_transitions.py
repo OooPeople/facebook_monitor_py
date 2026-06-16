@@ -203,6 +203,30 @@ def stale_queued_recovered_state(
     )
 
 
+def stale_running_inactive_recovered_state(
+    state: TargetRuntimeState,
+    *,
+    stale_after_seconds: float,
+    now: datetime,
+) -> TargetRuntimeState:
+    """建立 inactive target 的 stale running owner cleanup state。"""
+
+    return replace(
+        state,
+        runtime_status=TargetRuntimeStatus.IDLE,
+        scan_requested_at=None,
+        last_error="",
+        last_skip_reason=(
+            "stale_running_inactive_recovered: running owner expired "
+            f"after {int(stale_after_seconds)} seconds"
+        ),
+        enqueue_reason="",
+        active_worker_id="",
+        active_page_id="",
+        updated_at=now,
+    )
+
+
 def scan_request_after_current_attempt(
     state: TargetRuntimeState,
 ) -> datetime | None:
@@ -227,5 +251,6 @@ __all__ = [
     "retry_requested_state",
     "scan_request_after_current_attempt",
     "scan_skipped_state",
+    "stale_running_inactive_recovered_state",
     "stale_queued_recovered_state",
 ]

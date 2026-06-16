@@ -91,6 +91,7 @@ SAFE_REASON_CODE_VALUES = {
     "stagnant_windows",
     "stale_queued_recovered",
     "stale_running",
+    "stale_running_inactive_recovered",
     "target_already_queued_or_running",
     "target_already_running",
     "target_argument_conflict",

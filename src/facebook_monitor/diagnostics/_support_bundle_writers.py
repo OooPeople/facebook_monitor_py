@@ -36,7 +36,6 @@ class _BundleSectionStatus:
         return payload
 
 
-
 def _write_json_section(
     archive: zipfile.ZipFile,
     sections: list[_BundleSectionStatus],
@@ -63,18 +62,30 @@ def _write_json_section(
     _write_json(archive, filename, payload)
 
 
-def _write_text_section(
+def _write_text_section_from_collect(
     archive: zipfile.ZipFile,
     sections: list[_BundleSectionStatus],
     *,
     name: str,
     filename: str,
-    content: str,
+    collect: Any,
 ) -> None:
-    """寫入文字 section 並記錄 manifest。"""
+    """收集並寫入文字 section；失敗時保留 unavailable 文字 payload。"""
 
+    try:
+        content = str(collect())
+        sections.append(_BundleSectionStatus(name=name, file=filename))
+    except Exception as exc:
+        content = f"available: false\nerror: {_safe_exception_summary(exc)}\n"
+        sections.append(
+            _BundleSectionStatus(
+                name=name,
+                file=filename,
+                status="unavailable",
+                error=_safe_exception_summary(exc),
+            )
+        )
     _write_text(archive, filename, content)
-    sections.append(_BundleSectionStatus(name=name, file=filename))
 
 
 def _unavailable_payload(exc: Exception) -> dict[str, object]:
@@ -84,8 +95,6 @@ def _unavailable_payload(exc: Exception) -> dict[str, object]:
         "available": False,
         "error": _safe_exception_summary(exc),
     }
-
-
 
 
 def _write_json(

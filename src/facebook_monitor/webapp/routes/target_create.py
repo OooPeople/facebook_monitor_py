@@ -17,6 +17,7 @@ from facebook_monitor.application.target_create_service import build_create_targ
 from facebook_monitor.application.target_create_service import CreateTargetPlan
 from facebook_monitor.application.target_create_service import CreateTargetResult
 from facebook_monitor.application.target_create_service import create_or_update_target_from_plan
+from facebook_monitor.application.target_create_service import MetadataResolutionOutcome
 from facebook_monitor.application.target_create_service import TargetCreateMetadata
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.models import TargetDescriptor
@@ -48,9 +49,11 @@ async def _resolve_group_metadata_if_needed(
     request: Request,
     *,
     plan: CreateTargetPlan,
-) -> TargetCreateMetadata:
+) -> MetadataResolutionOutcome:
     """未提供自訂名稱時，視 profile 可用狀態嘗試解析 Facebook group metadata。"""
 
+    if plan.custom_name:
+        return MetadataResolutionOutcome()
     if not plan.should_resolve_metadata:
         if plan.scheduler_running:
             scheduler_state = get_scheduler_manager(request).state()
@@ -58,26 +61,39 @@ async def _resolve_group_metadata_if_needed(
                 "skip group name resolver because scheduler lifecycle is %s",
                 scheduler_state.lifecycle_state,
             )
-        return TargetCreateMetadata()
+            return MetadataResolutionOutcome(skipped_reason="scheduler_running")
+        return MetadataResolutionOutcome()
     scheduler_state = get_scheduler_manager(request).state()
     if scheduler_state.running:
         logger.info(
             "skip group name resolver because scheduler lifecycle is %s",
             scheduler_state.lifecycle_state,
         )
-        return TargetCreateMetadata()
+        return MetadataResolutionOutcome(skipped_reason="scheduler_running")
     profile_dir = get_profile_dir(request)
     resolver = get_group_name_resolver(request)
-    resolved = await run_with_temporary_profile_access(
-        request,
-        lambda: resolver(profile_dir, plan.metadata_canonical_url),
-    )
-    if isinstance(resolved, GroupMetadata):
-        return TargetCreateMetadata(
-            group_name=resolved.group_name,
-            group_cover_image_url=resolved.group_cover_image_url,
+    try:
+        resolved = await run_with_temporary_profile_access(
+            request,
+            lambda: resolver(profile_dir, plan.metadata_canonical_url),
         )
-    return TargetCreateMetadata(group_name=str(resolved or ""))
+    except ProfileSessionError:
+        logger.info("defer group metadata resolver because profile is unavailable")
+        return MetadataResolutionOutcome(skipped_reason="profile_unavailable")
+    except GroupMetadataError:
+        logger.info("defer group metadata resolver after resolution failure")
+        return MetadataResolutionOutcome(skipped_reason="resolution_failed")
+    if isinstance(resolved, GroupMetadata):
+        return MetadataResolutionOutcome(
+            metadata=TargetCreateMetadata(
+                group_name=resolved.group_name,
+                group_cover_image_url=resolved.group_cover_image_url,
+            )
+        )
+    group_name = str(resolved or "")
+    if not group_name:
+        return MetadataResolutionOutcome(skipped_reason="resolution_failed")
+    return MetadataResolutionOutcome(metadata=TargetCreateMetadata(group_name=group_name))
 
 
 def _request_metadata_refresh_if_needed(
@@ -112,7 +128,7 @@ async def _create_or_update_target_from_form(
         display_name=display_name,
         scheduler_running=get_scheduler_manager(request).state().running,
     )
-    metadata = await _resolve_group_metadata_if_needed(request, plan=plan)
+    metadata_outcome = await _resolve_group_metadata_if_needed(request, plan=plan)
 
     def upsert(app_context: ApplicationContext) -> CreateTargetResult:
         """在 Web DB retry/thread 邊界內建立 target。"""
@@ -121,7 +137,8 @@ async def _create_or_update_target_from_form(
             app_context.services.targets,
             plan=plan,
             config=config_form.to_config_patch(preserve_secret_fields_as_unset=False),
-            metadata=metadata,
+            metadata=metadata_outcome.metadata,
+            metadata_refresh_required=metadata_outcome.requires_deferred_refresh,
         )
 
     result = await run_web_app_context_operation(
@@ -179,10 +196,6 @@ def register_create_target_routes(app: FastAPI, templates: Jinja2Templates) -> N
                 display_name=display_name,
             )
         except RouteDetectionError as exc:
-            return redirect_new_target_with_error(str(exc))
-        except GroupMetadataError as exc:
-            return redirect_new_target_with_error(str(exc))
-        except ProfileSessionError as exc:
             return redirect_new_target_with_error(str(exc))
         except ValueError as exc:
             return redirect_new_target_with_error(

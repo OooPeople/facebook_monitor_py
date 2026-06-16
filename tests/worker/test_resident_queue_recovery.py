@@ -12,6 +12,7 @@ from typing import Any
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import DueTarget
@@ -337,6 +338,117 @@ def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) ->
             recovered_state = app.repositories.runtime_states.get(target.id)
         assert recovered_state is not None
         assert recovered_state.runtime_status == TargetRuntimeStatus.IDLE
+
+    asyncio.run(run_test())
+
+
+def test_inactive_stale_recovery_cancels_attempt_without_scan_failure(
+    tmp_path: Path,
+) -> None:
+    """已停用 target 的 stale running cleanup 仍需取消 resident in-memory attempt。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    goto_started = asyncio.Event()
+    goto_cancelled = asyncio.Event()
+
+    class BlockingPreparePage(FakeAsyncPage):
+        """page prepare 卡住，讓 recovery 有機會取消 attempt。"""
+
+        async def goto(self, url: str, wait_until: str, timeout: float) -> None:
+            self.url = url.rstrip("/")
+            self.goto_count += 1
+            goto_started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                goto_cancelled.set()
+                raise
+
+    class BlockingContext(FakeAsyncBrowserContext):
+        """所有新 page 都使用可取消的 blocking page。"""
+
+        async def new_page(self) -> FakeAsyncPage:
+            page = BlockingPreparePage()
+            self.pages.append(page)
+            return page
+
+    async def fake_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise AssertionError("inactive stale running cleanup must not scan")
+
+    async def run_test() -> None:
+        target_queue = TargetQueue()
+        planner = TargetSchedulePlanner()
+        page_pool = AsyncResidentPagePool(BlockingContext())
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+                stale_running_after_seconds=180,
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=fake_scan_page,
+        )
+        await executor.start()
+        try:
+            await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=1,
+            )
+            await asyncio.wait_for(goto_started.wait(), timeout=1)
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                assert state is not None
+                assert state.runtime_status == TargetRuntimeStatus.RUNNING
+                app.repositories.runtime_states.save(
+                    replace(
+                        state,
+                        desired_state=TargetDesiredState.STOPPED,
+                        last_heartbeat_at=now - timedelta(seconds=240),
+                        updated_at=now - timedelta(seconds=240),
+                    )
+                )
+
+            summary = await run_resident_main_scheduler_tick(
+                options=executor.options,
+                page_pool=page_pool,
+                target_queue=target_queue,
+                executor=executor,
+                schedule_planner=planner,
+                cycle_index=2,
+            )
+            await asyncio.wait_for(goto_cancelled.wait(), timeout=1)
+            await asyncio.wait_for(target_queue.join(), timeout=1)
+        finally:
+            await executor.stop()
+
+        assert summary.recovered_runtime_count == 1
+        _queued_count, running_count, _queued_ids = await target_queue.snapshot()
+        assert running_count == 0
+        with SqliteApplicationContext(db_path) as app:
+            recovered_state = app.repositories.runtime_states.get(target.id)
+            latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        assert recovered_state is not None
+        assert recovered_state.desired_state == TargetDesiredState.STOPPED
+        assert recovered_state.runtime_status == TargetRuntimeStatus.IDLE
+        assert latest_scan is None
 
     asyncio.run(run_test())
 

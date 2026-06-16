@@ -553,10 +553,11 @@ class TargetRuntimeStateRepository:
                 updated_at = ?
             WHERE target_id = ?
               AND runtime_status = ?
+              AND desired_state = ?
               AND active_worker_id = ?
               AND last_started_at = ?
               AND (? = '' OR active_page_id = ?)
-              AND last_heartbeat_at <= ?
+              AND COALESCE(last_heartbeat_at, updated_at) <= ?
             """,
             (
                 state.desired_state.value,
@@ -581,6 +582,7 @@ class TargetRuntimeStateRepository:
                 encode_datetime(state.updated_at),
                 state.target_id,
                 TargetRuntimeStatus.RUNNING.value,
+                state.desired_state.value,
                 worker_id,
                 encode_datetime(started_at),
                 page_id,

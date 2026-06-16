@@ -36,7 +36,7 @@ class RunningRecoveryAction:
     worker_id: str
     started_at: datetime
     page_id: str
-    decision: ScanFailureDecision
+    decision: ScanFailureDecision | None
     state: TargetRuntimeState
     scan_run_id: int = 0
 
@@ -44,7 +44,7 @@ class RunningRecoveryAction:
     def terminal(self) -> bool:
         """回傳本次 recovery 是否已停止 target 自動恢復。"""
 
-        return self.decision.terminal
+        return self.decision.terminal if self.decision is not None else False
 
     @property
     def owner_key(self) -> str:
@@ -152,6 +152,15 @@ def _record_stale_running_failure(
     target = app.repositories.targets.get(recovery.state.target_id)
     if target is None:
         return None
+    if not recovery.record_failure or recovery.decision is None:
+        return RunningRecoveryAction(
+            target_id=recovery.state.target_id,
+            worker_id=recovery.previous_worker_id,
+            started_at=recovery.previous_started_at,
+            page_id=recovery.previous_page_id,
+            decision=None,
+            state=recovery.state,
+        )
     detail = f"worker heartbeat expired after {int(recovery.stale_after_seconds)} seconds"
     scan_run_id = record_scan_failure(
         app=app,

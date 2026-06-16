@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "name": "SortableJS ESM bundle",
+      "package": "sortablejs",
+      "version": "1.15.6",
+      "license": "MIT",
+      "source": "https://github.com/SortableJS/Sortable",
+      "path": "src/facebook_monitor/webapp/static/vendor/sortablejs/sortable.esm.js",
+      "sha256": "6C9B20F666B97A0D3577088EED380B9D2A522C61DAAC2BE464C8C13672A7B2F2"
+    },
+    {
+      "name": "SortableJS license",
+      "package": "sortablejs",
+      "version": "1.15.6",
+      "license": "MIT",
+      "source": "https://github.com/SortableJS/Sortable",
+      "path": "src/facebook_monitor/webapp/static/vendor/sortablejs/LICENSE",
+      "sha256": "199071E94A4D6BA6F634ACD6020842EFC55161B9FB639A432C50DA687781219D"
+    }
+  ]
+}

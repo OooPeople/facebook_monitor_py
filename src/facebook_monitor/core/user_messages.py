@@ -88,6 +88,7 @@ _RUNTIME_SKIP_MESSAGES = {
     "scan_guard_skipped": "掃描已略過",
     "target_already_running": "監視項目已在掃描中",
     "stale_queued_recovered": "監視項目排隊等待過久，系統已回復排程狀態。",
+    "stale_running_inactive_recovered": "已停止監視項目的過期執行狀態已清除。",
 }
 
 _NOTIFICATION_STATUS_LABELS = {
@@ -239,7 +240,7 @@ def format_runtime_skip_message(value: str) -> str:
     if not text:
         return ""
     code, detail = split_coded_message(text)
-    if code == "stale_queued_recovered":
+    if code in {"stale_queued_recovered", "stale_running_inactive_recovered"}:
         return _RUNTIME_SKIP_MESSAGES[code]
     if code == "scan_guard_skipped":
         if "target_already_running" in detail:

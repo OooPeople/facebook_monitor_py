@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.target_requests import TargetConfigPatch
@@ -27,6 +28,28 @@ class TargetCreateMetadata:
 
     group_name: str = ""
     group_cover_image_url: str = ""
+
+
+MetadataSkipReason = Literal[
+    "none",
+    "scheduler_running",
+    "profile_unavailable",
+    "resolution_failed",
+]
+
+
+@dataclass(frozen=True)
+class MetadataResolutionOutcome:
+    """保存同步 metadata resolver 的實際結果與補償排程需求。"""
+
+    metadata: TargetCreateMetadata = TargetCreateMetadata()
+    skipped_reason: MetadataSkipReason = "none"
+
+    @property
+    def requires_deferred_refresh(self) -> bool:
+        """回傳是否需要 commit 後排 resident metadata refresh 補償。"""
+
+        return self.skipped_reason != "none"
 
 
 @dataclass(frozen=True)
@@ -87,6 +110,7 @@ def create_or_update_target_from_plan(
     plan: CreateTargetPlan,
     config: TargetConfigPatch,
     metadata: TargetCreateMetadata = TargetCreateMetadata(),
+    metadata_refresh_required: bool = False,
 ) -> CreateTargetResult:
     """依 create plan 建立或更新 posts/comments target。"""
 
@@ -113,7 +137,7 @@ def create_or_update_target_from_plan(
                 config=config,
             )
         )
-    if not plan.should_request_metadata_refresh:
+    if not (plan.should_request_metadata_refresh or metadata_refresh_required):
         return CreateTargetResult(target=target)
     refreshed_target = targets.mark_target_metadata_refresh_pending(target.id)
     return CreateTargetResult(
@@ -125,6 +149,7 @@ def create_or_update_target_from_plan(
 __all__ = [
     "CreateTargetPlan",
     "CreateTargetResult",
+    "MetadataResolutionOutcome",
     "TargetCreateMetadata",
     "build_create_target_plan",
     "create_or_update_target_from_plan",

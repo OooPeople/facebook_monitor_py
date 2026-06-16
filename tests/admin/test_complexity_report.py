@@ -253,3 +253,12 @@ def test_complexity_report_annotation_warnings_do_not_drop_valid_items(
     )
     assert any("unsupported status='typo'" in warning for warning in result.warnings)
     assert any("missing path_glob" in warning for warning in result.warnings)
+
+
+def test_default_maintainability_annotations_load_without_warnings() -> None:
+    """追蹤中的 maintainability annotations 不應有 JSON/schema 警告。"""
+
+    result = load_annotations_with_warnings(Path("docs/maintainability_annotations.json"))
+
+    assert result.warnings == ()
+    assert result.annotations

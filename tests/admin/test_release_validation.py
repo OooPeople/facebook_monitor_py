@@ -109,6 +109,23 @@ def test_validation_steps_include_static_js_syntax_check() -> None:
     ]
 
 
+def test_validation_steps_include_frontend_vendor_manifest_check() -> None:
+    """release validation 必須驗證 vendored frontend provenance manifest。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=True,
+    )
+
+    vendor_step = next(step for step in steps if step.label == "frontend vendor manifest")
+    assert vendor_step.command == [
+        "uv",
+        "run",
+        "python",
+        "scripts/admin/check_frontend_vendor_manifest.py",
+    ]
+
+
 def test_static_js_syntax_check_reports_missing_node(monkeypatch, capsys) -> None:
     """缺 node 時 JS syntax checker 應以清楚錯誤 fail。"""
 

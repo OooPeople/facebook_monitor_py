@@ -20,7 +20,7 @@
 | Setup Login | `facebook-monitor-login` | Start | 開啟專用 automation profile，供登入與檢查 session | 是，維運入口 |
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
-| Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程 | 否 |
+| Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程，含 frontend vendor manifest checksum 檢查 | 否 |
 | Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | 串接 Windows PyInstaller、release zip / `.sha256`、不含 manifest 的 artifact validation 與 release validation | 否 |
 | macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | 串接 macOS Apple Silicon PyInstaller、release zip / `.sha256`、不含 manifest 的 artifact validation 與 release validation；需在 macOS 上執行 | 否 |
 | Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 從 `dist/facebook-monitor` 建立 Windows / macOS release zip 與同名 `.sha256`，並先檢查平台必要檔案與私密 runtime data | 否 |

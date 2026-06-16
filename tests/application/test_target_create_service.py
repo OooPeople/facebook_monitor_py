@@ -105,6 +105,33 @@ def test_create_target_use_case_marks_metadata_refresh_pending_when_scheduler_ru
     assert target.group_name == ""
 
 
+def test_create_target_use_case_marks_metadata_refresh_pending_from_resolver_outcome(
+    tmp_path: Path,
+) -> None:
+    """resolver 實際跳過時，即使 plan snapshot 是 stopped 也需補排 metadata refresh。"""
+
+    db_path = tmp_path / "app.db"
+    plan = build_create_target_plan(
+        group_url="https://www.facebook.com/groups/222518561920110/",
+        display_name="",
+        scheduler_running=False,
+    )
+
+    with SqliteApplicationContext(db_path) as app_context:
+        result = create_or_update_target_from_plan(
+            app_context.services.targets,
+            plan=plan,
+            config=TargetConfigPatch(),
+            metadata_refresh_required=True,
+        )
+        target = app_context.repositories.targets.get(result.target.id)
+
+    assert target is not None
+    assert result.metadata_refresh_target_id == target.id
+    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert target.group_name == ""
+
+
 def test_create_target_plan_rejects_invalid_url_without_db_write(tmp_path: Path) -> None:
     """invalid URL 會在 plan 階段失敗，不需要開 DB transaction。"""
 

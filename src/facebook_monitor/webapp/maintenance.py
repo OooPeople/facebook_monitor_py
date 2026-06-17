@@ -7,12 +7,18 @@ cleanup latency。
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from collections.abc import Callable
 import logging
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi import Request
+from starlette.responses import Response
+
 
 logger = logging.getLogger(__name__)
+BOUNDED_RETENTION_MAINTENANCE_READ_PATHS = frozenset({"/", "/settings"})
 
 
 class BoundedRetentionMaintenanceRunner:
@@ -53,4 +59,30 @@ class BoundedRetentionMaintenanceRunner:
             logger.exception("bounded retention background maintenance failed")
 
 
-__all__ = ["BoundedRetentionMaintenanceRunner"]
+def register_bounded_retention_maintenance_middleware(app: FastAPI) -> None:
+    """註冊 Web read path housekeeping trigger middleware。"""
+
+    @app.middleware("http")
+    async def bounded_retention_maintenance_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """成功讀取頁面後嘗試 housekeeping，避免搶在空 DB schema 初始化前執行。"""
+
+        response = await call_next(request)
+        if (
+            request.method == "GET"
+            and request.url.path in BOUNDED_RETENTION_MAINTENANCE_READ_PATHS
+            and response.status_code < 500
+        ):
+            request.app.state.bounded_retention_maintenance_runner.trigger(
+                request.app.state.db_path
+            )
+        return response
+
+
+__all__ = [
+    "BOUNDED_RETENTION_MAINTENANCE_READ_PATHS",
+    "BoundedRetentionMaintenanceRunner",
+    "register_bounded_retention_maintenance_middleware",
+]

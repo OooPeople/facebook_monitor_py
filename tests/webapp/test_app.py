@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import parse_qs
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
+from httpx import Response as HttpResponse
 from starlette.requests import Request
 
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -16,12 +18,14 @@ from facebook_monitor.application.target_requests import UpsertCommentsTargetReq
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.keyword_text import parse_keywords_text
 from facebook_monitor.webapp.app import create_app as create_production_app
-from facebook_monitor.webapp.app import RequestBodyTooLarge
-from facebook_monitor.webapp.app import _read_request_body_with_limit
 from facebook_monitor.webapp.assets import ASSET_VERSION
+from facebook_monitor.webapp.dependencies import TEMPLATES_DIR
+from facebook_monitor.webapp.http_security import RequestBodyTooLarge
+from facebook_monitor.webapp.http_security import _read_request_body_with_limit
 from facebook_monitor.webapp.maintenance import BoundedRetentionMaintenanceRunner
 from facebook_monitor.webapp.dependencies import redirect_with_error
 from facebook_monitor.version import APP_VERSION
+from tests.helpers.webapp import FakeSchedulerManager
 from tests.webapp.app_test_helpers import create_app
 
 
@@ -60,6 +64,27 @@ class SchemaAwareBoundedRetentionRunner:
         return True
 
 
+def assert_basic_security_headers(response: HttpResponse) -> None:
+    """確認本機 Web UI response 帶基本瀏覽器安全 header。"""
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-frame-options"] == "DENY"
+    csp = response.headers["content-security-policy"]
+    assert "default-src 'self'" in csp
+    assert "script-src 'self'" in csp
+    assert "style-src 'self'" in csp
+    assert "unsafe-inline" not in csp
+    assert "img-src 'self' data: https://fbcdn.net https://*.fbcdn.net" in csp
+    assert "connect-src 'self'" in csp
+    assert "form-action 'self'" in csp
+    assert "frame-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "unsafe-eval" not in csp
+
+
 def test_parse_keywords_text_dedupes_and_trims() -> None:
     """Web UI keyword parser 會去除空白與重複值。"""
 
@@ -88,22 +113,41 @@ def test_web_ui_responses_include_basic_security_headers(tmp_path: Path) -> None
     response = client.get("/")
 
     assert response.status_code == 200
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["x-frame-options"] == "DENY"
-    csp = response.headers["content-security-policy"]
-    assert "default-src 'self'" in csp
-    assert "script-src 'self'" in csp
-    assert "style-src 'self'" in csp
-    assert "unsafe-inline" not in csp
-    assert "img-src 'self' data: https://fbcdn.net https://*.fbcdn.net" in csp
-    assert "connect-src 'self'" in csp
-    assert "form-action 'self'" in csp
-    assert "frame-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
-    assert "base-uri 'none'" in csp
-    assert "object-src 'none'" in csp
-    assert "unsafe-eval" not in csp
+    assert_basic_security_headers(response)
+
+
+def test_static_and_error_responses_include_basic_security_headers(
+    tmp_path: Path,
+) -> None:
+    """Static 與 middleware error response 也需經過 security middleware。"""
+
+    client = TestClient(
+        create_production_app(
+            db_path=tmp_path / "app.db",
+            profile_dir=tmp_path / "profile",
+            csrf_token="known-token",
+            max_request_body_bytes=128,
+        )
+    )
+
+    static_response = client.get("/static/dashboard/sidebar.js")
+    csrf_response = client.post(
+        "/settings/target-keywords",
+        data={"exclude_keywords": "售完"},
+        follow_redirects=False,
+    )
+    body_limit_response = client.post(
+        "/settings/target-keywords",
+        data={"csrf_token": "known-token", "exclude_keywords": "x" * 256},
+        follow_redirects=False,
+    )
+
+    assert static_response.status_code == 200
+    assert csrf_response.status_code == 403
+    assert body_limit_response.status_code == 413
+    assert_basic_security_headers(static_response)
+    assert_basic_security_headers(csrf_response)
+    assert_basic_security_headers(body_limit_response)
 
 
 def test_redirect_error_redacts_sensitive_values() -> None:
@@ -139,6 +183,61 @@ def test_create_app_uses_explicit_static_resource_dir(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.text == "custom static"
     assert app.state.static_dir == static_dir
+
+
+def test_create_app_uses_explicit_template_resource_dir(tmp_path: Path) -> None:
+    """launcher 傳入的 templates dir 應成為 Web UI 實際 render 來源。"""
+
+    db_path = tmp_path / "app.db"
+    templates_dir = tmp_path / "templates"
+    shutil.copytree(TEMPLATES_DIR, templates_dir)
+    index_template = templates_dir / "index.html"
+    index_template.write_text(
+        index_template.read_text(encoding="utf-8") + "\n<!-- custom-template-dir -->\n",
+        encoding="utf-8",
+    )
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        templates_dir=templates_dir,
+    )
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "custom-template-dir" in response.text
+    assert app.state.templates_dir == templates_dir
+
+
+def test_create_app_auto_starts_scheduler_with_configured_options(
+    tmp_path: Path,
+) -> None:
+    """Web UI lifespan 需用 factory 參數啟動注入的 scheduler manager。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    scheduler_manager = FakeSchedulerManager()
+    app = create_app(
+        db_path=db_path,
+        profile_dir=profile_dir,
+        scheduler_manager=scheduler_manager,
+        auto_start_scheduler=True,
+        scheduler_interval_seconds=37,
+        scheduler_tick_seconds=2.5,
+        max_concurrent_scans=3,
+    )
+
+    with TestClient(app):
+        assert scheduler_manager.started_count == 1
+        assert scheduler_manager.options is not None
+        assert scheduler_manager.options.db_path == db_path
+        assert scheduler_manager.options.profile_dir == profile_dir
+        assert scheduler_manager.options.interval_seconds == 37
+        assert scheduler_manager.options.scheduler_tick_seconds == 2.5
+        assert scheduler_manager.options.max_concurrent_scans == 3
+
+    assert scheduler_manager.stopped_count == 1
 
 
 def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:

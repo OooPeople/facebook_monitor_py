@@ -38,24 +38,22 @@ from facebook_monitor.version import APP_VERSION
 
 
 ZIP_ROOT_NAME = RELEASE_ARCHIVE_ROOT_NAME
-MACOS_FIRST_RUN_README = """# Facebook Monitor macOS 首次開啟
+MACOS_FIRST_RUN_README = """Facebook Monitor macOS 首次開啟說明
 
-如果第一次從 GitHub Release 下載後，開啟 `Facebook Monitor.app` 時出現
+如果第一次從 GitHub Release 下載後，開啟 Facebook Monitor.app 時出現
 「已損毀」、「無法驗證開發者」或被 macOS 阻擋，請打開 Terminal 執行：
 
-```bash
 cd ~/Downloads
 xattr -dr com.apple.quarantine "./facebook-monitor"
-```
 
-如果你把資料夾解壓到其他位置，請把 `~/Downloads` 改成實際位置。完成後
-再開啟 `Facebook Monitor.app`。
+如果你把資料夾解壓到其他位置，請把 ~/Downloads 改成實際位置。完成後
+再開啟 Facebook Monitor.app。
 
 這個步驟通常只在第一次用瀏覽器從 GitHub 下載時需要；之後從 app 內更新器
 下載並替換新版，就不需要再執行一次這個指令。
 
 這是因為目前 macOS 版尚未做 Developer ID signing / notarization；
-從瀏覽器下載的 zip 會被 macOS 加上 `com.apple.quarantine` 標記。
+從瀏覽器下載的 zip 會被 macOS 加上 com.apple.quarantine 標記。
 這個指令只會移除 macOS 對這次瀏覽器下載加上的 quarantine 標記，
 不等於正式簽章或 notarization。
 """
@@ -101,7 +99,7 @@ RELEASE_ZIP_TARGETS = {
         ),
         extra_text_files=(
             ReleaseZipTextFile(
-                relative_path="README.md",
+                relative_path="README.txt",
                 content=MACOS_FIRST_RUN_README,
             ),
         ),

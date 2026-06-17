@@ -71,6 +71,8 @@ ARTIFACT_PLATFORM_CHOICES = tuple(
 WINDOWS_ZIP_ROOT = RELEASE_ARCHIVE_ROOT_NAME
 MACOS_ZIP_ROOT = RELEASE_ARCHIVE_ROOT_NAME
 MACHO_PROBE_BYTES = 4096
+MACOS_FIRST_RUN_README_ENTRY = f"{MACOS_ZIP_ROOT}/README.txt"
+MACOS_DEPRECATED_FIRST_RUN_README_ENTRY = f"{MACOS_ZIP_ROOT}/README.md"
 WINDOWS_REQUIRED_ZIP_ENTRIES = frozenset(
     f"{WINDOWS_ZIP_ROOT}/{path}"
     for path in WINDOWS_LAYOUT_POLICY.required_staging_files
@@ -82,7 +84,7 @@ WINDOWS_ZIP_EXE_ENTRIES = (
 MACOS_REQUIRED_ZIP_ENTRIES = frozenset(
     f"{MACOS_ZIP_ROOT}/{path}"
     for path in MACOS_ARM64_LAYOUT_POLICY.required_staging_files
-)
+) | {MACOS_FIRST_RUN_README_ENTRY}
 MACOS_EXECUTABLE_ENTRIES = (
     *(
         f"{MACOS_ZIP_ROOT}/{path}"
@@ -334,6 +336,10 @@ def _validate_macos_zip_contents(
             missing = sorted(MACOS_REQUIRED_ZIP_ENTRIES - names)
             for name in missing:
                 messages.append(f"zip missing required entry: {name}")
+            if MACOS_DEPRECATED_FIRST_RUN_README_ENTRY in names:
+                messages.append(
+                    "zip must not include deprecated macOS first-run README.md"
+                )
             for entry in MACOS_EXECUTABLE_ENTRIES:
                 info = infos.get(entry)
                 if info is not None and not zip_member_has_executable_bit(info):

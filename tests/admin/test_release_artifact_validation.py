@@ -653,6 +653,102 @@ def test_validate_release_artifacts_accepts_macos_arm64_onedir_zip(
     assert result.ok
 
 
+def test_validate_release_artifacts_rejects_macos_zip_without_first_run_readme(
+    tmp_path: Path,
+) -> None:
+    """macOS zip 必須包含給使用者看的首次開啟純文字說明。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive, include_readme=False)
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any(
+        f"zip missing required entry: {validation.MACOS_FIRST_RUN_README_ENTRY}"
+        in message
+        for message in result.messages
+    )
+
+
+def test_validate_release_artifacts_rejects_deprecated_macos_markdown_readme(
+    tmp_path: Path,
+) -> None:
+    """macOS zip 不可同時保留舊的 Markdown 首次開啟說明。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        archive.writestr(validation.MACOS_DEPRECATED_FIRST_RUN_README_ENTRY, "old")
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any(
+        "deprecated macOS first-run README.md" in message
+        for message in result.messages
+    )
+
+
 def test_validate_release_artifacts_accepts_macos_symlink_to_sibling_in_root(
     tmp_path: Path,
 ) -> None:
@@ -1431,6 +1527,7 @@ def _write_macos_app_bundle(
     version: str = "0.1.0",
     launcher_content: bytes = MACHO_ARM64_BYTES,
     extra_plist_values: dict[str, object] | None = None,
+    include_readme: bool = True,
 ) -> None:
     """寫入測試用 Finder/Dock `.app` launcher bundle。"""
 
@@ -1440,3 +1537,5 @@ def _write_macos_app_bundle(
         launcher_content=launcher_content,
         extra_plist_values=extra_plist_values,
     )
+    if include_readme:
+        archive.writestr(validation.MACOS_FIRST_RUN_README_ENTRY, "first run\n")

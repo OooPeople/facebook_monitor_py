@@ -63,7 +63,7 @@ uv run playwright install chromium
 uv run facebook-monitor
 ```
 
-詳細安裝、release zip 使用方式、macOS 首次下載 quarantine 處理、日常使用、命令參數、troubleshooting 與資料路徑，請看 [docs/USAGE.md](docs/USAGE.md)。macOS zip 內也會附 `README.md` 說明首次開啟步驟。
+詳細安裝、release zip 使用方式、macOS 首次下載 quarantine 處理、日常使用、命令參數、troubleshooting 與資料路徑，請看 [docs/USAGE.md](docs/USAGE.md)。macOS zip 內也會附 `README.txt` 說明首次開啟步驟。
 
 ## 文件
 

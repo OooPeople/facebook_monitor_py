@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -319,6 +320,44 @@ def test_scan_request_during_running_survives_current_scan_finish(
     assert finished_state.scan_requested_at == requested_state.scan_requested_at
 
 
+def test_guarded_owner_save_preserves_scan_request_after_snapshot(
+    tmp_path: Path,
+) -> None:
+    """owner save 不可覆蓋 worker snapshot 後送出的 scan-once。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="running-preserve-request",
+                canonical_url="https://www.facebook.com/groups/running-preserve-request",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.mark_target_running(target.id, "worker-1")
+        assert running.last_started_at is not None
+        requested_state = app.services.targets.request_target_scan(target.id)
+        stale_idle = replace(
+            running,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=None,
+            last_error="",
+            active_worker_id="",
+            active_page_id="",
+            updated_at=utc_now(),
+        )
+        committed_state = app.repositories.runtime_states.save_if_running_owner(
+            stale_idle,
+            worker_id="worker-1",
+            started_at=running.last_started_at,
+        )
+
+    assert requested_state.scan_requested_at is not None
+    assert committed_state is not None
+    assert committed_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert committed_state.scan_requested_at == requested_state.scan_requested_at
+
+
 def test_scan_request_during_queued_survives_current_scan_finish(
     tmp_path: Path,
 ) -> None:
@@ -393,36 +432,41 @@ def test_mark_target_queued_only_updates_active_non_running_state(
             active_target.id,
             "manual_request",
         )
-        running_queued = app.services.targets.mark_target_queued(
+        running_admission = app.services.targets.try_mark_target_queued(
             running_target.id,
             "manual_request",
         )
-        error_queued = app.services.targets.mark_target_queued(
+        error_admission = app.services.targets.try_mark_target_queued(
             error_target.id,
             "manual_request",
         )
-        stopped_queued = app.services.targets.mark_target_queued(
+        stopped_admission = app.services.targets.try_mark_target_queued(
             stopped_target.id,
             "manual_request",
         )
+        with pytest.raises(RuntimeError, match="target was not queued"):
+            app.services.targets.mark_target_queued(running_target.id, "manual_request")
 
     assert running_state is not None
     assert active_queued.desired_state == TargetDesiredState.ACTIVE
     assert active_queued.runtime_status == TargetRuntimeStatus.QUEUED
     assert active_queued.enqueue_reason == "manual_request"
 
-    assert running_queued.desired_state == TargetDesiredState.ACTIVE
-    assert running_queued.runtime_status == TargetRuntimeStatus.RUNNING
-    assert running_queued.active_worker_id == "worker-running"
+    assert running_admission.committed is False
+    assert running_admission.state.desired_state == TargetDesiredState.ACTIVE
+    assert running_admission.state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert running_admission.state.active_worker_id == "worker-running"
 
     assert error_state.runtime_status == TargetRuntimeStatus.ERROR
-    assert error_queued.desired_state == TargetDesiredState.ACTIVE
-    assert error_queued.runtime_status == TargetRuntimeStatus.ERROR
-    assert error_queued.last_error == "terminal failure"
+    assert error_admission.committed is False
+    assert error_admission.state.desired_state == TargetDesiredState.ACTIVE
+    assert error_admission.state.runtime_status == TargetRuntimeStatus.ERROR
+    assert error_admission.state.last_error == "terminal failure"
 
-    assert stopped_queued.desired_state == TargetDesiredState.STOPPED
-    assert stopped_queued.runtime_status == TargetRuntimeStatus.IDLE
-    assert stopped_queued.enqueue_reason == ""
+    assert stopped_admission.committed is False
+    assert stopped_admission.state.desired_state == TargetDesiredState.STOPPED
+    assert stopped_admission.state.runtime_status == TargetRuntimeStatus.IDLE
+    assert stopped_admission.state.enqueue_reason == ""
 
 
 def test_try_claim_target_running_claims_only_active_non_running_state(

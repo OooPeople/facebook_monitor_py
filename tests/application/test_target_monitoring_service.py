@@ -747,6 +747,140 @@ def test_stale_running_recovery_does_not_overwrite_refreshed_owner(
     assert loaded.last_error == ""
 
 
+def test_stale_running_recovery_uses_updated_at_when_heartbeat_is_empty(
+    tmp_path: Path,
+) -> None:
+    """空 heartbeat row 需以 updated_at 判斷 stale，不可被空字串誤判。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="empty-heartbeat-fresh",
+                canonical_url="https://www.facebook.com/groups/empty-heartbeat-fresh",
+            )
+        )
+        running = app.services.targets.mark_target_running(target.id, "worker")
+        assert running.last_started_at is not None
+        fresh_running = replace(
+            running,
+            last_heartbeat_at=None,
+            updated_at=now,
+        )
+        app.repositories.runtime_states.save(fresh_running)
+        stale_error = replace(
+            fresh_running,
+            runtime_status=TargetRuntimeStatus.ERROR,
+            last_error="stale",
+            active_worker_id="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_running_state_if_unchanged(
+            stale_error,
+            worker_id="worker",
+            started_at=running.last_started_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert committed is None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.RUNNING
+    assert loaded.last_heartbeat_at is None
+    assert loaded.last_error == ""
+
+
+def test_stale_running_recovery_allows_empty_heartbeat_with_stale_updated_at(
+    tmp_path: Path,
+) -> None:
+    """空 heartbeat row 的 updated_at 已過 cutoff 時仍可 recovery。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="empty-heartbeat-stale",
+                canonical_url="https://www.facebook.com/groups/empty-heartbeat-stale",
+            )
+        )
+        running = app.services.targets.mark_target_running(target.id, "worker")
+        assert running.last_started_at is not None
+        stale_running = replace(
+            running,
+            last_heartbeat_at=None,
+            updated_at=now - timedelta(seconds=240),
+        )
+        app.repositories.runtime_states.save(stale_running)
+        stale_error = replace(
+            stale_running,
+            runtime_status=TargetRuntimeStatus.ERROR,
+            last_error="stale",
+            active_worker_id="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_running_state_if_unchanged(
+            stale_error,
+            worker_id="worker",
+            started_at=running.last_started_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert committed is not None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.ERROR
+    assert loaded.last_error == "stale"
+
+
+def test_stale_running_recovery_preserves_newer_scan_request(
+    tmp_path: Path,
+) -> None:
+    """stale recovery 不可覆蓋同一 attempt 開始後送出的 scan request。"""
+
+    db_path = tmp_path / "app.db"
+    now = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="stale-preserve-request",
+                canonical_url="https://www.facebook.com/groups/stale-preserve-request",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.mark_target_running(target.id, "worker")
+        assert running.last_started_at is not None
+        stale_running = replace(
+            running,
+            last_heartbeat_at=now - timedelta(seconds=240),
+            updated_at=now - timedelta(seconds=240),
+        )
+        app.repositories.runtime_states.save(stale_running)
+        requested = app.services.targets.request_target_scan(target.id)
+        stale_error = replace(
+            stale_running,
+            runtime_status=TargetRuntimeStatus.ERROR,
+            scan_requested_at=None,
+            last_error="stale",
+            active_worker_id="",
+            updated_at=now,
+        )
+        committed = app.repositories.runtime_states.save_stale_running_state_if_unchanged(
+            stale_error,
+            worker_id="worker",
+            started_at=running.last_started_at,
+            stale_before=now - timedelta(seconds=180),
+        )
+        loaded = app.repositories.runtime_states.get(target.id)
+
+    assert committed is not None
+    assert requested.scan_requested_at is not None
+    assert loaded is not None
+    assert loaded.runtime_status == TargetRuntimeStatus.ERROR
+    assert loaded.scan_requested_at == requested.scan_requested_at
+
+
 def test_stale_queued_recovery_does_not_overwrite_refreshed_queue(
     tmp_path: Path,
 ) -> None:

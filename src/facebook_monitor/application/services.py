@@ -307,7 +307,7 @@ class TargetApplicationService:
         return self.runtime_service.ensure_runtime_state(target_id)
 
     def mark_target_queued(self, target_id: str, reason: str) -> TargetRuntimeState:
-        """嘗試標記 queued；需判斷 admission 成功時請改用 try_mark_target_queued。"""
+        """Legacy convenience API；queue admission 失敗時直接報錯。"""
 
         return self.runtime_service.mark_target_queued(target_id, reason)
 

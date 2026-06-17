@@ -16,6 +16,7 @@ from typing import BinaryIO
 from typing import Callable
 from typing import Literal
 from typing import Any
+from typing import cast
 import uuid
 import zipfile
 
@@ -297,7 +298,7 @@ def _write_registered_sections(
                 sections,
                 name=section.name,
                 filename=section.filename,
-                collect=lambda section=section: section.collect(context),
+                collect=_text_section_collector(section, context),
             )
             continue
         _write_json_section(
@@ -305,8 +306,32 @@ def _write_registered_sections(
             sections,
             name=section.name,
             filename=section.filename,
-            collect=lambda section=section: section.collect(context),
+            collect=_json_section_collector(section, context),
         )
+
+
+def _text_section_collector(
+    section: _SupportBundleSection,
+    context: _SupportBundleContext,
+) -> Callable[[], str]:
+    """將 registry text collector 包成 writer 需要的零參數 callable。"""
+
+    def collect() -> str:
+        return cast(str, section.collect(context))
+
+    return collect
+
+
+def _json_section_collector(
+    section: _SupportBundleSection,
+    context: _SupportBundleContext,
+) -> Callable[[], object]:
+    """將 registry JSON collector 包成 writer 需要的零參數 callable。"""
+
+    def collect() -> object:
+        return section.collect(context)
+
+    return collect
 
 
 def _apply_private_bundle_permissions(path: Path) -> None:

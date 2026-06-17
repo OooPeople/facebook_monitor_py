@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 import json
 import zipfile
 
@@ -42,15 +42,17 @@ def _write_json_section(
     *,
     name: str,
     filename: str,
-    collect: Any,
+    collect: Callable[[], object],
 ) -> None:
     """收集並寫入 JSON section；失敗時保留 unavailable payload。"""
 
     try:
         payload = collect()
+        content = _json_text(payload)
         sections.append(_BundleSectionStatus(name=name, file=filename))
     except Exception as exc:
         payload = _unavailable_payload(exc)
+        content = _json_text(payload)
         sections.append(
             _BundleSectionStatus(
                 name=name,
@@ -59,7 +61,7 @@ def _write_json_section(
                 error=_safe_exception_summary(exc),
             )
         )
-    _write_json(archive, filename, payload)
+    _write_text(archive, filename, content)
 
 
 def _write_text_section_from_collect(
@@ -68,7 +70,7 @@ def _write_text_section_from_collect(
     *,
     name: str,
     filename: str,
-    collect: Any,
+    collect: Callable[[], str],
 ) -> None:
     """收集並寫入文字 section；失敗時保留 unavailable 文字 payload。"""
 
@@ -104,15 +106,16 @@ def _write_json(
 ) -> None:
     """以穩定 UTF-8 JSON 寫入 zip。"""
 
-    _write_text(
-        archive,
-        name,
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
+    _write_text(archive, name, _json_text(payload))
+
+
+def _json_text(payload: object) -> str:
+    """將 JSON payload 轉成穩定文字，讓 section writer 可隔離序列化錯誤。"""
+
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _write_text(archive: zipfile.ZipFile, name: str, content: str) -> None:
     """將文字內容寫入 zip，避免呼叫端重複處理 encoding。"""
 
     archive.writestr(name, content.encode("utf-8"))
-

@@ -312,7 +312,13 @@ class TargetRuntimeStateRepository:
             SET
                 desired_state = ?,
                 runtime_status = ?,
-                scan_requested_at = ?,
+                scan_requested_at = CASE
+                    WHEN ? = ?
+                     AND scan_requested_at != ''
+                     AND scan_requested_at > ?
+                    THEN scan_requested_at
+                    ELSE ?
+                END,
                 last_enqueued_at = ?,
                 last_started_at = ?,
                 last_finished_at = ?,
@@ -339,6 +345,9 @@ class TargetRuntimeStateRepository:
             (
                 state.desired_state.value,
                 state.runtime_status.value,
+                state.desired_state.value,
+                TargetDesiredState.ACTIVE.value,
+                started_at_text,
                 encode_datetime(state.scan_requested_at),
                 encode_datetime(state.last_enqueued_at),
                 encode_datetime(state.last_started_at),
@@ -534,7 +543,13 @@ class TargetRuntimeStateRepository:
             SET
                 desired_state = ?,
                 runtime_status = ?,
-                scan_requested_at = ?,
+                scan_requested_at = CASE
+                    WHEN ? = ?
+                     AND scan_requested_at != ''
+                     AND scan_requested_at > ?
+                    THEN scan_requested_at
+                    ELSE ?
+                END,
                 last_enqueued_at = ?,
                 last_started_at = ?,
                 last_finished_at = ?,
@@ -558,11 +573,17 @@ class TargetRuntimeStateRepository:
               AND active_worker_id = ?
               AND last_started_at = ?
               AND (? = '' OR active_page_id = ?)
-              AND COALESCE(last_heartbeat_at, updated_at) <= ?
+              AND (
+                (last_heartbeat_at != '' AND last_heartbeat_at <= ?)
+                OR (last_heartbeat_at = '' AND updated_at <= ?)
+              )
             """,
             (
                 state.desired_state.value,
                 state.runtime_status.value,
+                state.desired_state.value,
+                TargetDesiredState.ACTIVE.value,
+                encode_datetime(started_at),
                 encode_datetime(state.scan_requested_at),
                 encode_datetime(state.last_enqueued_at),
                 encode_datetime(state.last_started_at),
@@ -588,6 +609,7 @@ class TargetRuntimeStateRepository:
                 encode_datetime(started_at),
                 page_id,
                 page_id,
+                encode_datetime(stale_before),
                 encode_datetime(stale_before),
             ),
         )
@@ -738,4 +760,3 @@ class TargetRuntimeStateRepository:
             ),
         ).fetchall()
         return [runtime_state_from_row(row) for row in rows]
-

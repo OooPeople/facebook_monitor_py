@@ -68,6 +68,7 @@ UNGUARDED_RUNTIME_METHODS = {
     "mark_target_running",
     "record_target_heartbeat",
 }
+LEGACY_QUEUE_ADMISSION_METHODS = {"mark_target_queued"}
 ALLOWED_FORCE_RUNTIME_CALLS = {
     (
         "src/facebook_monitor/worker/resident_main_executor.py",
@@ -335,6 +336,24 @@ def test_formal_runtime_paths_do_not_call_unguarded_runtime_methods() -> None:
             if node.attr not in UNGUARDED_RUNTIME_METHODS:
                 continue
             violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.attr}")
+
+    assert violations == []
+
+
+def test_formal_runtime_paths_do_not_call_legacy_queue_admission_api() -> None:
+    """正式 runtime path 必須讀取 QueueAdmissionResult，不可丟掉 committed 語義。"""
+
+    violations: list[str] = []
+    for path in FORMAL_RUNTIME_BOUNDARY_FILES:
+        relative_path = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        visitor = _CallContextVisitor()
+        visitor.visit(tree)
+        for lineno, context, node in visitor.calls:
+            name = _called_name(node)
+            if name not in LEGACY_QUEUE_ADMISSION_METHODS:
+                continue
+            violations.append(f"{relative_path}:{lineno}:{context}:{name}")
 
     assert violations == []
 

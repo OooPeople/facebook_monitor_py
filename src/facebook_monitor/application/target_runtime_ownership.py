@@ -31,9 +31,12 @@ class TargetRuntimeOwnershipService:
         self._access = access
 
     def mark_target_queued(self, target_id: str, reason: str) -> TargetRuntimeState:
-        """嘗試標記 queued；需判斷 admission 成功時請改用 try_mark_target_queued。"""
+        """Legacy convenience API；queue admission 失敗時直接報錯。"""
 
-        return self.try_mark_target_queued(target_id, reason).state
+        result = self.try_mark_target_queued(target_id, reason)
+        if not result.committed:
+            raise RuntimeError(f"target was not queued: {target_id}")
+        return result.state
 
     def try_mark_target_queued(self, target_id: str, reason: str) -> QueueAdmissionResult:
         """嘗試將 target 放入 queue，並回報本輪 DB admission 是否成功。"""

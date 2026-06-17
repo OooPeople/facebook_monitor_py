@@ -712,6 +712,44 @@ def test_support_bundle_text_section_failure_is_isolated(
     assert "private path" not in json.dumps(manifest, ensure_ascii=False)
 
 
+def test_support_bundle_json_serialization_failure_is_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON collector 回傳不可序列化值時，只標該 section unavailable。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    def unserializable_database_summary(*_args, **_kwargs) -> dict[str, object]:
+        return {"bad": object()}
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle._database_summary_payload",
+        unserializable_database_summary,
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        database_summary = json.loads(
+            archive.read("database_summary.json").decode("utf-8")
+        )
+        manifest = json.loads(archive.read("bundle_manifest.json").decode("utf-8"))
+
+    section = next(
+        item for item in manifest["sections"] if item["name"] == "database_summary"
+    )
+    assert database_summary["available"] is False
+    assert database_summary["error"] == "TypeError"
+    assert section["status"] == "unavailable"
+    assert section["error"] == "TypeError"
+
+
 def test_support_bundle_keeps_inactive_stale_running_recovery_reason_code(
     tmp_path: Path,
 ) -> None:

@@ -53,6 +53,16 @@ class _MetadataRefreshCandidate:
     overwrite_name: bool = True
 
 
+@dataclass(frozen=True)
+class _CoverImageRefreshAttempt:
+    """保存單一 cover image refresh attempt 的已鎖定輸入。"""
+
+    target_id: str
+    group_id: str
+    reported_url: str
+    requested_at: datetime | None
+
+
 async def refresh_requested_target_metadata(
     *,
     options: ResidentRuntimeOptions,
@@ -557,13 +567,40 @@ async def refresh_target_group_cover_image_from_context(
 ) -> bool:
     """用 resident browser context 只刷新 target group cover image URL。"""
 
-    group_id = ""
+    attempt = _begin_cover_image_refresh_attempt(options=options, state=state)
+    if attempt is None:
+        return False
+    try:
+        cover_image_url = await resolve_group_cover_image_with_context(
+            browser_context,
+            canonical_url=f"https://www.facebook.com/groups/{attempt.group_id}",
+        )
+    except GroupMetadataError as exc:
+        return _handle_cover_image_resolve_error(
+            options=options,
+            attempt=attempt,
+            exc=exc,
+        )
+    return _finish_resolved_cover_image_refresh_attempt(
+        options=options,
+        attempt=attempt,
+        cover_image_url=cover_image_url,
+    )
+
+
+def _begin_cover_image_refresh_attempt(
+    *,
+    options: ResidentRuntimeOptions,
+    state: TargetCoverImageRefreshState,
+) -> _CoverImageRefreshAttempt | None:
+    """鎖定 cover image refresh attempt 輸入，並標記本輪已嘗試。"""
+
     target_id = state.target_id
     reported_url = state.last_reported_url.strip()
     with SqliteApplicationContext(options.db_path) as app:
         target = app.repositories.targets.get(target_id)
         if target is None:
-            return False
+            return None
         current_url = target.group_cover_image_url.strip()
         if current_url != reported_url:
             app.services.target_cover_image_refresh.mark_stale_skipped(
@@ -572,14 +609,14 @@ async def refresh_target_group_cover_image_from_context(
                 reported_url=reported_url,
                 requested_at=state.requested_at,
             )
-            return False
+            return None
         group_id = target.group_id
         if not app.services.target_cover_image_refresh.mark_attempted(
             target_id,
             reported_url=reported_url,
             requested_at=state.requested_at,
         ):
-            return False
+            return None
     if not group_id:
         mark_target_cover_image_refresh_failed(
             options,
@@ -588,76 +625,96 @@ async def refresh_target_group_cover_image_from_context(
             reported_url=reported_url,
             requested_at=state.requested_at,
         )
-        return False
-    try:
-        cover_image_url = await resolve_group_cover_image_with_context(
-            browser_context,
-            canonical_url=f"https://www.facebook.com/groups/{group_id}",
-        )
-    except GroupMetadataError as exc:
-        if _is_scheduler_runtime_refresh_failure(exc):
-            raise
-        if clear_polluted_cover_image_url_if_current(
-            options,
-            target_id=target_id,
-            reported_url=reported_url,
-        ):
-            with SqliteApplicationContext(options.db_path) as app:
-                app.services.target_cover_image_refresh.mark_succeeded(
-                    target_id,
-                    resolved_url="",
-                    changed=True,
-                    result=TargetCoverImageRefreshResult.SUCCEEDED_CHANGED,
-                    reported_url=reported_url,
-                    requested_at=state.requested_at,
-                )
-            return True
-        logger.info(
-            "cover image refresh skipped",
-            extra={"target_id": target_id},
-        )
-        mark_target_cover_image_refresh_failed(
-            options,
-            target_id,
-            str(exc),
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        )
-        return False
+        return None
+    return _CoverImageRefreshAttempt(
+        target_id=target_id,
+        group_id=group_id,
+        reported_url=reported_url,
+        requested_at=state.requested_at,
+    )
+
+
+def _handle_cover_image_resolve_error(
+    *,
+    options: ResidentRuntimeOptions,
+    attempt: _CoverImageRefreshAttempt,
+    exc: GroupMetadataError,
+) -> bool:
+    """處理 cover image resolve 失敗；回傳本 refresh job 是否已完成。"""
+
+    if _is_scheduler_runtime_refresh_failure(exc):
+        raise
+    if clear_polluted_cover_image_url_if_current(
+        options,
+        target_id=attempt.target_id,
+        reported_url=attempt.reported_url,
+    ):
+        with SqliteApplicationContext(options.db_path) as app:
+            app.services.target_cover_image_refresh.mark_succeeded(
+                attempt.target_id,
+                resolved_url="",
+                changed=True,
+                result=TargetCoverImageRefreshResult.SUCCEEDED_CHANGED,
+                reported_url=attempt.reported_url,
+                requested_at=attempt.requested_at,
+            )
+        return True
+    logger.info(
+        "cover image refresh skipped",
+        extra={"target_id": attempt.target_id},
+    )
+    mark_target_cover_image_refresh_failed(
+        options,
+        attempt.target_id,
+        str(exc),
+        reported_url=attempt.reported_url,
+        requested_at=attempt.requested_at,
+    )
+    return False
+
+
+def _finish_resolved_cover_image_refresh_attempt(
+    *,
+    options: ResidentRuntimeOptions,
+    attempt: _CoverImageRefreshAttempt,
+    cover_image_url: str,
+) -> bool:
+    """寫回已 resolve 的 cover image URL；回傳本 refresh job 是否已完成。"""
+
     with SqliteApplicationContext(options.db_path) as app:
-        target = app.repositories.targets.get(target_id)
+        target = app.repositories.targets.get(attempt.target_id)
         if target is None:
             return False
         current_url = target.group_cover_image_url.strip()
-        if current_url != reported_url:
+        if current_url != attempt.reported_url:
             app.services.target_cover_image_refresh.mark_stale_skipped(
-                target_id,
+                attempt.target_id,
                 current_url=current_url,
-                reported_url=reported_url,
-                requested_at=state.requested_at,
+                reported_url=attempt.reported_url,
+                requested_at=attempt.requested_at,
             )
             return True
         normalized_cover_image_url = cover_image_url.strip()
         changed = normalized_cover_image_url != current_url
         try:
             app.services.target_cover_image_refresh.refresh_target_cover_image_url(
-                target_id,
+                attempt.target_id,
                 normalized_cover_image_url,
             )
         except InvalidTargetMetadataError as exc:
             app.services.target_cover_image_refresh.mark_failed(
-                target_id,
+                attempt.target_id,
                 str(exc),
-                reported_url=reported_url,
-                requested_at=state.requested_at,
+                reported_url=attempt.reported_url,
+                requested_at=attempt.requested_at,
             )
             return False
         app.services.target_cover_image_refresh.mark_succeeded(
-            target_id,
+            attempt.target_id,
             resolved_url=normalized_cover_image_url,
             changed=changed,
-            reported_url=reported_url,
-            requested_at=state.requested_at,
+            reported_url=attempt.reported_url,
+            requested_at=attempt.requested_at,
         )
     return True
 

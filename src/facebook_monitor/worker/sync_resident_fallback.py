@@ -30,6 +30,7 @@ from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
 from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
@@ -46,6 +47,7 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import force_mark_resident_target_error
@@ -74,6 +76,14 @@ class _SyncFallbackAttemptResult:
     skipped_count: int = 0
     opened_page_count: int = 0
     reused_page_count: int = 0
+
+
+@dataclass(frozen=True)
+class _SyncFallbackTargetLoad:
+    """保存 sync fallback target load 結果或可立即回傳的 attempt result。"""
+
+    resident_target: ResidentTarget | None = None
+    early_result: _SyncFallbackAttemptResult | None = None
 
 
 class ResidentScanCallable(Protocol):
@@ -271,26 +281,21 @@ def _run_sync_resident_target_attempt(
     """執行 sync fallback 單一 target attempt，保留既有 guarded 寫回語義。"""
 
     target_id = due_target.target_id
-    try:
-        resident_target = load_resident_target(options.db_path, target_id)
-    except WorkerFailure as exc:
-        force_mark_resident_target_error(
-            options.db_path,
-            target_id,
-            format_scan_failure_message(exc.reason, str(exc)),
-        )
-        return _SyncFallbackAttemptResult(failure_count=1)
+    load_result = _load_sync_resident_target_attempt(
+        options=options,
+        target_id=target_id,
+    )
+    if load_result.early_result is not None:
+        return load_result.early_result
+    resident_target = load_result.resident_target
+    if resident_target is None:
+        raise RuntimeError("sync resident fallback target load returned no target")
 
-    with SqliteApplicationContext(options.db_path) as app:
-        locked_state = app.services.targets.try_claim_target_running(
-            target_id,
-            worker_id,
-        )
-        if locked_state is not None and due_target.scan_requested:
-            app.services.targets.clear_target_scan_request_if_not_newer(
-                target_id,
-                due_target.scan_requested_at,
-            )
+    locked_state = _claim_sync_resident_target(
+        options=options,
+        due_target=due_target,
+        worker_id=worker_id,
+    )
     if locked_state is None:
         return _SyncFallbackAttemptResult(skipped_count=1)
 
@@ -310,53 +315,108 @@ def _run_sync_resident_target_attempt(
             opened=opened,
             commit_guard=commit_guard,
         )
-    except WorkerFailure as exc:
-        return _with_sync_fallback_page_counts(
-            _record_sync_resident_attempt_failure(
-                options=options,
-                page_pool=page_pool,
-                target_id=target_id,
-                reason=exc.reason,
-                message=str(exc),
-                source="worker_failure",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-            ),
-            page_acquired=page_acquired,
-            opened=opened,
-        )
-    except (PlaywrightTimeoutError, PlaywrightError) as exc:
-        return _with_sync_fallback_page_counts(
-            _record_sync_resident_attempt_failure(
-                options=options,
-                page_pool=page_pool,
-                target_id=target_id,
-                reason=classify_playwright_exception(exc),
-                message=str(exc),
-                source="playwright",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-            ),
+    except (WorkerFailure, PlaywrightTimeoutError, PlaywrightError) as exc:
+        return _sync_resident_failure_result_for_exception(
+            options=options,
+            page_pool=page_pool,
+            target_id=target_id,
+            exc=exc,
+            commit_guard=commit_guard,
             page_acquired=page_acquired,
             opened=opened,
         )
     except Exception as exc:
-        return _with_sync_fallback_page_counts(
-            _record_sync_resident_attempt_failure(
-                options=options,
-                page_pool=page_pool,
-                target_id=target_id,
-                reason=UNKNOWN_REASON,
-                message=str(exc),
-                source="unknown_exception",
-                commit_guard=commit_guard,
-                exception_class=exc.__class__.__name__,
-            ),
+        return _sync_resident_failure_result_for_exception(
+            options=options,
+            page_pool=page_pool,
+            target_id=target_id,
+            exc=exc,
+            commit_guard=commit_guard,
             page_acquired=page_acquired,
             opened=opened,
         )
     finally:
         planner.mark_finished(target_id)
+
+
+def _load_sync_resident_target_attempt(
+    *,
+    options: ResidentRuntimeOptions,
+    target_id: str,
+) -> _SyncFallbackTargetLoad:
+    """載入 sync fallback target；載入失敗時直接寫入 runtime error。"""
+
+    try:
+        resident_target = load_resident_target(options.db_path, target_id)
+    except WorkerFailure as exc:
+        force_mark_resident_target_error(
+            options.db_path,
+            target_id,
+            format_scan_failure_message(exc.reason, str(exc)),
+        )
+        return _SyncFallbackTargetLoad(
+            early_result=_SyncFallbackAttemptResult(failure_count=1),
+        )
+    return _SyncFallbackTargetLoad(resident_target=resident_target)
+
+
+def _claim_sync_resident_target(
+    *,
+    options: ResidentRuntimeOptions,
+    due_target: DueTarget,
+    worker_id: str,
+) -> TargetRuntimeState | None:
+    """以 owner guard claim target running，並清除本次 manual scan request。"""
+
+    target_id = due_target.target_id
+    with SqliteApplicationContext(options.db_path) as app:
+        locked_state = app.services.targets.try_claim_target_running(
+            target_id,
+            worker_id,
+        )
+        if locked_state is not None and due_target.scan_requested:
+            app.services.targets.clear_target_scan_request_if_not_newer(
+                target_id,
+                due_target.scan_requested_at,
+            )
+    return locked_state
+
+
+def _sync_resident_failure_result_for_exception(
+    *,
+    options: ResidentRuntimeOptions,
+    page_pool: SyncResidentPagePool,
+    target_id: str,
+    exc: Exception,
+    commit_guard: ScanCommitGuard,
+    page_acquired: bool,
+    opened: bool,
+) -> _SyncFallbackAttemptResult:
+    """將 sync fallback exception 映射成 failure finalize 與 attempt counters。"""
+
+    if isinstance(exc, WorkerFailure):
+        reason = exc.reason
+        source: ScanFailureSource = "worker_failure"
+    elif isinstance(exc, (PlaywrightTimeoutError, PlaywrightError)):
+        reason = classify_playwright_exception(exc)
+        source = "playwright"
+    else:
+        reason = UNKNOWN_REASON
+        source = "unknown_exception"
+    return _with_sync_fallback_page_counts(
+        _record_sync_resident_attempt_failure(
+            options=options,
+            page_pool=page_pool,
+            target_id=target_id,
+            reason=reason,
+            message=str(exc),
+            source=source,
+            commit_guard=commit_guard,
+            exception_class=exc.__class__.__name__,
+        ),
+        page_acquired=page_acquired,
+        opened=opened,
+    )
 
 
 def _with_sync_fallback_page_counts(

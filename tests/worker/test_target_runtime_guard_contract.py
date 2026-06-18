@@ -126,7 +126,7 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/sync_resident_fallback.py",
-        "_run_sync_resident_target_attempt",
+        "_load_sync_resident_target_attempt",
         "force_mark_resident_target_error",
     ),
 }

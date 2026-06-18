@@ -124,7 +124,8 @@
 - 「重置通知狀態」位於 target 卡片更多操作，會清該 target 的 notification outbox rows（包含待送、處理中、失敗、已送出或略過的投遞狀態）、同一 scan scope 的 legacy seen items 與目前 epoch 的 logical item aliases，並推進 target-scoped dedupe epoch。它會保留或建立 initialized `scan_scope_state`，但不清 match history 或設定，因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，會被視為 new 並可再次通知。
 - 社團縮圖載入失敗時，UI 上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
 - target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
-- dashboard revision 是 partial update 的觸發來源；Web UI 以 batch payload 更新 sidebar 與 target cards。
+- dashboard revision table 是 partial update 的可靠 truth source；Web UI 正常主路徑使用 `/api/dashboard-events` 長 SSE 接收 `dashboard_revision` event，再以 batch payload 更新 sidebar 與 target cards。
+- Web UI process 內只有單一 dashboard revision notifier watcher 以 read-only SQLite path 輪詢 revision；每個 SSE client 只訂閱 notifier，不各自長期讀 DB。成功的 unsafe Web route 只會 `wake()` notifier 加速下一輪 revision read，不直接製造 revision event；`/api/dashboard-revision` polling endpoint 保留作 fallback、診斷與外部補償入口。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API payload 對外使用 `recorded_at`，DB 欄位仍沿用歷史名稱 `notified_at` 作為內部 persistence 欄位。
 - hit records route 只負責 HTTP wiring；若未來新增 search、export、detail 或 bulk 行為，產品語義需先下沉到 query/export/detail/bulk service，不直接累積在 route registration。
 - dashboard / target card / hit records read model 需要對 inactive 或 paused 的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；active fatal invariant 仍應回報阻擋或 degraded 狀態。

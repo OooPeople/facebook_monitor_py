@@ -9,9 +9,11 @@ from pathlib import Path
 from urllib.parse import parse_qs
 from urllib.parse import urlsplit
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import Response as HttpResponse
 from starlette.requests import Request
+from starlette.responses import Response
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
@@ -24,6 +26,7 @@ from facebook_monitor.webapp.http_security import RequestBodyTooLarge
 from facebook_monitor.webapp.http_security import _read_request_body_with_limit
 from facebook_monitor.webapp.maintenance import BoundedRetentionMaintenanceRunner
 from facebook_monitor.webapp.dependencies import redirect_with_error
+from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.version import APP_VERSION
 from tests.helpers.webapp import FakeSchedulerManager
 from tests.webapp.app_test_helpers import create_app
@@ -62,6 +65,30 @@ class SchemaAwareBoundedRetentionRunner:
             ).fetchone()
         self.observed_app_settings_table.append(row is not None)
         return True
+
+
+class FakeDashboardRevisionNotifier:
+    """測試用 dashboard revision notifier。"""
+
+    def __init__(self) -> None:
+        self.started_count = 0
+        self.stopped_count = 0
+        self.woken_count = 0
+
+    async def start(self) -> None:
+        """記錄 lifespan startup。"""
+
+        self.started_count += 1
+
+    async def stop(self) -> None:
+        """記錄 lifespan shutdown。"""
+
+        self.stopped_count += 1
+
+    def wake(self) -> None:
+        """記錄 mutation wake hook。"""
+
+        self.woken_count += 1
 
 
 def assert_basic_security_headers(response: HttpResponse) -> None:
@@ -240,6 +267,105 @@ def test_create_app_auto_starts_scheduler_with_configured_options(
     assert scheduler_manager.stopped_count == 1
 
 
+def test_webui_lifespan_starts_and_stops_dashboard_revision_notifier(
+    tmp_path: Path,
+) -> None:
+    """Web UI lifespan 會啟停 process-local dashboard revision notifier。"""
+
+    notifier = FakeDashboardRevisionNotifier()
+    app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+    app.state.dashboard_revision_notifier = notifier
+
+    with TestClient(app):
+        assert notifier.started_count == 1
+        assert notifier.stopped_count == 0
+
+    assert notifier.stopped_count == 1
+
+
+def test_webui_shutdown_stops_dashboard_notifier_before_other_runtime(
+    tmp_path: Path,
+) -> None:
+    """shutdown 第一個步驟先停止 SSE notifier，避免 active stream 卡住收尾。"""
+
+    events: list[str] = []
+
+    class OrderedNotifier(FakeDashboardRevisionNotifier):
+        async def start(self) -> None:
+            self.started_count += 1
+
+        async def stop(self) -> None:
+            events.append("notifier.stop")
+            self.stopped_count += 1
+
+    class OrderedRunner:
+        async def wait_until_idle(self) -> None:
+            events.append("retention.wait")
+
+    class OrderedProfileManager:
+        def is_active(self) -> bool:
+            return False
+
+        def open(self, _options: object) -> None:
+            raise AssertionError("profile open should not be called")
+
+        def close(self) -> None:
+            events.append("profile.close")
+
+    class OrderedSchedulerManager(FakeSchedulerManager):
+        def stop(self) -> None:
+            events.append("scheduler.stop")
+            super().stop()
+
+    app = create_app(
+        db_path=tmp_path / "app.db",
+        profile_dir=tmp_path / "profile",
+        profile_manager=OrderedProfileManager(),
+        scheduler_manager=OrderedSchedulerManager(),
+    )
+    app.state.dashboard_revision_notifier = OrderedNotifier()
+    app.state.bounded_retention_maintenance_runner = OrderedRunner()
+
+    with TestClient(app):
+        pass
+
+    assert events == [
+        "notifier.stop",
+        "retention.wait",
+        "profile.close",
+        "scheduler.stop",
+    ]
+
+
+def test_webui_startup_failure_after_notifier_start_stops_notifier(
+    tmp_path: Path,
+) -> None:
+    """notifier 啟動後若 scheduler startup 失敗，lifespan 仍需明確收尾。"""
+
+    class FailingSchedulerManager(FakeSchedulerManager):
+        def start(self, options: SchedulerSessionOptions) -> None:
+            super().start(options)
+            raise RuntimeError("scheduler startup failed")
+
+    notifier = FakeDashboardRevisionNotifier()
+    scheduler_manager = FailingSchedulerManager()
+    app = create_app(
+        db_path=tmp_path / "app.db",
+        profile_dir=tmp_path / "profile",
+        scheduler_manager=scheduler_manager,
+        auto_start_scheduler=True,
+    )
+    app.state.dashboard_revision_notifier = notifier
+
+    with pytest.raises(RuntimeError, match="scheduler startup failed"):
+        with TestClient(app):
+            pass
+
+    assert notifier.started_count == 1
+    assert notifier.stopped_count == 1
+    assert scheduler_manager.stopped_count == 1
+
+
 def test_health_endpoint_returns_app_identity(tmp_path: Path) -> None:
     """Health endpoint 供 launcher 判斷既有 Web UI 是否存活。"""
 
@@ -275,6 +401,42 @@ def test_health_endpoint_does_not_run_bounded_retention_maintenance(
 
     assert response.status_code == 200
     assert runner.triggered_paths == []
+
+
+def test_successful_unsafe_requests_wake_dashboard_revision_notifier(
+    tmp_path: Path,
+) -> None:
+    """成功的 unsafe HTTP method 會 wake dashboard revision watcher；GET/4xx 不會。"""
+
+    notifier = FakeDashboardRevisionNotifier()
+    app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+    app.state.dashboard_revision_notifier = notifier
+
+    @app.get("/__wake_probe")
+    async def wake_probe_get() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/__wake_probe")
+    @app.put("/__wake_probe")
+    @app.patch("/__wake_probe")
+    @app.delete("/__wake_probe")
+    async def wake_probe_mutation() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/__wake_rejected")
+    async def wake_probe_rejected() -> Response:
+        return Response(status_code=400)
+
+    with TestClient(app) as client:
+        assert client.get("/__wake_probe").status_code == 200
+        assert notifier.woken_count == 0
+
+        for method in (client.post, client.put, client.patch, client.delete):
+            assert method("/__wake_probe").status_code == 200
+        assert notifier.woken_count == 4
+
+        assert client.post("/__wake_rejected").status_code == 400
+        assert notifier.woken_count == 4
 
 
 def test_web_ui_read_path_runs_bounded_retention_maintenance(

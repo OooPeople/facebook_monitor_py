@@ -31,6 +31,7 @@
 ## Partial Update 與資料邊界
 
 - 前端收到 dashboard batch payload 後更新 sidebar 與 target cards；partial update 的 revision 來源以 `docs/ARCHITECTURE.md#web-ui-語義` 為準。
+- 前端 revision transport 預設使用 EventSource 長 SSE；無 EventSource 支援或 SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。EventSource open 後必須停止 fallback polling，任一時間最多保留一個 EventSource 與一個 polling interval。
 - route / template / static module 應消費 read model 或 presenter payload；不直接承擔 scan、dedupe、outbox 或 persistence owner 語義。
 - 新 UI 欄位若只是呈現既有狀態，優先擴充 read model / presenter；若需要新增持久狀態，必須先回到 `docs/ARCHITECTURE.md` 定義資料 owner 與 runtime 語義。
 

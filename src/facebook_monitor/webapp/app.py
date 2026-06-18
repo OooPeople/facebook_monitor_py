@@ -36,6 +36,9 @@ from facebook_monitor.webapp.lifespan import webui_lifespan
 from facebook_monitor.webapp.maintenance import (
     register_bounded_retention_maintenance_middleware,
 )
+from facebook_monitor.webapp.dashboard_revision_wake import (
+    register_dashboard_revision_wake_middleware,
+)
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
 from facebook_monitor.webapp.routes.hit_records import register_hit_record_routes
@@ -104,6 +107,7 @@ def create_app(
     register_bounded_retention_maintenance_middleware(app)
     app.mount("/static", LocalStaticFiles(directory=str(static_dir)), name="static")
     register_http_security_middleware(app)
+    register_dashboard_revision_wake_middleware(app)
 
     @app.get("/health")
     def health() -> dict[str, str]:

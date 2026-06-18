@@ -37,6 +37,7 @@ from facebook_monitor.webapp.profile_session import ProfileSessionOptions
 from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
+from facebook_monitor.webapp.dashboard_revision_notifier import DashboardRevisionNotifier
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
@@ -85,6 +86,12 @@ def get_scheduler_manager(request: Request) -> SchedulerManagerLike:
     """從 app state 取得 Web UI 背景 scheduler manager。"""
 
     return getattr(request.app.state, "scheduler_manager")
+
+
+def get_dashboard_revision_notifier(request: Request) -> DashboardRevisionNotifier:
+    """從 app state 取得 dashboard revision notifier。"""
+
+    return getattr(request.app.state, "dashboard_revision_notifier")
 
 
 def get_session_started_at(request: Request) -> datetime:

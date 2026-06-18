@@ -17,14 +17,14 @@ def get_dashboard_revision(db_path: Path) -> DashboardRevision:
         return DashboardRevision(revision="0", last_changed_at="")
     uri = f"{db_path.resolve().as_uri()}?mode=ro"
     try:
-        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        connection = sqlite3.connect(uri, uri=True, timeout=1)
     except sqlite3.OperationalError as exc:
         if is_sqlite_lock_error(exc):
             raise DashboardRevisionUnavailable(str(exc)) from exc
         return DashboardRevision(revision="0", last_changed_at="")
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA busy_timeout = 1000")
         row = connection.execute(
             "SELECT revision, updated_at FROM dashboard_revision WHERE id = 1"
         ).fetchone()

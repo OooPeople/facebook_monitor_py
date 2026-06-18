@@ -15,8 +15,11 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
 from facebook_monitor.notifications.senders import NtfySender
+from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import default_group_name_resolver
 from facebook_monitor.webapp.dependencies import GroupMetadataResolver
+from facebook_monitor.webapp.dashboard_revision_notifier import DashboardRevisionNotifier
+from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
 from facebook_monitor.webapp.maintenance import BoundedRetentionMaintenanceRunner
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.profile_session import ProfileSessionManager
@@ -68,6 +71,16 @@ def configure_app_state(app: FastAPI, config: WebAppStateConfig) -> None:
     app.state.scheduler_interval_seconds = config.scheduler_interval_seconds
     app.state.scheduler_tick_seconds = config.scheduler_tick_seconds
     app.state.max_concurrent_scans = config.max_concurrent_scans
+    app.state.sse_poll_interval_seconds = (
+        PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_poll_interval_seconds
+    )
+    app.state.sse_keepalive_seconds = PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_keepalive_seconds
+    app.state.sse_retry_milliseconds = PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_retry_milliseconds
+    app.state.dashboard_revision_notifier = DashboardRevisionNotifier(
+        db_path=config.db_path,
+        get_dashboard_revision=get_dashboard_revision,
+        poll_interval_seconds=PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_poll_interval_seconds,
+    )
     app.state.session_started_at = utc_now()
     app.state.reset_targets_on_startup = config.reset_targets_on_startup
     app.state.resume_active_targets_on_startup = False

@@ -81,6 +81,8 @@ class WebUiRuntimeDefaults:
     graceful_shutdown_timeout_seconds: int = 5
     sse_poll_interval_seconds: float = 1.0
     sse_keepalive_seconds: float = 20.0
+    sse_retry_milliseconds: int = 2500
+    # Deprecated: 短 SSE 連線欄位，長 SSE 正式路徑不再讀取。
     sse_max_connection_seconds: float = 1.2
     hit_record_preview_limit: int = 5
     hit_record_preview_max_limit: int = 20

@@ -15,6 +15,7 @@ export const createDashboardState = (currentRevision = "") => ({
   dirtyTargets: new Set(),
   pendingRefresh: false,
   revisionTransport: "initializing",
+  revisionTransportState: "sse_connecting",
   sseConnected: false,
   lastSseEventAt: 0,
   partialUpdateSeq: 0,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -13,13 +14,63 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.webapp.dashboard_queries import list_sidebar_items
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
+from facebook_monitor.webapp.dashboard_read_models import DashboardRevision
 from facebook_monitor.webapp.dashboard_read_models import DashboardRevisionUnavailable
+from facebook_monitor.webapp.dashboard_revision_notifier import DashboardRevisionNotifier
 from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
+from facebook_monitor.webapp.maintenance import BOUNDED_RETENTION_MAINTENANCE_READ_PATHS
 from facebook_monitor.webapp.routes import dashboard as dashboard_routes
 from facebook_monitor.webapp.routes.dashboard import _format_dashboard_revision_event
+from facebook_monitor.webapp.routes.dashboard_revision_routes import (
+    build_dashboard_revision_sse_response,
+)
+from facebook_monitor.webapp.routes.dashboard_revision_routes import dashboard_revision_event_stream
 
 
 from tests.webapp.app_test_helpers import create_app
+
+
+class FakeSseRequest:
+    """測試用 request，只提供 SSE stream 需要的 disconnect probe。"""
+
+    async def is_disconnected(self) -> bool:
+        """測試期間保持連線。"""
+
+        return False
+
+
+class FiniteDashboardRevisionNotifier:
+    """測試 route wiring 用的有限 notifier。"""
+
+    def __init__(self) -> None:
+        self.started_count = 0
+        self.stopped_count = 0
+        self.subscriber_count = 0
+
+    async def start(self) -> None:
+        """記錄 lifespan startup。"""
+
+        self.started_count += 1
+
+    async def stop(self) -> None:
+        """記錄 lifespan shutdown。"""
+
+        self.stopped_count += 1
+
+    def wake(self) -> None:
+        """route wiring 測試不需要 wake side effect。"""
+
+    async def subscribe(self):
+        """送出一筆 revision 後結束，避免 TestClient 等待無限 stream。"""
+
+        self.subscriber_count += 1
+        try:
+            yield DashboardRevision(
+                revision="rev-route",
+                last_changed_at="2026-06-18T00:00:00",
+            )
+        finally:
+            self.subscriber_count -= 1
 
 
 def test_dashboard_revision_endpoint_changes_after_target_update(tmp_path: Path) -> None:
@@ -177,8 +228,195 @@ def test_dashboard_events_streams_revision_event(tmp_path: Path) -> None:
     )
 
     assert "/api/dashboard-events" in openapi["paths"]
-    assert event_text.startswith("event: dashboard_revision\n")
+    assert event_text.startswith("id: rev-1\nevent: dashboard_revision\n")
     assert event_text.endswith("\n\n")
     data_line = next(line for line in event_text.splitlines() if line.startswith("data: "))
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload == {"revision": "rev-1", "last_changed_at": "2026-05-08T00:00:00"}
+
+
+def test_dashboard_events_route_uses_app_state_notifier_with_lifespan(
+    tmp_path: Path,
+) -> None:
+    """實際 ASGI route 需從 app.state 取 notifier，並在 TestClient teardown 清理。"""
+
+    app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+    notifier = FiniteDashboardRevisionNotifier()
+    app.state.dashboard_revision_notifier = notifier
+
+    with TestClient(app) as client:
+        response = client.get("/api/dashboard-events")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.text.startswith("retry: 2500\n\n")
+    assert "id: rev-route\nevent: dashboard_revision\n" in response.text
+    assert '"revision":"rev-route"' in response.text
+    assert notifier.started_count == 1
+    assert notifier.stopped_count == 1
+    assert notifier.subscriber_count == 0
+
+
+def test_dashboard_events_stream_sends_retry_and_initial_revision(tmp_path: Path) -> None:
+    """長 SSE stream 開頭送 retry，已有真 revision 時送 initial event。"""
+
+    async def run_test() -> None:
+        notifier = DashboardRevisionNotifier(
+            db_path=tmp_path / "app.db",
+            get_dashboard_revision=lambda _path: DashboardRevision(
+                revision="rev-1",
+                last_changed_at="2026-06-18T00:00:00",
+            ),
+            poll_interval_seconds=1.0,
+        )
+        stream = dashboard_revision_event_stream(
+            FakeSseRequest(),
+            notifier=notifier,
+            format_revision_event=_format_dashboard_revision_event,
+            keepalive_seconds=0.05,
+            retry_milliseconds=2500,
+        )
+        try:
+            retry = await asyncio.wait_for(anext(stream), timeout=0.5)
+            event = await asyncio.wait_for(anext(stream), timeout=0.5)
+        finally:
+            await stream.aclose()
+            await notifier.stop()
+
+        assert retry == "retry: 2500\n\n"
+        assert event.startswith("id: rev-1\nevent: dashboard_revision\n")
+        assert event.endswith("\n\n")
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_stream_initial_failure_sends_keepalive_not_fake_revision(
+    tmp_path: Path,
+) -> None:
+    """initial revision 讀取失敗時不送 revision=0 event，只送 keepalive。"""
+
+    def raise_locked(_path: Path) -> DashboardRevision:
+        raise DashboardRevisionUnavailable("database is locked")
+
+    async def run_test() -> None:
+        notifier = DashboardRevisionNotifier(
+            db_path=tmp_path / "app.db",
+            get_dashboard_revision=raise_locked,
+            poll_interval_seconds=1.0,
+        )
+        stream = dashboard_revision_event_stream(
+            FakeSseRequest(),
+            notifier=notifier,
+            format_revision_event=_format_dashboard_revision_event,
+            keepalive_seconds=0.01,
+            retry_milliseconds=2500,
+        )
+        try:
+            retry = await asyncio.wait_for(anext(stream), timeout=0.5)
+            keepalive = await asyncio.wait_for(anext(stream), timeout=0.5)
+        finally:
+            await stream.aclose()
+            await notifier.stop()
+
+        assert retry == "retry: 2500\n\n"
+        assert keepalive == ": keepalive\n\n"
+        assert "dashboard_revision" not in keepalive
+        assert "revision" not in keepalive
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_stream_sends_revision_change(tmp_path: Path) -> None:
+    """notifier 讀到 revision 變更時，長 SSE stream 送 dashboard_revision event。"""
+
+    state = {"revision": "rev-1"}
+
+    def load_revision(_path: Path) -> DashboardRevision:
+        return DashboardRevision(
+            revision=state["revision"],
+            last_changed_at="2026-06-18T00:00:00",
+        )
+
+    async def run_test() -> None:
+        notifier = DashboardRevisionNotifier(
+            db_path=tmp_path / "app.db",
+            get_dashboard_revision=load_revision,
+            poll_interval_seconds=1.0,
+        )
+        await notifier.start()
+        stream = dashboard_revision_event_stream(
+            FakeSseRequest(),
+            notifier=notifier,
+            format_revision_event=_format_dashboard_revision_event,
+            keepalive_seconds=0.05,
+            retry_milliseconds=2500,
+        )
+        try:
+            await asyncio.wait_for(anext(stream), timeout=0.5)
+            assert "rev-1" in await asyncio.wait_for(anext(stream), timeout=0.5)
+            state["revision"] = "rev-2"
+            notifier.wake()
+            event = await asyncio.wait_for(anext(stream), timeout=0.5)
+        finally:
+            await stream.aclose()
+            await notifier.stop()
+
+        assert event.startswith("id: rev-2\nevent: dashboard_revision\n")
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_stream_ends_when_notifier_stops(tmp_path: Path) -> None:
+    """notifier stop 會喚醒 stream generator 結束，避免 shutdown / teardown 卡住。"""
+
+    async def run_test() -> None:
+        notifier = DashboardRevisionNotifier(
+            db_path=tmp_path / "app.db",
+            get_dashboard_revision=lambda _path: DashboardRevision(revision="rev-1"),
+            poll_interval_seconds=1.0,
+        )
+        await notifier.start()
+        stream = dashboard_revision_event_stream(
+            FakeSseRequest(),
+            notifier=notifier,
+            format_revision_event=_format_dashboard_revision_event,
+            keepalive_seconds=0.05,
+            retry_milliseconds=2500,
+        )
+        try:
+            assert await asyncio.wait_for(anext(stream), timeout=0.5) == "retry: 2500\n\n"
+            assert "rev-1" in await asyncio.wait_for(anext(stream), timeout=0.5)
+            await notifier.stop()
+            try:
+                await asyncio.wait_for(anext(stream), timeout=0.5)
+            except StopAsyncIteration:
+                pass
+            else:
+                raise AssertionError("stream should finish after notifier stop")
+        finally:
+            await stream.aclose()
+            await notifier.stop()
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_response_headers_and_no_maintenance(tmp_path: Path) -> None:
+    """SSE response header 符合長 SSE，且 route 不觸發 bounded retention。"""
+
+    notifier = DashboardRevisionNotifier(
+        db_path=tmp_path / "app.db",
+        get_dashboard_revision=lambda _path: DashboardRevision(revision="rev-1"),
+        poll_interval_seconds=1.0,
+    )
+
+    response = build_dashboard_revision_sse_response(
+        FakeSseRequest(),
+        notifier=notifier,
+        format_revision_event=_format_dashboard_revision_event,
+    )
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.headers["connection"] == "keep-alive"
+    assert "/api/dashboard-events" not in BOUNDED_RETENTION_MAINTENANCE_READ_PATHS

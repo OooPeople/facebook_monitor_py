@@ -21,8 +21,9 @@ async def webui_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """管理 Web UI 啟動與關閉時的背景 scheduler 生命週期。"""
 
     _run_startup_maintenance(app)
-    _start_scheduler_if_configured(app)
+    await _start_dashboard_revision_notifier(app)
     try:
+        _start_scheduler_if_configured(app)
         yield
     finally:
         await _shutdown_webui_runtime(app)
@@ -60,16 +61,25 @@ def _start_scheduler_if_configured(app: FastAPI) -> None:
     )
 
 
+async def _start_dashboard_revision_notifier(app: FastAPI) -> None:
+    """在 startup maintenance 後啟動 dashboard revision watcher。"""
+
+    await app.state.dashboard_revision_notifier.start()
+
+
 async def _shutdown_webui_runtime(app: FastAPI) -> None:
     """關閉 Web UI 背景資源，保留既有 nested-finally 收尾語義。"""
 
     try:
-        await app.state.bounded_retention_maintenance_runner.wait_until_idle()
+        await app.state.dashboard_revision_notifier.stop()
     finally:
         try:
-            app.state.profile_manager.close()
+            await app.state.bounded_retention_maintenance_runner.wait_until_idle()
         finally:
-            app.state.scheduler_manager.stop()
+            try:
+                app.state.profile_manager.close()
+            finally:
+                app.state.scheduler_manager.stop()
 
 
 __all__ = ["webui_lifespan"]

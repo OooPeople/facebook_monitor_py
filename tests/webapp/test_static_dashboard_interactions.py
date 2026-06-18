@@ -154,6 +154,155 @@ def test_dashboard_partial_updates_are_coalesced_while_in_flight() -> None:
     assert "partialUpdateInFlight: false" in state_js
     assert "state.partialUpdateInFlight || isFormDirty(state)" in state_js
     assert "state.pendingRefresh = true;" in revision_client_js
+    assert "state.pendingRefresh && !shouldDelayRefresh(state)" in revision_client_js
+    assert "void updateWhenSafe(state);" in revision_client_js
+
+
+def test_revision_client_uses_eventsource_as_primary_transport() -> None:
+    """revision client 預設使用 EventSource 訂閱 dashboard revision event。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'new EventSource("/api/dashboard-events")' in revision_client_js
+    assert 'source.addEventListener("open"' in revision_client_js
+    assert 'source.addEventListener("dashboard_revision"' in revision_client_js
+    assert 'source.addEventListener("error"' in revision_client_js
+    assert 'fetch("/api/dashboard-revision", { cache: "no-store" })' in revision_client_js
+    revision_handler = revision_client_js.split(
+        'source.addEventListener("dashboard_revision", (event) => {',
+        1,
+    )[1].split("});", 1)[0]
+    assert "if (runtime.closed) return;" in revision_handler
+
+
+def test_revision_client_falls_back_to_polling_without_eventsource() -> None:
+    """沒有 EventSource 支援時，revision client 才直接啟動 polling fallback。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'if (!("EventSource" in window)) {' in revision_client_js
+    no_eventsource_branch = revision_client_js.split(
+        'if (!("EventSource" in window)) {',
+        1,
+    )[1].split("}", 1)[0]
+    assert "startPollingFallback(state, runtime);" in no_eventsource_branch
+    assert "const pollingIntervalMs = 3000;" in revision_client_js
+    assert 'fetch("/api/dashboard-revision", { cache: "no-store" })' in revision_client_js
+
+
+def test_revision_client_delays_polling_after_sse_error() -> None:
+    """SSE error 後延遲啟動 polling，避免正常 reconnect 時兩套主路徑並行。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    error_handler = revision_client_js.split(
+        'source.addEventListener("error", () => {',
+        1,
+    )[1].split("});", 1)[0]
+    assert "setSseState(state, transportStates.sseReconnecting);" in error_handler
+    assert "schedulePollingFallback(state, runtime);" in error_handler
+    assert "startPollingFallback(state, runtime);" not in error_handler
+    assert "if (runtime.pollingIntervalId) {" in error_handler
+    assert "setPollingState(state);" in error_handler
+    assert "clearFallbackTimer(runtime);" in error_handler
+    assert "if (runtime.closed || runtime.fallbackTimerId || runtime.pollingIntervalId) return;" in (
+        revision_client_js
+    )
+    assert "window.setTimeout(() => {" in revision_client_js
+
+
+def test_revision_client_stops_polling_when_sse_opens() -> None:
+    """EventSource open 後會取消 fallback timer 並停止 polling。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    open_handler = revision_client_js.split(
+        'source.addEventListener("open", () => {',
+        1,
+    )[1].split("});", 1)[0]
+    assert "state.sseConnected = true;" in open_handler
+    assert "setSseState(state, transportStates.sseOpen);" in open_handler
+    assert "clearFallbackTimer(runtime);" in open_handler
+    assert "stopPollingFallback(runtime);" in open_handler
+
+
+def test_revision_client_does_not_create_duplicate_polling_intervals() -> None:
+    """polling fallback interval 需有 guard，停止時清除並重設 id。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    assert "if (runtime.pollingIntervalId) return;" in revision_client_js
+    assert "runtime.pollingIntervalId = window.setInterval(" in revision_client_js
+    assert "window.clearInterval(runtime.pollingIntervalId);" in revision_client_js
+    assert "runtime.pollingIntervalId = 0;" in revision_client_js
+
+
+def test_revision_client_teardown_closes_sse_and_clears_timers() -> None:
+    """page teardown 會關閉 EventSource 並清除 revision client timers。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    teardown = revision_client_js.split(
+        "const teardownRevisionClient = (state, runtime) => {",
+        1,
+    )[1].split("};", 1)[0]
+    assert "clearFallbackTimer(runtime);" in teardown
+    assert "stopPollingFallback(runtime);" in teardown
+    assert "window.clearInterval(runtime.pendingRefreshIntervalId);" in teardown
+    assert "window.clearInterval(runtime.safetyPollIntervalId);" in teardown
+    assert "runtime.source.close();" in teardown
+    assert "state.revisionTransportState = transportStates.closed;" in teardown
+    assert 'window.addEventListener("pagehide", teardown, { once: true });' in (
+        revision_client_js
+    )
+    assert 'window.addEventListener("beforeunload", teardown, { once: true });' in (
+        revision_client_js
+    )
+
+
+def test_revision_client_supports_polling_only_internal_transport_switch() -> None:
+    """internal polling-only switch 不建立 EventSource，直接使用 revision endpoint。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+
+    assert "window.__DASHBOARD_REVISION_TRANSPORT__" in revision_client_js
+    assert 'return configured === "polling" ? "polling" : "sse";' in revision_client_js
+    polling_branch = revision_client_js.split(
+        'if (selectedRevisionTransport() === "polling") {',
+        1,
+    )[1].split("}", 1)[0]
+    assert "startPollingFallback(state, runtime);" in polling_branch
+    assert "new EventSource" not in polling_branch
+
+
+def test_dashboard_state_exposes_revision_transport_state() -> None:
+    """dashboard state 保留粗分類 transport，並新增明確細狀態。"""
+
+    state_js = Path("src/facebook_monitor/webapp/static/dashboard/state.js").read_text(
+        encoding="utf-8"
+    )
+    main_js = Path("src/facebook_monitor/webapp/static/dashboard/main.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revisionTransport: "initializing"' in state_js
+    assert 'revisionTransportState: "sse_connecting"' in state_js
+    assert "sseConnected: false" in state_js
+    assert "setupRevisionClient(state);" in main_js
 
 
 def test_dashboard_partial_update_toggles_database_invariant_warning_safely() -> None:

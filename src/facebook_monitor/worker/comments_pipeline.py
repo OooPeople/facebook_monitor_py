@@ -45,10 +45,13 @@ from facebook_monitor.worker.scan_metadata import build_sort_adjust_skip_meta
 from facebook_monitor.worker.scan_metadata import with_scan_skipped_reason
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
+from facebook_monitor.worker.scan_finalize import record_unguarded_skipped_scan_for_one_shot
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
+from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
+from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
 
 
@@ -192,18 +195,26 @@ def scan_comments_target_page(
         config=config,
         sort_adjust_result=sort_adjust_result,
     ):
-        finalize_result = record_skipped_scan(
-            app=app,
-            target=target,
-            commit_guard=commit_guard,
-            metadata=build_comments_sort_unconfirmed_skip_metadata(
-                config=config,
-                sort_adjust_result=sort_adjust_result,
-                scroll_rounds=effective_scroll_rounds,
-                requested_scroll_rounds=scroll_rounds,
-                scroll_wait_ms=scroll_wait_ms,
-            ),
+        skip_metadata = build_comments_sort_unconfirmed_skip_metadata(
+            config=config,
+            sort_adjust_result=sort_adjust_result,
+            scroll_rounds=effective_scroll_rounds,
+            requested_scroll_rounds=scroll_rounds,
+            scroll_wait_ms=scroll_wait_ms,
         )
+        if commit_guard is None:
+            finalize_result = record_unguarded_skipped_scan_for_one_shot(
+                app=app,
+                target=target,
+                metadata=skip_metadata,
+            )
+        else:
+            finalize_result = record_guarded_skipped_scan(
+                app=app,
+                target=target,
+                commit_guard=commit_guard,
+                metadata=skip_metadata,
+            )
         return CommentsScanSummary(
             target_id=target.id,
             url=str(page.url),
@@ -256,8 +267,8 @@ async def scan_comments_target_page_async(
     desktop_notification_sender: DesktopSender = send_desktop_notification,
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
-) -> CommentsScanSummary:
-    """async 版本：掃描目前頁面可見留言。"""
+) -> SuccessScanResult | ProtectiveSkipScanResult:
+    """async 版本：掃描留言；visible scan state 交由 coordinator commit。"""
 
     ensure_comments_target(target)
     await ensure_async_page_scannable(page)
@@ -274,10 +285,9 @@ async def scan_comments_target_page_async(
         config=config,
         sort_adjust_result=sort_adjust_result,
     ):
-        finalize_result = record_skipped_scan(
-            app=app,
-            target=target,
-            commit_guard=commit_guard,
+        return ProtectiveSkipScanResult(
+            target_id=target.id,
+            url=str(page.url),
             metadata=build_comments_sort_unconfirmed_skip_metadata(
                 config=config,
                 sort_adjust_result=sort_adjust_result,
@@ -285,15 +295,6 @@ async def scan_comments_target_page_async(
                 requested_scroll_rounds=scroll_rounds,
                 scroll_wait_ms=scroll_wait_ms,
             ),
-        )
-        return CommentsScanSummary(
-            target_id=target.id,
-            url=str(page.url),
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=finalize_result.scan_run_id,
-            round_stats=(),
         )
     items, round_stats, collection_meta = await collect_comment_items_with_diagnostics_async(
         page=page,
@@ -306,9 +307,8 @@ async def scan_comments_target_page_async(
     )
     if not items:
         raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No comment-like items were extracted.")
-    return finalize_comments_pipeline_scan(
+    return build_comments_pipeline_success_result(
         page_url=str(page.url),
-        app=app,
         target=target,
         config=config,
         items=items,
@@ -319,10 +319,6 @@ async def scan_comments_target_page_async(
         requested_scroll_rounds=scroll_rounds,
         scroll_wait_ms=scroll_wait_ms,
         auto_load_more=config.auto_load_more,
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
-        commit_guard=commit_guard,
     )
 
 
@@ -362,14 +358,67 @@ def finalize_comments_pipeline_scan(
 ) -> CommentsScanSummary:
     """將 comments scan items 交給 shared finalize 層寫入後處理狀態。"""
 
+    success_result = build_comments_pipeline_success_result(
+        page_url=page_url,
+        target=target,
+        config=config,
+        items=items,
+        collection_meta=collection_meta,
+        sort_adjust_result=sort_adjust_result,
+        round_stats=round_stats,
+        scroll_rounds=scroll_rounds,
+        requested_scroll_rounds=requested_scroll_rounds,
+        scroll_wait_ms=scroll_wait_ms,
+        auto_load_more=auto_load_more,
+    )
     finalize_result = finalize_scan_items(
         app=app,
         target=target,
         config=config,
-        items=normalize_extracted_scan_items(
-            items=items,
-            item_kind=ItemKind.COMMENT,
-            target=target,
+        items=list(success_result.items),
+        item_count=success_result.item_count,
+        metadata=dict(success_result.metadata),
+        notification_sender=notification_sender,
+        desktop_notification_sender=desktop_notification_sender,
+        discord_notification_sender=discord_notification_sender,
+        commit_guard=commit_guard,
+    )
+    return CommentsScanSummary(
+        target_id=target.id,
+        url=success_result.url,
+        item_count=success_result.item_count,
+        new_count=finalize_result.new_count,
+        matched_count=finalize_result.matched_count,
+        scan_run_id=finalize_result.scan_run_id,
+        round_stats=tuple(round_stats),
+    )
+
+
+def build_comments_pipeline_success_result(
+    *,
+    page_url: str,
+    target: TargetDescriptor,
+    config: TargetConfig,
+    items: list[ExtractedItem],
+    collection_meta: CommentCollectionMeta,
+    sort_adjust_result: SortAdjustResult,
+    round_stats: list[CommentExtractRoundStats],
+    scroll_rounds: int,
+    requested_scroll_rounds: int,
+    scroll_wait_ms: int,
+    auto_load_more: bool,
+) -> SuccessScanResult:
+    """建立 comments success commit-ready result，不直接寫 DB。"""
+
+    return SuccessScanResult(
+        target_id=target.id,
+        url=page_url,
+        items=tuple(
+            normalize_extracted_scan_items(
+                items=items,
+                item_kind=ItemKind.COMMENT,
+                target=target,
+            )
         ),
         item_count=len(items),
         metadata=build_comments_scan_metadata(
@@ -383,17 +432,4 @@ def finalize_comments_pipeline_scan(
             scroll_wait_ms=scroll_wait_ms,
             auto_load_more=auto_load_more,
         ),
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
-        commit_guard=commit_guard,
-    )
-    return CommentsScanSummary(
-        target_id=target.id,
-        url=page_url,
-        item_count=len(items),
-        new_count=finalize_result.new_count,
-        matched_count=finalize_result.matched_count,
-        scan_run_id=finalize_result.scan_run_id,
-        round_stats=tuple(round_stats),
     )

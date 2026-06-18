@@ -58,7 +58,7 @@ class AsyncScanCallable(Protocol):
         scroll_wait_ms: int,
         commit_guard: ScanCommitGuard | None = None,
     ) -> object:
-        """掃描已準備好的 target page 並寫入 application context。"""
+        """掃描已準備好的 target page，或回傳 commit-ready result。"""
 
 
 @dataclass(frozen=True)

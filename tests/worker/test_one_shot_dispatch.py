@@ -21,7 +21,7 @@ from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
 class FakePlaywrightManager:
@@ -118,13 +118,13 @@ def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(
             )
         )
         target = app.services.targets.restart_target_monitoring(target.id)
-        record_skipped_scan(
+        record_protective_skip_for_test(
             app=app,
             target=target,
             metadata={"worker": "one_shot_posts_scan"},
             commit_guard=None,
         )
-        record_skipped_scan(
+        record_protective_skip_for_test(
             app=app,
             target=target,
             metadata={"worker": "one_shot_posts_scan"},
@@ -134,7 +134,7 @@ def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(
     def fake_scan_posts_page(**kwargs: Any) -> PostsScanSummary:
         """模擬 one-shot 掃描中再次遇到排序未確認。"""
 
-        result = record_skipped_scan(
+        result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={
@@ -361,7 +361,7 @@ def test_run_one_shot_scan_skipped_success_preserves_direct_failure_streak(
     def fake_scan_posts_page(**kwargs: Any) -> PostsScanSummary:
         """模擬排序未確認但尚未達錯誤門檻的 skipped scan。"""
 
-        result = record_skipped_scan(
+        result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={

@@ -26,6 +26,7 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/resident_main.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor_attempt.py",
+    ROOT / "src/facebook_monitor/worker/resident_failure_decisions.py",
     ROOT / "src/facebook_monitor/worker/resident_maintenance.py",
     ROOT / "src/facebook_monitor/worker/resident_shared.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_coordinator.py",
@@ -34,6 +35,14 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",
     ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
 )
+FORMAL_ASYNC_SCANNER_FILES = (
+    ROOT / "src/facebook_monitor/worker/posts_pipeline.py",
+    ROOT / "src/facebook_monitor/worker/comments_pipeline.py",
+)
+FORMAL_ASYNC_SCANNER_FUNCTIONS = {
+    "scan_posts_page_async",
+    "scan_comments_target_page_async",
+}
 APPLICATION_RUNTIME_SERVICE_FILES = (
     APPLICATION_DIR / "services.py",
     *TARGET_RUNTIME_MODULE_FILES,
@@ -97,7 +106,7 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/scan_finalize.py",
-        "record_skipped_scan",
+        "_record_skipped_scan",
         "force_apply_scan_skip_decision",
     ),
     (
@@ -107,7 +116,7 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/scan_failure_finalize.py",
-        "record_guarded_scan_failure",
+        "record_guarded_scan_failure_result",
         "force_apply_scan_failure_decision",
     ),
     (
@@ -117,25 +126,47 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/sync_resident_fallback.py",
-        "run_sync_resident_fallback_cycle",
+        "_run_sync_resident_target_attempt",
         "force_mark_resident_target_error",
     ),
 }
 SCAN_COMMIT_HELPERS = {
-    "commit_failure_for_db_async",
-    "commit_idle_after_existing_success_finalize",
-    "commit_skipped_existing_finalize",
-    "record_guarded_scan_failure_for_db",
-    "record_guarded_scan_failure_for_db_async",
-    "record_skipped_scan",
+    "commit_guarded_idle_after_success",
+    "commit_guarded_protective_skip",
+    "commit_success",
+    "FailureScanCommitRequest",
+    "record_guarded_skipped_scan",
+    "record_guarded_scan_failure_decision_for_db",
+    "record_guarded_scan_failure_result_for_db_async",
+    "record_unguarded_skipped_scan_for_one_shot",
     "finalize_scan_items",
     "mark_target_idle_for_scan_commit",
+}
+FORMAL_RUNTIME_FORBIDDEN_SKIP_COMMIT_HELPERS = {
+    "record_unguarded_skipped_scan_for_one_shot",
+}
+FORMAL_ASYNC_SCANNER_FORBIDDEN_COMMIT_HELPERS = {
+    "finalize_scan_items",
+    "mark_target_idle_for_scan_commit",
+    "record_guarded_skipped_scan",
+    "record_guarded_scan_failure_decision_for_db",
+    "record_unguarded_skipped_scan_for_one_shot",
+}
+SUCCESS_COMMITTED_ALLOWED_FILES = {
+    "src/facebook_monitor/worker/attempt_transitions.py",
+    "src/facebook_monitor/worker/scan_commit_coordinator.py",
+    "src/facebook_monitor/worker/scan_commit_outcomes.py",
 }
 ALLOWED_EXPLICIT_NONE_SCAN_COMMIT_GUARDS = {
     (
         "src/facebook_monitor/worker/resident_maintenance.py",
         "record_refresh_runtime_failure",
-        "record_guarded_scan_failure_for_db",
+        "record_guarded_scan_failure_decision_for_db",
+    ),
+    (
+        "src/facebook_monitor/worker/scan_commit_coordinator.py",
+        "commit_failure_request_for_db_async",
+        "record_guarded_scan_failure_result_for_db_async",
     ),
 }
 SQL_WRITE_PREFIXES = ("INSERT INTO", "UPDATE", "DELETE FROM", "REPLACE INTO")
@@ -392,6 +423,64 @@ def test_formal_runtime_paths_do_not_call_removed_runtime_aliases() -> None:
                 continue
             if node.attr in REMOVED_APPLICATION_RUNTIME_ALIASES:
                 violations.append(f"{path.relative_to(ROOT)}:{node.lineno}:{node.attr}")
+
+    assert violations == []
+
+
+def test_formal_runtime_paths_do_not_call_legacy_or_unguarded_skip_api() -> None:
+    """正式 runtime path 不得直接呼叫 legacy / unguarded skipped scan API。"""
+
+    violations: list[str] = []
+    for path in FORMAL_RUNTIME_BOUNDARY_FILES:
+        relative_path = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        visitor = _CallContextVisitor()
+        visitor.visit(tree)
+        for lineno, context, node in visitor.calls:
+            name = _called_name(node)
+            if name not in FORMAL_RUNTIME_FORBIDDEN_SKIP_COMMIT_HELPERS:
+                continue
+            violations.append(f"{relative_path}:{lineno}:{context}:{name}")
+
+    assert violations == []
+
+
+def test_formal_runtime_paths_only_coordinator_produces_success_committed() -> None:
+    """Phase 6 後 SUCCESS_COMMITTED 只能由 coordinator 產生或由 model/transition 使用。"""
+
+    violations: list[str] = []
+    for path in FORMAL_RUNTIME_BOUNDARY_FILES:
+        relative_path = path.relative_to(ROOT).as_posix()
+        if relative_path in SUCCESS_COMMITTED_ALLOWED_FILES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr != "SUCCESS_COMMITTED":
+                continue
+            violations.append(f"{relative_path}:{node.lineno}:SUCCESS_COMMITTED")
+
+    assert violations == []
+
+
+def test_formal_async_scanners_do_not_finalize_visible_scan_state() -> None:
+    """formal async scanner 只能回傳 commit-ready result，不直接寫 visible scan state。"""
+
+    violations: list[str] = []
+    for path in FORMAL_ASYNC_SCANNER_FILES:
+        relative_path = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        visitor = _CallContextVisitor()
+        visitor.visit(tree)
+        for lineno, context, node in visitor.calls:
+            function_name = context.split(".")[-1]
+            if function_name not in FORMAL_ASYNC_SCANNER_FUNCTIONS:
+                continue
+            name = _called_name(node)
+            if name not in FORMAL_ASYNC_SCANNER_FORBIDDEN_COMMIT_HELPERS:
+                continue
+            violations.append(f"{relative_path}:{lineno}:{context}:{name}")
 
     assert violations == []
 

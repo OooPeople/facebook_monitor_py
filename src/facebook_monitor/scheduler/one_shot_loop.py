@@ -25,7 +25,9 @@ from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_guarded_scan_failure_decision_for_db,
+)
 
 
 ScanCallable = Callable[[OneShotScanOptions], PostsScanSummary]
@@ -136,7 +138,7 @@ def run_one_shot_scheduler_loop(
                     )
                 )
             except WorkerFailure as exc:
-                recorded_failure = record_guarded_scan_failure_for_db(
+                recorded_failure = record_guarded_scan_failure_decision_for_db(
                     db_path=options.db_path,
                     target_id=target_id,
                     reason=exc.reason,
@@ -152,7 +154,7 @@ def run_one_shot_scheduler_loop(
                     continue
                 failure_count += 1
             except Exception as exc:
-                recorded_failure = record_guarded_scan_failure_for_db(
+                recorded_failure = record_guarded_scan_failure_decision_for_db(
                     db_path=options.db_path,
                     target_id=target_id,
                     reason=UNKNOWN_REASON,

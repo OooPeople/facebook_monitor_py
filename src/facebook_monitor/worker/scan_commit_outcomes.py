@@ -37,15 +37,17 @@ class ScanCommitOutcome:
     request_runtime_restart: bool = False
     discard_page: bool = False
     failure_decision: ScanFailureDecision | None = None
+    runtime_failure_notification_count: int = 0
 
     @property
     def committed_visible_scan_state(self) -> bool:
         """回傳本次 outcome 是否已寫入 visible scan result。"""
 
+        if self.kind == ScanCommitOutcomeKind.FAILURE_COMMITTED:
+            return self.scan_run_id > 0
         return self.kind in {
             ScanCommitOutcomeKind.SUCCESS_COMMITTED,
             ScanCommitOutcomeKind.SKIP_COMMITTED,
-            ScanCommitOutcomeKind.FAILURE_COMMITTED,
         }
 
     @property

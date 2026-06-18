@@ -31,10 +31,12 @@ from facebook_monitor.notifications.outbox_service import (
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_guarded_scan_failure_decision,
+)
 from facebook_monitor.worker.errors import WorkerFailure
 
-from tests.worker.scan_finalize_test_helpers import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
 from tests.worker.scan_finalize_test_helpers import _stub_outbox_dispatch
 from tests.worker.scan_finalize_test_helpers import _create_running_target_with_guard
@@ -55,7 +57,7 @@ def test_record_guarded_scan_failure_ignores_stale_running_owner(
             page_id="page-b",
         )
 
-        decision = record_guarded_scan_failure(
+        decision = record_guarded_scan_failure_decision(
             app=app,
             target_id=fixture.target.id,
             reason=UNKNOWN_REASON,
@@ -380,7 +382,7 @@ def test_immediate_terminal_failure_records_again_after_manual_restart(
             "worker-a",
             page_id="page-a",
         )
-        first_decision = record_guarded_scan_failure(
+        first_decision = record_guarded_scan_failure_decision(
             app=app,
             target_id=target.id,
             reason="login_required",
@@ -405,7 +407,7 @@ def test_immediate_terminal_failure_records_again_after_manual_restart(
             "worker-b",
             page_id="page-b",
         )
-        second_decision = record_guarded_scan_failure(
+        second_decision = record_guarded_scan_failure_decision(
             app=app,
             target_id=target.id,
             reason="login_required",
@@ -638,7 +640,7 @@ def test_runtime_failure_outbox_allows_immediate_terminal_failure(
     assert entries[0].failure_count == 1
 
 
-def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
+def test_guarded_protective_skip_starts_write_transaction_before_scan_run_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -659,7 +661,7 @@ def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
             return original_record_scan(request)  # type: ignore[arg-type]
 
         monkeypatch.setattr(app.services.scans, "record_scan", record_scan_with_assertion)
-        record_skipped_scan(
+        record_protective_skip_for_test(
             app=app,
             target=fixture.target,
             metadata={"worker": "test_worker"},
@@ -669,7 +671,7 @@ def test_record_skipped_scan_starts_write_transaction_before_scan_run_write(
     assert saw_write_transaction == [True]
 
 
-def test_record_skipped_scan_escalates_on_third_sort_skip(
+def test_guarded_protective_skip_escalates_on_third_sort_skip(
     tmp_path: Path,
 ) -> None:
     """第三次排序保護性 skip 應升級成 WorkerFailure，不再寫 skipped success。"""
@@ -677,7 +679,7 @@ def test_record_skipped_scan_escalates_on_third_sort_skip(
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app)
-        record_skipped_scan(
+        record_protective_skip_for_test(
             app=app,
             target=fixture.target,
             metadata={"worker": "test_worker"},
@@ -689,7 +691,7 @@ def test_record_skipped_scan_escalates_on_third_sort_skip(
             page_id="page-b",
         )
         second_guard = scan_commit_guard_from_runtime_state(state)
-        record_skipped_scan(
+        record_protective_skip_for_test(
             app=app,
             target=fixture.target,
             metadata={"worker": "test_worker"},
@@ -703,7 +705,7 @@ def test_record_skipped_scan_escalates_on_third_sort_skip(
         third_guard = scan_commit_guard_from_runtime_state(state)
 
         with pytest.raises(WorkerFailure) as excinfo:
-            record_skipped_scan(
+            record_protective_skip_for_test(
                 app=app,
                 target=fixture.target,
                 metadata={"worker": "test_worker"},
@@ -761,14 +763,14 @@ def test_sort_adjust_skip_notifies_after_three_escalated_failures(
         decisions = []
         for _attempt_index in range(9):
             try:
-                record_skipped_scan(
+                record_protective_skip_for_test(
                     app=app,
                     target=target,
                     metadata={"worker": "test_worker"},
                     commit_guard=UNGUARDED_SCAN_COMMIT,
                 )
             except WorkerFailure as exc:
-                decision = record_guarded_scan_failure(
+                decision = record_guarded_scan_failure_decision(
                     app=app,
                     target_id=target.id,
                     reason=exc.reason,

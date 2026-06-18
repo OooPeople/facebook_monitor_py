@@ -41,7 +41,9 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_guarded_scan_failure_decision_for_db,
+)
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.target_validation import is_valid_posts_target_route
 from facebook_monitor.worker.target_validation import validate_posts_target_route
@@ -146,7 +148,7 @@ def record_failure(
 
     if target is None:
         return
-    recorded = record_guarded_scan_failure_for_db(
+    recorded = record_guarded_scan_failure_decision_for_db(
         db_path=db_path,
         target_id=target.id,
         reason=reason,

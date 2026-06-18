@@ -90,6 +90,21 @@ class ScanFailureMetadata:
         return metadata
 
 
+@dataclass(frozen=True)
+class GuardedScanFailureFinalizeResult:
+    """保存 guarded failure finalize 實際完成的 side effect 摘要。"""
+
+    decision: ScanFailureDecision
+    scan_run_id: int = 0
+    runtime_failure_notification_count: int = 0
+
+    @property
+    def failure_scan_run_written(self) -> bool:
+        """回傳本次 finalize 是否新增 failure scan run。"""
+
+        return self.scan_run_id > 0
+
+
 def record_scan_failure(
     *,
     app: ApplicationContext,
@@ -154,7 +169,7 @@ def record_scan_failure(
     )
 
 
-def record_guarded_scan_failure(
+def record_guarded_scan_failure_result(
     *,
     app: ApplicationContext,
     target_id: str,
@@ -169,8 +184,8 @@ def record_guarded_scan_failure(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
-) -> ScanFailureDecision | None:
-    """在同一 transaction 內確認 attempt guard、記錄 failure 並更新 runtime。"""
+) -> GuardedScanFailureFinalizeResult | None:
+    """在同一 transaction 內確認 guard，並回傳 failure side-effect 摘要。"""
 
     begin_scan_commit_transaction(app)
     target = app.repositories.targets.get(target_id)
@@ -236,9 +251,10 @@ def record_guarded_scan_failure(
         if guarded_state is None:
             return None
         updated_state = guarded_state
+    runtime_failure_notification_count = 0
     if decision.terminal and scan_run_id > 0:
         config = app.services.targets.get_config_for_target(target)
-        queue_runtime_failure_notifications_after_commit(
+        entries = queue_runtime_failure_notifications_after_commit(
             app=app,
             target=target,
             config=config,
@@ -248,10 +264,53 @@ def record_guarded_scan_failure(
             error_message=updated_state.last_error or runtime_message,
             failure_source=source,
         )
-    return decision
+        runtime_failure_notification_count = len(entries)
+    return GuardedScanFailureFinalizeResult(
+        decision=decision,
+        scan_run_id=scan_run_id,
+        runtime_failure_notification_count=runtime_failure_notification_count,
+    )
 
 
-def record_guarded_scan_failure_for_db(
+def record_guarded_scan_failure_decision(
+    *,
+    app: ApplicationContext,
+    target_id: str,
+    reason: str,
+    message: str,
+    source: ScanFailureSource,
+    worker_path: str,
+    commit_guard: ScanCommitGuard | None,
+    worker_mode: WorkerMode = WorkerMode.HEADLESS,
+    exception_class: str = "",
+    profile_lease_state: str = "",
+    page_reused: bool | None = None,
+    scan_request_id: str = "",
+    runtime_error_message: str | None = None,
+) -> ScanFailureDecision | None:
+    """Decision-only wrapper：保留既有 guarded failure finalize 回傳語義。"""
+
+    result = record_guarded_scan_failure_result(
+        app=app,
+        target_id=target_id,
+        reason=reason,
+        message=message,
+        source=source,
+        worker_path=worker_path,
+        commit_guard=commit_guard,
+        worker_mode=worker_mode,
+        exception_class=exception_class,
+        profile_lease_state=profile_lease_state,
+        page_reused=page_reused,
+        scan_request_id=scan_request_id,
+        runtime_error_message=runtime_error_message,
+    )
+    if result is None:
+        return None
+    return result.decision
+
+
+def record_guarded_scan_failure_decision_for_db(
     *,
     db_path: Path,
     target_id: str,
@@ -267,11 +326,11 @@ def record_guarded_scan_failure_for_db(
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
 ) -> ScanFailureDecision | None:
-    """用 DB path 執行 guarded failure finalize；stale attempt 回傳 None。"""
+    """用 DB path 執行 decision-only guarded failure finalize。"""
 
     def operation() -> ScanFailureDecision | None:
         with SqliteApplicationContext(db_path) as app:
-            return record_guarded_scan_failure(
+            return record_guarded_scan_failure_decision(
                 app=app,
                 target_id=target_id,
                 reason=reason,
@@ -289,12 +348,12 @@ def record_guarded_scan_failure_for_db(
 
     return run_sqlite_operation_with_retry(
         operation,
-        operation_name="record_guarded_scan_failure",
+        operation_name="record_guarded_scan_failure_decision",
         logger=logger,
     )
 
 
-async def record_guarded_scan_failure_for_db_async(
+async def record_guarded_scan_failure_result_for_db_async(
     *,
     db_path: Path,
     target_id: str,
@@ -309,12 +368,12 @@ async def record_guarded_scan_failure_for_db_async(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
-) -> ScanFailureDecision | None:
-    """async resident 用 guarded failure finalize，lock retry 不阻塞 event loop。"""
+) -> GuardedScanFailureFinalizeResult | None:
+    """async resident 用 result-returning guarded failure finalize。"""
 
-    def operation() -> ScanFailureDecision | None:
+    def operation() -> GuardedScanFailureFinalizeResult | None:
         with SqliteApplicationContext(db_path) as app:
-            return record_guarded_scan_failure(
+            return record_guarded_scan_failure_result(
                 app=app,
                 target_id=target_id,
                 reason=reason,
@@ -332,7 +391,7 @@ async def record_guarded_scan_failure_for_db_async(
 
     return await run_sqlite_operation_with_retry_async(
         operation,
-        operation_name="record_guarded_scan_failure",
+        operation_name="record_guarded_scan_failure_result",
         logger=logger,
     )
 

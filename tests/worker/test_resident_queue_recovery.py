@@ -14,6 +14,7 @@ from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
@@ -28,6 +29,7 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
@@ -40,8 +42,9 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
@@ -234,6 +237,108 @@ def test_resident_pre_admission_failure_does_not_force_runtime_error(
     assert latest_scan is None
 
 
+def test_resident_running_claim_rejected_does_not_release_reserved_page(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """只 reserve page id 但未 acquire page 時，不應執行 page/planner cleanup。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="claim-rejected",
+                canonical_url="https://www.facebook.com/groups/claim-rejected",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def fake_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise AssertionError("scan should not run when running claim is rejected")
+
+    async def run_test() -> tuple[
+        TargetQueue,
+        RecordingSchedulePlanner,
+        ExecutorWorkerPool,
+        list[tuple[str, str]],
+        list[str],
+    ]:
+        target_queue = TargetQueue()
+        planner = RecordingSchedulePlanner()
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        release_if_calls: list[tuple[str, str]] = []
+        release_calls: list[str] = []
+
+        async def record_release_if_page_id(
+            target_id: str,
+            page_id: str,
+            *,
+            current_url: str = "",
+        ) -> bool:
+            release_if_calls.append((target_id, page_id))
+            return False
+
+        async def record_release(target_id: str, *, current_url: str = "") -> None:
+            release_calls.append(target_id)
+
+        monkeypatch.setattr(page_pool, "release_if_page_id", record_release_if_page_id)
+        monkeypatch.setattr(page_pool, "release", record_release)
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=fake_scan_page,
+        )
+        assert await executor.enqueue_due_targets(
+            (
+                DueTarget(
+                    target_id=target.id,
+                    interval_seconds=60,
+                    due_at=utc_now(),
+                ),
+            )
+        ) == 1
+        item = await target_queue.get()
+        assert item is not None
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.mark_target_running(
+                target.id,
+                "worker-other",
+                page_id="page-other",
+            )
+
+        result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
+        await asyncio.wait_for(target_queue.join(), timeout=1)
+        assert result.skipped is True
+        return target_queue, planner, executor, release_if_calls, release_calls
+
+    target_queue, planner, executor, release_if_calls, release_calls = asyncio.run(
+        run_test()
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == "worker-other"
+    assert state.active_page_id == "page-other"
+    assert latest_scan is None
+    assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
+    assert planner.dispatched_target_ids == []
+    assert planner.finished_target_ids == []
+    assert release_if_calls == []
+    assert release_calls == []
+    assert executor._active_attempt_tasks == {}  # noqa: SLF001
+    assert executor._active_scan_tasks == {}  # noqa: SLF001
+
+
 def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
     tmp_path: Path,
     monkeypatch: Any,
@@ -311,7 +416,7 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
     assert latest_scan is None
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == []
-    assert planner.finished_target_ids == [target.id]
+    assert planner.finished_target_ids == []
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
 
@@ -577,6 +682,7 @@ def test_resident_scheduler_stopping_cancellation_guard_mismatch_writes_no_failu
         pending_outbox = app.repositories.notification_outbox.list_pending()
     assert transition.outcome.kind.value == "owner_changed"
     assert transition.outcome.to_scan_result().skipped is True
+    assert transition.cleanup_plan is not None
     assert transition.cleanup_plan.target_id == target.id
     assert transition.cleanup_plan.page_id == "page-a"
     assert state is not None
@@ -744,7 +850,7 @@ def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) ->
             return page
 
     async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        finalize_result = record_skipped_scan(
+        finalize_result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={
@@ -1227,6 +1333,253 @@ def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
     assert len(history) == 1
     assert outbox_entry is not None
     assert sent_messages
+    assert planner.dispatched_target_ids == [target.id]
+    assert planner.finished_target_ids == [target.id]
+    assert executor._active_attempt_tasks == {}  # noqa: SLF001
+    assert executor._active_scan_tasks == {}  # noqa: SLF001
+    assert executor.page_pool.pages[target.id].in_use_by_worker == ""
+
+
+def test_resident_success_result_is_committed_by_coordinator(
+    tmp_path: Path,
+) -> None:
+    """resident scanner 回傳 success result 時，由 coordinator 寫 visible scan state。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="resident-success-result",
+                canonical_url="https://www.facebook.com/groups/resident-success-result",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        target = app.services.targets.restart_target_monitoring(target.id)
+        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+
+    async def scan_to_success_result(**kwargs: Any) -> SuccessScanResult:
+        return SuccessScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            items=(
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:resident-success-result",
+                    alias_keys=("post:resident-success-result",),
+                    group_id="resident-success-result",
+                    author="作者",
+                    text="這是一篇票券貼文",
+                    permalink=(
+                        "https://www.facebook.com/groups/"
+                        "resident-success-result/posts/1"
+                    ),
+                    raw_target_kind=kwargs["target"].target_kind.value,
+                ),
+            ),
+            item_count=1,
+            metadata={"worker": "resident_main"},
+        )
+
+    async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
+        target_queue = TargetQueue()
+        planner = RecordingSchedulePlanner()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_to_success_result,
+        )
+        assert await executor.enqueue_due_targets(
+            (
+                DueTarget(
+                    target_id=target.id,
+                    interval_seconds=60,
+                    due_at=utc_now(),
+                ),
+            )
+        ) == 1
+        item = await target_queue.get()
+        assert item is not None
+        result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
+        await asyncio.wait_for(target_queue.join(), timeout=1)
+        assert result.success is True
+        assert result.failure is False
+        assert result.skipped is False
+        return planner, executor
+
+    planner, executor = asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["worker"] == "resident_main"
+    assert len(latest_items) == 1
+    assert latest_items[0].item_key == "post:resident-success-result"
+    assert len(history) == 1
+    assert planner.dispatched_target_ids == [target.id]
+    assert planner.finished_target_ids == [target.id]
+    assert executor._active_attempt_tasks == {}  # noqa: SLF001
+    assert executor._active_scan_tasks == {}  # noqa: SLF001
+    assert executor.page_pool.pages[target.id].in_use_by_worker == ""
+
+
+def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
+    tmp_path: Path,
+) -> None:
+    """resident comments success path 保留 shared finalize 與 runtime idle 語義。"""
+
+    parent_post_id = "2187454285426518"
+    comment_id = "9876543210987654"
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="resident-comments",
+                parent_post_id=parent_post_id,
+                canonical_url=(
+                    "https://www.facebook.com/groups/resident-comments/posts/"
+                    f"{parent_post_id}"
+                ),
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase5-comments-resident",
+                ),
+            )
+        )
+        target = app.services.targets.restart_target_monitoring(target.id)
+        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
+
+    sent_messages: list[str] = []
+
+    def fake_ntfy_sender(_config: NtfyConfig, _title: str, message: str) -> NtfyResult:
+        """記錄 comments resident success 通知內容。"""
+
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    async def scan_with_real_finalize(**kwargs: Any) -> CommentsScanSummary:
+        result = finalize_scan_items(
+            app=kwargs["app"],
+            target=kwargs["target"],
+            config=kwargs["config"],
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.COMMENT,
+                    item_key="comment:resident-success",
+                    alias_keys=("comment:resident-success",),
+                    group_id="resident-comments",
+                    parent_post_id=parent_post_id,
+                    comment_id=comment_id,
+                    author="留言作者",
+                    text="這是一則有票券關鍵字的留言",
+                    permalink=f"{kwargs['target'].canonical_url}?comment_id={comment_id}",
+                    raw_target_kind=kwargs["target"].target_kind.value,
+                    metadata={"commentId": comment_id},
+                )
+            ],
+            item_count=1,
+            metadata={
+                "worker": "resident_main",
+                "comment_sort": {"reason": "unit_contract"},
+                "comments_meta": {"commentsWithCommentIdCount": 1},
+            },
+            commit_guard=kwargs["commit_guard"],
+            notification_sender=fake_ntfy_sender,
+        )
+        return CommentsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=1,
+            new_count=result.new_count,
+            matched_count=result.matched_count,
+            scan_run_id=result.scan_run_id,
+            round_stats=(),
+        )
+
+    async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
+        target_queue = TargetQueue()
+        planner = RecordingSchedulePlanner()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=planner,
+            scan_page=scan_with_real_finalize,
+            scan_comments_target_page=scan_with_real_finalize,
+        )
+        assert await executor.enqueue_due_targets(
+            (
+                DueTarget(
+                    target_id=target.id,
+                    interval_seconds=60,
+                    due_at=utc_now(),
+                ),
+            )
+        ) == 1
+        item = await target_queue.get()
+        assert item is not None
+        result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
+        await asyncio.wait_for(target_queue.join(), timeout=1)
+        assert result.success is True
+        assert result.failure is False
+        assert result.skipped is False
+        assert result.opened_page is True
+        assert await target_queue.snapshot() == (0, 0, ())
+        return planner, executor
+
+    planner, executor = asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        outbox_entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="comment:resident-success",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert scan_count == 1
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.metadata["comment_sort"] == {"reason": "unit_contract"}
+    assert len(latest_items) == 1
+    assert latest_items[0].item_kind == ItemKind.COMMENT
+    assert latest_items[0].debug_metadata["commentId"] == comment_id
+    assert len(history) == 1
+    assert history[0].item_kind == ItemKind.COMMENT
+    assert history[0].parent_post_id == parent_post_id
+    assert history[0].comment_id == comment_id
+    assert outbox_entry is not None
+    assert outbox_entry.item_kind == ItemKind.COMMENT
+    assert sent_messages
+    assert "類型：留言" in sent_messages[0]
     assert planner.dispatched_target_ids == [target.id]
     assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001

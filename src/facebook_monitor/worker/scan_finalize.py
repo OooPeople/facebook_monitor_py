@@ -8,7 +8,6 @@ Extractor、sort 與 load-more 仍由 target-kind-specific pipeline 負責。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from typing import Any
@@ -47,6 +46,8 @@ from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
 from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_latest_snapshot import build_latest_scan_items
+from facebook_monitor.worker.scan_latest_snapshot import should_carry_over_previous_latest_items
 
 
 @dataclass(frozen=True)
@@ -180,12 +181,45 @@ def scan_commit_guard_from_runtime_state(
     )
 
 
-def record_skipped_scan(
+def record_guarded_skipped_scan(
     *,
     app: ApplicationContext,
     target: TargetDescriptor,
     metadata: dict[str, Any],
-    commit_guard: ScanCommitGuard | None = None,
+    commit_guard: ScanCommitGuard,
+) -> ScanFinalizeResult:
+    """記錄正式 runtime guarded protective skipped scan。"""
+
+    return _record_skipped_scan(
+        app=app,
+        target=target,
+        metadata=metadata,
+        commit_guard=commit_guard,
+    )
+
+
+def record_unguarded_skipped_scan_for_one_shot(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    metadata: dict[str, Any],
+) -> ScanFinalizeResult:
+    """記錄 debug / one-shot 入口允許的 unguarded protective skipped scan。"""
+
+    return _record_skipped_scan(
+        app=app,
+        target=target,
+        metadata=metadata,
+        commit_guard=UNGUARDED_SCAN_COMMIT,
+    )
+
+
+def _record_skipped_scan(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    metadata: dict[str, Any],
+    commit_guard: ScanCommitGuard | None,
 ) -> ScanFinalizeResult:
     """記錄保護性 skipped scan；達門檻時升級為 worker failure。"""
 
@@ -725,87 +759,3 @@ def build_scan_match_result(
         include_group_results=keyword_evaluation.include_group_results,
         logical_item_id=logical_item_id,
     )
-
-
-def build_latest_scan_items(
-    *,
-    target: TargetDescriptor,
-    scan_run_id: int,
-    match_results: list[ScanMatchResult],
-    previous_latest_items: list[LatestScanItem] | None = None,
-    target_count: int | None = None,
-    carry_over_previous_items: bool = False,
-) -> list[LatestScanItem]:
-    """將 shared classification 結果轉成 latest scan snapshot。"""
-
-    latest_items = [
-        LatestScanItem(
-            target_id=target.id,
-            scan_run_id=scan_run_id,
-            item_kind=result.item.item_kind,
-            item_key=result.item.item_key,
-            item_index=item_index,
-            author=result.item.author,
-            text=result.item.text,
-            display_text=result.item.display_text or result.item.text,
-            permalink=result.item.permalink,
-            matched_keyword=result.matched_keyword,
-            matched_keywords=result.matched_keywords,
-            matched_keyword_groups=result.matched_keyword_groups,
-            debug_metadata={
-                **(result.item.metadata or {}),
-                "classification": {
-                    "is_new": result.is_new,
-                    "is_matched": result.is_matched,
-                    "include_rule": result.include_rule,
-                    "include_rules": list(result.matched_keywords),
-                    "include_group_results": [
-                        {
-                            "group_id": group_result.group_id,
-                            "group_label": group_result.group_label,
-                            "matched": group_result.matched,
-                            "rules": list(group_result.rules),
-                        }
-                        for group_result in result.include_group_results
-                    ],
-                    "exclude_rule": result.exclude_rule,
-                    "eligible_for_notify": result.eligible_for_notify,
-                    "baseline_mode": result.baseline_mode,
-                },
-            },
-        )
-        for item_index, result in enumerate(match_results)
-    ]
-    if not carry_over_previous_items:
-        return latest_items
-
-    existing_item_keys = {item.item_key for item in latest_items}
-    limit = max(int(target_count or len(latest_items)), len(latest_items))
-    for previous_item in previous_latest_items or []:
-        if len(latest_items) >= limit:
-            break
-        if previous_item.item_key in existing_item_keys:
-            continue
-        existing_item_keys.add(previous_item.item_key)
-        latest_items.append(
-            replace(
-                previous_item,
-                scan_run_id=scan_run_id,
-                item_index=len(latest_items),
-                debug_metadata={
-                    **(previous_item.debug_metadata or {}),
-                    "carriedOverFromPreviousScan": True,
-                    "carriedOverFromScanRunId": previous_item.scan_run_id,
-                },
-            )
-        )
-    return latest_items
-
-
-def should_carry_over_previous_latest_items(metadata: dict[str, Any]) -> bool:
-    """seen-stop 提早停止時，用上一輪 latest snapshot 補足 UI 可檢視項目。"""
-
-    collected_meta = metadata.get("collected_meta")
-    if isinstance(collected_meta, dict) and collected_meta.get("seenStopTriggered") is True:
-        return True
-    return metadata.get("stop_reason") == "seen_stop_consecutive_seen"

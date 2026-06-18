@@ -5,14 +5,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from collections.abc import Callable
 from secrets import compare_digest
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI
 from fastapi import Request
+from starlette.datastructures import MutableHeaders
 from starlette.responses import Response
+from starlette.types import ASGIApp
+from starlette.types import Message
+from starlette.types import Receive
+from starlette.types import Scope
+from starlette.types import Send
 
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -40,16 +44,20 @@ class RequestBodyTooLarge(Exception):
     """HTTP request body 超過本機管理 UI 可接受上限。"""
 
 
-def register_http_security_middleware(app: FastAPI) -> None:
-    """註冊 CSRF/body-limit/security-header middleware。"""
+class HttpSecurityMiddleware:
+    """集中處理本機 Web UI 的 CSRF、body limit 與安全 response headers。"""
 
-    @app.middleware("http")
-    async def csrf_middleware(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """保護本機管理 UI 的 mutating routes，避免跨站表單直接操作 localhost。"""
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """套用 pure ASGI middleware，避免長 SSE 被 BaseHTTPMiddleware 包住。"""
+
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
         try:
             request_body = await _read_request_body_with_limit(
                 request,
@@ -65,16 +73,32 @@ def register_http_security_middleware(app: FastAPI) -> None:
                         request_body or b"",
                     )
                 expected_token = str(getattr(request.app.state, "csrf_token", ""))
-                if not submitted_token or not compare_digest(submitted_token, expected_token):
-                    return _with_security_headers(
+                if not submitted_token or not compare_digest(
+                    submitted_token,
+                    expected_token,
+                ):
+                    await _with_security_headers(
                         Response("CSRF validation failed", status_code=403)
-                    )
-            response = await call_next(request)
+                    )(scope, receive, send)
+                    return
         except RequestBodyTooLarge:
-            return _with_security_headers(
+            await _with_security_headers(
                 Response("Request body too large", status_code=413)
-            )
-        return _with_security_headers(response)
+            )(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                _apply_security_headers(MutableHeaders(scope=message))
+            await send(message)
+
+        await self.app(request.scope, request.receive, send_with_security_headers)
+
+
+def register_http_security_middleware(app: FastAPI) -> None:
+    """註冊 CSRF/body-limit/security-header middleware。"""
+
+    app.add_middleware(HttpSecurityMiddleware)
 
 
 def _should_validate_csrf(request: Request) -> bool:
@@ -90,14 +114,28 @@ def _should_validate_csrf(request: Request) -> bool:
 def _with_security_headers(response: Response) -> Response:
     """加上本機 Web UI 的基本安全 header。"""
 
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault(
+    _apply_security_headers(response.headers)
+    return response
+
+
+def _apply_security_headers(headers: MutableHeaders) -> None:
+    """將基本安全 header 寫入 response start message 或 Response 物件。"""
+
+    _set_header_if_absent(headers, "X-Content-Type-Options", "nosniff")
+    _set_header_if_absent(headers, "Referrer-Policy", "no-referrer")
+    _set_header_if_absent(headers, "X-Frame-Options", "DENY")
+    _set_header_if_absent(
+        headers,
         "Content-Security-Policy",
         LOCAL_UI_CONTENT_SECURITY_POLICY,
     )
-    return response
+
+
+def _set_header_if_absent(headers: MutableHeaders, key: str, value: str) -> None:
+    """只在下游未明確設定時補上 header。"""
+
+    if key not in headers:
+        headers[key] = value
 
 
 def _submitted_csrf_token_from_body(request: Request, body: bytes) -> str:
@@ -168,6 +206,7 @@ def _replay_request_body(request: Request, body: bytes) -> Request:
 
 __all__ = [
     "CSRF_FORM_FIELD",
+    "HttpSecurityMiddleware",
     "CSRF_HEADER",
     "LOCAL_UI_CONTENT_SECURITY_POLICY",
     "RequestBodyTooLarge",

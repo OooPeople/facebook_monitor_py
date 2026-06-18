@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
+import httpx
 from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
+import uvicorn
 
 from facebook_monitor.application import context as application_context
 from facebook_monitor.application.context import SqliteApplicationContext
@@ -37,6 +40,20 @@ class FakeSseRequest:
         """測試期間保持連線。"""
 
         return False
+
+
+class DisconnectAfterChecksRequest:
+    """測試用 request，在指定 probe 次數後回報 client 已斷線。"""
+
+    def __init__(self, *, connected_checks: int) -> None:
+        self.connected_checks = connected_checks
+        self.check_count = 0
+
+    async def is_disconnected(self) -> bool:
+        """前幾次維持連線，之後模擬 uvicorn shutdown/client disconnect。"""
+
+        self.check_count += 1
+        return self.check_count > self.connected_checks
 
 
 class FiniteDashboardRevisionNotifier:
@@ -322,6 +339,94 @@ def test_dashboard_events_stream_initial_failure_sends_keepalive_not_fake_revisi
         assert keepalive == ": keepalive\n\n"
         assert "dashboard_revision" not in keepalive
         assert "revision" not in keepalive
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_stream_disconnect_does_not_wait_for_keepalive(
+    tmp_path: Path,
+) -> None:
+    """client/shutdown disconnect 應短時間結束，不等待長 keepalive interval。"""
+
+    def raise_locked(_path: Path) -> DashboardRevision:
+        raise DashboardRevisionUnavailable("database is locked")
+
+    async def run_test() -> None:
+        request = DisconnectAfterChecksRequest(connected_checks=1)
+        notifier = DashboardRevisionNotifier(
+            db_path=tmp_path / "app.db",
+            get_dashboard_revision=raise_locked,
+            poll_interval_seconds=60.0,
+        )
+        stream = dashboard_revision_event_stream(
+            request,
+            notifier=notifier,
+            format_revision_event=_format_dashboard_revision_event,
+            keepalive_seconds=60.0,
+            retry_milliseconds=2500,
+            disconnect_poll_seconds=0.01,
+        )
+        try:
+            assert await asyncio.wait_for(anext(stream), timeout=0.5) == "retry: 2500\n\n"
+            try:
+                await asyncio.wait_for(anext(stream), timeout=0.2)
+            except StopAsyncIteration:
+                pass
+            else:
+                raise AssertionError("stream should finish after disconnect")
+        finally:
+            await stream.aclose()
+            await notifier.stop()
+
+        assert request.check_count >= 2
+
+    asyncio.run(run_test())
+
+
+def test_dashboard_events_active_stream_shutdown_signal_finishes_before_uvicorn_timeout(
+    tmp_path: Path,
+) -> None:
+    """pre-shutdown signal 會讓 active SSE 在 uvicorn graceful timeout 前結束。"""
+
+    async def run_test() -> None:
+        app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+        config = uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=0,
+            log_level="error",
+            timeout_graceful_shutdown=1,
+            lifespan="on",
+        )
+        server = uvicorn.Server(config)
+        server_task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:
+                await asyncio.sleep(0.01)
+            if not server.servers:
+                raise AssertionError("uvicorn server did not expose sockets")
+            port = int(server.servers[0].sockets[0].getsockname()[1])
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "GET",
+                    f"http://127.0.0.1:{port}/api/dashboard-events",
+                ) as response:
+                    assert response.status_code == 200
+                    lines = response.aiter_lines()
+                    assert await asyncio.wait_for(anext(lines), timeout=2.0) == (
+                        "retry: 2500"
+                    )
+                    started = time.perf_counter()
+                    app.state.dashboard_revision_notifier.request_stop()
+                    server.should_exit = True
+                    await asyncio.wait_for(server_task, timeout=2.0)
+                    elapsed = time.perf_counter() - started
+        finally:
+            server.should_exit = True
+            if not server_task.done():
+                await server_task
+
+        assert elapsed < 1.0
 
     asyncio.run(run_test())
 

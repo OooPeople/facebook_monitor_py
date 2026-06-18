@@ -59,6 +59,7 @@ class DashboardRevisionNotifier:
         self._subscribers: set[_DashboardRevisionSubscriber] = set()
         self._latest_revision: DashboardRevision | None = None
         self._watcher_task: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
 
     @property
@@ -78,19 +79,33 @@ class DashboardRevisionNotifier:
 
         if self._closed or self.running:
             return
+        self._loop = asyncio.get_running_loop()
         self._watcher_task = asyncio.create_task(
             self._watch_revisions(),
             name="dashboard-revision-notifier",
         )
 
+    def request_stop(self) -> None:
+        """同步要求 SSE subscribers 結束，供 uvicorn graceful shutdown 前呼叫。"""
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if running_loop is loop:
+                self._request_stop_now()
+            else:
+                loop.call_soon_threadsafe(self._request_stop_now)
+            return
+        self._request_stop_now()
+
     async def stop(self) -> None:
         """停止 watcher 並喚醒所有 subscribers；可重入且有 bounded timeout。"""
 
         async with self._stop_lock:
-            self._closed = True
-            self._stop_event.set()
-            self._wake_event.set()
-            self._close_subscribers()
+            self._request_stop_now()
             task = self._watcher_task
             try:
                 if task is not None and not task.done():
@@ -219,6 +234,14 @@ class DashboardRevisionNotifier:
                 continue
             subscriber.latest = revision
             subscriber.changed.set()
+
+    def _request_stop_now(self) -> None:
+        """在 notifier 所屬 event loop 內標記停止並喚醒等待中的 subscriber。"""
+
+        self._closed = True
+        self._stop_event.set()
+        self._wake_event.set()
+        self._close_subscribers()
 
     def _close_subscribers(self) -> None:
         """喚醒並標記所有 subscribers 結束。"""

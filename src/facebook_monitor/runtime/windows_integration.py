@@ -126,10 +126,19 @@ def run_uvicorn_with_windows_tray(
     server = uvicorn.Server(config)
     if configure_server is not None:
         configure_server(server)
+
+    def request_shutdown() -> None:
+        state = getattr(app, "state", None)
+        shutdown = getattr(state, "request_shutdown", None)
+        if callable(shutdown):
+            shutdown()
+            return
+        server.should_exit = True
+
     tray_icon = start_windows_tray_icon(
         url=url,
         icon_path=icon_path,
-        on_exit=lambda: setattr(server, "should_exit", True),
+        on_exit=request_shutdown,
     )
     try:
         try:

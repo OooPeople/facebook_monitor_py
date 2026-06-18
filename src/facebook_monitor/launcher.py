@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+from collections.abc import Callable
 from collections.abc import Sequence
 import ipaddress
 import logging
@@ -269,7 +270,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         app.state.runtime_paths = paths
                         if open_browser_on_start:
                             _open_browser(url)
-                        with _print_shutdown_feedback_on_signal():
+                        with _print_shutdown_feedback_on_signal(
+                            on_shutdown_requested=lambda: (
+                                _request_dashboard_revision_stream_shutdown(app)
+                            ),
+                        ):
                             uvicorn_kwargs: dict[str, Any] = {
                                 "host": args.host,
                                 "port": port,
@@ -293,7 +298,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     configure_server=lambda server: setattr(
                                         app.state,
                                         "request_shutdown",
-                                        lambda: setattr(server, "should_exit", True),
+                                        lambda: _request_webui_server_shutdown(
+                                            app,
+                                            server,
+                                        ),
                                     ),
                                 )
                             else:
@@ -399,11 +407,28 @@ def _run_uvicorn_with_shutdown_hook(app: Any, **uvicorn_kwargs: Any) -> None:
 
     config = uvicorn.Config(app, **uvicorn_kwargs)
     server = uvicorn.Server(config)
-    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
+    app.state.request_shutdown = lambda: _request_webui_server_shutdown(app, server)
     try:
         server.run()
     except KeyboardInterrupt:
         return
+
+
+def _request_webui_server_shutdown(app: Any, server: uvicorn.Server) -> None:
+    """要求 uvicorn 結束前先通知 dashboard SSE subscribers 收尾。"""
+
+    _request_dashboard_revision_stream_shutdown(app)
+    server.should_exit = True
+
+
+def _request_dashboard_revision_stream_shutdown(app: Any) -> None:
+    """同步通知 dashboard revision notifier，讓長 SSE 在 graceful wait 前結束。"""
+
+    state = getattr(app, "state", None)
+    notifier = getattr(state, "dashboard_revision_notifier", None)
+    request_stop = getattr(notifier, "request_stop", None)
+    if callable(request_stop):
+        request_stop()
 
 
 def _server_is_healthy(url: str) -> bool:
@@ -461,7 +486,9 @@ def _print_startup_summary(
 
 
 @contextlib.contextmanager
-def _print_shutdown_feedback_on_signal():
+def _print_shutdown_feedback_on_signal(
+    on_shutdown_requested: Callable[[], None] | None = None,
+):
     """在 uvicorn 收到中斷訊號時先輸出使用者可見的關閉提示。"""
 
     original_handle_exit = uvicorn.server.Server.handle_exit
@@ -476,13 +503,15 @@ def _print_shutdown_feedback_on_signal():
         if not feedback_printed:
             feedback_printed = True
             print("已收到停止指令，正在結束 Web UI...", flush=True)
+            if on_shutdown_requested is not None:
+                on_shutdown_requested()
         original_handle_exit(server, sig, frame)
 
-    uvicorn.server.Server.handle_exit = handle_exit_with_feedback
+    setattr(uvicorn.server.Server, "handle_exit", handle_exit_with_feedback)
     try:
         yield
     finally:
-        uvicorn.server.Server.handle_exit = original_handle_exit
+        setattr(uvicorn.server.Server, "handle_exit", original_handle_exit)
 
 
 def _resolve_server_port(

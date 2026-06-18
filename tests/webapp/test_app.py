@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response as HttpResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -110,6 +111,17 @@ def assert_basic_security_headers(response: HttpResponse) -> None:
     assert "base-uri 'none'" in csp
     assert "object-src 'none'" in csp
     assert "unsafe-eval" not in csp
+
+
+def test_web_ui_does_not_register_base_http_middleware(tmp_path: Path) -> None:
+    """長 SSE 不可被 Starlette BaseHTTPMiddleware 包住，避免 shutdown 卡 stream。"""
+
+    app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+
+    assert not any(
+        issubclass(middleware.cls, BaseHTTPMiddleware)
+        for middleware in app.user_middleware
+    )
 
 
 def test_parse_keywords_text_dedupes_and_trims() -> None:

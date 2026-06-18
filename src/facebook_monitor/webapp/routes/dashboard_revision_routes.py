@@ -26,6 +26,7 @@ from facebook_monitor.webapp.dashboard_read_models import DashboardRevisionUnava
 
 DashboardRevisionLoader = Callable[[Path], DashboardRevision]
 DashboardRevisionFormatter = Callable[[dict[str, str]], str]
+DASHBOARD_SSE_DISCONNECT_POLL_SECONDS = 0.25
 
 
 class DashboardSseRequest(Protocol):
@@ -116,10 +117,18 @@ async def dashboard_revision_event_stream(
     format_revision_event: DashboardRevisionFormatter,
     keepalive_seconds: float = PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_keepalive_seconds,
     retry_milliseconds: int = PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_retry_milliseconds,
+    disconnect_poll_seconds: float = DASHBOARD_SSE_DISCONNECT_POLL_SECONDS,
 ) -> AsyncGenerator[str, None]:
     """輸出 dashboard 長 SSE stream，revision 由 process-local notifier 提供。"""
 
     yield f"retry: {int(retry_milliseconds)}\n\n"
+    keepalive_interval = max(0.05, float(keepalive_seconds))
+    disconnect_poll_interval = min(
+        keepalive_interval,
+        max(0.05, float(disconnect_poll_seconds)),
+    )
+    loop = asyncio.get_running_loop()
+    next_keepalive_at = loop.time() + keepalive_interval
     revision_stream = notifier.subscribe()
     next_revision = asyncio.create_task(anext(revision_stream))
     try:
@@ -128,10 +137,13 @@ async def dashboard_revision_event_stream(
                 break
             done, _pending = await asyncio.wait(
                 {next_revision},
-                timeout=max(0.05, float(keepalive_seconds)),
+                timeout=disconnect_poll_interval,
             )
             if not done:
-                yield ": keepalive\n\n"
+                now = loop.time()
+                if now >= next_keepalive_at:
+                    next_keepalive_at = now + keepalive_interval
+                    yield ": keepalive\n\n"
                 continue
             try:
                 revision = next_revision.result()
@@ -143,6 +155,7 @@ async def dashboard_revision_event_stream(
                     "last_changed_at": revision.last_changed_at,
                 }
             )
+            next_keepalive_at = loop.time() + keepalive_interval
             next_revision = asyncio.create_task(anext(revision_stream))
     finally:
         next_revision.cancel()
@@ -152,6 +165,7 @@ async def dashboard_revision_event_stream(
 
 
 __all__ = [
+    "DASHBOARD_SSE_DISCONNECT_POLL_SECONDS",
     "build_dashboard_revision_sse_response",
     "dashboard_revision_event_stream",
     "format_dashboard_revision_event",

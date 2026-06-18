@@ -57,7 +57,7 @@
 - 不得為 speculative 功能提前建立正式 DB / repository / UI 架構；若需求已確認且需要持久狀態，必須走完整 schema / migration / repository / service / test 鏈。
 - 新增或修改模組、類別、函式時，補繁體中文 docstring 或必要註解，說明職責即可，避免逐行解說。
 - 測試 macOS / POSIX executable bit 時，不得在 Windows 上無條件 assert `Path.stat().st_mode & 0o111`；單元測試需使用平台 guard / helper，只在支援 POSIX mode 的平台檢查 executable bit。若要在 Windows 驗證 macOS release zip 權限，應檢查 zip metadata 或交由 artifact validation。
-- 使用者要求 commit message 時，先遵守 `GIT_COMMIT_RULES.md`。
+- 使用者要求 commit message 時，先查看目前變動區內容（至少 `git status --short`、`git diff --stat`，必要時 `git diff --name-only` 或實際 diff），確認只描述目前 staged/unstaged 變更；不得只靠對話印象或前一輪工作摘要。再遵守 `GIT_COMMIT_RULES.md` 產生訊息。
 - 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
 
 ### 讀取正式 SQLite DB

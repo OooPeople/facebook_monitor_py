@@ -13,11 +13,20 @@ import facebook_monitor.runtime.windows_integration as windows_integration
 def test_plain_uvicorn_runner_exposes_shutdown_hook(monkeypatch) -> None:
     """非 Windows tray 路徑也要讓 Web UI 可要求 uvicorn 關閉。"""
 
+    class FakeNotifier:
+        def __init__(self) -> None:
+            self.requested_count = 0
+
+        def request_stop(self) -> None:
+            self.requested_count += 1
+
     class FakeState:
-        pass
+        def __init__(self) -> None:
+            self.dashboard_revision_notifier = FakeNotifier()
 
     class FakeApp:
-        state = FakeState()
+        def __init__(self) -> None:
+            self.state = FakeState()
 
     class FakeConfig:
         def __init__(self, app: object, **kwargs: object) -> None:
@@ -48,6 +57,7 @@ def test_plain_uvicorn_runner_exposes_shutdown_hook(monkeypatch) -> None:
 
     assert created_servers[0].config.kwargs == {"host": "127.0.0.1", "port": 8765}
     assert created_servers[0].should_exit is True
+    assert app.state.dashboard_revision_notifier.requested_count == 1
 
 
 def test_plain_uvicorn_runner_suppresses_shutdown_keyboard_interrupt(
@@ -127,6 +137,61 @@ def test_windows_tray_uvicorn_runner_suppresses_shutdown_keyboard_interrupt(
     assert tray.stop_count == 1
 
 
+def test_windows_tray_exit_uses_app_shutdown_hook(monkeypatch) -> None:
+    """tray Exit 應走 app shutdown hook，讓 Web UI 可先關閉長 SSE。"""
+
+    class FakeState:
+        def __init__(self) -> None:
+            self.shutdown_count = 0
+
+        def request_shutdown(self) -> None:
+            self.shutdown_count += 1
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.state = FakeState()
+
+    class FakeConfig:
+        def __init__(self, app: object, **kwargs: object) -> None:
+            self.app = app
+            self.kwargs = kwargs
+
+    captured_exit_callbacks: list[Callable[[], None]] = []
+
+    class FakeServer:
+        def __init__(self, config: FakeConfig) -> None:
+            self.config = config
+            self.should_exit = False
+
+        def run(self) -> None:
+            captured_exit_callbacks[0]()
+
+    class FakeTray:
+        def stop(self) -> None:
+            pass
+
+    def fake_start_windows_tray_icon(**kwargs: object) -> FakeTray:
+        captured_exit_callbacks.append(cast(Callable[[], None], kwargs["on_exit"]))
+        return FakeTray()
+
+    monkeypatch.setattr(windows_integration.uvicorn, "Config", FakeConfig)
+    monkeypatch.setattr(windows_integration.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(
+        "facebook_monitor.runtime.windows_tray.start_windows_tray_icon",
+        fake_start_windows_tray_icon,
+    )
+
+    app = FakeApp()
+    windows_integration.run_uvicorn_with_windows_tray(
+        app,
+        url="http://127.0.0.1:8765",
+        icon_path=None,
+        uvicorn_kwargs={"host": "127.0.0.1", "port": 8765},
+    )
+
+    assert app.state.shutdown_count == 1
+
+
 def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
     monkeypatch,
     capsys,
@@ -141,7 +206,15 @@ def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
     monkeypatch.setattr(launcher.uvicorn.server.Server, "handle_exit", fake_handle_exit)
     original_handle_exit = launcher.uvicorn.server.Server.handle_exit
 
-    with launcher._print_shutdown_feedback_on_signal():
+    shutdown_callback_count = 0
+
+    def on_shutdown_requested() -> None:
+        nonlocal shutdown_callback_count
+        shutdown_callback_count += 1
+
+    with launcher._print_shutdown_feedback_on_signal(
+        on_shutdown_requested=on_shutdown_requested,
+    ):
         wrapped_handle_exit = cast(
             Callable[[object, int, object | None], None],
             launcher.uvicorn.server.Server.handle_exit,
@@ -152,6 +225,7 @@ def test_launcher_shutdown_feedback_wraps_uvicorn_signal_handler(
 
     assert launcher.uvicorn.server.Server.handle_exit is original_handle_exit
     assert handled_signals == [2, 2]
+    assert shutdown_callback_count == 1
     output = capsys.readouterr().out
     assert output.count("已收到停止指令，正在結束 Web UI...") == 1
 

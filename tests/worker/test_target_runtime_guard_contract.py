@@ -20,11 +20,16 @@ PACKAGE_SOURCE_FILES = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/scheduler/runtime_recovery.py",
     ROOT / "src/facebook_monitor/scheduler/one_shot_loop.py",
+    ROOT / "src/facebook_monitor/worker/attempt_cleanup.py",
+    ROOT / "src/facebook_monitor/worker/attempt_outcomes.py",
+    ROOT / "src/facebook_monitor/worker/attempt_transitions.py",
     ROOT / "src/facebook_monitor/worker/resident_main.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor_attempt.py",
     ROOT / "src/facebook_monitor/worker/resident_maintenance.py",
     ROOT / "src/facebook_monitor/worker/resident_shared.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_coordinator.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_outcomes.py",
     ROOT / "src/facebook_monitor/worker/scan_finalize.py",
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",
     ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
@@ -117,6 +122,9 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
 }
 SCAN_COMMIT_HELPERS = {
+    "commit_failure_for_db_async",
+    "commit_idle_after_existing_success_finalize",
+    "commit_skipped_existing_finalize",
     "record_guarded_scan_failure_for_db",
     "record_guarded_scan_failure_for_db_async",
     "record_skipped_scan",

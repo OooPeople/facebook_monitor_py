@@ -211,6 +211,8 @@ def test_resident_main_page_load_timeout_retries_until_third_failure(
                 cycle_index=attempt,
             )
             assert summary.failure_count == 1
+            assert summary.opened_page_count == 0
+            assert summary.reused_page_count == 0
             assert await page_pool.size() == 0
             assert context.pages[-1].closed is True
 

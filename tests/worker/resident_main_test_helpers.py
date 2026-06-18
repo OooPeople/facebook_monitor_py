@@ -277,10 +277,15 @@ class RecordingSchedulePlanner(TargetSchedulePlanner):
     def __init__(self) -> None:
         super().__init__()
         self.dispatched_target_ids: list[str] = []
+        self.finished_target_ids: list[str] = []
 
     def mark_dispatched(self, due_target: DueTarget, *, now: Any = None) -> None:
         self.dispatched_target_ids.append(due_target.target_id)
         super().mark_dispatched(due_target, now=now)
+
+    def mark_finished(self, target_id: str, *, now: Any = None) -> None:
+        self.finished_target_ids.append(target_id)
+        super().mark_finished(target_id, now=now)
 
 
 def _stub_runtime_outbox_dispatch(monkeypatch: MonkeyPatch) -> list[Path]:

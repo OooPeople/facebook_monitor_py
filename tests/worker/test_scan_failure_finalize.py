@@ -40,6 +40,46 @@ from tests.worker.scan_finalize_test_helpers import _stub_outbox_dispatch
 from tests.worker.scan_finalize_test_helpers import _create_running_target_with_guard
 
 
+def test_record_guarded_scan_failure_ignores_stale_running_owner(
+    tmp_path: Path,
+) -> None:
+    """failure finalize 遇到舊 owner guard 時不得寫 failure scan 或 runtime outbox。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        app.services.targets.restart_target_monitoring(fixture.target.id)
+        refreshed_running = app.services.targets.mark_target_running(
+            fixture.target.id,
+            "worker-b",
+            page_id="page-b",
+        )
+
+        decision = record_guarded_scan_failure(
+            app=app,
+            target_id=fixture.target.id,
+            reason=UNKNOWN_REASON,
+            message="stale failure should not commit",
+            source="unknown_exception",
+            worker_path="resident_main",
+            commit_guard=fixture.commit_guard,
+            exception_class="RuntimeError",
+        )
+
+        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert decision is None
+    assert latest_scan is None
+    assert pending_outbox == []
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == "worker-b"
+    assert state.active_page_id == "page-b"
+    assert state.last_started_at == refreshed_running.last_started_at
+
+
 def test_active_targets_runtime_failure_notifies_after_retry_limit(
     tmp_path: Path,
     monkeypatch: Any,

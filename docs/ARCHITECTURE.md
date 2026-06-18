@@ -58,6 +58,7 @@
 - Web UI `scan-once` 只排入 resident scheduler request，不直接啟動 browser scan。
 - `worker.resident_main` 是正式 queue-based resident 主路徑。
 - resident 啟動前會回收 stale runtime state，避免重啟後 target 永遠卡在 queued/running；inactive target 的 stale running corrupt row 只清 runtime owner，不記成 scan failure 或 runtime failure notification。
+- resident executor 的 attempt state machine 分成 DB truth state、in-memory attempt context、scan commit outcome 與 cleanup plan；`ScanCommitGuard` 仍是正式 resident scan commit guard。typed outcome / coordinator 只包現有 guarded finalize/failure/idle helper 與 process-local cleanup，不擁有 scanner、Playwright page、scheduler policy、notification sender 或 dashboard transport。
 - scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；若同步 metadata resolver 被跳過或失敗，先建立 target 並標記 metadata pending，再由 resident metadata refresh 補齊名稱。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、keyword classification、match history、notification dedupe/outbox、latest scan snapshot 與 scan run commit。

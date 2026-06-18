@@ -32,6 +32,13 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.attempt_cleanup import ResidentAttemptCleanupPlan
+from facebook_monitor.worker.attempt_cleanup import run_resident_attempt_cleanup
+from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcome
+from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
+from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalTransition
+from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
+from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
@@ -45,8 +52,12 @@ from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle_if_not_running
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db_async
-from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
+from facebook_monitor.worker.scan_commit_coordinator import commit_failure_for_db_async
+from facebook_monitor.worker.scan_commit_coordinator import (
+    commit_idle_after_existing_success_finalize,
+)
+from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
+from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 
@@ -263,7 +274,7 @@ async def _run_guarded_scan_and_commit_idle(
     resident_target: ResidentTarget,
     page: AsyncReusablePageLike,
     state: ResidentQueueAttemptState,
-) -> bool:
+) -> ScanCommitOutcome:
     """執行 target scan，並在同一 DB context 內做 guarded idle commit。"""
 
     commit_guard = _require_commit_guard(state)
@@ -282,7 +293,7 @@ async def _run_guarded_scan_and_commit_idle(
             page_id=state.page_id,
             commit_guard=commit_guard,
         )
-        return mark_target_idle_for_scan_commit(
+        return commit_idle_after_existing_success_finalize(
             app=app,
             target_id=state.target_id,
             commit_guard=commit_guard,
@@ -306,6 +317,7 @@ async def run_queue_item(
 
     target_id = item.due_target.target_id
     state = ResidentQueueAttemptState(target_id=target_id)
+    cleanup_plan: ResidentAttemptCleanupPlan | None = None
     try:
         resident_target = await _load_and_admit_target_attempt(
             pool,
@@ -319,25 +331,21 @@ async def run_queue_item(
         page = await _prepare_attempt_page(pool, worker_id, resident_target, state)
         if page is None:
             return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        committed_current_attempt = await _run_guarded_scan_and_commit_idle(
+        commit_outcome = await _run_guarded_scan_and_commit_idle(
             pool,
             worker_id,
             resident_target,
             page,
             state,
         )
-        if not committed_current_attempt:
-            logger.info(
-                "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
-                target_id,
-                worker_id,
-                state.page_id,
-                "scan_commit_guard_mismatch",
-            )
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        return _successful_attempt_result(worker_id=worker_id, state=state)
+        scan_result, cleanup_plan = _finish_scan_commit_outcome(
+            worker_id=worker_id,
+            state=state,
+            commit_outcome=commit_outcome,
+        )
+        return scan_result
     except WorkerFailure as exc:
-        return await _record_failure_and_finish(
+        transition = await _record_failure_and_finish(
             pool=pool,
             worker_id=worker_id,
             state=state,
@@ -348,9 +356,11 @@ async def run_queue_item(
             owner_changed_reason="worker_failure_owner_changed",
             include_page_counts_in_result=True,
         )
+        cleanup_plan = transition.cleanup_plan
+        return transition.outcome.to_scan_result()
     except asyncio.CancelledError:
         if pool.runtime_restart_requested():
-            return await _record_failure_and_finish(
+            transition = await _record_failure_and_finish(
                 pool=pool,
                 worker_id=worker_id,
                 state=state,
@@ -362,39 +372,39 @@ async def run_queue_item(
                 request_runtime_restart=False,
                 include_page_counts_in_log=False,
             )
+            cleanup_plan = transition.cleanup_plan
+            return transition.outcome.to_scan_result()
         if state.commit_guard is None:
-            _finish_pre_admission_failure(
+            transition = _finish_pre_admission_failure(
                 pool=pool,
                 worker_id=worker_id,
                 state=state,
                 reason="scheduler_cancel_before_running",
                 exception_class="CancelledError",
+                kind=ResidentAttemptOutcomeKind.CANCELLED,
             )
+            cleanup_plan = transition.cleanup_plan
             raise
-        await record_guarded_scan_failure_for_db_async(
-            db_path=pool.options.db_path,
-            target_id=target_id,
-            reason=SCHEDULER_STOPPING_REASON,
-            message="resident scheduler is stopping",
-            source="scheduler_cancel",
-            worker_path="resident_main",
-            commit_guard=_require_commit_guard(state),
-            exception_class="CancelledError",
-            page_reused=state.acquired_page and not state.opened,
+        transition = await _record_scheduler_stopping_cancellation(
+            pool=pool,
+            state=state,
         )
+        cleanup_plan = transition.cleanup_plan
         raise
     except sqlite3.OperationalError as exc:
         if not is_sqlite_lock_error(exc):
             raise
-        return await _retry_after_sqlite_lock_and_skip(
+        transition = await _retry_after_sqlite_lock_and_skip(
             pool=pool,
             worker_id=worker_id,
             state=state,
             exception_class=exc.__class__.__name__,
         )
+        cleanup_plan = transition.cleanup_plan
+        return transition.outcome.to_scan_result()
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
         reason = classify_playwright_exception(exc)
-        return await _record_failure_and_finish(
+        transition = await _record_failure_and_finish(
             pool=pool,
             worker_id=worker_id,
             state=state,
@@ -404,12 +414,14 @@ async def run_queue_item(
             exception_class=exc.__class__.__name__,
             owner_changed_reason="playwright_failure_owner_changed",
         )
+        cleanup_plan = transition.cleanup_plan
+        return transition.outcome.to_scan_result()
     except Exception as exc:
         reason = classify_wrapped_playwright_exception(exc)
         source: ScanFailureSource = (
             "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
         )
-        return await _record_failure_and_finish(
+        transition = await _record_failure_and_finish(
             pool=pool,
             worker_id=worker_id,
             state=state,
@@ -419,14 +431,49 @@ async def run_queue_item(
             exception_class=exc.__class__.__name__,
             owner_changed_reason="unknown_failure_owner_changed",
         )
+        cleanup_plan = transition.cleanup_plan
+        return transition.outcome.to_scan_result()
     finally:
-        await pool._unregister_active_attempt(target_id, state.owner_key)
-        if state.page_id:
-            await pool.page_pool.release_if_page_id(target_id, state.page_id)
-        else:
-            await pool.page_pool.release(target_id)
-        await pool.target_queue.complete(target_id, owner_key=state.owner_key)
-        pool.schedule_planner.mark_finished(target_id)
+        await run_resident_attempt_cleanup(
+            pool,
+            cleanup_plan
+            or ResidentAttemptCleanupPlan.for_attempt(
+                target_id=target_id,
+                owner_key=state.owner_key,
+                page_id=state.page_id,
+            ),
+        )
+
+
+def _finish_scan_commit_outcome(
+    *,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    commit_outcome: ScanCommitOutcome,
+) -> tuple[AsyncTargetScanResult, ResidentAttemptCleanupPlan]:
+    """將 scan commit outcome 映射成既有 executor result。"""
+
+    transition = transition_from_scan_commit_outcome(
+        target_id=state.target_id,
+        owner_key=state.owner_key,
+        page_id=state.page_id,
+        commit_outcome=commit_outcome,
+        opened_page=state.opened,
+        reused_page=not state.opened,
+    )
+    if transition.outcome.kind != ResidentAttemptOutcomeKind.SUCCEEDED:
+        logger.info(
+            "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
+            state.target_id,
+            worker_id,
+            state.page_id,
+            transition.outcome.reason or "scan_commit_guard_mismatch",
+        )
+        return transition.outcome.to_scan_result(), transition.cleanup_plan
+    return (
+        _successful_attempt_result(worker_id=worker_id, state=state),
+        transition.cleanup_plan,
+    )
 
 
 def _successful_attempt_result(
@@ -446,12 +493,11 @@ def _successful_attempt_result(
         state.opened,
         not state.opened,
     )
-    return AsyncTargetScanResult(
+    return ResidentAttemptOutcome.succeeded(
         target_id=state.target_id,
-        success=True,
         opened_page=state.opened,
         reused_page=not state.opened,
-    )
+    ).to_scan_result()
 
 
 async def _record_failure_and_finish(
@@ -467,7 +513,7 @@ async def _record_failure_and_finish(
     request_runtime_restart: bool = True,
     include_page_counts_in_log: bool = True,
     include_page_counts_in_result: bool = False,
-) -> AsyncTargetScanResult:
+) -> ResidentAttemptTerminalTransition:
     """記錄 guarded scan failure，並依 recovery decision 完成本輪結果。"""
 
     if state.commit_guard is None:
@@ -479,7 +525,7 @@ async def _record_failure_and_finish(
             exception_class=exception_class,
         )
     commit_guard = _require_commit_guard(state)
-    decision = await record_guarded_scan_failure_for_db_async(
+    commit_outcome = await commit_failure_for_db_async(
         db_path=pool.options.db_path,
         target_id=state.target_id,
         reason=reason,
@@ -490,6 +536,7 @@ async def _record_failure_and_finish(
         exception_class=exception_class,
         page_reused=_attempt_reused_page(state),
     )
+    decision = commit_outcome.failure_decision
     if decision is None:
         logger.info(
             "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
@@ -498,9 +545,18 @@ async def _record_failure_and_finish(
             state.page_id,
             owner_changed_reason,
         )
-        return AsyncTargetScanResult(target_id=state.target_id, skipped=True)
+        return transition_from_attempt_outcome(
+            target_id=state.target_id,
+            owner_key=state.owner_key,
+            page_id=state.page_id,
+            outcome=ResidentAttemptOutcome.skipped(
+                target_id=state.target_id,
+                kind=ResidentAttemptOutcomeKind.OWNER_CHANGED,
+                reason=owner_changed_reason,
+            ),
+        )
     if decision.discard_page:
-        await pool.page_pool.discard(state.target_id)
+        await _discard_failed_attempt_page(pool, state)
     if (
         request_runtime_restart
         and decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
@@ -513,14 +569,75 @@ async def _record_failure_and_finish(
         exception_class=exception_class,
         include_page_counts=include_page_counts_in_log,
     )
+    outcome_factory = (
+        ResidentAttemptOutcome.runtime_restart_requested
+        if decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
+        else ResidentAttemptOutcome.failed
+    )
     if include_page_counts_in_result:
-        return AsyncTargetScanResult(
+        outcome = outcome_factory(
             target_id=state.target_id,
-            failure=True,
+            reason=decision.reason,
+            source=source,
+            exception_class=exception_class,
+            request_runtime_restart=request_runtime_restart,
             opened_page=state.opened,
             reused_page=_attempt_reused_page(state),
         )
-    return AsyncTargetScanResult(target_id=state.target_id, failure=True)
+    else:
+        outcome = outcome_factory(
+            target_id=state.target_id,
+            reason=decision.reason,
+            source=source,
+            exception_class=exception_class,
+            request_runtime_restart=request_runtime_restart,
+        )
+    return transition_from_attempt_outcome(
+        target_id=state.target_id,
+        owner_key=state.owner_key,
+        page_id=state.page_id,
+        outcome=outcome,
+    )
+
+
+async def _record_scheduler_stopping_cancellation(
+    *,
+    pool: ResidentExecutorAttemptHost,
+    state: ResidentQueueAttemptState,
+) -> ResidentAttemptTerminalTransition:
+    """保留 scheduler stopping guarded failure + re-raise 前的 transition。"""
+
+    commit_outcome = await commit_failure_for_db_async(
+        db_path=pool.options.db_path,
+        target_id=state.target_id,
+        reason=SCHEDULER_STOPPING_REASON,
+        message="resident scheduler is stopping",
+        source="scheduler_cancel",
+        worker_path="resident_main",
+        commit_guard=_require_commit_guard(state),
+        exception_class="CancelledError",
+        page_reused=state.acquired_page and not state.opened,
+    )
+    return transition_from_scan_commit_outcome(
+        target_id=state.target_id,
+        owner_key=state.owner_key,
+        page_id=state.page_id,
+        commit_outcome=commit_outcome,
+        opened_page=False,
+        reused_page=False,
+    )
+
+
+async def _discard_failed_attempt_page(
+    pool: ResidentExecutorAttemptHost,
+    state: ResidentQueueAttemptState,
+) -> None:
+    """依 page id guard 丟棄失敗 page，避免舊 attempt 關掉新 page。"""
+
+    if state.page_id:
+        await pool.page_pool.discard_if_page_id(state.target_id, state.page_id)
+        return
+    await pool.page_pool.discard(state.target_id)
 
 
 def _finish_pre_admission_failure(
@@ -530,7 +647,8 @@ def _finish_pre_admission_failure(
     state: ResidentQueueAttemptState,
     reason: str,
     exception_class: str,
-) -> AsyncTargetScanResult:
+    kind: ResidentAttemptOutcomeKind = ResidentAttemptOutcomeKind.TARGET_INACTIVE,
+) -> ResidentAttemptTerminalTransition:
     """claim running 前失敗時，不走 scan finalize 的 unguarded fallback。"""
 
     mark_resident_target_idle_if_not_running(pool.options.db_path, state.target_id)
@@ -543,7 +661,16 @@ def _finish_pre_admission_failure(
         reason,
         exception_class,
     )
-    return AsyncTargetScanResult(target_id=state.target_id, skipped=True)
+    return transition_from_attempt_outcome(
+        target_id=state.target_id,
+        owner_key=state.owner_key,
+        page_id=state.page_id,
+        outcome=ResidentAttemptOutcome.skipped(
+            target_id=state.target_id,
+            kind=kind,
+            reason=reason,
+        ),
+    )
 
 
 def _log_failure_decision(
@@ -602,7 +729,7 @@ async def _retry_after_sqlite_lock_and_skip(
     worker_id: str,
     state: ResidentQueueAttemptState,
     exception_class: str,
-) -> AsyncTargetScanResult:
+) -> ResidentAttemptTerminalTransition:
     """SQLite lock 時排回 target 並回傳 skipped result。"""
 
     try:
@@ -633,9 +760,15 @@ async def _retry_after_sqlite_lock_and_skip(
         _attempt_reused_page(state),
         exception_class,
     )
-    return AsyncTargetScanResult(
+    return transition_from_scan_commit_outcome(
         target_id=state.target_id,
-        skipped=True,
+        owner_key=state.owner_key,
+        page_id=state.page_id,
+        commit_outcome=ScanCommitOutcome(
+            kind=ScanCommitOutcomeKind.SQLITE_LOCK_RETRY,
+            target_id=state.target_id,
+            reason="database_locked",
+        ),
         opened_page=state.opened,
         reused_page=_attempt_reused_page(state),
     )

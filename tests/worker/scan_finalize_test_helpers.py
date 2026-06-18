@@ -14,7 +14,8 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
 from facebook_monitor.worker.scan_finalize import finalize_scan_items as _finalize_scan_items
-from facebook_monitor.worker.scan_finalize import record_skipped_scan as _record_skipped_scan
+from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
+from facebook_monitor.worker.scan_finalize import record_unguarded_skipped_scan_for_one_shot
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 
 
@@ -25,11 +26,14 @@ def finalize_scan_items(**kwargs: Any) -> Any:
     return _finalize_scan_items(**kwargs)
 
 
-def record_skipped_scan(**kwargs: Any) -> Any:
-    """測試預設走明確 unguarded skip finalize；guard 案例可覆寫 commit_guard。"""
+def record_protective_skip_for_test(**kwargs: Any) -> Any:
+    """測試 helper：依 commit_guard 轉到明確 guarded / unguarded skip API。"""
 
     kwargs.setdefault("commit_guard", UNGUARDED_SCAN_COMMIT)
-    return _record_skipped_scan(**kwargs)
+    commit_guard = kwargs.pop("commit_guard")
+    if commit_guard is None:
+        return record_unguarded_skipped_scan_for_one_shot(**kwargs)
+    return record_guarded_skipped_scan(commit_guard=commit_guard, **kwargs)
 
 
 def _activate_target(

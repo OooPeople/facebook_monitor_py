@@ -34,7 +34,7 @@ from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePoo
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_scan_db import RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from tests.worker.resident_main_cycle_harness import (
@@ -183,7 +183,7 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
         lock_connection.execute("PRAGMA busy_timeout = 100")
         lock_connection.execute("BEGIN IMMEDIATE")
         try:
-            record_skipped_scan(
+            record_protective_skip_for_test(
                 app=kwargs["app"],
                 target=kwargs["target"],
                 metadata={
@@ -195,7 +195,7 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
         finally:
             lock_connection.rollback()
             lock_connection.close()
-        raise AssertionError("record_skipped_scan should fail while writer lock is held")
+        raise AssertionError("record_protective_skip_for_test should fail while writer lock is held")
 
     summary = asyncio.run(
         run_resident_main_cycle(
@@ -793,9 +793,9 @@ def test_resident_main_retries_failure_finalize_sqlite_lock(
         app.services.targets.restart_target_monitoring(target.id)
 
     calls = 0
-    original = scan_failure_finalize_module.record_guarded_scan_failure
+    original = scan_failure_finalize_module.record_guarded_scan_failure_result
 
-    def flaky_record_guarded_scan_failure(**kwargs: Any) -> object:
+    def flaky_record_guarded_scan_failure_result(**kwargs: Any) -> object:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -804,8 +804,8 @@ def test_resident_main_retries_failure_finalize_sqlite_lock(
 
     monkeypatch.setattr(
         scan_failure_finalize_module,
-        "record_guarded_scan_failure",
-        flaky_record_guarded_scan_failure,
+        "record_guarded_scan_failure_result",
+        flaky_record_guarded_scan_failure_result,
     )
 
     async def failing_scan_page(**_kwargs: Any) -> PostsScanSummary:

@@ -10,9 +10,11 @@ from typing import Any
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -20,6 +22,7 @@ from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
@@ -224,6 +227,160 @@ def test_resident_main_cycle_dispatches_comments_target_to_comments_worker(
         state = app.repositories.runtime_states.get(target.id)
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
+
+
+def test_resident_main_cycle_commits_posts_protective_skip_result(
+    tmp_path: Path,
+) -> None:
+    """formal resident posts protective skip result 應寫 skipped scan 並回 skipped。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def fake_scan_page(**kwargs: Any) -> ProtectiveSkipScanResult:
+        """模擬 async scanner 已決定 protective skip，但尚未寫 DB。"""
+
+        return ProtectiveSkipScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            metadata={
+                "worker": "posts_scan",
+                "scan_skipped": True,
+                "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
+            },
+        )
+
+    async def run_test() -> None:
+        summary = await run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            scan_page=fake_scan_page,
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+        assert summary.selected_count == 1
+        assert summary.success_count == 0
+        assert summary.skipped_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.consecutive_scan_skip_count == 1
+    assert state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 0
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
+    assert pending_outbox == []
+
+
+def test_resident_main_cycle_commits_comments_protective_skip_result(
+    tmp_path: Path,
+) -> None:
+    """formal resident comments protective skip result 應走 comments dispatch 後寫 skipped。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="11111111",
+                parent_post_id="99999999",
+                canonical_url="https://www.facebook.com/groups/11111111/posts/99999999",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    post_calls: list[str] = []
+    comment_calls: list[str] = []
+
+    async def fake_post_scan_page(**kwargs: Any) -> PostsScanSummary:
+        """若 comments protective skip 被錯派到 posts worker，測試應失敗。"""
+
+        post_calls.append(kwargs["target"].id)
+        raise AssertionError("comments target should not use posts scan callable")
+
+    async def fake_comment_scan_page(**kwargs: Any) -> ProtectiveSkipScanResult:
+        """模擬 comments scanner protective skip 尚未寫 DB。"""
+
+        comment_calls.append(kwargs["target"].id)
+        return ProtectiveSkipScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            metadata={
+                "worker": "comments_scan",
+                "scan_skipped": True,
+                "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
+            },
+        )
+
+    async def run_test() -> None:
+        summary = await run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            scan_page=fake_post_scan_page,
+            scan_comments_target_page=fake_comment_scan_page,
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+        assert summary.selected_count == 1
+        assert summary.success_count == 0
+        assert summary.skipped_count == 1
+
+    asyncio.run(run_test())
+
+    assert post_calls == []
+    assert comment_calls == [target.id]
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        notifications = app.repositories.notification_events.list_by_target(target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.consecutive_scan_skip_count == 1
+    assert state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
+    assert latest_scan.item_count == 0
+    assert latest_scan.metadata["scan_skipped"] is True
+    assert latest_scan.metadata["skip_reason"] == SORT_ADJUST_UNCONFIRMED_REASON
+    assert latest_items == []
+    assert history == []
+    assert notifications == []
+    assert pending_outbox == []
 
 
 def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(

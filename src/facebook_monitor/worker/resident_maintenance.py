@@ -30,7 +30,9 @@ from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.worker.resident_runtime_errors import _is_playwright_driver_shutdown_exception
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_for_db
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_guarded_scan_failure_decision_for_db,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -77,34 +79,27 @@ async def refresh_requested_target_metadata(
             ):
                 refreshed_count += 1
         except Exception as exc:
-            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
-                logger.info(
-                    "metadata refresh skipped because scheduler is stopping",
-                    extra={"target_id": target_id},
-                )
-                break
-            if _is_scheduler_runtime_refresh_failure(exc):
-                logger.warning(
-                    "metadata refresh requested browser runtime restart",
-                    extra={"target_id": target_id},
-                )
-                recorded_failure = record_refresh_runtime_failure(
-                    options=options,
-                    target_id=target_id,
-                    exc=exc,
-                )
-                if recorded_failure and request_runtime_restart is not None:
-                    request_runtime_restart()
-                break
-            logger.exception(
-                "metadata refresh failed",
-                extra={"target_id": target_id},
+            should_break = _handle_maintenance_refresh_exception(
+                options=options,
+                target_id=target_id,
+                exc=exc,
+                stop_requested=stop_requested,
+                request_runtime_restart=request_runtime_restart,
+                shutdown_log_message=(
+                    "metadata refresh skipped because scheduler is stopping"
+                ),
+                runtime_restart_log_message=(
+                    "metadata refresh requested browser runtime restart"
+                ),
+                failure_log_message="metadata refresh failed",
+                mark_failed=lambda: mark_target_metadata_refresh_failed(
+                    options,
+                    target_id,
+                    "metadata refresh failed",
+                ),
             )
-            mark_target_metadata_refresh_failed(
-                options,
-                target_id,
-                "metadata refresh failed",
-            )
+            if should_break:
+                break
     return refreshed_count
 
 
@@ -280,36 +275,30 @@ async def refresh_pending_target_cover_images(
             ):
                 refreshed_count += 1
         except Exception as exc:
-            if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
-                logger.info(
-                    "cover image refresh skipped because scheduler is stopping",
-                    extra={"target_id": state.target_id},
-                )
-                break
-            if _is_scheduler_runtime_refresh_failure(exc):
-                logger.warning(
-                    "cover image refresh requested browser runtime restart",
-                    extra={"target_id": state.target_id},
-                )
-                recorded_failure = record_refresh_runtime_failure(
-                    options=options,
-                    target_id=state.target_id,
-                    exc=exc,
-                )
-                if recorded_failure and request_runtime_restart is not None:
-                    request_runtime_restart()
-                break
-            logger.exception(
-                "cover image refresh failed",
-                extra={"target_id": state.target_id},
+            failure_message = _format_exception_message(exc)
+            should_break = _handle_maintenance_refresh_exception(
+                options=options,
+                target_id=state.target_id,
+                exc=exc,
+                stop_requested=stop_requested,
+                request_runtime_restart=request_runtime_restart,
+                shutdown_log_message=(
+                    "cover image refresh skipped because scheduler is stopping"
+                ),
+                runtime_restart_log_message=(
+                    "cover image refresh requested browser runtime restart"
+                ),
+                failure_log_message="cover image refresh failed",
+                mark_failed=lambda: mark_target_cover_image_refresh_failed(
+                    options,
+                    state.target_id,
+                    failure_message,
+                    reported_url=state.last_reported_url,
+                    requested_at=state.requested_at,
+                ),
             )
-            mark_target_cover_image_refresh_failed(
-                options,
-                state.target_id,
-                _format_exception_message(exc),
-                reported_url=state.last_reported_url,
-                requested_at=state.requested_at,
-            )
+            if should_break:
+                break
     return refreshed_count
 
 
@@ -453,6 +442,47 @@ def _runtime_state_has_pending_failure_retry(state: TargetRuntimeState) -> bool:
     )
 
 
+def _handle_maintenance_refresh_exception(
+    *,
+    options: ResidentRuntimeOptions,
+    target_id: str,
+    exc: Exception,
+    stop_requested: StopCheckCallable,
+    request_runtime_restart: Callable[[], None] | None,
+    shutdown_log_message: str,
+    runtime_restart_log_message: str,
+    failure_log_message: str,
+    mark_failed: Callable[[], None],
+) -> bool:
+    """處理 maintenance refresh 共用例外分支；回傳是否應中止本輪。"""
+
+    if _should_skip_refresh_failure_for_shutdown(exc, stop_requested):
+        logger.info(
+            shutdown_log_message,
+            extra={"target_id": target_id},
+        )
+        return True
+    if _is_scheduler_runtime_refresh_failure(exc):
+        logger.warning(
+            runtime_restart_log_message,
+            extra={"target_id": target_id},
+        )
+        recorded_failure = record_refresh_runtime_failure(
+            options=options,
+            target_id=target_id,
+            exc=exc,
+        )
+        if recorded_failure and request_runtime_restart is not None:
+            request_runtime_restart()
+        return True
+    logger.exception(
+        failure_log_message,
+        extra={"target_id": target_id},
+    )
+    mark_failed()
+    return False
+
+
 def record_refresh_runtime_failure(
     *,
     options: ResidentRuntimeOptions,
@@ -462,7 +492,7 @@ def record_refresh_runtime_failure(
     """將 maintenance refresh 的 browser runtime failure 接回 scan failure policy。"""
 
     exception_class, message = _runtime_refresh_failure_detail(exc)
-    decision = record_guarded_scan_failure_for_db(
+    decision = record_guarded_scan_failure_decision_for_db(
         db_path=options.db_path,
         target_id=target_id,
         reason=SCHEDULER_RUNTIME_REASON,

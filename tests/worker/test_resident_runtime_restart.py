@@ -20,7 +20,7 @@ from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
@@ -299,7 +299,7 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
         return context
 
     async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        finalize_result = record_skipped_scan(
+        finalize_result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={

@@ -25,7 +25,7 @@ from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_ta
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
 def test_list_schedulable_target_ids_respects_target_stop(tmp_path: Path) -> None:
@@ -744,7 +744,7 @@ def test_scheduler_loop_escalates_sort_skip_after_three_skipped_scans(
         with SqliteApplicationContext(db_path) as app:
             selected_target = app.repositories.targets.get(options.target_id)
             assert selected_target is not None
-            result = record_skipped_scan(
+            result = record_protective_skip_for_test(
                 app=app,
                 target=selected_target,
                 metadata={

@@ -18,7 +18,7 @@ from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from facebook_monitor.worker.sync_resident_fallback import SyncResidentPagePool
 from facebook_monitor.worker.sync_resident_fallback import prepare_sync_resident_page
 from facebook_monitor.worker.sync_resident_fallback import run_sync_resident_fallback_cycle
@@ -284,7 +284,7 @@ def test_sync_resident_fallback_escalates_sort_skip_after_three_skips(
     def skipping_scan_page(**kwargs: Any) -> PostsScanSummary:
         """模擬排序未確認時的 shared skipped finalize。"""
 
-        result = record_skipped_scan(
+        result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={

@@ -20,7 +20,7 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_finalize import record_skipped_scan
+from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
@@ -113,7 +113,7 @@ def test_resident_main_escalates_sort_skip_after_three_skipped_scans(
         app.services.targets.restart_target_monitoring(target.id)
 
     async def skipping_scan_page(**kwargs: Any) -> PostsScanSummary:
-        result = record_skipped_scan(
+        result = record_protective_skip_for_test(
             app=kwargs["app"],
             target=kwargs["target"],
             metadata={

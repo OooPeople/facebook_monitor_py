@@ -1,18 +1,21 @@
 """Side-effect-free resident attempt terminal transitions.
 
-職責：把 commit outcome 與 attempt identity 映射成 internal outcome 與
-cleanup plan；不執行 DB、page、queue 或 scheduler side effects。
+職責：把 commit outcome 與 attempt identity 映射成 internal outcome；
+cleanup obligation 由 formal executor 的 attempt resources 推導。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from facebook_monitor.worker.attempt_cleanup import ResidentAttemptCleanupPlan
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcome
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
+
+if TYPE_CHECKING:
+    from facebook_monitor.worker.attempt_cleanup import ResidentAttemptCleanupPlan
 
 
 @dataclass(frozen=True)
@@ -20,25 +23,17 @@ class ResidentAttemptTerminalTransition:
     """保存 terminal transition 的純資料結果。"""
 
     outcome: ResidentAttemptOutcome
-    cleanup_plan: ResidentAttemptCleanupPlan
+    cleanup_plan: ResidentAttemptCleanupPlan | None = None
 
 
 def transition_from_scan_commit_outcome(
     *,
     target_id: str,
-    owner_key: str,
-    page_id: str,
     commit_outcome: ScanCommitOutcome,
     opened_page: bool,
     reused_page: bool,
 ) -> ResidentAttemptTerminalTransition:
-    """依 scan commit outcome 建立 terminal attempt outcome 與 cleanup plan。"""
-
-    cleanup_plan = ResidentAttemptCleanupPlan.for_attempt(
-        target_id=target_id,
-        owner_key=owner_key,
-        page_id=page_id,
-    )
+    """依 scan commit outcome 建立 terminal attempt outcome。"""
     if commit_outcome.kind == ScanCommitOutcomeKind.IDLE_COMMITTED:
         outcome = ResidentAttemptOutcome.succeeded(
             target_id=target_id,
@@ -46,8 +41,10 @@ def transition_from_scan_commit_outcome(
             reused_page=reused_page,
         )
     elif commit_outcome.kind == ScanCommitOutcomeKind.SUCCESS_COMMITTED:
-        raise NotImplementedError(
-            "SUCCESS_COMMITTED requires a scanner-owned finalize migration plan"
+        outcome = ResidentAttemptOutcome.succeeded(
+            target_id=target_id,
+            opened_page=opened_page,
+            reused_page=reused_page,
         )
     elif commit_outcome.kind == ScanCommitOutcomeKind.SKIP_COMMITTED:
         outcome = ResidentAttemptOutcome.skipped(
@@ -85,27 +82,17 @@ def transition_from_scan_commit_outcome(
         )
     return ResidentAttemptTerminalTransition(
         outcome=outcome,
-        cleanup_plan=cleanup_plan,
     )
 
 
 def transition_from_attempt_outcome(
     *,
     target_id: str,
-    owner_key: str,
-    page_id: str,
     outcome: ResidentAttemptOutcome,
 ) -> ResidentAttemptTerminalTransition:
     """把非 scan-commit branch 的 terminal outcome 包成 transition。"""
 
-    return ResidentAttemptTerminalTransition(
-        outcome=outcome,
-        cleanup_plan=ResidentAttemptCleanupPlan.for_attempt(
-            target_id=target_id,
-            owner_key=owner_key,
-            page_id=page_id,
-        ),
-    )
+    return ResidentAttemptTerminalTransition(outcome=outcome)
 
 
 __all__ = [

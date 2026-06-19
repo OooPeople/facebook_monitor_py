@@ -59,7 +59,6 @@ def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
         second_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(),
@@ -68,7 +67,6 @@ def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
 
         assert first_summary.new_count == 2
@@ -129,7 +127,6 @@ def test_scan_posts_page_sync_and_finalize_records_failed_ntfy_event(
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
@@ -177,7 +174,6 @@ def test_scan_posts_page_sync_and_finalize_records_skipped_ntfy_when_topic_is_em
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
@@ -247,9 +243,6 @@ def test_scan_posts_page_sync_and_finalize_records_all_enabled_notification_chan
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
-            desktop_notification_sender=fake_desktop_sender,
-            discord_notification_sender=fake_discord_sender,
         )
         dispatch_pending_notifications_for_test(
             app=app,

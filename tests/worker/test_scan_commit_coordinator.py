@@ -134,7 +134,6 @@ def test_scan_commit_coordinator_commits_success_and_idle(
                 metadata={"worker": "phase6"},
             ),
             commit_guard=fixture.commit_guard,
-            notification_sender=fake_ntfy_sender,
         )
         state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)

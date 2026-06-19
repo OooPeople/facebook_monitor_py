@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 
 from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEventKind
@@ -21,124 +20,27 @@ from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failure_policy import is_runtime_failure_notification_terminal
 from facebook_monitor.core.scan_failure_policy import normalize_scan_failure_reason
 from facebook_monitor.notifications.channel_plan import build_enabled_channel_plans
-from facebook_monitor.notifications.desktop import send_desktop_notification
-from facebook_monitor.notifications.desktop_format import build_compact_notification_body
 from facebook_monitor.notifications.desktop_format import (
     build_runtime_failure_compact_notification_message,
 )
-from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.discord_format import build_discord_match_notification_payload
-from facebook_monitor.notifications.ntfy import send_ntfy_notification
-from facebook_monitor.notifications.ntfy_format import build_ntfy_match_notification_payload
+from facebook_monitor.notifications.match_message_builders import (
+    build_match_compact_notification_message,
+)
+from facebook_monitor.notifications.match_message_builders import (
+    build_match_discord_notification_message,
+)
+from facebook_monitor.notifications.match_message_builders import (
+    build_ntfy_match_notification_message,
+)
 from facebook_monitor.notifications.outbox_dispatcher import (
     wake_notification_outbox_dispatcher_for_db,
 )
-from facebook_monitor.notifications.payload import MatchNotificationFields
-from facebook_monitor.notifications.senders import DesktopSender
-from facebook_monitor.notifications.senders import DiscordSender
-from facebook_monitor.notifications.senders import NtfySender
-from facebook_monitor.core.user_messages import format_failure_reason
+from facebook_monitor.notifications.runtime_failure_message_builders import (
+    build_runtime_failure_notification_message,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-def build_ntfy_match_notification_message(
-    *,
-    target: TargetDescriptor,
-    author: str,
-    item_text: str,
-    permalink: str,
-    matched_keyword: str,
-    item_kind: ItemKind = ItemKind.POST,
-) -> tuple[str, str]:
-    """建立 ntfy / plain-text keyword match 通知標題與內容。"""
-
-    return build_ntfy_match_notification_payload(
-        build_match_notification_fields(
-            target=target,
-            item_kind=item_kind,
-            author=author,
-            item_text=item_text,
-            permalink=permalink,
-            matched_keyword=matched_keyword,
-        )
-    )
-
-
-def build_match_discord_notification_message(
-    *,
-    target: TargetDescriptor,
-    author: str,
-    item_text: str,
-    permalink: str,
-    matched_keyword: str,
-    item_kind: ItemKind = ItemKind.POST,
-) -> tuple[str, str]:
-    """建立 Discord 專用 keyword match 通知標題與內容。"""
-
-    return build_discord_match_notification_payload(
-        build_match_notification_fields(
-            target=target,
-            item_kind=item_kind,
-            author=author,
-            item_text=item_text,
-            permalink=permalink,
-            matched_keyword=matched_keyword,
-        )
-    )
-
-
-def build_match_notification_fields(
-    *,
-    target: TargetDescriptor,
-    author: str,
-    item_text: str,
-    permalink: str,
-    matched_keyword: str,
-    item_kind: ItemKind = ItemKind.POST,
-) -> MatchNotificationFields:
-    """依 target 顯示語義建立各通道 formatter 共用的 match 欄位。"""
-
-    return MatchNotificationFields(
-        group_name=format_target_display_name(target),
-        item_kind=item_kind.value,
-        author=author,
-        include_rule=matched_keyword,
-        text=item_text,
-        permalink=permalink,
-    )
-
-
-def build_runtime_failure_notification_message(
-    *,
-    target: TargetDescriptor,
-    reason: str,
-    failure_count: int,
-    error_message: str,
-    target_stopped: bool = True,
-) -> tuple[str, str]:
-    """建立 target runtime failure 通知標題與內容。"""
-
-    target_name = format_target_display_name(target)
-    reason_label = format_failure_reason(reason)
-    count = max(int(failure_count), 1)
-    title = "Facebook Monitor target error"
-    final_line = (
-        "系統已停止此監視項目，請開啟 Web UI 檢查。"
-        if target_stopped
-        else "系統已記錄背景掃描錯誤，請開啟 Web UI 檢查。"
-    )
-    message = "\n".join(
-        (
-            f"監視項目: {target_name}",
-            f"錯誤類型: {reason_label}",
-            f"連續次數: {count}",
-            f"狀態: {error_message or reason_label}",
-            final_line,
-        )
-    )
-    return title, message
 
 
 def queue_match_notifications_after_commit(
@@ -153,9 +55,6 @@ def queue_match_notifications_after_commit(
     matched_keyword: str,
     logical_item_id: int | None = None,
     item_kind: ItemKind = ItemKind.POST,
-    ntfy_sender: NtfySender = send_ntfy_notification,
-    desktop_sender: DesktopSender = send_desktop_notification,
-    discord_sender: DiscordSender = send_discord_notification,
 ) -> None:
     """依目前設定寫入 match notification outbox，commit 後才做外部 I/O。"""
 
@@ -186,9 +85,6 @@ def queue_runtime_failure_notifications_after_commit(
     error_message: str,
     target_stopped: bool = True,
     failure_source: ScanFailureSource = "unknown_exception",
-    ntfy_sender: NtfySender = send_ntfy_notification,
-    desktop_sender: DesktopSender = send_desktop_notification,
-    discord_sender: DiscordSender = send_discord_notification,
 ) -> tuple[NotificationOutboxEntry, ...]:
     """將 terminal runtime failure 通知寫入 outbox，commit 後才做外部 I/O。"""
 
@@ -396,26 +292,3 @@ def build_notification_idempotency_key(
     """建立通知 outbox 去重 key，避免同一 match/channel 重複發送。"""
 
     return f"{target_id}:{item_key}:{channel.value}"
-
-
-def build_match_compact_notification_message(
-    *,
-    target: TargetDescriptor,
-    author: str,
-    item_text: str,
-    permalink: str,
-    matched_keyword: str,
-    item_kind: ItemKind = ItemKind.POST,
-) -> str:
-    """建立桌面通知使用的短內容。"""
-
-    return build_compact_notification_body(
-        build_match_notification_fields(
-            target=target,
-            item_kind=item_kind,
-            author=author,
-            item_text=item_text,
-            permalink=permalink,
-            matched_keyword=matched_keyword,
-        )
-    )

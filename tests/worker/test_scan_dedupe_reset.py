@@ -68,7 +68,6 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert first_result.new_count == 1
@@ -115,7 +114,6 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert second_result.new_count == 0
@@ -175,7 +173,6 @@ def test_finalize_keeps_dedupe_after_terminal_outbox_retention(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
         pending_outbox = app.repositories.notification_outbox.list_pending()
         assert len(pending_outbox) == 1
@@ -216,7 +213,6 @@ def test_finalize_keeps_dedupe_after_terminal_outbox_retention(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
     assert first_result.new_count == 1
@@ -272,7 +268,6 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert first_result.new_count == 1
@@ -308,7 +303,6 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert clear_result.notification_outbox_rows == 1
@@ -386,7 +380,6 @@ def test_startup_runtime_cleanup_preserves_notification_state(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
         target_id = target.id
 
@@ -421,7 +414,6 @@ def test_startup_runtime_cleanup_preserves_notification_state(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
         repeat_result = finalize_scan_items(
             app=app,
@@ -439,7 +431,6 @@ def test_startup_runtime_cleanup_preserves_notification_state(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert new_match_result.new_count == 1
@@ -504,7 +495,6 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
         target_id = target.id
 
@@ -539,7 +529,6 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert clear_result.notification_outbox_rows == 1
@@ -596,7 +585,6 @@ def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:
             items=[],
             item_count=0,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert empty_result.baseline_mode
@@ -618,7 +606,6 @@ def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         assert baseline_result.baseline_mode

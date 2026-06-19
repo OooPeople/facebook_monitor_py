@@ -10,6 +10,7 @@
 - admin / debug / internal 工具預設也走正式 runtime path resolver；若要操作特定資料根目錄，使用同一組 `--data-dir` / `--profile-name` / `--db-path` / `--profile-dir`。
 - `--profile-dir` 只能指向 `<data-dir>/profiles/` 底下；外部測試 profile 必須使用 debug-only 的 `--unsafe-profile-dir`，且仍會拒絕常見 Chrome / Edge / Chromium 日常 profile。
 - 新功能預設先接 Web UI + resident main 主路徑；debug / fallback 工具只有在有實際維護價值時才跟進。
+- One-shot debug / fallback scheduler 可能只會將通知寫入 notification outbox；除非同一 process 已啟動 outbox dispatcher，否則不保證掃描後立即送出外部 notification。正式 Web UI / resident main 路徑才提供背景 dispatcher drain 語義。
 - 不再新增 `phase_*` 命名 script。
 
 ## 工具清單

@@ -137,7 +137,6 @@ def test_scan_posts_page_sync_and_finalize_uses_key_aliases_to_prevent_duplicate
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
         second_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(second_items),
@@ -146,7 +145,6 @@ def test_scan_posts_page_sync_and_finalize_uses_key_aliases_to_prevent_duplicate
             config=config,
             scroll_rounds=0,
             scroll_wait_ms=0,
-            notification_sender=fake_sender,
         )
 
         assert first_summary.new_count == 1

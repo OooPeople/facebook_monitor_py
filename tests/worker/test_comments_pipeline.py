@@ -447,7 +447,6 @@ def test_scan_comments_target_page_sync_and_finalize_records_latest_scan_and_see
             app=app,
             target=target,
             config=config,
-            notification_sender=fake_ntfy_sender,
         )
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
@@ -864,7 +863,6 @@ def test_scan_comments_target_page_sync_and_finalize_collapses_duplicate_comment
             app=app,
             target=target,
             config=config,
-            notification_sender=fake_ntfy_sender,
         )
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)

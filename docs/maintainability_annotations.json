@@ -98,6 +98,11 @@
       "reason": "Thin notification outbox cleanup use-case names over existing repository cleanup policies. Do not add retry, dead-letter UX, pending/processing cleanup, or retention SQL here."
     },
     {
+      "path_glob": "src/facebook_monitor/webapp/dashboard_queries.py",
+      "category": "dashboard_read_model_aggregation",
+      "reason": "Dashboard read-side aggregation for target rows, sidebar sections, invariant warnings, previews, notification summaries, and degraded states. Keep new read-model families in focused modules before expanding this file."
+    },
+    {
       "path_glob": "src/facebook_monitor/persistence/repositories/target_runtime_state.py",
       "category": "target_runtime_state_repository",
       "reason": "Runtime state repository with guarded conditional updates. Do not add broad full-row saves in formal resident paths or unguarded worker transitions; split when adding a new runtime state family or recovery policy."

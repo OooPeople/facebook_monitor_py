@@ -18,6 +18,7 @@ from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
@@ -138,9 +139,6 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
-            desktop_notification_sender=fake_desktop_sender,
-            discord_notification_sender=fake_discord_sender,
         )
 
         assert result.new_count == 1
@@ -196,9 +194,6 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
-            desktop_notification_sender=fake_desktop_sender,
-            discord_notification_sender=fake_discord_sender,
         )
 
         assert second_result.new_count == 0
@@ -479,7 +474,6 @@ def test_finalize_scan_items_preserves_comments_identity_contract(
                 "comment_sort": {"reason": "unit_contract"},
                 "comments_meta": {"commentsWithCommentIdCount": 1},
             },
-            notification_sender=fake_ntfy_sender,
         )
         second_result = finalize_scan_items(
             app=app,
@@ -506,7 +500,6 @@ def test_finalize_scan_items_preserves_comments_identity_contract(
                 "comment_sort": {"reason": "unit_contract"},
                 "comments_meta": {"commentsWithCommentIdCount": 1},
             },
-            notification_sender=fake_ntfy_sender,
         )
 
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
@@ -637,7 +630,6 @@ def test_finalize_scan_items_comments_baseline_uses_comments_scope(
             items=[],
             item_count=0,
             metadata={"worker": "comments_contract"},
-            notification_sender=fake_ntfy_sender,
         )
         scope_initialized_after_empty = app.repositories.scan_scope_state.is_initialized(
             target.scope_id
@@ -662,7 +654,6 @@ def test_finalize_scan_items_comments_baseline_uses_comments_scope(
             ],
             item_count=1,
             metadata={"worker": "comments_contract"},
-            notification_sender=fake_ntfy_sender,
         )
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
@@ -867,7 +858,6 @@ def test_finalize_scan_items_persists_display_text_for_visible_results(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
         history = app.repositories.match_history.list_by_target(target.id)
@@ -988,7 +978,6 @@ def test_finalize_scan_items_uses_renamed_target_display_name_for_notifications(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
         history = app.repositories.match_history.list_by_target(target.id)
         assert history[0].group_name == "測試社團"
@@ -1225,8 +1214,56 @@ def test_guarded_protective_skip_refuses_restarted_attempt_commit(tmp_path: Path
 
         latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
         assert excinfo.value.reason == "target_stopped"
-        assert len(latest_items) == 1
-        assert latest_items[0].item_key == "previous"
+    assert len(latest_items) == 1
+    assert latest_items[0].item_key == "previous"
+
+
+def test_guarded_protective_skip_post_write_guard_failure_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """skip scan 寫入後若 runtime guard 失敗，不得留下部分 visible state。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    def reject_skip_decision(*_args: object, **_kwargs: object) -> None:
+        """模擬 runtime transition 在 scan run 寫入後才被 guard 擋下。"""
+
+        return None
+
+    with pytest.raises(WorkerFailure) as excinfo:
+        with SqliteApplicationContext(db_path) as app:
+            monkeypatch.setattr(
+                app.services.targets,
+                "guarded_apply_scan_skip_decision",
+                reject_skip_decision,
+            )
+            record_protective_skip_for_test(
+                app=app,
+                target=fixture.target,
+                metadata={"worker": "test_worker"},
+                commit_guard=fixture.commit_guard,
+            )
+
+    assert excinfo.value.reason == "target_stopped"
+    with SqliteApplicationContext(db_path) as app:
+        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (fixture.target.id,),
+        ).fetchone()[0]
+
+    assert latest_scan is None
+    assert latest_items == []
+    assert scan_count == 0
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
 
 
 def test_finalize_scan_items_refuses_reused_worker_with_different_page(

@@ -27,12 +27,6 @@ from facebook_monitor.facebook.sort_results import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_feed_sort_async
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_feed_sort
-from facebook_monitor.notifications.ntfy import send_ntfy_notification
-from facebook_monitor.notifications.desktop import send_desktop_notification
-from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.senders import DesktopSender
-from facebook_monitor.notifications.senders import DiscordSender
-from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
 from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
@@ -74,9 +68,6 @@ def scan_posts_page_sync_and_finalize(
     config: TargetConfig,
     scroll_rounds: int,
     scroll_wait_ms: int,
-    notification_sender: NtfySender = send_ntfy_notification,
-    desktop_notification_sender: DesktopSender = send_desktop_notification,
-    discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
     """sync/one-shot/fallback 掃描目前 page，並直接寫入 visible scan state。"""
@@ -155,9 +146,6 @@ def scan_posts_page_sync_and_finalize(
         requested_scroll_rounds=scroll_rounds,
         scroll_wait_ms=scroll_wait_ms,
         auto_load_more=config.auto_load_more,
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
         commit_guard=commit_guard,
     )
 
@@ -244,9 +232,6 @@ def finalize_posts_pipeline_scan(
     requested_scroll_rounds: int,
     scroll_wait_ms: int,
     auto_load_more: bool,
-    notification_sender: NtfySender,
-    desktop_notification_sender: DesktopSender,
-    discord_notification_sender: DiscordSender,
     commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
     """將 posts scan items 交給 shared finalize 層寫入後處理狀態。"""
@@ -271,9 +256,6 @@ def finalize_posts_pipeline_scan(
         items=list(success_result.items),
         item_count=success_result.item_count,
         metadata=dict(success_result.metadata),
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
         commit_guard=commit_guard,
     )
     return PostsScanSummary(

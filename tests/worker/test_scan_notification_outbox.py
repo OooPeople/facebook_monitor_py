@@ -106,7 +106,6 @@ def test_finalize_does_not_send_notification_when_transaction_rolls_back(
                 ],
                 item_count=1,
                 metadata={"worker": "test_worker"},
-                notification_sender=fake_ntfy_sender,
             )
     except RuntimeError as exc:
         assert str(exc) == "latest_write_failed"
@@ -175,7 +174,6 @@ def test_finalize_rollback_keeps_committed_target_but_discards_scan_writes(
                 ],
                 item_count=1,
                 metadata={"worker": "test_worker"},
-                notification_sender=fake_ntfy_sender,
             )
     except RuntimeError as exc:
         assert str(exc) == "latest_write_failed"
@@ -248,7 +246,6 @@ def test_outbox_keeps_retryable_failed_notification_after_commit(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=failing_ntfy_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=failing_ntfy_sender)
@@ -336,7 +333,6 @@ def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
             ],
             item_count=2,
             metadata={"worker": "test_worker"},
-            notification_sender=failing_ntfy_sender,
         )
 
     assert wake_calls == [db_path]
@@ -416,7 +412,6 @@ def test_outbox_failed_result_records_one_event_per_entry(
             ],
             item_count=2,
             metadata={"worker": "test_worker"},
-            notification_sender=failed_result_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=failed_result_sender)
@@ -491,7 +486,6 @@ def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> Non
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=sometimes_failing_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
@@ -516,7 +510,6 @@ def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> Non
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=sometimes_failing_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
@@ -590,7 +583,6 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=sometimes_failing_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
@@ -665,7 +657,6 @@ def test_failed_outbox_retry_resends_persisted_multiline_message(
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=sometimes_failing_sender,
         )
 
     _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
@@ -739,7 +730,6 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            discord_notification_sender=fake_discord_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(
             build_notification_idempotency_key(
@@ -827,7 +817,6 @@ def test_discord_outbox_persists_permalink_separator(tmp_path: Path) -> None:
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            discord_notification_sender=fake_discord_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(
             build_notification_idempotency_key(
@@ -1310,7 +1299,6 @@ def test_outbox_dispatch_is_idempotent_for_sent_event(tmp_path: Path) -> None:
             ],
             item_count=1,
             metadata={"worker": "test_worker"},
-            notification_sender=fake_ntfy_sender,
         )
 
     with SqliteApplicationContext(db_path) as app:

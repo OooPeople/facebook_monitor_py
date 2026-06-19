@@ -12,12 +12,6 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
-from facebook_monitor.notifications.desktop import send_desktop_notification
-from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.ntfy import send_ntfy_notification
-from facebook_monitor.notifications.senders import DesktopSender
-from facebook_monitor.notifications.senders import DiscordSender
-from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
@@ -86,9 +80,6 @@ def commit_success(
     config: TargetConfig,
     result: SuccessScanResult,
     commit_guard: ScanCommitGuard,
-    notification_sender: NtfySender = send_ntfy_notification,
-    desktop_notification_sender: DesktopSender = send_desktop_notification,
-    discord_notification_sender: DiscordSender = send_discord_notification,
 ) -> ScanCommitOutcome:
     """以 coordinator 擁有 success finalize 與 guarded idle commit。"""
 
@@ -107,9 +98,6 @@ def commit_success(
         items=list(result.items),
         item_count=result.item_count,
         metadata=dict(result.metadata),
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
         commit_guard=commit_guard,
     )
     committed_idle = mark_target_idle_for_scan_commit(

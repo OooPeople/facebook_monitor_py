@@ -38,15 +38,9 @@ from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
-from facebook_monitor.notifications.desktop import send_desktop_notification
-from facebook_monitor.notifications.discord import send_discord_notification
-from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.outbox_enqueue_service import (
     queue_match_notifications_after_commit,
 )
-from facebook_monitor.notifications.senders import DesktopSender
-from facebook_monitor.notifications.senders import DiscordSender
-from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_latest_snapshot import build_latest_scan_items
 from facebook_monitor.worker.scan_latest_snapshot import should_carry_over_previous_latest_items
@@ -327,9 +321,6 @@ def finalize_scan_items(
     items: list[NormalizedScanItem],
     item_count: int,
     metadata: dict[str, Any],
-    notification_sender: NtfySender = send_ntfy_notification,
-    desktop_notification_sender: DesktopSender = send_desktop_notification,
-    discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None,
 ) -> ScanFinalizeResult:
     """完成 target-kind-independent 的 scan 後處理與持久化。"""
@@ -344,9 +335,6 @@ def finalize_scan_items(
         config=config,
         items=items,
         baseline_mode=baseline_mode,
-        notification_sender=notification_sender,
-        desktop_notification_sender=desktop_notification_sender,
-        discord_notification_sender=discord_notification_sender,
     )
     scan_run_id, latest_items, scan_metadata = _record_success_scan_snapshot(
         app=app,
@@ -372,9 +360,6 @@ def _process_scan_items_for_finalize(
     config: TargetConfig,
     items: list[NormalizedScanItem],
     baseline_mode: bool,
-    notification_sender: NtfySender,
-    desktop_notification_sender: DesktopSender,
-    discord_notification_sender: DiscordSender,
 ) -> _ScanFinalizeAccumulator:
     """在既有 scan commit transaction 內處理 seen、keyword、history 與 outbox。"""
 
@@ -412,9 +397,6 @@ def _process_scan_items_for_finalize(
             target=target,
             config=config,
             classified=classified,
-            notification_sender=notification_sender,
-            desktop_notification_sender=desktop_notification_sender,
-            discord_notification_sender=discord_notification_sender,
         )
         accumulator.history_entries.append(history_entry)
         accumulator.notification_payloads.append(notification_payload)
@@ -472,9 +454,6 @@ def _record_match_notification_side_effects(
     target: TargetDescriptor,
     config: TargetConfig,
     classified: _ClassifiedScanItem,
-    notification_sender: NtfySender,
-    desktop_notification_sender: DesktopSender,
-    discord_notification_sender: DiscordSender,
 ) -> tuple[MatchHistoryEntry, MatchNotificationPayload]:
     """寫入 match history 並註冊 notification outbox after-commit dispatch。"""
 
@@ -522,9 +501,6 @@ def _record_match_notification_side_effects(
         permalink=notification_payload.permalink,
         matched_keyword=notification_payload.matched_keyword,
         item_kind=notification_payload.item_kind,
-        ntfy_sender=notification_sender,
-        desktop_sender=desktop_notification_sender,
-        discord_sender=discord_notification_sender,
     )
     return history_entry, notification_payload
 

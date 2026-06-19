@@ -38,7 +38,7 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_failure_finalize import (
@@ -79,7 +79,9 @@ class OneShotScanOptions:
         )
 
 
-def select_one_shot_target(app: ApplicationContext, target_id: str, group_id: str) -> TargetDescriptor:
+def select_one_shot_target(
+    app: ApplicationContext, target_id: str, group_id: str
+) -> TargetDescriptor:
     """選取本次 one-shot worker 要掃描的 target。"""
 
     if target_id and group_id:
@@ -246,7 +248,7 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
                         context.set_default_timeout(remaining_timeout_ms())
                         page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
                         context.set_default_timeout(remaining_timeout_ms())
-                        summary = scan_posts_page(
+                        summary = scan_posts_page_sync_and_finalize(
                             page=page,
                             app=app,
                             target=target,

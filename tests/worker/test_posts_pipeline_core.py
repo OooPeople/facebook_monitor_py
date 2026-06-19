@@ -11,14 +11,16 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import ContentUnavailablePostsPage
 from tests.worker.posts_pipeline_test_helpers import FakePage
 from tests.worker.posts_pipeline_test_helpers import GrowingFakePage
 
 
-def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_records_seen_match_and_scan(
+    tmp_path: Path,
+) -> None:
     """單輪掃描會寫入 seen、match history 與 scan run。"""
 
     db_path = tmp_path / "app.db"
@@ -35,7 +37,7 @@ def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
         assert config is not None
 
         fake_page = FakePage()
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -86,7 +88,9 @@ def test_scan_posts_page_records_seen_match_and_scan(tmp_path: Path) -> None:
         assert app.repositories.notification_events.list_by_target(target.id) == []
 
 
-def test_scan_posts_page_records_all_matched_keywords(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_records_all_matched_keywords(
+    tmp_path: Path,
+) -> None:
     """同一貼文命中多組 include 規則時，history/latest scan 會保留全部命中。"""
 
     db_path = tmp_path / "app.db"
@@ -113,7 +117,7 @@ def test_scan_posts_page_records_all_matched_keywords(tmp_path: Path) -> None:
                 }
             ]
         )
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -131,7 +135,9 @@ def test_scan_posts_page_records_all_matched_keywords(tmp_path: Path) -> None:
         assert latest_items[0].matched_keywords == ("6/5", "6/6")
 
 
-def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_honors_auto_load_more_config(
+    tmp_path: Path,
+) -> None:
     """auto_load_more 關閉時即使 CLI 傳多輪 scroll，也只掃目前可見視窗。"""
 
     db_path = tmp_path / "app.db"
@@ -148,7 +154,7 @@ def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
         assert config is not None
         config = replace(config, auto_load_more=False)
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -165,7 +171,7 @@ def test_scan_posts_page_honors_auto_load_more_config(tmp_path: Path) -> None:
         assert latest_scan.metadata["collection_strategy"] == "feed_visible_window"
 
 
-def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
+def test_scan_posts_page_sync_and_finalize_uses_dynamic_window_limit_for_target_count(
     tmp_path: Path,
 ) -> None:
     """target_count 較高時以動態視窗上限補足掃描。"""
@@ -184,7 +190,7 @@ def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -211,7 +217,9 @@ def test_scan_posts_page_uses_dynamic_window_limit_for_target_count(
         assert latest_scan.metadata["collected_meta"]["accumulatedCount"] == 10
 
 
-def test_scan_posts_page_raises_content_unavailable_before_sort(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_raises_content_unavailable_before_sort(
+    tmp_path: Path,
+) -> None:
     """內容不可見頁應分類成 target 失效，不應落到排序失敗。"""
 
     db_path = tmp_path / "app.db"
@@ -229,7 +237,7 @@ def test_scan_posts_page_raises_content_unavailable_before_sort(tmp_path: Path) 
         assert config is not None
 
         with pytest.raises(WorkerFailure) as exc_info:
-            scan_posts_page(
+            scan_posts_page_sync_and_finalize(
                 page=page,
                 app=app,
                 target=target,

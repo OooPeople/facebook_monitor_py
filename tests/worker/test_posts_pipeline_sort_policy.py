@@ -15,8 +15,8 @@ from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
-from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_async_commit_ready
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 from tests.worker.posts_pipeline_test_helpers import _activate_target
@@ -104,9 +104,7 @@ class AsyncSuccessFakePage:
                 {
                     "text": "這是一篇有票券關鍵字的貼文",
                     "textLength": 14,
-                    "permalink": (
-                        "https://www.facebook.com/groups/222518561920110/posts/1"
-                    ),
+                    "permalink": ("https://www.facebook.com/groups/222518561920110/posts/1"),
                     "linkCount": 1,
                     "author": "王小明",
                 }
@@ -139,7 +137,9 @@ class AsyncSuccessFakePage:
         """模擬 async 捲動等待。"""
 
 
-def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_records_sort_adjust_result(
+    tmp_path: Path,
+) -> None:
     """auto_adjust_sort 開啟時會在掃描前嘗試切到新貼文並保存診斷。"""
 
     db_path = tmp_path / "app.db"
@@ -156,7 +156,7 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
         assert config is not None
         config = replace(config, auto_adjust_sort=True)
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -181,7 +181,9 @@ def test_scan_posts_page_records_sort_adjust_result(tmp_path: Path) -> None:
         }
 
 
-def test_scan_posts_page_allows_missing_sort_control(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_allows_missing_sort_control(
+    tmp_path: Path,
+) -> None:
     """沒有排序控制欄位的社團仍應繼續掃描並保存排序診斷。"""
 
     db_path = tmp_path / "app.db"
@@ -201,7 +203,7 @@ def test_scan_posts_page_allows_missing_sort_control(tmp_path: Path) -> None:
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -233,7 +235,9 @@ def test_scan_posts_page_allows_missing_sort_control(tmp_path: Path) -> None:
     }
 
 
-def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_skips_when_sort_adjust_is_unconfirmed(
+    tmp_path: Path,
+) -> None:
     """auto_adjust_sort 未確認新貼文排序時不污染 seen/history/latest/notification。"""
 
     db_path = tmp_path / "app.db"
@@ -270,7 +274,7 @@ def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -301,7 +305,7 @@ def test_scan_posts_page_skips_when_sort_adjust_is_unconfirmed(tmp_path: Path) -
     assert notifications == []
 
 
-def test_scan_posts_page_async_returns_protective_skip_without_db_write(
+def test_scan_posts_page_async_commit_ready_returns_protective_skip_without_db_write(
     tmp_path: Path,
 ) -> None:
     """async resident posts protective skip 應先回傳 side-effect-free result。"""
@@ -326,7 +330,7 @@ def test_scan_posts_page_async_returns_protective_skip_without_db_write(
         assert config is not None
 
         result = asyncio.run(
-            scan_posts_page_async(
+            scan_posts_page_async_commit_ready(
                 page=page,
                 app=app,
                 target=target,
@@ -352,7 +356,7 @@ def test_scan_posts_page_async_returns_protective_skip_without_db_write(
     assert notifications == []
 
 
-def test_scan_posts_page_async_returns_success_result_without_db_write(
+def test_scan_posts_page_async_commit_ready_returns_success_result_without_db_write(
     tmp_path: Path,
 ) -> None:
     """async resident posts success 應回傳 commit-ready result，不直接 finalize。"""
@@ -377,7 +381,7 @@ def test_scan_posts_page_async_returns_success_result_without_db_write(
         assert config is not None
 
         result = asyncio.run(
-            scan_posts_page_async(
+            scan_posts_page_async_commit_ready(
                 page=page,
                 app=app,
                 target=target,
@@ -409,7 +413,9 @@ def test_scan_posts_page_async_returns_success_result_without_db_write(
     assert pending_outbox == []
 
 
-def test_scan_posts_page_escalates_third_sort_unconfirmed(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_escalates_third_sort_unconfirmed(
+    tmp_path: Path,
+) -> None:
     """posts 排序未確認連續三輪後，升級交給 scan failure policy。"""
 
     db_path = tmp_path / "app.db"
@@ -426,7 +432,7 @@ def test_scan_posts_page_escalates_third_sort_unconfirmed(tmp_path: Path) -> Non
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -434,7 +440,7 @@ def test_scan_posts_page_escalates_third_sort_unconfirmed(tmp_path: Path) -> Non
             scroll_rounds=3,
             scroll_wait_ms=0,
         )
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -444,7 +450,7 @@ def test_scan_posts_page_escalates_third_sort_unconfirmed(tmp_path: Path) -> Non
         )
 
         with pytest.raises(WorkerFailure) as excinfo:
-            scan_posts_page(
+            scan_posts_page_sync_and_finalize(
                 page=page,
                 app=app,
                 target=target,

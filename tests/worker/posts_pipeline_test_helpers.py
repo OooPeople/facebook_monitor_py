@@ -174,8 +174,7 @@ class GrowingFakePage(FakePage):
                 "text": f"票券貼文 {chr(65 + index)}",
                 "textLength": 10,
                 "permalink": (
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    f"{10000000 + index}"
+                    f"https://www.facebook.com/groups/222518561920110/posts/{10000000 + index}"
                 ),
                 "linkCount": 1,
                 "author": f"作者 {index}",

@@ -53,10 +53,7 @@ def test_classify_wrapped_non_playwright_timeout_stays_unknown() -> None:
     reason = classify_wrapped_playwright_exception(Exception("internal timeout"))
 
     assert reason == UNKNOWN_REASON
-    assert (
-        classify_wrapped_playwright_exception(Exception("page.render timeout"))
-        == UNKNOWN_REASON
-    )
+    assert classify_wrapped_playwright_exception(Exception("page.render timeout")) == UNKNOWN_REASON
 
 
 def test_classify_playwright_navigation_error_as_page_load_timeout() -> None:
@@ -64,8 +61,7 @@ def test_classify_playwright_navigation_error_as_page_load_timeout() -> None:
 
     reason = classify_playwright_exception(
         AsyncPlaywrightError(
-            "Page.evaluate: Execution context was destroyed, "
-            "most likely because of a navigation."
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation."
         )
     )
 
@@ -97,7 +93,7 @@ def test_classify_playwright_body_locator_timeout_as_page_load_timeout() -> None
 
     reason = classify_playwright_exception(
         AsyncPlaywrightError(
-            'Locator.inner_text: Timeout 10000ms exceeded\n'
+            "Locator.inner_text: Timeout 10000ms exceeded\n"
             'Call log:\n  - waiting for locator("body")'
         )
     )

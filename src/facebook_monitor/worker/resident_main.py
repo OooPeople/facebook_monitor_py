@@ -43,14 +43,14 @@ from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.posts_pipeline import scan_posts_page_async
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_async_commit_ready
 import facebook_monitor.worker.resident_maintenance as resident_maintenance
 import facebook_monitor.worker.resident_runtime_errors as resident_runtime_errors
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import list_active_resident_target_ids
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
-from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.resident_main_executor_types import AsyncCommitReadyScanCallable
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_recovery import ResidentRecoveryCoordinator
@@ -116,8 +116,8 @@ def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
 async def run_resident_main_loop(
     options: ResidentRuntimeOptions,
     *,
-    scan_page: AsyncScanCallable = scan_posts_page_async,
-    scan_comments_target_page: AsyncScanCallable | None = None,
+    scan_page: AsyncCommitReadyScanCallable = scan_posts_page_async_commit_ready,
+    comments_commit_ready_scan_page: AsyncCommitReadyScanCallable | None = None,
     sleep_fn: AsyncSleepCallable | None = None,
     should_stop: StopCheckCallable | None = None,
     on_cycle: AsyncCycleObserver | None = None,
@@ -157,7 +157,7 @@ async def run_resident_main_loop(
                 session_result = await _run_resident_browser_runtime_session(
                     options=options,
                     scan_page=scan_page,
-                    scan_comments_target_page=scan_comments_target_page,
+                    comments_commit_ready_scan_page=comments_commit_ready_scan_page,
                     schedule_planner=schedule_planner,
                     stop_requested=stop_requested,
                     sleep=sleep,
@@ -179,8 +179,8 @@ async def run_resident_main_loop(
 async def _run_resident_browser_runtime_session(
     *,
     options: ResidentRuntimeOptions,
-    scan_page: AsyncScanCallable,
-    scan_comments_target_page: AsyncScanCallable | None,
+    scan_page: AsyncCommitReadyScanCallable,
+    comments_commit_ready_scan_page: AsyncCommitReadyScanCallable | None,
     schedule_planner: TargetSchedulePlanner,
     stop_requested: StopCheckCallable,
     sleep: AsyncSleepCallable,
@@ -211,8 +211,8 @@ async def _run_resident_browser_runtime_session(
                     schedule_planner=schedule_planner,
                     scan_page=scan_page,
                     **(
-                        {"scan_comments_target_page": scan_comments_target_page}
-                        if scan_comments_target_page is not None
+                        {"comments_commit_ready_scan_page": comments_commit_ready_scan_page}
+                        if comments_commit_ready_scan_page is not None
                         else {}
                     ),
                 )
@@ -259,9 +259,7 @@ async def _run_scheduler_ticks_until_restart(
     """在單一 runtime session 中執行 scheduler ticks 直到停止或 restart。"""
 
     runtime_restart_requested = False
-    while not stop_requested() and (
-        options.max_cycles is None or cycle_index < options.max_cycles
-    ):
+    while not stop_requested() and (options.max_cycles is None or cycle_index < options.max_cycles):
         if executor.runtime_restart_requested():
             runtime_restart_requested = True
             break
@@ -333,8 +331,7 @@ def _request_restart_for_unhealthy_workers(
     """worker pool unhealthy 時記錄原因並要求 runtime restart。"""
 
     logger.warning(
-        "resident_main_runtime_restart_requested "
-        "reason=%s cycle=%s worker_statuses=%s",
+        "resident_main_runtime_restart_requested reason=%s cycle=%s worker_statuses=%s",
         "worker_pool_unhealthy",
         summary.cycle_index,
         ",".join(summary.worker_statuses),

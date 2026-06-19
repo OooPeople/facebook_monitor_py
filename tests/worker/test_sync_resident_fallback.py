@@ -14,7 +14,11 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.comments_pipeline import (
+    scan_comments_target_page_sync_and_finalize,
+)
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
@@ -23,6 +27,7 @@ from facebook_monitor.worker.sync_resident_fallback import SyncResidentPagePool
 from facebook_monitor.worker.sync_resident_fallback import prepare_sync_resident_page
 from facebook_monitor.worker.sync_resident_fallback import run_sync_resident_fallback_cycle
 from facebook_monitor.worker.sync_resident_fallback import run_sync_resident_fallback_loop
+from facebook_monitor.worker.sync_resident_fallback import select_sync_finalizing_scan_page
 
 
 class FakeResidentPage:
@@ -123,6 +128,26 @@ def test_resident_page_reload_keeps_same_comment_post_url() -> None:
     assert not should_reload_resident_page(
         "https://www.facebook.com/groups/11111111/posts/33333333",
         "https://www.facebook.com/groups/11111111/posts/22222222",
+    )
+
+
+def test_sync_finalizing_selector_uses_target_kind_specific_scanner() -> None:
+    """sync fallback selector 應依 target kind 選到會寫 DB 的 finalizing scanner。"""
+
+    posts_target = TargetDescriptor.for_group_posts(
+        group_id="111",
+        canonical_url="https://www.facebook.com/groups/111",
+    )
+    comments_target = TargetDescriptor.for_comments(
+        group_id="111",
+        parent_post_id="222",
+        canonical_url="https://www.facebook.com/groups/111/posts/222",
+    )
+
+    assert select_sync_finalizing_scan_page(posts_target) is scan_posts_page_sync_and_finalize
+    assert (
+        select_sync_finalizing_scan_page(comments_target)
+        is scan_comments_target_page_sync_and_finalize
     )
 
 

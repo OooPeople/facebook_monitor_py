@@ -131,7 +131,7 @@ def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(
             commit_guard=None,
         )
 
-    def fake_scan_posts_page(**kwargs: Any) -> PostsScanSummary:
+    def fake_sync_finalizing_scan_page(**kwargs: Any) -> PostsScanSummary:
         """模擬 one-shot 掃描中再次遇到排序未確認。"""
 
         result = record_protective_skip_for_test(
@@ -163,8 +163,8 @@ def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(
         lambda _playwright, _options: FakeOneShotContext(),
     )
     monkeypatch.setattr(
-        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page",
-        fake_scan_posts_page,
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        fake_sync_finalizing_scan_page,
     )
 
     with pytest.raises(WorkerFailure) as excinfo:
@@ -228,7 +228,7 @@ def test_run_one_shot_scan_success_clears_direct_runtime_streaks(
         )
         app.services.targets.apply_scan_skip_decision(target.id, skip)
 
-    def fake_scan_posts_page(**kwargs: Any) -> PostsScanSummary:
+    def fake_sync_finalizing_scan_page(**kwargs: Any) -> PostsScanSummary:
         """模擬真正成功的 posts scan finalize。"""
 
         target_id = kwargs["target"].id
@@ -259,8 +259,8 @@ def test_run_one_shot_scan_success_clears_direct_runtime_streaks(
         lambda _playwright, _options: FakeOneShotContext(),
     )
     monkeypatch.setattr(
-        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page",
-        fake_scan_posts_page,
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        fake_sync_finalizing_scan_page,
     )
 
     summary = run_one_shot_scan(
@@ -358,7 +358,7 @@ def test_run_one_shot_scan_skipped_success_preserves_direct_failure_streak(
         )
         app.services.targets.apply_scan_failure_decision(target.id, failure, "sort failed")
 
-    def fake_scan_posts_page(**kwargs: Any) -> PostsScanSummary:
+    def fake_sync_finalizing_scan_page(**kwargs: Any) -> PostsScanSummary:
         """模擬排序未確認但尚未達錯誤門檻的 skipped scan。"""
 
         result = record_protective_skip_for_test(
@@ -391,8 +391,8 @@ def test_run_one_shot_scan_skipped_success_preserves_direct_failure_streak(
         lambda _playwright, _options: FakeOneShotContext(),
     )
     monkeypatch.setattr(
-        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page",
-        fake_scan_posts_page,
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        fake_sync_finalizing_scan_page,
     )
 
     summary = run_one_shot_scan(

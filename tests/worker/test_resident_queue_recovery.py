@@ -1477,7 +1477,7 @@ def test_resident_comments_success_result_writes_visible_state_once(
             target_queue=target_queue,
             schedule_planner=planner,
             scan_page=as_async_scan_callable(scan_to_success_result),
-            scan_comments_target_page=scan_to_success_result,
+            comments_commit_ready_scan_page=scan_to_success_result,
         )
         assert (
             await executor.enqueue_due_targets(

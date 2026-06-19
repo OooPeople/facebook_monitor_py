@@ -428,8 +428,7 @@ def test_finalize_scan_items_preserves_comments_identity_contract(
                 group_id="222518561920110",
                 parent_post_id=parent_post_id,
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    f"{parent_post_id}"
+                    f"https://www.facebook.com/groups/222518561920110/posts/{parent_post_id}"
                 ),
                 group_name="測試社團",
                 config=TargetConfigPatch(
@@ -601,8 +600,7 @@ def test_finalize_scan_items_comments_baseline_uses_comments_scope(
                 group_id="222518561920110",
                 parent_post_id=parent_post_id,
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    f"{parent_post_id}"
+                    f"https://www.facebook.com/groups/222518561920110/posts/{parent_post_id}"
                 ),
                 group_name="測試社團",
                 config=TargetConfigPatch(
@@ -663,8 +661,7 @@ def test_finalize_scan_items_comments_baseline_uses_comments_scope(
     assert item_result.baseline_mode is True
     assert item_result.latest_items[0].item_kind == ItemKind.COMMENT
     assert (
-        item_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"]
-        is False
+        item_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"] is False
     )
     assert latest_scan is not None
     assert latest_scan.metadata["baseline_mode"] is True
@@ -691,8 +688,7 @@ def test_finalize_scan_items_comments_guard_mismatch_writes_no_visible_state(
                 group_id="222518561920110",
                 parent_post_id=parent_post_id,
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    f"{parent_post_id}"
+                    f"https://www.facebook.com/groups/222518561920110/posts/{parent_post_id}"
                 ),
                 group_name="測試社團",
                 config=TargetConfigPatch(
@@ -871,9 +867,7 @@ def test_finalize_scan_items_persists_display_text_for_visible_results(
     assert latest_items[0].display_text == "第一行票券\n第二行座位"
     assert sent_ntfy
     assert (
-        "命中：票券\n"
-        "---------------------------------------------\n"
-        "第一行票券\n第二行座位"
+        "命中：票券\n---------------------------------------------\n第一行票券\n第二行座位"
     ) in sent_ntfy[0][2]
 
 

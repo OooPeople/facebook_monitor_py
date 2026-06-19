@@ -144,9 +144,7 @@ class TargetQueue:
                 self._queued_target_ids.discard(target_id)
                 cancelled_ids.append(target_id)
             self._queued_order = [
-                target_id
-                for target_id in self._queued_order
-                if target_id not in set(cancelled_ids)
+                target_id for target_id in self._queued_order if target_id not in set(cancelled_ids)
             ]
         return tuple(cancelled_ids)
 

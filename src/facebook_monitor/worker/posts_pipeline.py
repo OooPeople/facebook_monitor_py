@@ -66,7 +66,7 @@ class PostsScanSummary:
     scan_skipped: bool = False
 
 
-def scan_posts_page(
+def scan_posts_page_sync_and_finalize(
     *,
     page: SyncScannablePageLike,
     app: ApplicationContext,
@@ -79,7 +79,7 @@ def scan_posts_page(
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
 ) -> PostsScanSummary:
-    """掃描目前 page，並把結果寫入 application context。"""
+    """sync/one-shot/fallback 掃描目前 page，並直接寫入 visible scan state。"""
 
     ensure_sync_page_scannable(page)
 
@@ -162,7 +162,7 @@ def scan_posts_page(
     )
 
 
-async def scan_posts_page_async(
+async def scan_posts_page_async_commit_ready(
     *,
     page: AsyncScannablePageLike,
     app: ApplicationContext,
@@ -171,7 +171,7 @@ async def scan_posts_page_async(
     scroll_rounds: int,
     scroll_wait_ms: int,
 ) -> SuccessScanResult | ProtectiveSkipScanResult:
-    """resident main worker 掃描 page；visible scan state 交由 coordinator commit。"""
+    """formal async resident 掃描 page；visible scan state 交由 coordinator commit。"""
 
     await ensure_async_page_scannable(page)
 

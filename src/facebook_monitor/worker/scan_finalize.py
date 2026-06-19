@@ -225,9 +225,7 @@ def _record_skipped_scan(
 
     begin_scan_commit_transaction(app)
     ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
-    skip_reason = str(
-        metadata.get("skip_reason") or SORT_ADJUST_UNCONFIRMED_SKIP_REASON
-    )
+    skip_reason = str(metadata.get("skip_reason") or SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
     skip_decision = app.services.targets.decide_scan_skip(
         target.id,
         skip_reason,
@@ -447,9 +445,7 @@ def _mark_seen_and_classify_item(
         target.scope_id,
         item.alias_keys,
         utc_now()
-        - timedelta(
-            days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days
-        ),
+        - timedelta(days=PYTHON_PERSISTENCE_RETENTION_DEFAULTS.logical_dedupe_horizon_days),
     )
     app.repositories.seen_items.mark_seen_aliases(
         seen_item,
@@ -579,9 +575,7 @@ def _record_success_scan_snapshot(
             match_results=accumulator.match_results,
             previous_latest_items=previous_latest_items,
             target_count=config.max_items_per_scan,
-            carry_over_previous_items=should_carry_over_previous_latest_items(
-                scan_metadata
-            ),
+            carry_over_previous_items=should_carry_over_previous_latest_items(scan_metadata),
         )
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, latest_items)

@@ -195,6 +195,7 @@ def test_attempt_transition_maps_scan_commit_outcome_without_side_effects() -> N
     assert committed_skip_result.opened_page is False
     assert committed_skip_result.reused_page is False
 
+
 def test_attempt_transition_wraps_existing_terminal_outcome() -> None:
     """非 scan-commit branch 也只包 outcome 與 cleanup plan，不做 side effect。"""
 

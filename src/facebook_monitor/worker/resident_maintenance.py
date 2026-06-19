@@ -95,12 +95,8 @@ async def refresh_requested_target_metadata(
                 exc=exc,
                 stop_requested=stop_requested,
                 request_runtime_restart=request_runtime_restart,
-                shutdown_log_message=(
-                    "metadata refresh skipped because scheduler is stopping"
-                ),
-                runtime_restart_log_message=(
-                    "metadata refresh requested browser runtime restart"
-                ),
+                shutdown_log_message=("metadata refresh skipped because scheduler is stopping"),
+                runtime_restart_log_message=("metadata refresh requested browser runtime restart"),
                 failure_log_message="metadata refresh failed",
                 mark_failed=lambda: mark_target_metadata_refresh_failed(
                     options,
@@ -142,9 +138,7 @@ def list_metadata_refresh_candidates(
     )
     explicit_candidate_set = set(explicit_candidates)
     candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.target_id in explicit_candidate_set
+        candidate for candidate in candidates if candidate.target_id in explicit_candidate_set
     ]
     seen = {candidate.target_id for candidate in candidates}
     remaining_limit = METADATA_REFRESH_TARGET_LIMIT_PER_TICK - len(candidates)
@@ -292,9 +286,7 @@ async def refresh_pending_target_cover_images(
                 exc=exc,
                 stop_requested=stop_requested,
                 request_runtime_restart=request_runtime_restart,
-                shutdown_log_message=(
-                    "cover image refresh skipped because scheduler is stopping"
-                ),
+                shutdown_log_message=("cover image refresh skipped because scheduler is stopping"),
                 runtime_restart_log_message=(
                     "cover image refresh requested browser runtime restart"
                 ),
@@ -342,8 +334,7 @@ def queue_polluted_cover_image_refresh_candidates(options: ResidentRuntimeOption
                     target.id,
                     reported_url=target.group_cover_image_url,
                     min_interval_seconds=(
-                        PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-                        .cover_image_load_failure_min_interval_seconds
+                        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
                     ),
                 )
                 if result.status == CoverImageRefreshRequestStatus.QUEUED:

@@ -49,9 +49,7 @@ class ResidentRuntimeOptions:
     stale_running_after_seconds: float = (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_after_seconds
     )
-    heartbeat_interval_seconds: float = (
-        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.heartbeat_interval_seconds
-    )
+    heartbeat_interval_seconds: float = PYTHON_SCHEDULER_RUNTIME_DEFAULTS.heartbeat_interval_seconds
     headed_compat: bool = False
     max_cycles: int | None = None
     metadata_refresh_provider: Callable[[], tuple[str, ...]] | None = None

@@ -8,7 +8,9 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main import _drain_queue_or_runtime_restart
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
-from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.resident_main_executor_types import (
+    AsyncCommitReadyScanCallable,
+)
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
@@ -19,10 +21,10 @@ async def run_resident_main_cycle_harness(
     *,
     options: ResidentRuntimeOptions,
     page_pool: AsyncResidentPagePool,
-    scan_page: AsyncScanCallable,
+    scan_page: AsyncCommitReadyScanCallable,
     schedule_planner: TargetSchedulePlanner,
     cycle_index: int,
-    scan_comments_target_page: AsyncScanCallable | None = None,
+    comments_commit_ready_scan_page: AsyncCommitReadyScanCallable | None = None,
 ) -> ResidentCycleSummary:
     """以正式 queue/executor 跑單 tick，供 worker tests 驗證狀態機。"""
 
@@ -34,8 +36,8 @@ async def run_resident_main_cycle_harness(
         schedule_planner=schedule_planner,
         scan_page=scan_page,
         **(
-            {"scan_comments_target_page": scan_comments_target_page}
-            if scan_comments_target_page is not None
+            {"comments_commit_ready_scan_page": comments_commit_ready_scan_page}
+            if comments_commit_ready_scan_page is not None
             else {}
         ),
     )

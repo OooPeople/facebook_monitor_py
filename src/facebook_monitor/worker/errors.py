@@ -44,9 +44,7 @@ def classify_wrapped_playwright_exception(error: Exception) -> str:
     """辨識被一般 Exception 包住的 Playwright 失敗訊息。"""
 
     message = str(error).lower()
-    if _is_playwright_runtime_closed_message(
-        message
-    ) or _is_playwright_api_error_message(message):
+    if _is_playwright_runtime_closed_message(message) or _is_playwright_api_error_message(message):
         return classify_playwright_exception(error)
     return UNKNOWN_REASON
 

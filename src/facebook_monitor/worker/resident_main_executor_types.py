@@ -44,8 +44,8 @@ class AsyncPagePoolBrowserContextLike(Protocol):
         """建立新的 async page。"""
 
 
-class AsyncScanCallable(Protocol):
-    """formal async resident 注入的 commit-ready target scan callable。"""
+class AsyncCommitReadyScanCallable(Protocol):
+    """formal async resident 注入的 commit-ready scanner，不寫 visible scan state。"""
 
     async def __call__(
         self,

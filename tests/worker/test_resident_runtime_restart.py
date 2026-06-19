@@ -12,6 +12,7 @@ from pytest import MonkeyPatch
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -26,6 +27,107 @@ from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResu
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
+
+
+def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """正式 loop 入口應把 comments target 派給 comments commit-ready scanner。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    contexts: list[FakeAsyncBrowserContext] = []
+    post_calls: list[str] = []
+    comment_calls: list[str] = []
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="11111111",
+                parent_post_id="99999999",
+                canonical_url="https://www.facebook.com/groups/11111111/posts/99999999",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    class FakePlaywrightManager:
+        """測試用 async_playwright context manager。"""
+
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    async def fake_launch_persistent_context_async(
+        _playwright: object,
+        _options: object,
+    ) -> FakeAsyncBrowserContext:
+        context = FakeAsyncBrowserContext()
+        contexts.append(context)
+        return context
+
+    async def fake_post_scan_page(**kwargs: Any) -> object:
+        """若 comments target 被錯派到 posts scanner，測試應失敗。"""
+
+        post_calls.append(kwargs["target"].id)
+        raise AssertionError("comments target should not use posts scanner")
+
+    async def fake_comment_scan_page(**kwargs: Any) -> object:
+        """記錄正式 loop comments keyword 派發結果。"""
+
+        comment_calls.append(kwargs["target"].id)
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
+        )
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.acquire_profile_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.async_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.launch_persistent_context_async",
+        fake_launch_persistent_context_async,
+    )
+
+    async def run_test() -> None:
+        await asyncio.wait_for(
+            run_resident_main_loop(
+                ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=profile_dir,
+                    interval_seconds=0,
+                    scheduler_tick_seconds=0,
+                    max_cycles=1,
+                ),
+                scan_page=as_async_scan_callable(fake_post_scan_page),
+                comments_commit_ready_scan_page=as_async_scan_callable(fake_comment_scan_page),
+            ),
+            timeout=2,
+        )
+
+    asyncio.run(run_test())
+
+    assert len(contexts) == 1
+    assert contexts[0].closed is True
+    assert post_calls == []
+    assert comment_calls == [target.id]
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
 
 
 def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(

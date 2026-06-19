@@ -174,9 +174,7 @@ def test_finalize_rollback_keeps_committed_target_but_discards_scan_writes(
         assert app.repositories.latest_scan_items.list_by_target(target.id) == []
         connection = app.repositories.runtime_states.connection
         table_counts = {
-            table_name: connection.execute(
-                f"SELECT COUNT(1) FROM {table_name}"
-            ).fetchone()[0]
+            table_name: connection.execute(f"SELECT COUNT(1) FROM {table_name}").fetchone()[0]
             for table_name in (
                 "scan_runs",
                 "seen_items",
@@ -650,9 +648,7 @@ def test_failed_outbox_retry_resends_persisted_multiline_message(
 
     assert sent_messages == [stored_message]
     assert (
-        "命中：票券\n"
-        "---------------------------------------------\n"
-        "第一行票券\n第二行座位"
+        "命中：票券\n---------------------------------------------\n第一行票券\n第二行座位"
     ) in stored_message
 
 
@@ -726,8 +722,9 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
         assert "━" not in entry.message
 
     assert len(sent_discord) == 1
-    assert "命中：票券\n---------------------------------------------\n第一行票券" in (
-        sent_discord[0][2]
+    assert (
+        "命中：票券\n---------------------------------------------\n第一行票券"
+        in (sent_discord[0][2])
     )
     assert "第一行票券\n第二行座位" in sent_discord[0][2]
     assert "**票券**" not in sent_discord[0][2]
@@ -1009,10 +1006,7 @@ def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
                 item_kind=ItemKind.POST,
                 channel=NotificationChannel.NTFY,
                 title="掃描狀態發生錯誤",
-                message=(
-                    "監視項目: Facebook | Error | "
-                    "錯誤類型: 未分類錯誤 | 連續次數: 3"
-                ),
+                message=("監視項目: Facebook | Error | 錯誤類型: 未分類錯誤 | 連續次數: 3"),
                 endpoint="runtime-test",
                 event_kind=NotificationEventKind.RUNTIME_FAILURE,
                 source_scan_run_id=130,
@@ -1027,9 +1021,7 @@ def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
         )
 
     assert sent_count == 1
-    assert sent_messages == [
-        "監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3"
-    ]
+    assert sent_messages == ["監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3"]
 
 
 def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(

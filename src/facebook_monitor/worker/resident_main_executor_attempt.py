@@ -35,7 +35,9 @@ from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalT
 from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
-from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.resident_main_executor_types import (
+    AsyncCommitReadyScanCallable,
+)
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
@@ -64,12 +66,12 @@ from facebook_monitor.worker.resident_failure_decisions import (
     failure_record_decision_for_worker_failure,
 )
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureRecordDecision
-from facebook_monitor.worker.scan_commit_coordinator import FailureScanCommitRequest
 from facebook_monitor.worker.scan_commit_coordinator import commit_failure_request_for_db_async
 from facebook_monitor.worker.scan_commit_coordinator import commit_guarded_protective_skip
 from facebook_monitor.worker.scan_commit_coordinator import commit_success
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
+from facebook_monitor.worker.scan_commit_requests import FailureScanCommitRequest
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
@@ -99,12 +101,12 @@ class ResidentExecutorAttemptHost(Protocol):
     def _target_still_active(self, target_id: str) -> bool:
         """確認 target 仍可執行。"""
 
-    def _select_scan_page(self, target_kind: TargetKind) -> AsyncScanCallable:
+    def _select_scan_page(self, target_kind: TargetKind) -> AsyncCommitReadyScanCallable:
         """依 target kind 選擇 scan callable。"""
 
     async def _run_scan_with_heartbeat(
         self,
-        scan_page: AsyncScanCallable,
+        scan_page: AsyncCommitReadyScanCallable,
         *,
         page: AsyncReusablePageLike,
         app: ApplicationContext,
@@ -558,9 +560,7 @@ async def _record_failure_and_finish(
         request_runtime_restart=failure_record_decision.request_runtime_restart,
         opened_page=state.opened,
         reused_page=_attempt_reused_page(state),
-        include_page_counts_in_result=(
-            failure_record_decision.include_page_counts_in_result
-        ),
+        include_page_counts_in_result=(failure_record_decision.include_page_counts_in_result),
     )
     return await _finish_failure_attempt_decision(
         pool=pool,
@@ -692,8 +692,7 @@ def _finish_pre_admission_failure(
 
     mark_resident_target_idle_if_not_running(pool.options.db_path, state.target_id)
     logger.warning(
-        "resident_target_skipped target_id=%s worker_id=%s page_id=%s "
-        "reason=%s exception_class=%s",
+        "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s exception_class=%s",
         state.target_id,
         worker_id,
         state.page_id,

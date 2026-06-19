@@ -15,12 +15,14 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
 
 
-def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
+    tmp_path: Path,
+) -> None:
     """啟用 ntfy 時，新命中的貼文會送通知並記錄 notification event。"""
 
     db_path = tmp_path / "app.db"
@@ -49,7 +51,7 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        first_summary = scan_posts_page(
+        first_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -58,7 +60,7 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
             scroll_wait_ms=0,
             notification_sender=fake_sender,
         )
-        second_summary = scan_posts_page(
+        second_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -90,7 +92,9 @@ def test_scan_posts_page_sends_ntfy_for_new_match(tmp_path: Path) -> None:
         assert events[0].status == NotificationStatus.SENT
 
 
-def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_records_failed_ntfy_event(
+    tmp_path: Path,
+) -> None:
     """ntfy 發送失敗時會記錄 failed notification event。"""
 
     db_path = tmp_path / "app.db"
@@ -116,7 +120,7 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -133,7 +137,7 @@ def test_scan_posts_page_records_failed_ntfy_event(tmp_path: Path) -> None:
         assert events[0].message == "network failed"
 
 
-def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
+def test_scan_posts_page_sync_and_finalize_records_skipped_ntfy_when_topic_is_empty(
     tmp_path: Path,
 ) -> None:
     """ntfy 啟用但 topic 空白時記錄 skipped 而非 failed。"""
@@ -163,7 +167,7 @@ def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -181,7 +185,7 @@ def test_scan_posts_page_records_skipped_ntfy_when_topic_is_empty(
         assert events[0].message == "ntfy_skipped"
 
 
-def test_scan_posts_page_records_all_enabled_notification_channels(
+def test_scan_posts_page_sync_and_finalize_records_all_enabled_notification_channels(
     tmp_path: Path,
 ) -> None:
     """posts pipeline 會透過 outbox 記錄所有已啟用通知通道的發送結果。"""
@@ -232,7 +236,7 @@ def test_scan_posts_page_records_all_enabled_notification_channels(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_posts_page(
+        scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,

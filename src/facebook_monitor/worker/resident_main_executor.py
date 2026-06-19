@@ -31,11 +31,15 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import RunningRecoveryAction
 from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
-from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
+from facebook_monitor.worker.comments_pipeline import (
+    scan_comments_target_page_async_commit_ready,
+)
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_main_executor_attempt import run_queue_item
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
-from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.resident_main_executor_types import (
+    AsyncCommitReadyScanCallable,
+)
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
@@ -64,15 +68,17 @@ class ExecutorWorkerPool:
         page_pool: AsyncResidentPagePool,
         target_queue: TargetQueue,
         schedule_planner: TargetSchedulePlanner,
-        scan_page: AsyncScanCallable,
-        scan_comments_target_page: AsyncScanCallable = scan_comments_target_page_async,
+        scan_page: AsyncCommitReadyScanCallable,
+        comments_commit_ready_scan_page: AsyncCommitReadyScanCallable = (
+            scan_comments_target_page_async_commit_ready
+        ),
     ) -> None:
         self.options = options
         self.page_pool = page_pool
         self.target_queue = target_queue
         self.schedule_planner = schedule_planner
         self.scan_page = scan_page
-        self.scan_comments_target_page = scan_comments_target_page
+        self.comments_commit_ready_scan_page = comments_commit_ready_scan_page
         self.worker_ids = tuple(
             f"resident-slot-{index + 1}" for index in range(max(options.max_concurrent_scans, 1))
         )
@@ -509,7 +515,7 @@ class ExecutorWorkerPool:
 
     async def _run_scan_with_heartbeat(
         self,
-        scan_page: AsyncScanCallable,
+        scan_page: AsyncCommitReadyScanCallable,
         *,
         page: AsyncReusablePageLike,
         app: ApplicationContext,
@@ -696,9 +702,9 @@ class ExecutorWorkerPool:
                 commit_guard=commit_guard,
             )
 
-    def _select_scan_page(self, target_kind: TargetKind) -> AsyncScanCallable:
+    def _select_scan_page(self, target_kind: TargetKind) -> AsyncCommitReadyScanCallable:
         """依 target kind 選擇 resident main 掃描函式。"""
 
         if target_kind == TargetKind.COMMENTS:
-            return self.scan_comments_target_page
+            return self.comments_commit_ready_scan_page
         return self.scan_page

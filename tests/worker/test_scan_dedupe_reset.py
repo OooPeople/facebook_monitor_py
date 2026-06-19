@@ -398,9 +398,7 @@ def test_startup_runtime_cleanup_preserves_notification_state(
 
         assert cleanup_result.seen_items == 0
         assert cleanup_result.scan_scope_state == 0
-        assert app.repositories.scan_scope_state.is_initialized(
-            reloaded_target.scope_id
-        )
+        assert app.repositories.scan_scope_state.is_initialized(reloaded_target.scope_id)
         config = app.services.targets.get_config_for_target(reloaded_target)
         new_match_result = finalize_scan_items(
             app=app,
@@ -442,18 +440,14 @@ def test_startup_runtime_cleanup_preserves_notification_state(
         assert new_match_result.new_count == 1
         assert not new_match_result.baseline_mode
         assert (
-            new_match_result.latest_items[0].debug_metadata["classification"][
-                "eligible_for_notify"
-            ]
+            new_match_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"]
             is True
         )
         assert len(new_match_result.notification_payloads) == 1
         assert repeat_result.new_count == 0
         assert not repeat_result.baseline_mode
         assert (
-            repeat_result.latest_items[0].debug_metadata["classification"][
-                "eligible_for_notify"
-            ]
+            repeat_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"]
             is False
         )
         assert repeat_result.notification_payloads == ()
@@ -518,13 +512,9 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
         assert reloaded_target is not None
         app.repositories.maintenance.clear_startup_runtime_data()
 
-        assert app.repositories.scan_scope_state.is_initialized(
-            reloaded_target.scope_id
-        )
+        assert app.repositories.scan_scope_state.is_initialized(reloaded_target.scope_id)
 
-        clear_result = app.services.targets.reset_target_notification_state(
-            reloaded_target.id
-        )
+        clear_result = app.services.targets.reset_target_notification_state(reloaded_target.id)
         config = app.services.targets.get_config_for_target(reloaded_target)
         second_result = finalize_scan_items(
             app=app,
@@ -552,15 +542,11 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
         assert clear_result.dedupe_epoch_after == 1
         assert clear_result.scan_scope_initialized_before is True
         assert clear_result.scan_scope_initialized_after is True
-        assert app.repositories.scan_scope_state.is_initialized(
-            reloaded_target.scope_id
-        )
+        assert app.repositories.scan_scope_state.is_initialized(reloaded_target.scope_id)
         assert second_result.new_count == 1
         assert not second_result.baseline_mode
         assert (
-            second_result.latest_items[0].debug_metadata["classification"][
-                "eligible_for_notify"
-            ]
+            second_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"]
             is True
         )
         assert len(second_result.notification_payloads) == 1

@@ -19,8 +19,8 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
-from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async
+from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_sync_and_finalize
+from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async_commit_ready
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
@@ -329,9 +329,8 @@ class FakeScrollableCommentsPage(FakeCommentsPage):
         if "__facebookMonitorCommentScrollSnapshot" in script and "targetPositions" in script:
             self.snapshot_captured = True
             return {"captured": True, "targetCount": 2, "targetLabels": ["div role=dialog"]}
-        if (
-            script.lstrip().startswith("async ()")
-            or ("collectCommentScrollTargets" in script and "loadMoreMode" in script)
+        if script.lstrip().startswith("async ()") or (
+            "collectCommentScrollTargets" in script and "loadMoreMode" in script
         ):
             self.scroll_count += 1
             self.visible_count += 1
@@ -397,9 +396,7 @@ class FakeDuplicatedCommentTextPage(FakeCommentsPage):
 
         result = super().evaluate(script, payload)
         if isinstance(result, dict) and result.get("items"):
-            result["items"][0]["text"] = (
-                "這是一則有票券關鍵字的留言 這是一則有票券關鍵字的留言"
-            )
+            result["items"][0]["text"] = "這是一則有票券關鍵字的留言 這是一則有票券關鍵字的留言"
         return result
 
 
@@ -412,7 +409,9 @@ def _activate_target(
     return app.services.targets.restart_target_monitoring(target.id)
 
 
-def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: Path) -> None:
+def test_scan_comments_target_page_sync_and_finalize_records_latest_scan_and_seen_scope(
+    tmp_path: Path,
+) -> None:
     """comments worker 會寫入 seen/history/latest scan，且使用 comments scope。"""
 
     db_path = tmp_path / "app.db"
@@ -428,8 +427,7 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -443,7 +441,7 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_comments_target_page(
+        summary = scan_comments_target_page_sync_and_finalize(
             page=FakeCommentsPage(),
             app=app,
             target=target,
@@ -482,7 +480,7 @@ def test_scan_comments_target_page_records_latest_scan_and_seen_scope(tmp_path: 
     assert "類型：留言" in sent[0][2]
 
 
-def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
+def test_scan_comments_target_page_sync_and_finalize_skips_when_sort_adjust_is_unconfirmed(
     tmp_path: Path,
 ) -> None:
     """留言排序未確認時不寫 seen/history/latest/notification，避免舊留言誤通知。"""
@@ -495,8 +493,7 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -528,7 +525,7 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_comments_target_page(
+        summary = scan_comments_target_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -559,7 +556,7 @@ def test_scan_comments_target_page_skips_when_sort_adjust_is_unconfirmed(
     assert notifications == []
 
 
-def test_scan_comments_target_page_async_returns_protective_skip_without_db_write(
+def test_scan_comments_target_page_async_commit_ready_returns_protective_skip_without_db_write(
     tmp_path: Path,
 ) -> None:
     """async resident comments protective skip 應先回傳 side-effect-free result。"""
@@ -572,8 +569,7 @@ def test_scan_comments_target_page_async_returns_protective_skip_without_db_writ
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -588,7 +584,7 @@ def test_scan_comments_target_page_async_returns_protective_skip_without_db_writ
         assert config is not None
 
         result = asyncio.run(
-            scan_comments_target_page_async(
+            scan_comments_target_page_async_commit_ready(
                 page=page,
                 app=app,
                 target=target,
@@ -614,7 +610,7 @@ def test_scan_comments_target_page_async_returns_protective_skip_without_db_writ
     assert notifications == []
 
 
-def test_scan_comments_target_page_async_returns_success_result_without_db_write(
+def test_scan_comments_target_page_async_commit_ready_returns_success_result_without_db_write(
     tmp_path: Path,
 ) -> None:
     """async resident comments success 應回傳 commit-ready result，不直接 finalize。"""
@@ -627,8 +623,7 @@ def test_scan_comments_target_page_async_returns_success_result_without_db_write
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -643,7 +638,7 @@ def test_scan_comments_target_page_async_returns_success_result_without_db_write
         assert config is not None
 
         result = asyncio.run(
-            scan_comments_target_page_async(
+            scan_comments_target_page_async_commit_ready(
                 page=page,
                 app=app,
                 target=target,
@@ -678,7 +673,7 @@ def test_scan_comments_target_page_async_returns_success_result_without_db_write
     assert pending_outbox == []
 
 
-def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
+def test_scan_comments_target_page_sync_and_finalize_escalates_third_sort_unconfirmed(
     tmp_path: Path,
 ) -> None:
     """comments 排序未確認連續三輪後，升級交給 scan failure policy。"""
@@ -691,8 +686,7 @@ def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(auto_adjust_sort=True),
             )
@@ -701,7 +695,7 @@ def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_comments_target_page(
+        scan_comments_target_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -709,7 +703,7 @@ def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
             scroll_rounds=3,
             scroll_wait_ms=0,
         )
-        scan_comments_target_page(
+        scan_comments_target_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -719,7 +713,7 @@ def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
         )
 
         with pytest.raises(WorkerFailure) as excinfo:
-            scan_comments_target_page(
+            scan_comments_target_page_sync_and_finalize(
                 page=page,
                 app=app,
                 target=target,
@@ -741,7 +735,7 @@ def test_scan_comments_target_page_escalates_third_sort_unconfirmed(
     assert scan_count == 2
 
 
-def test_scan_comments_target_page_skips_when_sort_control_is_missing(
+def test_scan_comments_target_page_sync_and_finalize_skips_when_sort_control_is_missing(
     tmp_path: Path,
 ) -> None:
     """comments 缺排序控制時不套用 posts 的缺排序控制放寬特例。"""
@@ -754,8 +748,7 @@ def test_scan_comments_target_page_skips_when_sort_control_is_missing(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -767,7 +760,7 @@ def test_scan_comments_target_page_skips_when_sort_control_is_missing(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_comments_target_page(
+        summary = scan_comments_target_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,
@@ -796,7 +789,7 @@ def test_scan_comments_target_page_skips_when_sort_control_is_missing(
     assert notifications == []
 
 
-def test_scan_comments_target_page_raises_content_unavailable_before_sort(
+def test_scan_comments_target_page_sync_and_finalize_raises_content_unavailable_before_sort(
     tmp_path: Path,
 ) -> None:
     """parent post 不可見時應分類成連結失效，不應落到留言排序失敗。"""
@@ -809,8 +802,7 @@ def test_scan_comments_target_page_raises_content_unavailable_before_sort(
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(auto_adjust_sort=True),
             )
@@ -820,7 +812,7 @@ def test_scan_comments_target_page_raises_content_unavailable_before_sort(
         assert config is not None
 
         with pytest.raises(WorkerFailure) as exc_info:
-            scan_comments_target_page(
+            scan_comments_target_page_sync_and_finalize(
                 page=page,
                 app=app,
                 target=target,
@@ -833,7 +825,7 @@ def test_scan_comments_target_page_raises_content_unavailable_before_sort(
     assert not page.sort_adjusted
 
 
-def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notification(
+def test_scan_comments_target_page_sync_and_finalize_collapses_duplicate_comment_text_in_notification(
     tmp_path: Path,
 ) -> None:
     """comments worker 會沿用共用清理語義，避免通知內文重複兩次。"""
@@ -851,8 +843,7 @@ def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notificat
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 group_name="測試社團",
                 config=TargetConfigPatch(
@@ -866,7 +857,7 @@ def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notificat
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        scan_comments_target_page(
+        scan_comments_target_page_sync_and_finalize(
             page=FakeDuplicatedCommentTextPage(),
             app=app,
             target=target,
@@ -880,7 +871,9 @@ def test_scan_comments_target_page_collapses_duplicate_comment_text_in_notificat
     assert latest_items[0].text == "這是一則有票券關鍵字的留言"
 
 
-def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) -> None:
+def test_scan_comments_target_page_sync_and_finalize_uses_nested_scroll_load_more(
+    tmp_path: Path,
+) -> None:
     """comments D3 會使用 nested scroll 收集到目標數量並保存診斷。"""
 
     db_path = tmp_path / "app.db"
@@ -892,8 +885,7 @@ def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) 
                 group_id="222518561920110",
                 parent_post_id="2187454285426518",
                 canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/"
-                    "2187454285426518"
+                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -908,7 +900,7 @@ def test_scan_comments_target_page_uses_nested_scroll_load_more(tmp_path: Path) 
         assert config.max_items_per_scan == 2
         assert config.auto_load_more is True
 
-        summary = scan_comments_target_page(
+        summary = scan_comments_target_page_sync_and_finalize(
             page=page,
             app=app,
             target=target,

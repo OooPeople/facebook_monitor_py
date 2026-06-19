@@ -205,8 +205,7 @@ def infer_scan_stop_reason(
         return "scroll_stalled"
     if (
         max(scroll_rounds, 0) > 0
-        and round_stats[-1].stagnant_windows
-        >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT
+        and round_stats[-1].stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT
     ):
         return "stagnant_windows"
     if round_stats[-1].round_index >= max(scroll_rounds, 0):

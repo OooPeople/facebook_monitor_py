@@ -105,8 +105,7 @@ def decide_resident_failure_attempt(
         failure_decision=decision,
         discard_page=decision.discard_page,
         request_runtime_restart=(
-            request_runtime_restart
-            and decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
+            request_runtime_restart and decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
         ),
     )
 
@@ -160,9 +159,7 @@ def failure_record_decision_for_unknown_exception(
     """把一般 exception 分類成 failure finalize request。"""
 
     reason = classify_wrapped_playwright_exception(exc)
-    source: ScanFailureSource = (
-        "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
-    )
+    source: ScanFailureSource = "playwright" if reason != UNKNOWN_REASON else "unknown_exception"
     return ResidentFailureRecordDecision(
         reason=reason,
         message=str(exc),

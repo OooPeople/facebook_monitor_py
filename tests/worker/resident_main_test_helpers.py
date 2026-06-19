@@ -14,15 +14,17 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.resident_main_executor_types import (
+    AsyncCommitReadyScanCallable,
+)
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
-def as_async_scan_callable(scan_page: object) -> AsyncScanCallable:
+def as_async_scan_callable(scan_page: object) -> AsyncCommitReadyScanCallable:
     """測試用 cast：允許 fake scanner 刻意模擬 formal path 邊界案例。"""
 
-    return cast(AsyncScanCallable, scan_page)
+    return cast(AsyncCommitReadyScanCallable, scan_page)
 
 
 class FakeAsyncLocator:
@@ -114,9 +116,7 @@ def build_success_scan_result_for_test(
 ) -> SuccessScanResult:
     """建立 resident formal async 測試用的最小 commit-ready success result。"""
 
-    item_kind = (
-        ItemKind.COMMENT if target.target_kind == TargetKind.COMMENTS else ItemKind.POST
-    )
+    item_kind = ItemKind.COMMENT if target.target_kind == TargetKind.COMMENTS else ItemKind.POST
     items: tuple[NormalizedScanItem, ...]
     if item_key:
         items = (

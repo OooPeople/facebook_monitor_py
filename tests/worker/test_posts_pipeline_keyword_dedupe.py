@@ -10,12 +10,12 @@ from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
 
 
-def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_supports_keyword_rules(tmp_path: Path) -> None:
     """worker 使用分號 OR、空白 AND 與 exclude 規則。"""
 
     db_path = tmp_path / "app.db"
@@ -34,7 +34,7 @@ def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -49,7 +49,9 @@ def test_scan_posts_page_supports_keyword_rules(tmp_path: Path) -> None:
         assert latest_items[1].matched_keyword == ""
 
 
-def test_scan_posts_page_empty_include_does_not_match(tmp_path: Path) -> None:
+def test_scan_posts_page_sync_and_finalize_empty_include_does_not_match(
+    tmp_path: Path,
+) -> None:
     """未設定 include 時不應產生命中或通知。"""
 
     db_path = tmp_path / "app.db"
@@ -64,7 +66,7 @@ def test_scan_posts_page_empty_include_does_not_match(tmp_path: Path) -> None:
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=FakePage(),
             app=app,
             target=target,
@@ -78,7 +80,7 @@ def test_scan_posts_page_empty_include_does_not_match(tmp_path: Path) -> None:
         assert [item.matched_keyword for item in latest_items] == ["", ""]
 
 
-def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
+def test_scan_posts_page_sync_and_finalize_uses_key_aliases_to_prevent_duplicate_notification(
     tmp_path: Path,
 ) -> None:
     """同一貼文 permalink 與 fallback 抽取不一致時，不會重複通知。"""
@@ -127,7 +129,7 @@ def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        first_summary = scan_posts_page(
+        first_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(first_items),
             app=app,
             target=target,
@@ -136,7 +138,7 @@ def test_scan_posts_page_uses_key_aliases_to_prevent_duplicate_notification(
             scroll_wait_ms=0,
             notification_sender=fake_sender,
         )
-        second_summary = scan_posts_page(
+        second_summary = scan_posts_page_sync_and_finalize(
             page=FakePage(second_items),
             app=app,
             target=target,

@@ -39,12 +39,12 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
-from facebook_monitor.worker.comments_pipeline import scan_comments_target_page
+from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_sync_and_finalize
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import ResidentTarget
@@ -86,8 +86,8 @@ class _SyncFallbackTargetLoad:
     early_result: _SyncFallbackAttemptResult | None = None
 
 
-class ResidentScanCallable(Protocol):
-    """定義 sync fallback worker 可注入的掃描函式介面。"""
+class SyncFinalizingScanCallable(Protocol):
+    """定義 sync fallback 可注入且會直接寫 visible scan state 的掃描函式。"""
 
     def __call__(
         self,
@@ -100,7 +100,7 @@ class ResidentScanCallable(Protocol):
         scroll_wait_ms: int,
         commit_guard: ScanCommitGuard | None = None,
     ) -> PostsScanSummary | CommentsScanSummary:
-        """掃描單一 target page 並回傳摘要。"""
+        """掃描單一 target page、寫入 scan state，並回傳摘要。"""
 
 
 class SyncResidentPagePool:
@@ -161,19 +161,19 @@ def prepare_sync_resident_page(
     page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
 
 
-def select_sync_resident_scan_page(target: TargetDescriptor) -> ResidentScanCallable:
-    """依 target kind 選擇 sync fallback 掃描函式。"""
+def select_sync_finalizing_scan_page(target: TargetDescriptor) -> SyncFinalizingScanCallable:
+    """依 target kind 選擇 sync fallback finalizing 掃描函式。"""
 
     if target.target_kind == TargetKind.COMMENTS:
-        return scan_comments_target_page
-    return scan_posts_page
+        return scan_comments_target_page_sync_and_finalize
+    return scan_posts_page_sync_and_finalize
 
 
 def run_sync_resident_fallback_loop(
     options: ResidentRuntimeOptions,
     *,
     context_factory: ContextFactory | None = None,
-    scan_page: ResidentScanCallable = scan_posts_page,
+    scan_page: SyncFinalizingScanCallable = scan_posts_page_sync_and_finalize,
     sleep_fn: SleepCallable = sleep,
     should_stop: StopCheckCallable | None = None,
     on_cycle: CycleObserver | None = None,
@@ -191,9 +191,8 @@ def run_sync_resident_fallback_loop(
         schedule_planner = TargetSchedulePlanner()
         try:
             stop_requested = should_stop or _never_stop
-            while (
-                not stop_requested()
-                and (options.max_cycles is None or cycle_index < options.max_cycles)
+            while not stop_requested() and (
+                options.max_cycles is None or cycle_index < options.max_cycles
             ):
                 cycle_index += 1
                 summary = run_sync_resident_fallback_cycle(
@@ -220,7 +219,7 @@ def run_sync_resident_fallback_cycle(
     *,
     options: ResidentRuntimeOptions,
     page_pool: SyncResidentPagePool,
-    scan_page: ResidentScanCallable,
+    scan_page: SyncFinalizingScanCallable,
     cycle_index: int,
     schedule_planner: TargetSchedulePlanner | None = None,
 ) -> ResidentCycleSummary:
@@ -273,7 +272,7 @@ def _run_sync_resident_target_attempt(
     *,
     options: ResidentRuntimeOptions,
     page_pool: SyncResidentPagePool,
-    scan_page: ResidentScanCallable,
+    scan_page: SyncFinalizingScanCallable,
     due_target: DueTarget,
     worker_id: str,
     planner: TargetSchedulePlanner,
@@ -439,7 +438,7 @@ def _with_sync_fallback_page_counts(
 def _scan_sync_resident_target_attempt(
     *,
     options: ResidentRuntimeOptions,
-    scan_page: ResidentScanCallable,
+    scan_page: SyncFinalizingScanCallable,
     resident_target: Any,
     target_id: str,
     page: Any,
@@ -461,7 +460,7 @@ def _scan_sync_resident_target_attempt(
         selected_scan_page = (
             scan_page
             if resident_target.target.target_kind == TargetKind.POSTS
-            else select_sync_resident_scan_page(resident_target.target)
+            else select_sync_finalizing_scan_page(resident_target.target)
         )
         selected_scan_page(
             page=page,

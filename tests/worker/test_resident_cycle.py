@@ -204,7 +204,7 @@ def test_resident_main_cycle_dispatches_comments_target_to_comments_worker(
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             scan_page=as_async_scan_callable(fake_post_scan_page),
-            scan_comments_target_page=fake_comment_scan_page,
+            comments_commit_ready_scan_page=fake_comment_scan_page,
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -404,7 +404,7 @@ def test_resident_main_cycle_commits_comments_protective_skip_result(
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             scan_page=as_async_scan_callable(fake_post_scan_page),
-            scan_comments_target_page=fake_comment_scan_page,
+            comments_commit_ready_scan_page=fake_comment_scan_page,
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )

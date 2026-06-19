@@ -18,7 +18,7 @@ from facebook_monitor.facebook.sort_results import FEED_SORT_NEWEST_LABEL
 from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.posts_pipeline import build_feed_seen_stop_predicate
-from facebook_monitor.worker.posts_pipeline import scan_posts_page
+from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import build_post_payload
 from tests.worker.posts_pipeline_test_helpers import mark_post_payload_seen
@@ -27,7 +27,7 @@ from tests.worker.posts_pipeline_test_helpers import SeenStopFakePage
 from tests.worker.posts_pipeline_test_helpers import table_count
 
 
-def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
+def test_scan_posts_page_sync_and_finalize_stops_after_four_consecutive_seen_posts(
     tmp_path: Path,
 ) -> None:
     """feed seen-stop 從最上方開始，連續四篇 seen 即跳過深度掃描。"""
@@ -53,7 +53,7 @@ def test_scan_posts_page_stops_after_four_consecutive_seen_posts(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -186,7 +186,7 @@ def test_feed_seen_stop_ignores_legacy_seen_outside_retention_horizon(
         assert not connection.in_transaction
 
 
-def test_scan_posts_page_keeps_seen_stop_when_sort_control_is_absent(
+def test_scan_posts_page_sync_and_finalize_keeps_seen_stop_when_sort_control_is_absent(
     tmp_path: Path,
 ) -> None:
     """posts 找不到排序控制但已放行掃描時，仍保留 seen-stop 防止深度掃描。"""
@@ -212,7 +212,7 @@ def test_scan_posts_page_keeps_seen_stop_when_sort_control_is_absent(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,
@@ -275,7 +275,7 @@ def test_seen_stop_latest_scan_snapshot_carries_previous_items_to_target_count(
         config = app.repositories.configs.get_for_target(target)
         assert config is not None
 
-        summary = scan_posts_page(
+        summary = scan_posts_page_sync_and_finalize(
             page=fake_page,
             app=app,
             target=target,

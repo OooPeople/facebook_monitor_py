@@ -165,7 +165,7 @@ def build_comments_sort_unconfirmed_skip_metadata(
     )
 
 
-def scan_comments_target_page(
+def scan_comments_target_page_sync_and_finalize(
     *,
     page: SyncScannablePageLike,
     app: ApplicationContext,
@@ -178,7 +178,7 @@ def scan_comments_target_page(
     discord_notification_sender: DiscordSender = send_discord_notification,
     commit_guard: ScanCommitGuard | None = None,
 ) -> CommentsScanSummary:
-    """掃描目前頁面可見留言，並寫入 comments latest scan state。"""
+    """sync/fallback 掃描目前留言頁，並直接寫入 visible scan state。"""
 
     ensure_comments_target(target)
     ensure_sync_page_scannable(page)
@@ -255,7 +255,7 @@ def scan_comments_target_page(
     )
 
 
-async def scan_comments_target_page_async(
+async def scan_comments_target_page_async_commit_ready(
     *,
     page: AsyncScannablePageLike,
     app: ApplicationContext,
@@ -264,7 +264,7 @@ async def scan_comments_target_page_async(
     scroll_rounds: int = 0,
     scroll_wait_ms: int = 0,
 ) -> SuccessScanResult | ProtectiveSkipScanResult:
-    """async 版本：掃描留言；visible scan state 交由 coordinator commit。"""
+    """formal async resident 掃描留言；visible scan state 交由 coordinator commit。"""
 
     ensure_comments_target(target)
     await ensure_async_page_scannable(page)

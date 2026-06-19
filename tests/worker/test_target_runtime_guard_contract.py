@@ -31,6 +31,10 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/resident_shared.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_coordinator.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_outcomes.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_permissions.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_requests.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_side_effects.py",
+    ROOT / "src/facebook_monitor/worker/scan_commit_validation.py",
     ROOT / "src/facebook_monitor/worker/scan_finalize.py",
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",
     ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
@@ -40,8 +44,8 @@ FORMAL_ASYNC_SCANNER_FILES = (
     ROOT / "src/facebook_monitor/worker/comments_pipeline.py",
 )
 FORMAL_ASYNC_SCANNER_FUNCTIONS = {
-    "scan_posts_page_async",
-    "scan_comments_target_page_async",
+    "scan_posts_page_async_commit_ready",
+    "scan_comments_target_page_async_commit_ready",
 }
 APPLICATION_RUNTIME_SERVICE_FILES = (
     APPLICATION_DIR / "services.py",
@@ -131,6 +135,7 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
 SCAN_COMMIT_HELPERS = {
     "commit_guarded_protective_skip",
     "commit_success",
+    "classify_scan_commit_permission",
     "FailureScanCommitRequest",
     "record_guarded_skipped_scan",
     "record_guarded_scan_failure_decision_for_db",

@@ -590,7 +590,7 @@ def test_download_and_verify_update_rejects_existing_attempt_dir_symlink(
         attempt_link.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"directory symlink unavailable: {exc}")
-    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
+    monkeypatch.setattr("facebook_monitor.updates.download_paths.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(
@@ -625,7 +625,7 @@ def test_download_and_verify_update_rejects_existing_verified_attempt_dir(
     existing_set.mkdir()
     marker = existing_set / "keep.txt"
     marker.write_text("keep", encoding="utf-8")
-    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
+    monkeypatch.setattr("facebook_monitor.updates.download_paths.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(
@@ -683,7 +683,7 @@ def test_download_and_verify_update_rejects_existing_attempt_asset_directory(
     destination_dir = tmp_path / "updates" / "0.1.0"
     attempt_dir = destination_dir / f"attempt-{FIXED_ATTEMPT_ID}"
     (attempt_dir / "facebook-monitor-0.1.0-windows-portable.zip").mkdir(parents=True)
-    monkeypatch.setattr("facebook_monitor.updates.download.uuid.uuid4", fixed_uuid4)
+    monkeypatch.setattr("facebook_monitor.updates.download_paths.uuid.uuid4", fixed_uuid4)
 
     result = asyncio.run(
         download_and_verify_update(

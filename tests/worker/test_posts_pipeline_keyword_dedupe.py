@@ -13,6 +13,7 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
+from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
 
 
 def test_scan_posts_page_sync_and_finalize_supports_keyword_rules(tmp_path: Path) -> None:
@@ -150,6 +151,7 @@ def test_scan_posts_page_sync_and_finalize_uses_key_aliases_to_prevent_duplicate
 
         assert first_summary.new_count == 1
         assert second_summary.new_count == 0
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path):
         assert len(sent_payloads) == 1

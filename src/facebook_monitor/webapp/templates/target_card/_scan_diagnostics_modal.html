@@ -1,0 +1,24 @@
+<dialog class="settings-modal scan-diagnostics-modal" data-scan-diagnostics-modal aria-labelledby="scan-diagnostics-title-{{ row.target.id }}">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3 id="scan-diagnostics-title-{{ row.target.id }}">掃描診斷</h3>
+        <p>{{ row.display_name }}</p>
+      </div>
+      <button class="button--icon" type="button" data-close-scan-diagnostics aria-label="關閉掃描診斷">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M18 6 6 18"/>
+          <path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </header>
+    <div class="modal-body scan-diagnostics-body scan-debug-details">
+      <div class="debug-summary">{{ row.latest_scan_diagnostics_summary }}</div>
+      <textarea class="debug-copy-source" readonly rows="12">{{ row.latest_scan_diagnostics_text }}</textarea>
+    </div>
+    <footer class="modal-footer">
+      <span class="field-caption">診斷內容只供排查掃描行為，不會影響 target 設定。</span>
+      <button class="debug-copy-button" type="button">複製掃描診斷</button>
+    </footer>
+  </div>
+</dialog>

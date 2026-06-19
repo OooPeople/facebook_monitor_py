@@ -35,7 +35,10 @@ from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.facebook.group_metadata import (
     AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
 )
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_dispatcher import (
+    wake_notification_outbox_dispatcher_for_db,
+)
+from facebook_monitor.notifications.outbox_dispatch_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
@@ -566,9 +569,11 @@ def _should_log_resident_scheduler_tick_summary(summary: ResidentCycleSummary) -
 
 
 def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int:
-    """每輪 tick drain 已存在的 pending outbox，避免 after-commit hook 漏跑後卡住。"""
+    """喚醒 outbox dispatcher；standalone fallback 才同步 drain pending rows。"""
 
     try:
+        if wake_notification_outbox_dispatcher_for_db(options.db_path):
+            return 0
         return dispatch_new_pending_notification_outbox_for_db(db_path=options.db_path)
     except sqlite3.OperationalError as exc:
         if _is_sqlite_database_locked(exc):

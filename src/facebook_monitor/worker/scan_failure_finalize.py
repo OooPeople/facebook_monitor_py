@@ -28,7 +28,7 @@ from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
 from facebook_monitor.core.user_messages import format_failure_retry_exhausted_message
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_enqueue_service import (
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry

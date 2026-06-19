@@ -20,6 +20,9 @@ from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.repositories.notification_outbox import (
     NotificationOutboxRepository,
 )
+from facebook_monitor.notifications.outbox_cleanup_service import (
+    clear_target_notification_outbox,
+)
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
 from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
 from facebook_monitor.persistence.repositories.notification_dedupe import (
@@ -149,7 +152,10 @@ class TargetMonitoringCommands:
         )
         dedupe_epoch_after = self.dedupe_state.advance_epoch(target.id)
         self.scan_scope_state.mark_initialized(target.scope_id)
-        notification_outbox_rows = self.notification_outbox.clear_by_target(target.id)
+        notification_outbox_rows = clear_target_notification_outbox(
+            notification_outbox=self.notification_outbox,
+            target_id=target.id,
+        )
         seen_items = self.seen_items.clear_scope(target.scope_id)
         return ResetTargetNotificationStateResult(
             notification_outbox_rows=notification_outbox_rows,

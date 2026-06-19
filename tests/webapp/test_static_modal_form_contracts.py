@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
 from tests.webapp.static_contract_helpers import input_tags as _input_tags
+from tests.webapp.static_contract_helpers import target_card_template_family_text
 
 
 def test_sidebar_template_modal_keeps_shell_background_and_title_note() -> None:
@@ -161,8 +162,8 @@ def test_target_settings_modal_attaches_controls_to_config_form() -> None:
 def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:
     """群組模板套用確認必須列出批次覆蓋範圍與影響 target 摘要。"""
 
-    sidebar_layout_js = Path(
-        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    sidebar_templates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_templates_ui.js"
     ).read_text(encoding="utf-8")
     dialogs_js = Path("src/facebook_monitor/webapp/static/dashboard/dialogs.js").read_text(
         encoding="utf-8"
@@ -171,27 +172,27 @@ def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:
         encoding="utf-8"
     )
 
-    assert "套用範圍：" in sidebar_layout_js
-    assert "影響 target：" in sidebar_layout_js
-    assert "會覆蓋這些 target 既有設定。" in sidebar_layout_js
-    assert "不會影響群組外 target。" in sidebar_layout_js
-    assert "此操作沒有自動復原。" in sidebar_layout_js
-    assert "以及另外" in sidebar_layout_js
+    assert "套用範圍：" in sidebar_templates_js
+    assert "影響 target：" in sidebar_templates_js
+    assert "會覆蓋這些 target 既有設定。" in sidebar_templates_js
+    assert "不會影響群組外 target。" in sidebar_templates_js
+    assert "此操作沒有自動復原。" in sidebar_templates_js
+    assert "以及另外" in sidebar_templates_js
     assert "details = []" in dialogs_js
     assert "app-dialog-detail-list" in dialogs_js
     assert ".app-dialog-detail-list" in modals_css
-    assert 'import { saveScrollPosition } from "/static/dashboard/state.js";' in (sidebar_layout_js)
-    assert "const reloadDashboardPreservingScroll = () =>" in sidebar_layout_js
-    assert "saveScrollPosition();\n  window.location.reload();" in sidebar_layout_js
-    assert "reloadDashboardPreservingScroll();" in sidebar_layout_js
+    assert 'import { saveScrollPosition } from "/static/dashboard/state.js";' in (
+        sidebar_templates_js
+    )
+    assert "const reloadDashboardPreservingScroll = () =>" in sidebar_templates_js
+    assert "saveScrollPosition();\n  window.location.reload();" in sidebar_templates_js
+    assert "reloadDashboardPreservingScroll();" in sidebar_templates_js
 
 
 def test_keyword_ignore_phrase_placeholder_uses_semicolon_separator() -> None:
     """排除字忽略片語 placeholder 必須使用和 parser 一致的分號範例。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
 
     assert 'placeholder="例如：全收;回收"' in card_template
     assert "例如：全收, 回收" not in card_template
@@ -200,9 +201,7 @@ def test_keyword_ignore_phrase_placeholder_uses_semicolon_separator() -> None:
 def test_keyword_ignore_phrase_help_uses_short_examples_without_footer_note() -> None:
     """排除字忽略片語說明只保留簡短規則與兩個例子。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     modals_css = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
         encoding="utf-8"
     )
@@ -220,9 +219,7 @@ def test_keyword_ignore_phrase_help_uses_short_examples_without_footer_note() ->
 def test_include_keyword_help_matches_keyword_rule_copy() -> None:
     """包含關鍵字說明維持分號 OR / 空格 AND 語義。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     target_card_css = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
         encoding="utf-8"
     )
@@ -266,7 +263,7 @@ def test_button_variants_use_shared_button_modifier_classes() -> None:
         encoding="utf-8"
     )
     template_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in templates_dir.glob("*.html")
+        path.read_text(encoding="utf-8") for path in templates_dir.rglob("*.html")
     )
 
     assert ".button--primary" in styles
@@ -339,7 +336,7 @@ def test_refresh_mode_options_put_floating_before_fixed() -> None:
     )
     assert '{% set refresh_mode_payload_name = "refresh_mode" %}' in sidebar_group_template
     assert "sidebarTemplatePayloadName" in Path(
-        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_templates_ui.js"
     ).read_text(encoding="utf-8")
     assert '|| "floating"' in forms_js
 
@@ -347,13 +344,13 @@ def test_refresh_mode_options_put_floating_before_fixed() -> None:
 def test_sidebar_template_apply_confirmation_mentions_full_template_save() -> None:
     """群組模板 section 套用前會明確提示會先儲存整份模板。"""
 
-    sidebar_layout_js = Path(
-        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    sidebar_templates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_templates_ui.js"
     ).read_text(encoding="utf-8")
 
-    assert "套用前會先儲存目前整份群組模板；本次只會覆蓋所選區段。" in sidebar_layout_js
-    assert "套用前會先儲存目前整份群組模板；本次會覆蓋全部區段。" in sidebar_layout_js
-    assert 'section === "all"' in sidebar_layout_js
+    assert "套用前會先儲存目前整份群組模板；本次只會覆蓋所選區段。" in sidebar_templates_js
+    assert "套用前會先儲存目前整份群組模板；本次會覆蓋全部區段。" in sidebar_templates_js
+    assert 'section === "all"' in sidebar_templates_js
 
 
 def test_hit_records_modal_renders_keyword_segments_without_inner_html() -> None:
@@ -395,9 +392,7 @@ def test_partial_update_syncs_rename_modal_name_without_overwriting_active_input
 def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     """背景 partial update 必須同步開始/停止按鈕與 runtime error/skip reason。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     partial_updates_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
     ).read_text(encoding="utf-8")

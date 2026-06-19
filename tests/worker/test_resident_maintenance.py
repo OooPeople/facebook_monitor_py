@@ -25,6 +25,13 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.notifications.outbox_dispatcher import NotificationOutboxDispatcher
+from facebook_monitor.notifications.outbox_dispatcher import (
+    register_notification_outbox_dispatcher,
+)
+from facebook_monitor.notifications.outbox_dispatcher import (
+    unregister_notification_outbox_dispatcher,
+)
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
@@ -831,6 +838,49 @@ def test_resident_scheduler_tick_dispatches_existing_pending_outbox(
     asyncio.run(run_test())
 
     assert dispatched_db_paths == [db_path]
+
+
+def test_dispatch_pending_notification_outbox_wakes_registered_dispatcher(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Web UI 主路徑已有 dispatcher 時，resident tick 不做同步外部 dispatch。"""
+
+    db_path = tmp_path / "app.db"
+    wake_dispatches: list[Path] = []
+
+    def fake_background_dispatch(**kwargs: object) -> int:
+        db_path_arg = kwargs["db_path"]
+        assert isinstance(db_path_arg, Path)
+        wake_dispatches.append(db_path_arg)
+        return 0
+
+    def unexpected_sync_dispatch(**_kwargs: object) -> int:
+        raise AssertionError("registered dispatcher should handle pending outbox")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",
+        unexpected_sync_dispatch,
+    )
+    dispatcher = NotificationOutboxDispatcher(
+        db_path=db_path,
+        dispatch_pending=fake_background_dispatch,
+        stop_timeout_seconds=1,
+    )
+    dispatcher.start(wake_on_start=False)
+    register_notification_outbox_dispatcher(db_path, dispatcher)
+    try:
+        dispatched_count = dispatch_pending_notification_outbox(
+            ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            )
+        )
+    finally:
+        unregister_notification_outbox_dispatcher(db_path, dispatcher)
+        assert dispatcher.stop(timeout_seconds=1)
+
+    assert dispatched_count == 0
 
 
 def test_dispatch_pending_notification_outbox_treats_sqlite_lock_as_transient(

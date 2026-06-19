@@ -92,6 +92,27 @@ class FakeDashboardRevisionNotifier:
         self.woken_count += 1
 
 
+class FakeNotificationOutboxDispatcher:
+    """測試用 notification outbox dispatcher。"""
+
+    def __init__(self) -> None:
+        self.started_count = 0
+        self.stopped_count = 0
+        self.wake_on_start_values: list[bool] = []
+
+    def start(self, *, wake_on_start: bool = True) -> None:
+        """記錄 lifespan startup。"""
+
+        self.started_count += 1
+        self.wake_on_start_values.append(wake_on_start)
+
+    def stop(self) -> bool:
+        """記錄 lifespan shutdown。"""
+
+        self.stopped_count += 1
+        return True
+
+
 def assert_basic_security_headers(response: HttpResponse) -> None:
     """確認本機 Web UI response 帶基本瀏覽器安全 header。"""
 
@@ -295,10 +316,47 @@ def test_webui_lifespan_starts_and_stops_dashboard_revision_notifier(
     assert notifier.stopped_count == 1
 
 
+def test_webui_lifespan_starts_and_stops_notification_outbox_dispatcher(
+    tmp_path: Path,
+) -> None:
+    """Web UI lifespan 會啟停 process-local notification outbox dispatcher。"""
+
+    dispatcher = FakeNotificationOutboxDispatcher()
+    app = create_app(db_path=tmp_path / "app.db", profile_dir=tmp_path / "profile")
+    app.state.notification_outbox_dispatcher = dispatcher
+
+    with TestClient(app):
+        assert dispatcher.started_count == 1
+        assert dispatcher.wake_on_start_values == [True]
+        assert dispatcher.stopped_count == 0
+
+    assert dispatcher.stopped_count == 1
+
+
+def test_webui_lifespan_does_not_wake_notification_dispatcher_after_runtime_reset(
+    tmp_path: Path,
+) -> None:
+    """啟動時清 runtime data 不立刻 drain 舊 pending outbox，避免重建已清通知紀錄。"""
+
+    dispatcher = FakeNotificationOutboxDispatcher()
+    app = create_app(
+        db_path=tmp_path / "app.db",
+        profile_dir=tmp_path / "profile",
+        reset_runtime_data_on_startup=True,
+    )
+    app.state.notification_outbox_dispatcher = dispatcher
+
+    with TestClient(app):
+        assert dispatcher.started_count == 1
+        assert dispatcher.wake_on_start_values == [False]
+
+    assert dispatcher.stopped_count == 1
+
+
 def test_webui_shutdown_stops_dashboard_notifier_before_other_runtime(
     tmp_path: Path,
 ) -> None:
-    """shutdown 第一個步驟先停止 SSE notifier，避免 active stream 卡住收尾。"""
+    """shutdown 先停 SSE，再停 scheduler producer 與 outbox dispatcher。"""
 
     events: list[str] = []
 
@@ -329,6 +387,11 @@ def test_webui_shutdown_stops_dashboard_notifier_before_other_runtime(
             events.append("scheduler.stop")
             super().stop()
 
+    class OrderedNotificationOutboxDispatcher(FakeNotificationOutboxDispatcher):
+        def stop(self) -> bool:
+            events.append("outbox_dispatcher.stop")
+            return super().stop()
+
     app = create_app(
         db_path=tmp_path / "app.db",
         profile_dir=tmp_path / "profile",
@@ -336,6 +399,7 @@ def test_webui_shutdown_stops_dashboard_notifier_before_other_runtime(
         scheduler_manager=OrderedSchedulerManager(),
     )
     app.state.dashboard_revision_notifier = OrderedNotifier()
+    app.state.notification_outbox_dispatcher = OrderedNotificationOutboxDispatcher()
     app.state.bounded_retention_maintenance_runner = OrderedRunner()
 
     with TestClient(app):
@@ -343,9 +407,10 @@ def test_webui_shutdown_stops_dashboard_notifier_before_other_runtime(
 
     assert events == [
         "notifier.stop",
+        "scheduler.stop",
+        "outbox_dispatcher.stop",
         "retention.wait",
         "profile.close",
-        "scheduler.stop",
     ]
 
 
@@ -360,6 +425,7 @@ def test_webui_startup_failure_after_notifier_start_stops_notifier(
             raise RuntimeError("scheduler startup failed")
 
     notifier = FakeDashboardRevisionNotifier()
+    dispatcher = FakeNotificationOutboxDispatcher()
     scheduler_manager = FailingSchedulerManager()
     app = create_app(
         db_path=tmp_path / "app.db",
@@ -368,6 +434,7 @@ def test_webui_startup_failure_after_notifier_start_stops_notifier(
         auto_start_scheduler=True,
     )
     app.state.dashboard_revision_notifier = notifier
+    app.state.notification_outbox_dispatcher = dispatcher
 
     with pytest.raises(RuntimeError, match="scheduler startup failed"):
         with TestClient(app):
@@ -375,6 +442,8 @@ def test_webui_startup_failure_after_notifier_start_stops_notifier(
 
     assert notifier.started_count == 1
     assert notifier.stopped_count == 1
+    assert dispatcher.started_count == 1
+    assert dispatcher.stopped_count == 1
     assert scheduler_manager.stopped_count == 1
 
 

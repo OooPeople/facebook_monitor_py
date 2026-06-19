@@ -11,6 +11,17 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.notifications.desktop import DesktopNotificationResult
+from facebook_monitor.notifications.discord import DiscordConfig
+from facebook_monitor.notifications.discord import DiscordResult
+from facebook_monitor.notifications.ntfy import NtfyConfig
+from facebook_monitor.notifications.ntfy import NtfyResult
+from facebook_monitor.notifications.outbox_dispatch_service import (
+    dispatch_new_pending_notification_outbox,
+)
+from facebook_monitor.notifications.senders import DesktopSender
+from facebook_monitor.notifications.senders import DiscordSender
+from facebook_monitor.notifications.senders import NtfySender
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
 from facebook_monitor.worker.scan_finalize import finalize_scan_items as _finalize_scan_items
@@ -36,6 +47,52 @@ def record_protective_skip_for_test(**kwargs: Any) -> Any:
     return record_guarded_skipped_scan(commit_guard=commit_guard, **kwargs)
 
 
+def dispatch_pending_notifications_for_test(
+    *,
+    app: ApplicationContext,
+    ntfy_sender: NtfySender | None = None,
+    desktop_sender: DesktopSender | None = None,
+    discord_sender: DiscordSender | None = None,
+) -> int:
+    """測試用 outbox drain；預設 sender 不觸發任何外部通知。"""
+
+    return dispatch_new_pending_notification_outbox(
+        app=app,
+        ntfy_sender=ntfy_sender or _fake_success_ntfy_sender,
+        desktop_sender=desktop_sender or _fake_success_desktop_sender,
+        discord_sender=discord_sender or _fake_success_discord_sender,
+    )
+
+
+def _fake_success_ntfy_sender(
+    config: NtfyConfig,
+    title: str,
+    message: str,
+) -> NtfyResult:
+    """測試預設 ntfy sender：只回傳成功，不連外。"""
+
+    return NtfyResult(ok=True, status_code=200, message="ntfy_sent")
+
+
+def _fake_success_desktop_sender(
+    title: str,
+    message: str,
+) -> DesktopNotificationResult:
+    """測試預設 desktop sender：只回傳成功，不呼叫 OS 通知。"""
+
+    return DesktopNotificationResult(ok=True, status_code=None, message="desktop_sent")
+
+
+def _fake_success_discord_sender(
+    config: DiscordConfig,
+    title: str,
+    message: str,
+) -> DiscordResult:
+    """測試預設 Discord sender：只回傳成功，不送 webhook。"""
+
+    return DiscordResult(ok=True, status_code=204, message="discord_sent")
+
+
 def _activate_target(
     app: ApplicationContext,
     target: TargetDescriptor,
@@ -57,19 +114,18 @@ class RunningTargetFixture:
 
 
 def _stub_outbox_dispatch(monkeypatch: Any) -> list[Path]:
-    """攔截 after-commit outbox dispatch，避免測試打到外部通知服務。"""
+    """攔截 after-commit outbox dispatcher wake，避免測試打到外部通知服務。"""
 
     dispatch_calls: list[Path] = []
 
-    def fake_dispatch(**kwargs: object) -> int:
-        db_path = kwargs["db_path"]
+    def fake_wake(db_path: Path) -> bool:
         assert isinstance(db_path, Path)
         dispatch_calls.append(db_path)
-        return 1
+        return True
 
     monkeypatch.setattr(
-        "facebook_monitor.notifications.outbox_service.dispatch_new_pending_notification_outbox_for_db",
-        fake_dispatch,
+        "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",
+        fake_wake,
     )
     return dispatch_calls
 

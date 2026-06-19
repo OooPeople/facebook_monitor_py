@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 
 
@@ -18,3 +19,17 @@ def input_tags(template: str, field_name: str) -> list[str]:
         rf'<input\b(?=[^>]*\bname="{re.escape(field_name)}")[^>]*>',
         template,
     )
+
+
+def target_card_template_family_text() -> str:
+    """回傳 target card shell 與 partial family 文字，供 DOM contract 測試使用。"""
+
+    templates_dir = Path("src/facebook_monitor/webapp/templates")
+    parts = [
+        templates_dir.joinpath("_target_card.html").read_text(encoding="utf-8"),
+    ]
+    parts.extend(
+        path.read_text(encoding="utf-8")
+        for path in sorted(templates_dir.joinpath("target_card").glob("*.html"))
+    )
+    return "\n".join(parts)

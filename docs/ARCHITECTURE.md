@@ -10,6 +10,30 @@
 - async resident worker 是正式產品主路徑；one-shot 與 sync resident worker 僅作 fallback / debug tooling。
 - 新功能優先沿用 Python 版既有模組邊界、資料模型、diagnostics 與測試契約；若刻意改變既有產品語義，需在 handoff 中說明原因與風險。
 
+## 審查速覽表
+
+### 決策表
+
+| 範圍 | 目前決策 | 非目標 / 暫緩項目 | 驗證負責範圍 |
+|---|---|---|---|
+| 日常入口 | Web UI `facebook-monitor` | CLI/admin tools 作為日常使用者介面 | README、`docs/tooling.md` |
+| Worker 主路徑 | async resident worker | one-shot/sync worker 功能對齊 | worker tests、release validation |
+| Dashboard 更新 | 長 SSE + revision fallback polling | 短 SSE / 每個 client 各自長期讀 DB | Web UI tests、`docs/WEB_UI_CONTRACT.md` |
+| Notification dispatch | DB outbox + background dispatcher | 在 scan transaction / event loop 內做外部 I/O | notification / worker tests |
+| Updater 信任鏈 | signed manifest + SHA256 cross-check | OS 發布者身分簽章 | updater / release artifact tests |
+| Runtime cleanup | 只清可重建的 scan/debug snapshots | 把 dedupe/outbox/history 當 runtime data 清掉 | Web UI 啟動測試 |
+
+### 副作用邊界表
+
+| 副作用 | 允許負責者 | 不可發生的位置 | 清理 / 回滾期待 |
+|---|---|---|---|
+| Scan 可見寫入 | scan finalize / commit coordinator | Facebook extractor、UI route | rejection 時 guarded transaction rollback |
+| 通知入列 | scan finalize transaction | sender implementations | DB 內建立 idempotency reservation |
+| 通知發送 | outbox dispatch service / dispatcher | scan transaction、async resident event loop | claim status 記錄 sent / failed |
+| Runtime 狀態轉移 | target runtime service / repository | extractor、presenter、template | guarded owner-aware update |
+| Update 套用 | updater process | Web request handler、scanner | operation lock + handoff revalidation |
+| Support bundle 發布 | diagnostics support bundle | 任意 collector | 先寫暫存 artifact，再發布正式 artifact |
+
 ## 正式入口與本機邊界
 
 - Web UI：`facebook-monitor`
@@ -33,7 +57,7 @@
 - `facebook/`：Facebook route detection、permalink、DOM extraction、sort 與 scroll helper。
 - `worker/`：posts/comments scan pipeline、shared finalize、resident worker 與 fallback/debug workers。
 - `scheduler/`：target planner、runtime recovery、one-shot fallback scheduler。
-- `notifications/`：desktop / ntfy / Discord sender、safe diagnostics、channel dispatch、outbox service。
+- `notifications/`：desktop / ntfy / Discord sender、safe diagnostics、channel dispatch、outbox enqueue / dispatch service 與 process-local dispatcher。
 - `webapp/`：FastAPI assembly、routes、form models、read model、presenters、templates、static modules。
 - `scripts/`：低頻 admin、debug、internal tools；不得新增新的 `phase_*` script，也不得把 debug tool 包裝成日常入口。
 
@@ -68,8 +92,10 @@
 
 ## Notification 與 Secret
 
-- Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後才做外部 I/O。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
+- Notification 採 outbox boundary：scan transaction 先寫 match data、notification dedupe reservation 與 outbox，commit 成功後只喚醒 process-local background dispatcher；actual send 在 scan transaction / async resident event loop 之外由 dispatch service claim pending rows 後執行。`notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存投遞佇列與近期投遞狀態。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
+- notification outbox cleanup 不是一般 runtime cleanup：Settings 的「清除失敗通知」只清 failed rows；target「重置通知狀態」只清該 target 的 outbox rows；bounded retention 只短留 terminal outbox rows 並保護 pending / processing rows。
+- Web UI 啟動若要求清除 runtime/debug data，notification dispatcher 仍會啟動但不做 startup wake；既有 pending outbox rows 會保留到下一次 dispatcher wake，避免 runtime cleanup 剛清掉的 notification events 被舊 pending row 立刻重建。
 - notification failure 會保留安全化錯誤與內部分類摘要，用於 Settings health 與 support bundle 診斷；這不代表系統會自動 retry、補送或建立 dead-letter UI。
 - sender exception、manual test error、outbox last_error 與 notification event message 不得暴露 endpoint / token。
 - desktop notification 是 target-scoped compact message，正式摘要只包含 `社團`、`類型`、`命中` 三行，內容由共用 payload builder 產生；平台 sender 只負責投遞，不自行重組內容。

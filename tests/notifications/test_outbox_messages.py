@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_enqueue_service import (
     build_match_compact_notification_message,
 )
-from facebook_monitor.notifications.outbox_service import build_match_discord_notification_message
-from facebook_monitor.notifications.outbox_service import build_ntfy_match_notification_message
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    build_match_discord_notification_message,
+)
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    build_ntfy_match_notification_message,
+)
+from facebook_monitor.notifications.outbox_enqueue_service import (
     build_runtime_failure_notification_message,
 )
 from facebook_monitor.notifications.desktop_format import (

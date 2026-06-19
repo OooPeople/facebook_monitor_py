@@ -1,0 +1,70 @@
+<dialog class="settings-modal keyword-help-modal" id="include-keyword-help-{{ row.target.id }}" data-include-keyword-help-modal aria-labelledby="include-keyword-help-title-{{ row.target.id }}">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3 id="include-keyword-help-title-{{ row.target.id }}">關鍵字輸入規則</h3>
+        <p>分頁之間會同時成立，分頁內沿用分號與空格規則。</p>
+      </div>
+      <button class="button--icon" type="button" data-close-include-keyword-help aria-label="關閉關鍵字輸入規則說明">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M18 6 6 18"/>
+          <path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </header>
+    <div class="modal-body keyword-help-body">
+      <div class="keyword-help-rule-list">
+        <p><code>;</code> 表示 <strong>OR</strong></p>
+        <p>空格表示 <strong>AND</strong></p>
+        <p>關鍵字 1 / 2 / 3 之間也會套用 <strong>AND</strong></p>
+      </div>
+      <section class="modal-section-card keyword-help-example">
+        <h4>示例 1</h4>
+        <p><code>搖滾;6880;5880</code></p>
+        <p>只要出現 <code>搖滾</code> 或 <code>6880</code> 或 <code>5880</code> 就通知。</p>
+      </section>
+      <section class="modal-section-card keyword-help-example">
+        <h4>示例 2</h4>
+        <p><code>搖滾 6880;搖滾 5880</code></p>
+        <p>代表 <code>搖滾</code> 且 <code>6880</code>，或 <code>搖滾</code> 且 <code>5880</code> 才通知。</p>
+      </section>
+      <section class="modal-section-card keyword-help-example">
+        <h4>示例 3</h4>
+        <p>關鍵字 1：<code>5/1;5/2</code></p>
+        <p>關鍵字 2：<code>108;109</code></p>
+        <p>代表日期命中其中一天，且區域也命中其中一區才通知。</p>
+      </section>
+      <p>排除關鍵字只沿用分號 OR 與空格 AND，不套用關鍵字 1 / 2 / 3 分組。</p>
+    </div>
+  </div>
+</dialog>
+<dialog class="settings-modal keyword-help-modal" id="keyword-help-{{ row.target.id }}" data-keyword-help-modal aria-labelledby="keyword-help-title-{{ row.target.id }}">
+  <div class="modal-shell">
+    <header class="modal-header">
+      <div>
+        <h3 id="keyword-help-title-{{ row.target.id }}">排除字忽略片語</h3>
+        <p>避免排除關鍵字誤判。</p>
+      </div>
+      <button class="button--icon" type="button" data-close-keyword-help aria-label="關閉說明">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M18 6 6 18"/>
+          <path d="m6 6 12 12"/>
+        </svg>
+      </button>
+    </header>
+    <div class="modal-body keyword-help-body">
+      <section class="modal-section-card">
+        <p>
+          系統會先保護忽略片語，再檢查排除關鍵字。<br><br>
+          <strong>例：</strong><br><br>
+          排除關鍵字：<code>收</code><br>
+          忽略片語：<code>全收;回收</code><br><br>
+        </p>
+        <ul>
+          <li><code>收一張票</code> → <strong>排除</strong></li>
+          <li><code>售一張票，贈品回收</code> → <strong>不排除</strong></li>
+        </ul>
+      </section>
+    </div>
+  </div>
+</dialog>

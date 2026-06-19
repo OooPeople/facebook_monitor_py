@@ -10,6 +10,28 @@
 - 若 UI 規則會影響 target state、scan scheduling、notification outbox、dedupe、persistence 或 Facebook runtime 行為，主語義必須留在 `docs/ARCHITECTURE.md`，本文件只能摘要或連結。
 - Web UI 若需要新資料，優先新增 read model / presenter；不得為 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 
+## 審查契約表
+
+### 文件邊界表
+
+| 主題 | 本文件可定義 | 必須留在 `ARCHITECTURE.md` |
+|---|---|---|
+| Target 控制 | 按鈕位置、label、modal 互動 | start / stop / reset 的 persistence 語義 |
+| 側欄 | 視覺順序、drag/drop UI、template 確認文案 | layout 寫入 transaction 與 scheduler 獨立性 |
+| 局部更新 | 前端 transport state 與 DOM replacement contract | revision 真實來源與 DB trigger 語義 |
+| 通知 | 顯示區塊與遮罩 secret 表單行為 | outbox、dedupe、dispatch、retry / cleanup 語義 |
+| Facebook 資料 | 畫面呈現的 diagnostics 欄位 | extractor、sort、load-more、scan pipeline 行為 |
+
+### UI 契約表
+
+| 介面區塊 | 穩定契約 | 不可隨手改動 |
+|---|---|---|
+| Target 卡片 | 身分 / 標題 / 狀態 / 結果區塊消費 presenter payload | DOM id、data attributes、JS selectors |
+| 側欄 layout | 前端只呈現已保存的 layout 意圖 | scheduler scan order 或 target repository order |
+| 群組 template | 破壞性批次覆蓋，且必須要求使用者確認 | config fallback owner 或隱性全域繼承 |
+| 動態對話框 | confirm / input / action dialogs 走共用 helper | dashboard 流程內使用原生 `confirm/prompt/alert` |
+| Dashboard revision | 一個 EventSource，加上最多一個 polling fallback | 多條並行 transport paths 同時更新同一份 state |
+
 ## Target Card 與結果呈現
 
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。

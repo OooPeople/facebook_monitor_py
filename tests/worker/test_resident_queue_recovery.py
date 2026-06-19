@@ -24,7 +24,9 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
-from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    build_notification_idempotency_key,
+)
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick

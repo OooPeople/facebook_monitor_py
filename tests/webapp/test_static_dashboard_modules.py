@@ -9,6 +9,7 @@ from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.assets import DASHBOARD_MODULE_FILENAMES
 from facebook_monitor.webapp.assets import build_dashboard_module_imports
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
+from tests.webapp.static_contract_helpers import target_card_template_family_text
 
 
 def test_dashboard_import_map_covers_all_dashboard_modules() -> None:
@@ -316,6 +317,9 @@ def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
     sidebar_layout_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
     ).read_text(encoding="utf-8")
+    sidebar_menu_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_menu.js"
+    ).read_text(encoding="utf-8")
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
@@ -323,19 +327,19 @@ def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
         encoding="utf-8"
     )
 
-    assert "document.body.appendChild(panel);" in sidebar_layout_js
-    assert "data-sidebar-menu-floating" in sidebar_layout_js
-    assert "SIDEBAR_MENU_ACTION_SELECTOR" in sidebar_layout_js
-    assert "focusFirstSidebarMenuAction(panel);" in sidebar_layout_js
-    assert "focusSidebarMenuTrigger(menu);" in sidebar_layout_js
+    assert "document.body.appendChild(panel);" in sidebar_menu_js
+    assert "data-sidebar-menu-floating" in sidebar_menu_js
+    assert "SIDEBAR_MENU_ACTION_SELECTOR" in sidebar_menu_js
+    assert "focusFirstSidebarMenuAction(panel);" in sidebar_menu_js
+    assert "focusSidebarMenuTrigger(menu);" in sidebar_menu_js
     assert 'aria-controls="sidebar-menu-panel"' in sidebar_template
     assert 'id="sidebar-menu-panel"' in sidebar_template
-    assert "rect.right + gap" in sidebar_layout_js
-    assert 'event.target.closest?.(".sidebar-menu-panel")' in sidebar_layout_js
-    assert "sidebarRect.right - panelWidth - viewportPadding" not in sidebar_layout_js
+    assert "rect.right + gap" in sidebar_menu_js
+    assert 'event.target.closest?.(".sidebar-menu-panel")' in sidebar_menu_js
+    assert "sidebarRect.right - panelWidth - viewportPadding" not in sidebar_menu_js
     assert (
         'panel.style.setProperty("--sidebar-menu-left", `${Math.max(viewportPadding, left)}px`);'
-        in (sidebar_layout_js)
+        in (sidebar_menu_js)
     )
     assert "closeSidebarMenu," in sidebar_layout_js
     assert (
@@ -420,9 +424,7 @@ def test_dashboard_scroll_restore_runs_before_dashboard_module_graph() -> None:
 def test_modal_close_controls_use_one_visible_dismiss_pattern() -> None:
     """read-only modal 用右上角關閉；action/form modal 用底部取消，不同時顯示兩套。"""
 
-    target_card = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    target_card = target_card_template_family_text()
     target_settings = Path(
         "src/facebook_monitor/webapp/templates/_target_settings_modal.html"
     ).read_text(encoding="utf-8")

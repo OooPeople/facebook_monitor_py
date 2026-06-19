@@ -17,7 +17,7 @@ from facebook_monitor.application.target_runtime_service import StaleRunningReco
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.core.scan_failures import STALE_RUNNING_REASON
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_enqueue_service import (
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry

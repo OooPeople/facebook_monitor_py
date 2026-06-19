@@ -129,7 +129,7 @@ target 可啟用：
 
 新增 target 與群組設定模板會顯示通知設定；沒有勾選通道時，通知預設為關閉。既有 target 仍以自己的 target 設定為準。
 
-日常通知由 scan commit 後的 notification outbox 發送；Web UI 不提供 direct dispatch 作為一般操作入口。
+日常通知由 scan commit 後喚醒的 notification outbox background dispatcher 發送；Web UI 不提供 direct dispatch 作為一般操作入口。
 
 desktop notification 的摘要內容維持三行：`社團`、`類型`、`命中`。Windows 與 macOS 共用同一份桌面通知內容格式；Windows 由目前程式送出並使用內建 `Facebook Monitor` icon，macOS frozen `.app` 由執行中的 `Facebook Monitor.app` 用 UserNotifications 送出，使用 app 圖示與系統預設通知音效。如果 macOS 拒絕 `Facebook Monitor` 的通知身分，測試或正式發送會回報 macOS 權限失敗，使用者需到系統通知設定允許 `Facebook Monitor`。Focus / Notification Center 設定關閉 banner 或聲音時，scan 不會 crash，但實際 banner / 聲音仍由系統設定決定。macOS source mode 沒有 `.app` bundle 時，會 fallback 到 `osascript`，此時圖示與聲音依系統對腳本通知的呈現而定。
 

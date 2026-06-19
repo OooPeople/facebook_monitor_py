@@ -1,0 +1,16 @@
+{% from "_preview_rows.html" import preview_rows %}
+<aside class="match-panel panel" data-preview-tabs data-target-id="{{ row.target.id }}">
+  <div class="match-panel-header">
+    <div class="preview-tab-list" role="tablist" aria-label="Target 結果預覽">
+      <button class="preview-tab active" type="button" role="tab" aria-selected="true" data-preview-tab="latest">最近掃描</button>
+      <button class="preview-tab" type="button" role="tab" aria-selected="false" data-preview-tab="hits">命中紀錄 <span data-hit-count="{{ row.target.id }}">{{ row.hit_record_total_count }}</span></button>
+    </div>
+    <span class="scan-cycle-result" data-scan-cycle-result title="{{ row.scan_cycle_result_label }}">{{ row.scan_cycle_result_label }}</span>
+  </div>
+  <div class="preview-tab-panel" data-preview-panel="latest">
+    {{ preview_rows(row.latest_scan_preview_rows, "尚無掃描紀錄", "latest_scan") }}
+  </div>
+  <div class="preview-tab-panel" data-preview-panel="hits" hidden>
+    {{ preview_rows(row.hit_record_preview_rows, "尚無命中紀錄", "hit_records") }}
+  </div>
+</aside>

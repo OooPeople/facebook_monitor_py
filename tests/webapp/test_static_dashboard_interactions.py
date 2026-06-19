@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
+from tests.webapp.static_contract_helpers import target_card_template_family_text
 
 
 def test_dashboard_partial_update_reloads_when_sidebar_shell_signature_changes() -> None:
@@ -32,18 +33,19 @@ def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
         encoding="utf-8"
     )
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
     target_card_css = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
         encoding="utf-8"
     )
-    sidebar_js = Path("src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js").read_text(
-        encoding="utf-8"
-    )
+    sidebar_menu_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_menu.js"
+    ).read_text(encoding="utf-8")
+    sidebar_layout_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    ).read_text(encoding="utf-8")
 
     assert 'class="sidebar-menu-panel menu-panel"' in sidebar_template
     assert 'class="sidebar-menu-action menu-action"' in sidebar_template
@@ -65,20 +67,18 @@ def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     assert "max-inline-size: 160px;" in sidebar_menu_rule
     assert "right: auto;" in sidebar_menu_rule
     assert "top: var(--sidebar-menu-top" in sidebar_menu_rule
-    assert "const positionSidebarMenuPanel" in sidebar_js
-    assert "trigger.getBoundingClientRect()" in sidebar_js
-    assert "const setSidebarMenuOpen" in sidebar_js
-    assert "event.preventDefault();" in sidebar_js
-    assert 'trigger?.setAttribute("aria-expanded", String(open));' in sidebar_js
-    assert "setupSidebarMenuPosition();" in sidebar_js
+    assert "const positionSidebarMenuPanel" in sidebar_menu_js
+    assert "trigger.getBoundingClientRect()" in sidebar_menu_js
+    assert "const setSidebarMenuOpen" in sidebar_menu_js
+    assert "event.preventDefault();" in sidebar_menu_js
+    assert 'trigger?.setAttribute("aria-expanded", String(open));' in sidebar_menu_js
+    assert "setupSidebarMenuPosition();" in sidebar_layout_js
 
 
 def test_target_header_status_and_mode_are_grouped_in_subtitle() -> None:
     """卡片標題只放名稱；狀態與貼文/留言模式一起放在副標題。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     target_card_css = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
         encoding="utf-8"
     )
@@ -102,9 +102,7 @@ def test_target_header_status_and_mode_are_grouped_in_subtitle() -> None:
 def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> None:
     """下次刷新秒數由前端本地倒數，partial update 只在差距超過 1 秒時校準。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     dashboard_payloads = Path("src/facebook_monitor/webapp/dashboard_payloads.py").read_text(
         encoding="utf-8"
     )
@@ -345,9 +343,7 @@ def test_dashboard_partial_update_reloads_when_degraded_empty_state_changes() ->
 def test_scan_diagnostics_is_opened_from_card_more_menu() -> None:
     """掃描診斷入口收進卡片更多選單，內容顯示在共用 dialog 行為的 modal。"""
 
-    card_template = Path("src/facebook_monitor/webapp/templates/_target_card.html").read_text(
-        encoding="utf-8"
-    )
+    card_template = target_card_template_family_text()
     target_card_css = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
         encoding="utf-8"
     )

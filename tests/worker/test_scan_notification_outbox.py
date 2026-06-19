@@ -27,13 +27,27 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
-from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
-from facebook_monitor.notifications.outbox_service import retry_failed_notification_outbox
+from facebook_monitor.notifications.outbox_dispatch_service import (
+    dispatch_new_pending_notification_outbox,
+)
+from facebook_monitor.notifications.outbox_dispatch_service import retry_failed_notification_outbox
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    build_notification_idempotency_key,
+)
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 
 from tests.worker.scan_finalize_test_helpers import finalize_scan_items
 from tests.worker.scan_finalize_test_helpers import _activate_target
+
+
+def _dispatch_pending_for_db(
+    db_path: Path,
+    **kwargs: Any,
+) -> int:
+    """測試 helper：明確模擬 background dispatcher drain pending outbox。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        return dispatch_new_pending_notification_outbox(app=app, **kwargs)
 
 
 def test_finalize_does_not_send_notification_when_transaction_rolls_back(
@@ -197,7 +211,7 @@ def test_finalize_rollback_keeps_committed_target_but_discards_scan_writes(
 def test_outbox_keeps_retryable_failed_notification_after_commit(
     tmp_path: Path,
 ) -> None:
-    """DB commit 成功但通知 dispatch 失敗時，outbox 保留 failed 狀態供重試。"""
+    """DB commit 成功後 dispatcher 送失敗時，outbox 保留 failed 狀態供重試。"""
 
     def failing_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
         """模擬外部通知 I/O 失敗。"""
@@ -237,6 +251,8 @@ def test_outbox_keeps_retryable_failed_notification_after_commit(
             notification_sender=failing_ntfy_sender,
         )
 
+    _dispatch_pending_for_db(db_path, ntfy_sender=failing_ntfy_sender)
+
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
         assert stored_target is not None
@@ -261,16 +277,27 @@ def test_outbox_keeps_retryable_failed_notification_after_commit(
 
 def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
-    """同一輪多筆 match 只註冊一次 dispatch，不因 match 數倍增 attempts。"""
+    """同一輪多筆 match 只 wake 一次；dispatcher drain 時不倍增 attempts。"""
 
     calls: list[str] = []
+    wake_calls: list[Path] = []
 
     def failing_ntfy_sender(config: NtfyConfig, _title: str, _message: str) -> NtfyResult:
         """記錄 sender 被呼叫次數並模擬外部 I/O 失敗。"""
 
         calls.append(config.topic)
         raise RuntimeError("down")
+
+    def fake_wake(db_path: Path) -> bool:
+        wake_calls.append(db_path)
+        return True
+
+    monkeypatch.setattr(
+        "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",
+        fake_wake,
+    )
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -311,6 +338,9 @@ def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
             metadata={"worker": "test_worker"},
             notification_sender=failing_ntfy_sender,
         )
+
+    assert wake_calls == [db_path]
+    _dispatch_pending_for_db(db_path, ntfy_sender=failing_ntfy_sender)
 
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
@@ -389,6 +419,8 @@ def test_outbox_failed_result_records_one_event_per_entry(
             notification_sender=failed_result_sender,
         )
 
+    _dispatch_pending_for_db(db_path, ntfy_sender=failed_result_sender)
+
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
         assert stored_target is not None
@@ -462,6 +494,8 @@ def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> Non
             notification_sender=sometimes_failing_sender,
         )
 
+    _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
+
     fail_first = False
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
@@ -484,6 +518,8 @@ def test_failed_outbox_is_not_retried_by_new_match_commit(tmp_path: Path) -> Non
             metadata={"worker": "test_worker"},
             notification_sender=sometimes_failing_sender,
         )
+
+    _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
 
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
@@ -557,6 +593,8 @@ def test_failed_outbox_retry_requires_explicit_retry_api(tmp_path: Path) -> None
             notification_sender=sometimes_failing_sender,
         )
 
+    _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
+
     fail_first = False
     with SqliteApplicationContext(db_path) as app:
         retry_failed_notification_outbox(app=app, ntfy_sender=sometimes_failing_sender)
@@ -629,6 +667,8 @@ def test_failed_outbox_retry_resends_persisted_multiline_message(
             metadata={"worker": "test_worker"},
             notification_sender=sometimes_failing_sender,
         )
+
+    _dispatch_pending_for_db(db_path, ntfy_sender=sometimes_failing_sender)
 
     fail_first = False
     with SqliteApplicationContext(db_path) as app:
@@ -721,6 +761,8 @@ def test_discord_outbox_uses_display_text_newlines(tmp_path: Path) -> None:
         assert "\x1b" not in entry.message
         assert "━" not in entry.message
 
+    _dispatch_pending_for_db(db_path, discord_sender=fake_discord_sender)
+
     assert len(sent_discord) == 1
     assert (
         "命中：票券\n---------------------------------------------\n第一行票券"
@@ -800,6 +842,8 @@ def test_discord_outbox_persists_permalink_separator(tmp_path: Path) -> None:
             "<https://www.facebook.com/groups/123/posts/1>"
         ) in entry.message
         assert entry.message.endswith("<https://www.facebook.com/groups/123/posts/1>")
+
+    _dispatch_pending_for_db(db_path, discord_sender=fake_discord_sender)
 
     assert len(sent_discord) == 1
     assert sent_discord[0][2] == entry.message

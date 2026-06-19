@@ -16,6 +16,96 @@
       "symbol": "_native_launcher_source",
       "category": "native_embedded_source",
       "reason": "Embedded Objective-C launcher source; large text block with low Python control-flow complexity."
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/download.py",
+      "category": "updater_download_pipeline",
+      "reason": "Security-sensitive updater download orchestration facade over plan/fetch/publish/marker modules. Do not add new trust policy, channel, key lifecycle, or artifact type without focused tests and a dedicated module."
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/download_paths.py",
+      "category": "updater_download_path_guards",
+      "reason": "Security-sensitive updater download path planning and filesystem guards. Do not add network fetch, trust policy, or apply behavior here; split if adding another artifact layout family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/download_fetch.py",
+      "category": "updater_download_fetch_verify",
+      "reason": "Security-sensitive updater network fetch and staged verification boundary. Do not add filesystem publish, updater apply behavior, or trust-key lifecycle here; keep final URL, size, manifest, and asset checks covered by focused tests."
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/download_publish.py",
+      "category": "updater_download_marker_publish",
+      "reason": "Security-sensitive verified download marker and atomic publish logic. Do not add network fetch, trust policy, or updater apply behavior here; split if adding another marker schema family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/diagnostics/_support_bundle_redaction.py",
+      "category": "support_bundle_redaction_policy",
+      "reason": "Central sensitive-output redaction policy. Do not add collector-specific raw secret passthrough; split when adding a new major URL/path/token/header/metadata redaction family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/comment_extractor.py",
+      "category": "facebook_comment_extraction",
+      "reason": "External Facebook DOM extraction orchestration. Do not add DB writes, notification behavior, or runtime transitions; split raw payload, normalization, diagnostics, or collection loop when a new extraction source or diagnostics family is added."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/feed_extractor.py",
+      "category": "facebook_feed_extraction",
+      "reason": "External Facebook feed DOM extraction orchestration. Do not add DB writes, notification behavior, or runtime transitions; split raw payload, normalization, diagnostics, or collection loop when a new extraction source or diagnostics family is added."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/sort_adjust_scripts.py",
+      "category": "facebook_sort_browser_scripts",
+      "reason": "Bundled browser-side sort adjustment JavaScript payloads. Do not add Python business logic, DB access, or runtime state behavior; split again before adding another independent browser-side payload family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/sort_current_label_scripts.py",
+      "category": "facebook_sort_browser_scripts",
+      "reason": "Bundled browser-side current-label/menu-candidate JavaScript payloads. Do not add Python business logic, DB access, or runtime state behavior; split again before adding another independent browser-side payload family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/feed_extraction_diagnostics.py",
+      "category": "facebook_feed_extraction_diagnostics",
+      "reason": "Feed extraction metadata and seen-stop diagnostics vocabulary. Do not add DOM calls, scroll lifecycle, DB writes, or notification behavior here; split again if adding another diagnostics family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/comment_extraction_diagnostics.py",
+      "category": "facebook_comment_extraction_diagnostics",
+      "reason": "Comments extraction metadata and DOM-settle diagnostics vocabulary. Do not add DOM calls, guard lifecycle, DB writes, or notification behavior here; split again if adding another diagnostics family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/feed_extraction_normalizer.py",
+      "category": "facebook_feed_extraction_normalization",
+      "reason": "Feed DOM payload normalization and item debug metadata cleanup. Do not add page evaluation, scrolling, DB writes, or runtime state transitions here; split again if adding another feed payload source."
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/comment_extraction_normalizer.py",
+      "category": "facebook_comment_extraction_normalization",
+      "reason": "Comments DOM payload normalization and alias-based dedupe. Do not add page evaluation, DOM settle, guard lifecycle, DB writes, or runtime state transitions here; split again if adding another comments payload source."
+    },
+    {
+      "path_glob": "src/facebook_monitor/notifications/outbox_enqueue_service.py",
+      "category": "notification_outbox_enqueue",
+      "reason": "Notification outbox enqueue and after-commit wake boundary. Do not add sender implementations, retry UX, or blocking async resident dispatch; split message builders before adding another notification event family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/notifications/outbox_dispatch_service.py",
+      "category": "notification_outbox_dispatch",
+      "reason": "Notification outbox claim/send/retry/recovery boundary. Do not add scan finalize writes or enqueue policy here; split cleanup/retention if dispatch cleanup gains another policy family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/notifications/outbox_cleanup_service.py",
+      "category": "notification_outbox_cleanup",
+      "reason": "Thin notification outbox cleanup use-case names over existing repository cleanup policies. Do not add retry, dead-letter UX, pending/processing cleanup, or retention SQL here."
+    },
+    {
+      "path_glob": "src/facebook_monitor/persistence/repositories/target_runtime_state.py",
+      "category": "target_runtime_state_repository",
+      "reason": "Runtime state repository with guarded conditional updates. Do not add broad full-row saves in formal resident paths or unguarded worker transitions; split when adding a new runtime state family or recovery policy."
+    },
+    {
+      "path_glob": "src/facebook_monitor/runtime/windows_tray.py",
+      "category": "windows_tray_integration",
+      "reason": "Windows tray integration combines OS callback wiring and process control. Do not add worker, scheduler, or Web UI product logic here; split when adding another tray command family."
     }
   ],
   "watchlist": [
@@ -45,6 +135,26 @@
       "path_glob": "src/facebook_monitor/webapp/routes/hit_records.py",
       "category": "route_hotspot",
       "reason": "Hit records route is acceptable now, but future search/export/detail/bulk behavior should move into focused query/action services."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js",
+      "category": "dashboard_sidebar_shell",
+      "reason": "Dashboard sidebar aggregator shell. Keep feature logic in menu/groups/templates modules instead of growing this file again."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/static/dashboard/sidebar_groups_ui.js",
+      "category": "dashboard_sidebar_group_interactions",
+      "reason": "Dashboard sidebar group drag/drop and grouping interactions. Split again if adding another independent group-management workflow."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/templates/_target_card.html",
+      "category": "dashboard_target_card_shell",
+      "reason": "Target card shell. Keep modal, form, header, runtime note, and preview markup in target-card partials instead of growing this file again."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/templates/target_card/_config_form.html",
+      "category": "dashboard_target_card_config_form",
+      "reason": "Target card config form partial. Split field groups before adding another independent target configuration family."
     }
   ]
 }

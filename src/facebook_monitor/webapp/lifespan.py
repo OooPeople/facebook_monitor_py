@@ -8,12 +8,22 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.maintenance import run_bounded_retention_maintenance_for_db
+from facebook_monitor.notifications.outbox_dispatcher import (
+    register_notification_outbox_dispatcher,
+)
+from facebook_monitor.notifications.outbox_dispatcher import (
+    unregister_notification_outbox_dispatcher,
+)
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -22,6 +32,7 @@ async def webui_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _run_startup_maintenance(app)
     await _start_dashboard_revision_notifier(app)
+    _start_notification_outbox_dispatcher(app)
     try:
         _start_scheduler_if_configured(app)
         yield
@@ -67,6 +78,14 @@ async def _start_dashboard_revision_notifier(app: FastAPI) -> None:
     await app.state.dashboard_revision_notifier.start()
 
 
+def _start_notification_outbox_dispatcher(app: FastAPI) -> None:
+    """註冊並啟動 process-local notification outbox dispatcher。"""
+
+    dispatcher = app.state.notification_outbox_dispatcher
+    register_notification_outbox_dispatcher(app.state.db_path, dispatcher)
+    dispatcher.start(wake_on_start=not app.state.reset_runtime_data_on_startup)
+
+
 async def _shutdown_webui_runtime(app: FastAPI) -> None:
     """關閉 Web UI 背景資源，保留既有 nested-finally 收尾語義。"""
 
@@ -74,12 +93,24 @@ async def _shutdown_webui_runtime(app: FastAPI) -> None:
         await app.state.dashboard_revision_notifier.stop()
     finally:
         try:
-            await app.state.bounded_retention_maintenance_runner.wait_until_idle()
+            app.state.scheduler_manager.stop()
         finally:
             try:
-                app.state.profile_manager.close()
+                _shutdown_notification_outbox_dispatcher(app)
             finally:
-                app.state.scheduler_manager.stop()
+                try:
+                    await app.state.bounded_retention_maintenance_runner.wait_until_idle()
+                finally:
+                    app.state.profile_manager.close()
+
+
+def _shutdown_notification_outbox_dispatcher(app: FastAPI) -> None:
+    """解除註冊並以 bounded timeout 停止 notification outbox dispatcher。"""
+
+    dispatcher = app.state.notification_outbox_dispatcher
+    unregister_notification_outbox_dispatcher(app.state.db_path, dispatcher)
+    if not dispatcher.stop():
+        logger.warning("notification_outbox_dispatcher_stop_timeout")
 
 
 __all__ = ["webui_lifespan"]

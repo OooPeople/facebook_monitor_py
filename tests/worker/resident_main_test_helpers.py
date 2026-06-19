@@ -340,9 +340,14 @@ class RecordingSchedulePlanner(TargetSchedulePlanner):
 
 
 def _stub_runtime_outbox_dispatch(monkeypatch: MonkeyPatch) -> list[Path]:
-    """避免 runtime failure 通知測試觸發外部 I/O，並記錄 dispatch DB。"""
+    """避免 runtime failure 通知測試觸發外部 I/O，並記錄 wake/dispatch DB。"""
 
     dispatch_calls: list[Path] = []
+
+    def fake_wake(db_path: Path) -> bool:
+        assert isinstance(db_path, Path)
+        dispatch_calls.append(db_path)
+        return True
 
     def fake_dispatch(**kwargs: object) -> int:
         db_path = kwargs["db_path"]
@@ -351,8 +356,8 @@ def _stub_runtime_outbox_dispatch(monkeypatch: MonkeyPatch) -> list[Path]:
         return 0
 
     monkeypatch.setattr(
-        "facebook_monitor.notifications.outbox_service.dispatch_new_pending_notification_outbox_for_db",
-        fake_dispatch,
+        "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",
+        fake_wake,
     )
     monkeypatch.setattr(
         "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",

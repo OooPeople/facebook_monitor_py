@@ -18,6 +18,7 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
+from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
 
 
 def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
@@ -73,6 +74,7 @@ def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
         assert first_summary.new_count == 2
         assert second_summary.new_count == 0
         assert app.repositories.notification_events.list_by_target(target.id) == []
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
         events = app.repositories.notification_events.list_by_target(target.id)
@@ -129,6 +131,7 @@ def test_scan_posts_page_sync_and_finalize_records_failed_ntfy_event(
             scroll_wait_ms=0,
             notification_sender=fake_sender,
         )
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
         events = app.repositories.notification_events.list_by_target(target.id)
@@ -176,6 +179,7 @@ def test_scan_posts_page_sync_and_finalize_records_skipped_ntfy_when_topic_is_em
             scroll_wait_ms=0,
             notification_sender=fake_sender,
         )
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
         events = app.repositories.notification_events.list_by_target(target.id)
@@ -246,6 +250,12 @@ def test_scan_posts_page_sync_and_finalize_records_all_enabled_notification_chan
             notification_sender=fake_sender,
             desktop_notification_sender=fake_desktop_sender,
             discord_notification_sender=fake_discord_sender,
+        )
+        dispatch_pending_notifications_for_test(
+            app=app,
+            ntfy_sender=fake_sender,
+            desktop_sender=fake_desktop_sender,
+            discord_sender=fake_discord_sender,
         )
 
     with SqliteApplicationContext(db_path) as app:

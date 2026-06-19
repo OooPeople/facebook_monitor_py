@@ -1,0 +1,25 @@
+<dialog class="settings-modal rename-target-modal" data-rename-target-modal aria-labelledby="rename-target-title-{{ row.target.id }}">
+  <form class="modal-shell" method="post" action="/targets/{{ row.target.id }}/name" data-action-anchor="{{ row.anchor_id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="return_to" value="">
+    <header class="modal-header">
+      <div>
+        <h3 id="rename-target-title-{{ row.target.id }}">更改 target 名稱</h3>
+        <p>只會更新卡片與側邊欄顯示名稱。</p>
+      </div>
+    </header>
+    <div class="modal-body rename-target-body">
+      <label>
+        名稱
+        <input name="display_name" type="text" value="{{ row.rename_display_name }}" maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}" placeholder="等社團名稱抓取完成後會自動回填，或輸入自訂名稱" autocomplete="off" required>
+      </label>
+    </div>
+    <footer class="modal-footer">
+      <span class="field-caption">Facebook URL、掃描範圍與設定不會變更。</span>
+      <div class="modal-footer-actions">
+        <button type="button" data-close-rename-target>取消</button>
+        <button type="submit">確認</button>
+      </div>
+    </footer>
+  </form>
+</dialog>

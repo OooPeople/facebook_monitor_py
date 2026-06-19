@@ -20,6 +20,7 @@ from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 
 from tests.worker.scan_finalize_test_helpers import finalize_scan_items
+from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
 
 
@@ -88,6 +89,7 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
         assert dedupe_count == 1
         assert len(app.repositories.match_history.list_by_target(target.id)) == 1
         target_id = target.id
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test"]
 
@@ -277,6 +279,7 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
         assert not first_result.baseline_mode
         first_epoch = app.repositories.dedupe_state.peek_current_epoch(target.id)
         target_id = target.id
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test"]
 
@@ -335,6 +338,7 @@ def test_reset_notification_state_allows_previously_seen_match_to_notify_again(
         }
         assert dedupe_epochs == {0, 1}
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test", "phase0test"]
 
@@ -388,6 +392,7 @@ def test_startup_runtime_cleanup_preserves_notification_state(
 
         assert first_result.new_count == 1
         assert not first_result.baseline_mode
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test"]
 
@@ -451,6 +456,7 @@ def test_startup_runtime_cleanup_preserves_notification_state(
             is False
         )
         assert repeat_result.notification_payloads == ()
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test", "phase0test"]
 
@@ -504,6 +510,7 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
 
         assert first_result.new_count == 1
         assert not first_result.baseline_mode
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test"]
 
@@ -550,6 +557,7 @@ def test_reset_notification_state_after_startup_runtime_cleanup_notifies_seen_ma
             is True
         )
         assert len(second_result.notification_payloads) == 1
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy == ["phase0test", "phase0test"]
 

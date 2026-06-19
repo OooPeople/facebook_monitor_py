@@ -158,6 +158,15 @@ macOS build script 也支援 `--expected-tag`、`--skip-pyinstaller-install`、`
 
 正式上傳 GitHub Release asset 前，只有在平台 build、signed manifest finalize、`release_validation.py --include-artifacts`、對應平台 `release_artifact_validation.py --require-manifest`、frozen updater smoke，以及必要人工 smoke 都完成後，才可回報「上傳前完整檢查通過」。平台 build script 內建的不要求 manifest validation 只能回報為「平台 build / pre-finalize validation 通過」，不可視為 release upload-ready。
 
+| 關卡 | 必要輸入 | 主要檢查 | 可回報用語 | 不可替代 |
+|---|---|---|---|---|
+| 平台建置腳本 | source tree、locked env、platform build machine | PyInstaller、release zip、`.sha256`、不要求 manifest 的 artifact validation、pre-finalize release validation | 平台 build / pre-finalize validation 通過 | signed manifest、可上傳 artifact 檢查 |
+| Manifest finalize | 目前 version 的平台 zip / `.sha256`、release private key | manifest JSON、detached signature、manifest metadata 與 artifact 對齊 | signed manifest 已完成 | OS code signing / notarization |
+| 含 artifact 的 release validation | finalized manifest / `.sig` 與平台 zip | pytest/coverage、mypy、ruff、audit、artifact metadata、version resource / platform layout | 含 artifact 的 release validation 通過 | frozen updater smoke、人工 Facebook smoke |
+| Artifact validation `--require-manifest` | GitHub Release 將上傳的 zip、`.sha256`、manifest、`.sig` | signed manifest、SHA256、platform contents、私密 runtime data boundary | artifact validation 通過 | full release validation |
+| Frozen updater smoke | 已打包 app、signed test update fixture | updater 替換 app files、保留 data、清理 handoff / atomic download set | frozen updater smoke 通過 | 真實 app restart / Facebook runtime smoke |
+| 人工 smoke | 隔離 data dir 與實際 UI | login、metadata resolver、posts/comments scan、notifications | 人工 smoke 完成 | automated unit/release validation |
+
 一般 release validation：
 
 ```powershell

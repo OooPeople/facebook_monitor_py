@@ -23,6 +23,7 @@ from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_
 from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_async_commit_ready
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
+from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
 
 
 class FakeLocator:
@@ -448,6 +449,7 @@ def test_scan_comments_target_page_sync_and_finalize_records_latest_scan_and_see
             config=config,
             notification_sender=fake_ntfy_sender,
         )
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
 
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id, ScanStatus.SUCCESS)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
@@ -864,6 +866,7 @@ def test_scan_comments_target_page_sync_and_finalize_collapses_duplicate_comment
             config=config,
             notification_sender=fake_ntfy_sender,
         )
+        dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_ntfy_sender)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
 
     assert sent

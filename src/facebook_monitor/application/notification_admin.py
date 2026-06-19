@@ -12,6 +12,9 @@ from pathlib import Path
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.notifications.failure_taxonomy import classify_notification_failure
+from facebook_monitor.notifications.outbox_cleanup_service import (
+    clear_failed_notification_outbox_for_db,
+)
 
 
 @dataclass(frozen=True)
@@ -74,7 +77,4 @@ def load_notification_outbox_health(db_path: Path) -> NotificationOutboxHealth:
 def clear_failed_notifications(*, db_path: Path) -> int:
     """清除 failed outbox rows，讓使用者明確結束不再重試的通知。"""
 
-    with SqliteApplicationContext(db_path) as app_context:
-        cleared_count = app_context.repositories.notification_outbox.clear_failed()
-        app_context.repositories.notification_outbox.connection.commit()
-        return cleared_count
+    return clear_failed_notification_outbox_for_db(db_path=db_path)

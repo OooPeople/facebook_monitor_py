@@ -15,6 +15,7 @@ from facebook_monitor.core.models import utc_now
 from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
 from facebook_monitor.notifications.senders import NtfySender
+from facebook_monitor.notifications.outbox_dispatcher import NotificationOutboxDispatcher
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
 from facebook_monitor.webapp.dependencies import default_group_name_resolver
 from facebook_monitor.webapp.dependencies import GroupMetadataResolver
@@ -80,6 +81,12 @@ def configure_app_state(app: FastAPI, config: WebAppStateConfig) -> None:
         db_path=config.db_path,
         get_dashboard_revision=get_dashboard_revision,
         poll_interval_seconds=PYTHON_WEBUI_RUNTIME_DEFAULTS.sse_poll_interval_seconds,
+    )
+    app.state.notification_outbox_dispatcher = NotificationOutboxDispatcher(
+        db_path=config.db_path,
+        ntfy_sender=config.ntfy_sender,
+        desktop_sender=config.desktop_sender,
+        discord_sender=config.discord_sender,
     )
     app.state.session_started_at = utc_now()
     app.state.reset_targets_on_startup = config.reset_targets_on_startup

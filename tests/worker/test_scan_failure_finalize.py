@@ -21,11 +21,15 @@ from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
-from facebook_monitor.notifications.outbox_service import enqueue_runtime_failure_notifications
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    enqueue_runtime_failure_notifications,
+)
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.notifications.outbox_service import dispatch_new_pending_notification_outbox
-from facebook_monitor.notifications.outbox_service import (
+from facebook_monitor.notifications.outbox_dispatch_service import (
+    dispatch_new_pending_notification_outbox,
+)
+from facebook_monitor.notifications.outbox_enqueue_service import (
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module

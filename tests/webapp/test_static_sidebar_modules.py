@@ -174,9 +174,9 @@ def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored()
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_js = Path("src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js").read_text(
-        encoding="utf-8"
-    )
+    sidebar_groups_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_groups_ui.js"
+    ).read_text(encoding="utf-8")
     sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
         encoding="utf-8"
     )
@@ -191,8 +191,8 @@ def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored()
     assert ".sidebar-group-actions.expanded .sidebar-group-action-strip" in sidebar_css
     assert ".sidebar-group-delete {\n  color: var(--danger);" in sidebar_css
     assert "border-color: color-mix(in srgb, var(--danger)" not in sidebar_css
-    assert "const setupGroupActionToggles" in sidebar_js
-    assert "closeExpandedGroupActions();" in sidebar_js
+    assert "const setupGroupActionToggles" in sidebar_groups_js
+    assert "closeExpandedGroupActions();" in sidebar_groups_js
 
 
 def test_sidebar_group_operation_buttons_are_borderless_by_default() -> None:
@@ -416,10 +416,10 @@ def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> No
 def test_sidebar_template_save_reloads_dashboard_shell() -> None:
     """模板儲存成功後需 reload，避免 server-coerced template modal 留在舊狀態。"""
 
-    sidebar_layout_js = Path(
-        "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js"
+    sidebar_templates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_templates_ui.js"
     ).read_text(encoding="utf-8")
-    save_block = sidebar_layout_js.split(
+    save_block = sidebar_templates_js.split(
         'modal.querySelector("[data-sidebar-template-save]")?.addEventListener("click"',
         1,
     )[1].split('modal.querySelectorAll("[data-sidebar-template-apply]")', 1)[0]
@@ -427,5 +427,4 @@ def test_sidebar_template_save_reloads_dashboard_shell() -> None:
     assert "/template" in save_block
     assert 'showToast?.("群組模板已儲存", "success");' in save_block
     assert "reloadDashboardPreservingScroll();" in save_block
-
 

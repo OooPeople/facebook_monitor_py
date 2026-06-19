@@ -25,7 +25,12 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
+from facebook_monitor.notifications.outbox_dispatch_service import (
+    dispatch_new_pending_notification_outbox,
+)
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    build_notification_idempotency_key,
+)
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
@@ -199,6 +204,14 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert second_result.new_count == 0
         assert second_result.matched_count == 1
         assert len(app.repositories.match_history.list_by_target(target.id)) == 1
+
+    with SqliteApplicationContext(db_path) as app:
+        dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+            desktop_sender=fake_desktop_sender,
+            discord_sender=fake_discord_sender,
+        )
 
     assert sent_ntfy
     with SqliteApplicationContext(db_path) as app:
@@ -574,6 +587,9 @@ def test_finalize_scan_items_preserves_comments_identity_contract(
     )
     assert outbox_entries[0].permalink == f"{target.canonical_url}?comment_id={comment_id}"
     assert "類型：留言" in outbox_entries[0].message
+    with SqliteApplicationContext(db_path) as app:
+        dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
+
     assert sent_ntfy
     assert "類型：留言" in sent_ntfy[0]
 
@@ -865,6 +881,9 @@ def test_finalize_scan_items_persists_display_text_for_visible_results(
     assert history[0].display_text == "第一行票券\n第二行座位"
     assert latest_items[0].text == "第一行票券 第二行座位"
     assert latest_items[0].display_text == "第一行票券\n第二行座位"
+    with SqliteApplicationContext(db_path) as app:
+        dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
+
     assert sent_ntfy
     assert (
         "命中：票券\n---------------------------------------------\n第一行票券\n第二行座位"
@@ -973,6 +992,9 @@ def test_finalize_scan_items_uses_renamed_target_display_name_for_notifications(
         )
         history = app.repositories.match_history.list_by_target(target.id)
         assert history[0].group_name == "測試社團"
+
+    with SqliteApplicationContext(db_path) as app:
+        dispatch_new_pending_notification_outbox(app=app, ntfy_sender=fake_ntfy_sender)
 
     assert sent_ntfy
     assert "社團：我的票券社團" in sent_ntfy[0][2]

@@ -75,11 +75,21 @@
 
 ### 驗證分級與回報用語
 
-- 快速 / 聚焦檢查：只跑受影響 pytest、單一路徑 ruff / mypy、static JS syntax、compileall、probe 或特定 smoke。一般開發、文件整理與窄範圍修正預設使用這一層；若改到 DB / migration、scheduler、worker、release/update、dependency、Web middleware 或其他高風險邊界，需自行升級到相對應的測試切片、ruff、mypy 或 audit。回報時必須列出實際命令，並明講這不是上傳完整檢查。
-- 本機上傳前完整檢查：預設執行 `.\scripts\uv.ps1 run python scripts\admin\release_validation.py`；只有在環境已同步，且 dependency、`uv.lock`、workflow 或驗證腳本沒有變更時，才可加 `--skip-sync`。此層可回報「本機上傳前完整檢查通過」，不得寫成「GitHub CI 通過」。
-- GitHub CI：只有 GitHub Actions 對該 commit / PR 實際完成且綠燈，才可回報「GitHub CI 通過」。本機 release validation 是 CI 對齊的前置檢查，不等同遠端 CI 已通過。
-- Release validation：`scripts/admin/release_validation.py` 是 release 前本機可重現檢查，預設包含 `pip-audit`。使用 `--skip-audit` 時只能回報為離線 / 臨時快速檢查；使用 `--include-artifacts --skip-artifact-manifest` 時只能回報為 pre-finalize artifact 檢查，不可稱為 upload-ready。
-- Artifact / 上傳前 release asset 檢查：正式 GitHub Release asset 上傳前，還要依 `packaging/README.md#驗證` 完成 manifest finalize、`--require-manifest` artifact validation、frozen updater smoke 與必要人工 smoke。
+| 層級 | 何時使用 | 標準命令 / 來源 | 可回報用語 | 不可回報成 |
+|---|---|---|---|---|
+| 快速 / 聚焦檢查 | 一般開發、文件整理、窄範圍修正；高風險邊界需自行升級測試切片 | 受影響 pytest、單一路徑 ruff / mypy、static JS syntax、compileall、probe 或特定 smoke | 「快速 / 聚焦檢查通過」，並列出實際命令 | 上傳完整檢查、CI 通過 |
+| 本機上傳前完整檢查 | 上傳前或使用者要求完整/CI 對齊檢查 | `.\scripts\uv.ps1 run python scripts\admin\release_validation.py`；環境已同步且 lock/workflow/驗證腳本未變更時才可加 `--skip-sync` | 「本機上傳前完整檢查通過」 | GitHub CI 通過 |
+| GitHub CI | GitHub Actions 對該 commit / PR 實際完成且綠燈 | `.github/workflows/ci.yml` | 「GitHub CI 通過」 | 只靠本機結果宣稱 CI 通過 |
+| Release validation | release 前本機可重現檢查，預設含 dependency audit | `scripts/admin/release_validation.py` | 「release validation 通過」；使用 skip flags 時需明列 | 可上傳 artifact 檢查 |
+| Artifact / 上傳前 release asset 檢查 | 正式 GitHub Release asset 上傳前 | `packaging/README.md#驗證` 的 manifest finalize、`--require-manifest` artifact validation、frozen updater smoke 與必要人工 smoke | 「上傳前 release asset 檢查通過」 | 只用 pre-finalize build validation 代替 |
+
+| 略過旗標 / 狀態 | 允許用途 | 回報限制 |
+|---|---|---|
+| `--skip-sync` | 環境已同步，且 dependency / `uv.lock` / workflow / 驗證腳本未變更 | 必須明講已略過 sync |
+| `--skip-audit` | 離線或臨時非 audit 重現 | 只能稱快速 / 臨時檢查 |
+| `--skip-release-validation` | build 中間階段快速產物驗證 | 不可稱可上傳 |
+| `--skip-artifact-manifest` | manifest finalize 前的 pre-finalize artifact 檢查 | 不可稱可上傳 |
+| 未做人工 smoke | Facebook login / metadata resolver / posts-comments scan / notification 尚未人工驗 | 不可宣稱完整 release smoke 完成 |
 
 常用驗證命令：
 

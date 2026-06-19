@@ -20,10 +20,11 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
+from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,
 )
@@ -69,7 +70,7 @@ def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) 
                     heartbeat_interval_seconds=0.01,
                 ),
                 page_pool=page_pool,
-                scan_page=slow_scan_page,
+                scan_page=as_async_scan_callable(slow_scan_page),
                 schedule_planner=TargetSchedulePlanner(),
                 cycle_index=attempt,
             )
@@ -112,24 +113,14 @@ def test_resident_main_escalates_sort_skip_after_three_skipped_scans(
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    async def skipping_scan_page(**kwargs: Any) -> PostsScanSummary:
-        result = record_protective_skip_for_test(
-            app=kwargs["app"],
-            target=kwargs["target"],
+    async def skipping_scan_page(**kwargs: Any) -> ProtectiveSkipScanResult:
+        return ProtectiveSkipScanResult(
+            target_id=kwargs["target"].id,
+            url=str(kwargs["page"].url),
             metadata={
                 "worker": "resident_main",
                 "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
             },
-            commit_guard=kwargs["commit_guard"],
-        )
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=str(kwargs["page"].url),
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=result.scan_run_id,
-            round_stats=(),
         )
 
     async def run_test() -> None:
@@ -145,7 +136,7 @@ def test_resident_main_escalates_sort_skip_after_three_skipped_scans(
                     interval_seconds=0,
                 ),
                 page_pool=page_pool,
-                scan_page=skipping_scan_page,
+                scan_page=as_async_scan_callable(skipping_scan_page),
                 schedule_planner=TargetSchedulePlanner(),
                 cycle_index=attempt,
             )
@@ -206,7 +197,7 @@ def test_resident_main_page_load_timeout_retries_until_third_failure(
                     interval_seconds=0,
                 ),
                 page_pool=page_pool,
-                scan_page=failing_scan_page,
+                scan_page=as_async_scan_callable(failing_scan_page),
                 schedule_planner=TargetSchedulePlanner(),
                 cycle_index=attempt,
             )
@@ -269,7 +260,7 @@ def test_resident_main_browser_context_closed_retries_until_third_failure(
                     interval_seconds=0,
                 ),
                 page_pool=page_pool,
-                scan_page=failing_scan_page,
+                scan_page=as_async_scan_callable(failing_scan_page),
                 schedule_planner=TargetSchedulePlanner(),
                 cycle_index=attempt,
             )
@@ -326,7 +317,7 @@ def test_resident_main_wrapped_driver_closed_requests_runtime_restart(
                 interval_seconds=0,
             ),
             page_pool=page_pool,
-            scan_page=failing_scan_page,
+            scan_page=as_async_scan_callable(failing_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -400,7 +391,7 @@ def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> No
                     heartbeat_interval_seconds=0.01,
                 ),
                 page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-                scan_page=blocking_scan_page,
+                scan_page=as_async_scan_callable(blocking_scan_page),
                 schedule_planner=TargetSchedulePlanner(),
                 cycle_index=1,
             )

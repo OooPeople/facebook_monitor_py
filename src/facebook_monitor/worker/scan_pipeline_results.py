@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 from typing import Mapping
+from typing import TypeAlias
 
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 
@@ -39,4 +40,12 @@ class ProtectiveSkipScanResult:
         return str(self.metadata.get("skip_reason") or "")
 
 
-__all__ = ["ProtectiveSkipScanResult", "SuccessScanResult"]
+FormalAsyncScanResult: TypeAlias = SuccessScanResult | ProtectiveSkipScanResult
+"""正式 async resident scanner 可回傳的 commit-ready result。"""
+
+
+__all__ = [
+    "FormalAsyncScanResult",
+    "ProtectiveSkipScanResult",
+    "SuccessScanResult",
+]

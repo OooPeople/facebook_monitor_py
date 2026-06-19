@@ -24,12 +24,9 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
-from facebook_monitor.notifications.ntfy import NtfyConfig
-from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_service import build_notification_idempotency_key
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
@@ -42,14 +39,17 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
-from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import RecordingSchedulePlanner
+from tests.worker.resident_main_test_helpers import _stub_runtime_outbox_dispatch
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,
 )
@@ -140,15 +140,10 @@ def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -163,7 +158,7 @@ def test_async_resident_dispatches_schedule_after_running_lock(tmp_path: Path) -
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         due_target = DueTarget(
             target_id=target.id,
@@ -221,7 +216,7 @@ def test_resident_pre_admission_failure_does_not_force_runtime_error(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
     )
 
@@ -292,7 +287,7 @@ def test_resident_running_claim_rejected_does_not_release_reserved_page(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -370,7 +365,7 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -462,7 +457,7 @@ def test_resident_scheduler_stopping_cancellation_records_guarded_idle_failure(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=blocking_scan_page,
+            scan_page=as_async_scan_callable(blocking_scan_page),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -552,7 +547,7 @@ def test_resident_page_prepare_playwright_failure_discards_page_and_cleans_attem
             page_pool=AsyncResidentPagePool(FailingPrepareContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -742,7 +737,7 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=unused_scan_page,
+            scan_page=as_async_scan_callable(unused_scan_page),
         )
         monkeypatch.setattr(
             executor,
@@ -849,24 +844,14 @@ def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) ->
             self.pages.append(page)
             return page
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        finalize_result = record_protective_skip_for_test(
-            app=kwargs["app"],
-            target=kwargs["target"],
+    async def fake_scan_page(**kwargs: Any) -> ProtectiveSkipScanResult:
+        return ProtectiveSkipScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
             metadata={
                 "worker": "resident_main",
                 "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
             },
-            commit_guard=kwargs["commit_guard"],
-        )
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=finalize_result.scan_run_id,
-            round_stats=(),
         )
 
     async def run_test() -> None:
@@ -884,7 +869,7 @@ def test_stale_recovery_cancels_attempt_stuck_in_page_prepare(tmp_path: Path) ->
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         await executor.start()
         try:
@@ -988,7 +973,7 @@ def test_inactive_stale_recovery_cancels_attempt_without_scan_failure(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         await executor.start()
         try:
@@ -1076,15 +1061,10 @@ def test_stale_recovery_cancels_attempt_stuck_in_new_page(tmp_path: Path) -> Non
                     raise
             return await super().new_page()
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -1102,7 +1082,7 @@ def test_stale_recovery_cancels_attempt_stuck_in_new_page(tmp_path: Path) -> Non
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         await executor.start()
         try:
@@ -1164,15 +1144,10 @@ def test_async_resident_consumes_manual_scan_request_when_enqueued(
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -1186,7 +1161,7 @@ def test_async_resident_consumes_manual_scan_request_when_enqueued(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         enqueued_count = await executor.enqueue_due_targets(
             (
@@ -1209,12 +1184,14 @@ def test_async_resident_consumes_manual_scan_request_when_enqueued(
     asyncio.run(run_test())
 
 
-def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
+def test_resident_success_result_writes_visible_scan_state_once(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
-    """resident success path 保留 scanner/finalize 寫入與 result counter 語義。"""
+    """resident success result 由 coordinator 寫入 visible state 一次。"""
 
     db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_runtime_outbox_dispatch(monkeypatch)
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -1230,18 +1207,11 @@ def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
         target = app.services.targets.restart_target_monitoring(target.id)
         app.repositories.scan_scope_state.mark_initialized(target.scope_id)
 
-    sent_messages: list[str] = []
-
-    def fake_ntfy_sender(_config: NtfyConfig, _title: str, message: str) -> NtfyResult:
-        sent_messages.append(message)
-        return NtfyResult(ok=True, status_code=200, message="sent")
-
-    async def scan_with_real_finalize(**kwargs: Any) -> PostsScanSummary:
-        result = finalize_scan_items(
-            app=kwargs["app"],
-            target=kwargs["target"],
-            config=kwargs["config"],
-            items=[
+    async def scan_to_success_result(**kwargs: Any) -> SuccessScanResult:
+        return SuccessScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            items=(
                 NormalizedScanItem(
                     item_kind=ItemKind.POST,
                     item_key="post:resident-success",
@@ -1252,21 +1222,11 @@ def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
                     permalink=(
                         "https://www.facebook.com/groups/resident-success/posts/1"
                     ),
-                )
-            ],
+                    raw_target_kind=kwargs["target"].target_kind.value,
+                ),
+            ),
             item_count=1,
             metadata={"worker": "resident_main"},
-            commit_guard=kwargs["commit_guard"],
-            notification_sender=fake_ntfy_sender,
-        )
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=1,
-            new_count=result.new_count,
-            matched_count=result.matched_count,
-            scan_run_id=result.scan_run_id,
-            round_stats=(),
         )
 
     async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
@@ -1281,7 +1241,7 @@ def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_with_real_finalize,
+            scan_page=as_async_scan_callable(scan_to_success_result),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -1332,7 +1292,7 @@ def test_resident_success_with_real_finalize_writes_visible_scan_state_once(
     assert latest_items[0].item_key == "post:resident-success"
     assert len(history) == 1
     assert outbox_entry is not None
-    assert sent_messages
+    assert dispatch_calls == [db_path]
     assert planner.dispatched_target_ids == [target.id]
     assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
@@ -1392,7 +1352,7 @@ def test_resident_success_result_is_committed_by_coordinator(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_to_success_result,
+            scan_page=as_async_scan_callable(scan_to_success_result),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -1435,14 +1395,16 @@ def test_resident_success_result_is_committed_by_coordinator(
     assert executor.page_pool.pages[target.id].in_use_by_worker == ""
 
 
-def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
+def test_resident_comments_success_result_writes_visible_state_once(
     tmp_path: Path,
+    monkeypatch: Any,
 ) -> None:
-    """resident comments success path 保留 shared finalize 與 runtime idle 語義。"""
+    """resident comments success result 由 coordinator 寫入 visible state 一次。"""
 
     parent_post_id = "2187454285426518"
     comment_id = "9876543210987654"
     db_path = tmp_path / "app.db"
+    dispatch_calls = _stub_runtime_outbox_dispatch(monkeypatch)
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_comments_target(
             UpsertCommentsTargetRequest(
@@ -1462,20 +1424,11 @@ def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
         target = app.services.targets.restart_target_monitoring(target.id)
         app.repositories.scan_scope_state.mark_initialized(target.scope_id)
 
-    sent_messages: list[str] = []
-
-    def fake_ntfy_sender(_config: NtfyConfig, _title: str, message: str) -> NtfyResult:
-        """記錄 comments resident success 通知內容。"""
-
-        sent_messages.append(message)
-        return NtfyResult(ok=True, status_code=200, message="sent")
-
-    async def scan_with_real_finalize(**kwargs: Any) -> CommentsScanSummary:
-        result = finalize_scan_items(
-            app=kwargs["app"],
-            target=kwargs["target"],
-            config=kwargs["config"],
-            items=[
+    async def scan_to_success_result(**kwargs: Any) -> SuccessScanResult:
+        return SuccessScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            items=(
                 NormalizedScanItem(
                     item_kind=ItemKind.COMMENT,
                     item_key="comment:resident-success",
@@ -1488,25 +1441,14 @@ def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
                     permalink=f"{kwargs['target'].canonical_url}?comment_id={comment_id}",
                     raw_target_kind=kwargs["target"].target_kind.value,
                     metadata={"commentId": comment_id},
-                )
-            ],
+                ),
+            ),
             item_count=1,
             metadata={
                 "worker": "resident_main",
                 "comment_sort": {"reason": "unit_contract"},
                 "comments_meta": {"commentsWithCommentIdCount": 1},
             },
-            commit_guard=kwargs["commit_guard"],
-            notification_sender=fake_ntfy_sender,
-        )
-        return CommentsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=1,
-            new_count=result.new_count,
-            matched_count=result.matched_count,
-            scan_run_id=result.scan_run_id,
-            round_stats=(),
         )
 
     async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
@@ -1521,8 +1463,8 @@ def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_with_real_finalize,
-            scan_comments_target_page=scan_with_real_finalize,
+            scan_page=as_async_scan_callable(scan_to_success_result),
+            scan_comments_target_page=scan_to_success_result,
         )
         assert await executor.enqueue_due_targets(
             (
@@ -1578,8 +1520,7 @@ def test_resident_comments_success_with_real_finalize_writes_visible_state_once(
     assert history[0].comment_id == comment_id
     assert outbox_entry is not None
     assert outbox_entry.item_kind == ItemKind.COMMENT
-    assert sent_messages
-    assert "類型：留言" in sent_messages[0]
+    assert dispatch_calls == [db_path]
     assert planner.dispatched_target_ids == [target.id]
     assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
@@ -1643,7 +1584,7 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=stale_finalize_scan,
+            scan_page=as_async_scan_callable(stale_finalize_scan),
         )
         assert await executor.enqueue_due_targets(
             (
@@ -1702,17 +1643,12 @@ def test_resident_manual_scan_request_during_running_survives_guarded_finish(
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    async def request_scan_before_finish(**kwargs: Any) -> PostsScanSummary:
+    async def request_scan_before_finish(**kwargs: Any) -> object:
         with SqliteApplicationContext(db_path) as app:
             app.services.targets.request_target_scan(kwargs["target"].id)
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -1726,7 +1662,7 @@ def test_resident_manual_scan_request_during_running_survives_guarded_finish(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=request_scan_before_finish,
+            scan_page=as_async_scan_callable(request_scan_before_finish),
         )
         assert await executor.enqueue_due_targets(
             (

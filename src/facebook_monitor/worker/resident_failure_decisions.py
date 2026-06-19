@@ -19,6 +19,7 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
+from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 
 
 @dataclass(frozen=True)
@@ -62,11 +63,18 @@ def decide_resident_failure_attempt(
 
     decision = commit_outcome.failure_decision
     if decision is None:
+        target_inactive = commit_outcome.kind == ScanCommitOutcomeKind.TARGET_INACTIVE
+        kind = (
+            ResidentAttemptOutcomeKind.TARGET_INACTIVE
+            if target_inactive
+            else ResidentAttemptOutcomeKind.OWNER_CHANGED
+        )
+        reason = commit_outcome.reason if target_inactive else owner_changed_reason
         return ResidentFailureAttemptDecision(
             outcome=ResidentAttemptOutcome.skipped(
                 target_id=target_id,
-                kind=ResidentAttemptOutcomeKind.OWNER_CHANGED,
-                reason=owner_changed_reason,
+                kind=kind,
+                reason=reason,
             ),
             failure_decision=None,
             owner_changed=True,

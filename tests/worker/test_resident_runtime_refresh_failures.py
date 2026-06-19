@@ -16,6 +16,7 @@ from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import TargetCoverImageRefreshStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
@@ -32,6 +33,8 @@ from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import RuntimeRefreshMetadataBrowserContext
 from tests.worker.resident_main_test_helpers import RuntimeClosedOnPausedBrowserContext
 from tests.worker.resident_main_test_helpers import _stub_runtime_outbox_dispatch
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
 def test_resident_main_loop_keeps_non_active_metadata_runtime_failure_pending(
@@ -299,7 +302,7 @@ def test_active_metadata_runtime_failure_notifies_after_scan_retries(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_terminal_failure,
             ),
@@ -384,17 +387,12 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         nonlocal scan_calls
         scan_calls += 1
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     def stop_after_scan_success(summary: Any) -> None:
@@ -423,7 +421,7 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),
@@ -445,7 +443,7 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.consecutive_failure_reason == ""
     assert latest_scan is not None
-    assert latest_scan.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert latest_scan.status == ScanStatus.SUCCESS
     assert cover_state is not None
     assert cover_state.status == TargetCoverImageRefreshStatus.IDLE
     assert cover_state.last_result == TargetCoverImageRefreshResult.SUCCEEDED_CHANGED
@@ -505,17 +503,12 @@ def test_paused_metadata_runtime_failure_does_not_starve_active_scan(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         nonlocal scan_calls
         scan_calls += 1
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     def stop_after_scan_success(summary: Any) -> None:
@@ -544,7 +537,7 @@ def test_paused_metadata_runtime_failure_does_not_starve_active_scan(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),
@@ -627,17 +620,12 @@ def test_paused_cover_runtime_failure_does_not_starve_active_scan(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         nonlocal scan_calls
         scan_calls += 1
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     def stop_after_scan_success(summary: Any) -> None:
@@ -666,7 +654,7 @@ def test_paused_cover_runtime_failure_does_not_starve_active_scan(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),
@@ -730,7 +718,7 @@ def test_runtime_restart_pending_retry_preserves_failure_streak(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=scan_page,
+        scan_page=as_async_scan_callable(scan_page),
     )
     executor._request_target_retry_after_runtime_restart(target.id)
 

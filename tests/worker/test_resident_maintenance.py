@@ -47,6 +47,8 @@ from tests.worker.resident_main_test_helpers import FakeMetadataLocator
 from tests.worker.resident_main_test_helpers import FakeMetadataPage
 from tests.worker.resident_main_test_helpers import FakeLoggedOutMetadataBrowserContext
 from tests.worker.resident_main_test_helpers import FakeShutdownMetadataBrowserContext
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
 class FakeUnavailableMetadataLocator(FakeMetadataLocator):
@@ -144,7 +146,7 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -487,19 +489,14 @@ def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
             )
         )
 
-    async def scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def scan_page(**kwargs: Any) -> object:
         """metadata failure 不應阻擋正式 due scan。"""
 
         nonlocal scan_calls
         scan_calls += 1
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -514,7 +511,7 @@ def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -812,7 +809,7 @@ def test_resident_scheduler_tick_dispatches_existing_pending_outbox(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -961,7 +958,7 @@ def test_resident_scheduler_tick_refreshes_pending_custom_named_target_cover(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -1036,7 +1033,7 @@ def test_resident_scheduler_tick_refreshes_cover_image_without_renaming_target(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -1121,7 +1118,7 @@ def test_resident_scheduler_tick_skips_stale_cover_image_refresh_job(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -1256,7 +1253,7 @@ def test_resident_scheduler_tick_records_cover_image_refresh_failure(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -1344,7 +1341,7 @@ def test_resident_scheduler_tick_keeps_cover_refresh_pending_on_shutdown(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:
@@ -1413,7 +1410,7 @@ def test_resident_scheduler_tick_marks_pending_metadata_failed(tmp_path: Path) -
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=scan_page,
+            scan_page=as_async_scan_callable(scan_page),
         )
         await executor.start()
         try:

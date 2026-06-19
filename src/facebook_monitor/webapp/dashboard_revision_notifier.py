@@ -34,7 +34,12 @@ class _DashboardRevisionSubscriber:
 
 
 class DashboardRevisionNotifier:
-    """集中管理 dashboard revision watcher 與 SSE subscribers。"""
+    """集中管理 dashboard revision watcher 與 SSE subscribers。
+
+    instance 綁定單一 FastAPI app lifespan；呼叫 `stop()` 後不支援重新
+    `start()` 同一 instance。測試或 dev tooling 若需要新的 lifespan，應建立
+    新的 app / notifier instance。
+    """
 
     def __init__(
         self,

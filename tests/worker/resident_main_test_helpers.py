@@ -4,12 +4,25 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from typing import cast
 
 from playwright.async_api import Error as AsyncPlaywrightError
 from pytest import MonkeyPatch
 
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.core.models import TargetKind
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
+from facebook_monitor.worker.scan_finalize import NormalizedScanItem
+from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
+
+
+def as_async_scan_callable(scan_page: object) -> AsyncScanCallable:
+    """測試用 cast：允許 fake scanner 刻意模擬 formal path 邊界案例。"""
+
+    return cast(AsyncScanCallable, scan_page)
 
 
 class FakeAsyncLocator:
@@ -90,6 +103,44 @@ class FakeAsyncBrowserContext:
         """標記 browser context 已關閉。"""
 
         self.closed = True
+
+
+def build_success_scan_result_for_test(
+    *,
+    target: TargetDescriptor,
+    page_url: str,
+    item_key: str | None = None,
+    text: str = "測試內容",
+) -> SuccessScanResult:
+    """建立 resident formal async 測試用的最小 commit-ready success result。"""
+
+    item_kind = (
+        ItemKind.COMMENT if target.target_kind == TargetKind.COMMENTS else ItemKind.POST
+    )
+    items: tuple[NormalizedScanItem, ...]
+    if item_key:
+        items = (
+            NormalizedScanItem(
+                item_kind=item_kind,
+                item_key=item_key,
+                alias_keys=(item_key,),
+                group_id=target.group_id,
+                parent_post_id=target.parent_post_id
+                if target.target_kind == TargetKind.COMMENTS
+                else "",
+                text=text,
+                raw_target_kind=target.target_kind.value,
+            ),
+        )
+    else:
+        items = ()
+    return SuccessScanResult(
+        target_id=target.id,
+        url=page_url,
+        items=items,
+        item_count=len(items),
+        metadata={"worker": "resident_main_test"},
+    )
 
 
 class FakeMetadataLocator:

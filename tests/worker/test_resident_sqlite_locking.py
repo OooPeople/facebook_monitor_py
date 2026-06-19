@@ -43,6 +43,8 @@ from tests.worker.resident_main_cycle_harness import (
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
 def test_resident_main_retries_page_reload_state_sqlite_lock(
@@ -81,15 +83,10 @@ def test_resident_main_retries_page_reload_state_sqlite_lock(
         flaky_mark_page_reloaded,
     )
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     summary = asyncio.run(
@@ -100,7 +97,7 @@ def test_resident_main_retries_page_reload_state_sqlite_lock(
                 interval_seconds=0,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -143,7 +140,7 @@ def test_resident_main_scan_sqlite_lock_requeues_without_failure(
                 interval_seconds=0,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=locked_scan_page,
+            scan_page=as_async_scan_callable(locked_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -205,7 +202,7 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
                 interval_seconds=0,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=locked_finalize_scan_page,
+            scan_page=as_async_scan_callable(locked_finalize_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -241,20 +238,15 @@ def test_resident_main_scan_connection_uses_short_busy_timeout(
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    async def inspect_scan_db_timeout(**kwargs: Any) -> PostsScanSummary:
+    async def inspect_scan_db_timeout(**kwargs: Any) -> object:
         nonlocal observed_timeout_ms
         row = kwargs["app"].repositories.runtime_states.connection.execute(
             "PRAGMA busy_timeout"
         ).fetchone()
         observed_timeout_ms = int(row[0])
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     summary = asyncio.run(
@@ -265,7 +257,7 @@ def test_resident_main_scan_connection_uses_short_busy_timeout(
                 interval_seconds=0,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=inspect_scan_db_timeout,
+            scan_page=as_async_scan_callable(inspect_scan_db_timeout),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -318,7 +310,7 @@ def test_resident_main_unguarded_sqlite_lock_requeue_does_not_override_owner(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=unused_scan_page,
+        scan_page=as_async_scan_callable(unused_scan_page),
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=running.id,
@@ -415,7 +407,7 @@ def test_resident_main_sqlite_lock_requeue_begins_transaction_before_read(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=unused_scan_page,
+        scan_page=as_async_scan_callable(unused_scan_page),
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=target.id,
@@ -474,7 +466,7 @@ def test_resident_main_guarded_sqlite_lock_requeue_ignores_stale_owner(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=unused_scan_page,
+        scan_page=as_async_scan_callable(unused_scan_page),
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=target.id,
@@ -524,7 +516,7 @@ def test_resident_main_guarded_sqlite_lock_requeue_accepts_matching_owner(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=unused_scan_page,
+        scan_page=as_async_scan_callable(unused_scan_page),
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=target.id,
@@ -577,7 +569,7 @@ def test_resident_main_guarded_sqlite_lock_requeue_respects_stopped_target(
         page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
         target_queue=TargetQueue(),
         schedule_planner=TargetSchedulePlanner(),
-        scan_page=unused_scan_page,
+        scan_page=as_async_scan_callable(unused_scan_page),
     )
     executor._write_target_retry_after_sqlite_lock(
         target_id=target.id,
@@ -623,16 +615,11 @@ def test_resident_main_heartbeat_sqlite_lock_does_not_cancel_scan(
         fake_retry,
     )
 
-    async def slow_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def slow_scan_page(**kwargs: Any) -> object:
         await asyncio.sleep(0.05)
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     summary = asyncio.run(
@@ -645,7 +632,7 @@ def test_resident_main_heartbeat_sqlite_lock_does_not_cancel_scan(
                 scan_timeout_seconds=1,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=slow_scan_page,
+            scan_page=as_async_scan_callable(slow_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -691,15 +678,10 @@ def test_resident_main_display_next_due_sqlite_lock_does_not_fail_target(
         locked_display_next_due,
     )
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     planner = TargetSchedulePlanner(
@@ -714,7 +696,7 @@ def test_resident_main_display_next_due_sqlite_lock_does_not_fail_target(
                     interval_seconds=0,
                 ),
                 page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 schedule_planner=planner,
                 cycle_index=1,
             )
@@ -733,7 +715,8 @@ def test_resident_main_display_next_due_sqlite_lock_does_not_fail_target(
     assert summary.success_count == 1
     assert summary.failure_count == 0
     assert summary.worker_health_ok is True
-    assert latest_scan is None
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
 
@@ -821,7 +804,7 @@ def test_resident_main_retries_failure_finalize_sqlite_lock(
                 interval_seconds=0,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=failing_scan_page,
+            scan_page=as_async_scan_callable(failing_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )

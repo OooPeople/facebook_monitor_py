@@ -13,17 +13,19 @@ from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
+from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
 def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
@@ -70,19 +72,14 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         nonlocal scan_calls
         scan_calls += 1
         if scan_calls == 1:
             raise AsyncPlaywrightError("Target page, context or browser has been closed")
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     monkeypatch.setattr(
@@ -111,7 +108,7 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
             ),
@@ -132,7 +129,7 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.consecutive_failure_reason == ""
     assert latest_scan is not None
-    assert latest_scan.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert latest_scan.status == ScanStatus.SUCCESS
 
 
 def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
@@ -214,7 +211,7 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
-                scan_page=unused_scan_page,
+                scan_page=as_async_scan_callable(unused_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_cycle,
             ),
@@ -298,24 +295,14 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        finalize_result = record_protective_skip_for_test(
-            app=kwargs["app"],
-            target=kwargs["target"],
+    async def fake_scan_page(**kwargs: Any) -> ProtectiveSkipScanResult:
+        return ProtectiveSkipScanResult(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
             metadata={
                 "worker": "resident_main",
                 "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
             },
-            commit_guard=kwargs["commit_guard"],
-        )
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=finalize_result.scan_run_id,
-            round_stats=(),
         )
 
     monkeypatch.setattr(
@@ -350,7 +337,7 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
                     scheduler_tick_seconds=0,
                     max_concurrent_scans=4,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_second_runtime,
             ),
@@ -444,16 +431,11 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         await allow_scan_finish.wait()
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     monkeypatch.setattr(
@@ -487,7 +469,7 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
                     max_concurrent_scans=4,
                     max_cycles=1,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 on_cycle=release_after_first_summary,
             ),
             timeout=2,
@@ -564,7 +546,7 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
             sleep_cancelled.set()
             raise
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         nonlocal scan_calls
         scan_calls += 1
         if scan_calls == 1:
@@ -573,14 +555,9 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
             await release_scan_failure.wait()
             raise AsyncPlaywrightError("Target page, context or browser has been closed")
         second_scan_done.set()
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     def stop_after_success(summary: Any) -> None:
@@ -609,7 +586,7 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
                     interval_seconds=0,
                     scheduler_tick_seconds=300,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 sleep_fn=fake_sleep,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
@@ -681,7 +658,7 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
         contexts.append(context)
         return context
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> object:
         target = kwargs["target"]
         if target.id == first.id and not first_target_started.is_set():
             first_target_started.set()
@@ -691,14 +668,9 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
             second_target_started.set()
             await asyncio.sleep(10)
         success_counts[target.id] = success_counts.get(target.id, 0) + 1
-        return PostsScanSummary(
-            target_id=target.id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=target,
+            page_url=kwargs["page"].url,
         )
 
     def stop_after_both_succeed(summary: Any) -> None:
@@ -730,7 +702,7 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
                     scheduler_tick_seconds=0,
                     max_concurrent_scans=2,
                 ),
-                scan_page=fake_scan_page,
+                scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_both_succeed,
             ),
@@ -755,5 +727,5 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
     assert second_state.runtime_status == TargetRuntimeStatus.IDLE
     assert first_latest is not None
     assert second_latest is not None
-    assert first_latest.metadata["reason"] == SCHEDULER_RUNTIME_REASON
-    assert second_latest.metadata["reason"] == SCHEDULER_RUNTIME_REASON
+    assert first_latest.status == ScanStatus.SUCCESS
+    assert second_latest.status == ScanStatus.SUCCESS

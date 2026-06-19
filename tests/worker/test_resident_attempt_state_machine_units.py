@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import cast
 
 import pytest
 from playwright.async_api import Error as AsyncPlaywrightError
@@ -22,8 +24,11 @@ from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcome
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
 from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
+from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.resident_failure_decisions import decide_resident_failure_attempt
+from facebook_monitor.worker.resident_failure_decisions import ResidentFailureAttemptDecision
+from facebook_monitor.worker.resident_failure_decisions import ResidentFailureRecordDecision
 from facebook_monitor.worker.resident_failure_decisions import (
     failure_record_decision_for_playwright_exception,
 )
@@ -359,6 +364,81 @@ def test_failure_attempt_decision_maps_owner_changed_without_side_effects() -> N
     assert decision.outcome.reason == "worker_failure_owner_changed"
     assert result.skipped is True
     assert result.opened_page is False
+
+
+def test_failure_attempt_decision_maps_target_inactive_without_side_effects() -> None:
+    """failure commit target inactive 只映射 skipped，不誤標為 owner changed。"""
+
+    decision = decide_resident_failure_attempt(
+        target_id="target-1",
+        commit_outcome=ScanCommitOutcome(
+            kind=ScanCommitOutcomeKind.TARGET_INACTIVE,
+            target_id="target-1",
+            reason="target_inactive_before_commit",
+        ),
+        owner_changed_reason="worker_failure_owner_changed",
+        source="worker_failure",
+        exception_class="WorkerFailure",
+        request_runtime_restart=True,
+        opened_page=True,
+        reused_page=False,
+        include_page_counts_in_result=True,
+    )
+
+    result = decision.outcome.to_scan_result()
+
+    assert decision.owner_changed is True
+    assert decision.failure_decision is None
+    assert decision.discard_page is False
+    assert decision.request_runtime_restart is False
+    assert decision.outcome.kind == ResidentAttemptOutcomeKind.TARGET_INACTIVE
+    assert decision.outcome.reason == "target_inactive_before_commit"
+    assert result.skipped is True
+    assert result.opened_page is False
+
+
+def test_failure_attempt_target_inactive_log_uses_outcome_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """target inactive cleanup log 應使用實際 terminal outcome reason。"""
+
+    caplog.set_level(
+        logging.INFO,
+        logger="facebook_monitor.worker.resident_main_executor_attempt",
+    )
+    record_decision = ResidentFailureRecordDecision(
+        reason="unknown",
+        message="inactive boom",
+        source="unknown_exception",
+        exception_class="RuntimeError",
+        owner_changed_reason="unknown_owner_changed",
+    )
+    attempt_decision = ResidentFailureAttemptDecision(
+        outcome=ResidentAttemptOutcome.skipped(
+            target_id="target-1",
+            kind=ResidentAttemptOutcomeKind.TARGET_INACTIVE,
+            reason="target_inactive_before_commit",
+        ),
+        failure_decision=None,
+        owner_changed=True,
+    )
+
+    transition = asyncio.run(
+        attempt_module._finish_failure_attempt_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, object()),
+            worker_id="worker-a",
+            state=attempt_module.ResidentQueueAttemptState(
+                target_id="target-1",
+                page_id="page-a",
+            ),
+            failure_record_decision=record_decision,
+            failure_attempt_decision=attempt_decision,
+        )
+    )
+
+    assert transition.outcome.reason == "target_inactive_before_commit"
+    assert "reason=target_inactive_before_commit" in caplog.text
+    assert "reason=unknown_owner_changed" not in caplog.text
 
 
 def test_failure_attempt_decision_maps_regular_failure_with_page_counts() -> None:

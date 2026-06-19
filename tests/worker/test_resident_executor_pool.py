@@ -25,6 +25,8 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
 def test_resident_main_executor_keeps_third_target_queued(
@@ -52,7 +54,7 @@ def test_resident_main_executor_keeps_third_target_queued(
     release = asyncio.Event()
     active_count = 0
 
-    async def blocking_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def blocking_scan_page(**kwargs: Any) -> object:
         """讓前兩個 worker 保持 running，方便檢查第三個 target queued。"""
 
         nonlocal active_count
@@ -61,14 +63,9 @@ def test_resident_main_executor_keeps_third_target_queued(
             started.set()
         await release.wait()
         active_count -= 1
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -85,7 +82,7 @@ def test_resident_main_executor_keeps_third_target_queued(
             page_pool=page_pool,
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=blocking_scan_page,
+            scan_page=as_async_scan_callable(blocking_scan_page),
         )
         await executor.start()
         try:
@@ -152,16 +149,11 @@ def test_resident_enqueue_publishes_item_after_runtime_queued(
         release_db_mark = asyncio.Event()
         scan_started = asyncio.Event()
 
-        async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        async def fake_scan_page(**kwargs: Any) -> object:
             scan_started.set()
-            return PostsScanSummary(
-                target_id=kwargs["target"].id,
-                url=kwargs["page"].url,
-                item_count=0,
-                new_count=0,
-                matched_count=0,
-                scan_run_id=1,
-                round_stats=(),
+            return build_success_scan_result_for_test(
+                target=kwargs["target"],
+                page_url=kwargs["page"].url,
             )
 
         executor = ExecutorWorkerPool(
@@ -173,7 +165,7 @@ def test_resident_enqueue_publishes_item_after_runtime_queued(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         original_run_db_operation = executor._run_db_operation_with_retry  # noqa: SLF001
 
@@ -253,7 +245,7 @@ def test_resident_enqueue_releases_reserved_item_when_db_admission_rejected(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         due_target = DueTarget(
             target_id=target.id,
@@ -347,7 +339,7 @@ def test_resident_main_executor_requests_restart_when_worker_exits_unexpectedly(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=unused_scan_page,
+            scan_page=as_async_scan_callable(unused_scan_page),
         )
         await executor.start()
         try:
@@ -393,15 +385,10 @@ def test_resident_main_executor_requests_restart_when_worker_task_raises(
             await super().complete(target_id, owner_key=owner_key)
             raise RuntimeError("queue complete failed")
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+    async def fake_scan_page(**kwargs: Any) -> object:
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -415,7 +402,7 @@ def test_resident_main_executor_requests_restart_when_worker_task_raises(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=TargetSchedulePlanner(),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
         )
         await executor.start()
         try:

@@ -10,6 +10,7 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
+from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 
 
 class AsyncResidentPageLike(Protocol):
@@ -45,7 +46,7 @@ class AsyncPagePoolBrowserContextLike(Protocol):
 
 
 class AsyncScanCallable(Protocol):
-    """resident executor 注入的 async target scan callable。"""
+    """formal async resident 注入的 commit-ready target scan callable。"""
 
     async def __call__(
         self,
@@ -57,8 +58,8 @@ class AsyncScanCallable(Protocol):
         scroll_rounds: int,
         scroll_wait_ms: int,
         commit_guard: ScanCommitGuard | None = None,
-    ) -> object:
-        """掃描已準備好的 target page，或回傳 commit-ready result。"""
+    ) -> FormalAsyncScanResult:
+        """掃描已準備好的 target page，並回傳 coordinator commit-ready result。"""
 
 
 @dataclass(frozen=True)

@@ -16,17 +16,19 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
-from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_prepare import prepare_resident_main_page
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
+from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
+from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,
 )
@@ -113,7 +115,7 @@ def test_resident_main_cycle_runs_due_targets_concurrently(tmp_path: Path) -> No
     started_target_ids: set[str] = set()
     both_scans_started = asyncio.Event()
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> SuccessScanResult:
         """記錄同時執行數，證明 executor 不是序列化掃描。"""
 
         target_id = kwargs["target"].id
@@ -122,14 +124,9 @@ def test_resident_main_cycle_runs_due_targets_concurrently(tmp_path: Path) -> No
         if len(started_target_ids) == 2:
             both_scans_started.set()
         await asyncio.wait_for(both_scans_started.wait(), timeout=1)
-        return PostsScanSummary(
-            target_id=target_id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -141,7 +138,7 @@ def test_resident_main_cycle_runs_due_targets_concurrently(tmp_path: Path) -> No
                 max_concurrent_scans=2,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -188,18 +185,13 @@ def test_resident_main_cycle_dispatches_comments_target_to_comments_worker(
         post_calls.append(kwargs["target"].id)
         raise AssertionError("comments target should not use posts scan callable")
 
-    async def fake_comment_scan_page(**kwargs: Any) -> CommentsScanSummary:
+    async def fake_comment_scan_page(**kwargs: Any) -> SuccessScanResult:
         """記錄 comments worker 派發結果。"""
 
         comment_calls.append(kwargs["target"].id)
-        return CommentsScanSummary(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=1,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
         )
 
     async def run_test() -> None:
@@ -211,7 +203,7 @@ def test_resident_main_cycle_dispatches_comments_target_to_comments_worker(
                 max_concurrent_scans=1,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=fake_post_scan_page,
+            scan_page=as_async_scan_callable(fake_post_scan_page),
             scan_comments_target_page=fake_comment_scan_page,
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
@@ -266,7 +258,7 @@ def test_resident_main_cycle_commits_posts_protective_skip_result(
                 max_concurrent_scans=1,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
@@ -296,6 +288,70 @@ def test_resident_main_cycle_commits_posts_protective_skip_result(
     assert latest_items == []
     assert history == []
     assert notifications == []
+    assert pending_outbox == []
+
+
+def test_resident_main_cycle_rejects_legacy_finalized_summary_result(
+    tmp_path: Path,
+) -> None:
+    """formal async resident scanner 不可回傳 legacy finalized summary。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def legacy_summary_scan_page(**kwargs: Any) -> PostsScanSummary:
+        """模擬舊 scanner summary，正式 async path 必須 fail closed。"""
+
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    async def run_test() -> None:
+        summary = await run_resident_main_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+                max_concurrent_scans=1,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            scan_page=as_async_scan_callable(legacy_summary_scan_page),
+            schedule_planner=TargetSchedulePlanner(),
+            cycle_index=1,
+        )
+        assert summary.selected_count == 1
+        assert summary.success_count == 0
+        assert summary.failure_count == 1
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.FAILED
+    assert latest_scan.metadata["reason"] == "unknown"
+    assert latest_items == []
+    assert history == []
     assert pending_outbox == []
 
 
@@ -347,7 +403,7 @@ def test_resident_main_cycle_commits_comments_protective_skip_result(
                 max_concurrent_scans=1,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
-            scan_page=fake_post_scan_page,
+            scan_page=as_async_scan_callable(fake_post_scan_page),
             scan_comments_target_page=fake_comment_scan_page,
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
@@ -400,21 +456,17 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
 
     scan_calls = 0
 
-    async def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+    async def fake_scan_page(**kwargs: Any) -> SuccessScanResult:
         """模擬 auto_adjust_sort 後 page URL 帶 sorting query。"""
 
         nonlocal scan_calls
         scan_calls += 1
         page = kwargs["page"]
         page.url = "https://www.facebook.com/groups/111/?sorting_setting=CHRONOLOGICAL"
-        return PostsScanSummary(
-            target_id=kwargs["target"].id,
-            url=page.url,
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=scan_calls,
-            round_stats=(),
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=page.url,
+            item_key=f"post:reload:{scan_calls}",
         )
 
     async def run_test() -> None:
@@ -431,7 +483,7 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
         first_summary = await run_resident_main_cycle(
             options=options,
             page_pool=page_pool,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
             schedule_planner=planner,
             cycle_index=1,
         )
@@ -440,7 +492,7 @@ def test_resident_main_cycle_reuses_page_and_reloads_same_group_feed(
         second_summary = await run_resident_main_cycle(
             options=options,
             page_pool=page_pool,
-            scan_page=fake_scan_page,
+            scan_page=as_async_scan_callable(fake_scan_page),
             schedule_planner=planner,
             cycle_index=2,
         )

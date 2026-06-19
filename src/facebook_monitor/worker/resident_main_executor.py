@@ -38,6 +38,7 @@ from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePa
 from facebook_monitor.worker.resident_main_executor_types import AsyncScanCallable
 from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScanResult
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
+from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import force_mark_resident_target_idle
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
@@ -519,11 +520,11 @@ class ExecutorWorkerPool:
         worker_id: str,
         page_id: str,
         commit_guard: ScanCommitGuard,
-    ) -> object:
+    ) -> FormalAsyncScanResult:
         """以 timeout 與 heartbeat 包住 target scan，避免長跑誤判或永久卡住。"""
 
         target_id = target.id
-        scan_task: asyncio.Task[object] = asyncio.create_task(
+        scan_task: asyncio.Task[FormalAsyncScanResult] = asyncio.create_task(
             scan_page(
                 page=page,
                 app=app,

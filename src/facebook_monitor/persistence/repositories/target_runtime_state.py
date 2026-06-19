@@ -644,7 +644,10 @@ class TargetRuntimeStateRepository:
               AND runtime_status = ?
               AND ((last_enqueued_at IS NULL AND ? IS NULL) OR last_enqueued_at = ?)
               AND updated_at = ?
-              AND COALESCE(last_enqueued_at, updated_at) <= ?
+              AND (
+                (last_enqueued_at != '' AND last_enqueued_at <= ?)
+                OR (last_enqueued_at = '' AND updated_at <= ?)
+              )
             """,
             (
                 state.runtime_status.value,
@@ -660,6 +663,7 @@ class TargetRuntimeStateRepository:
                 expected_enqueued_at_text,
                 expected_enqueued_at_text,
                 encode_datetime(expected_updated_at),
+                encode_datetime(stale_before),
                 encode_datetime(stale_before),
             ),
         )

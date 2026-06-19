@@ -73,6 +73,15 @@
 - 是否有半套 abstraction、過早 abstraction、過深 call chain 或難以測試的隱式副作用。
 - `scripts/admin/complexity_report.py` 可作為大函式 / 大檔案 / CCN 排名入口，但 report 只提供人工審查線索，不是 pass/fail 規則；是否拆分仍以產品語義、狀態流程、交易邊界與測試風險判斷。
 
+#### Resident Worker 防禦邊界
+
+review resident worker / scan commit state machine 時，需區分長期防禦與過渡相容：
+
+- 長期防禦邊界：scan commit guard、target inactive guard、owner / page / started_at mismatch guard、scanner result target identity validation、cleanup resource ownership、SQLite retry / stale recovery、notification outbox idempotency、support bundle redaction。
+- 過渡相容邊界：sync / one-shot finalizing scanner summary、legacy finalizing scanner success 後只補 idle 的 helper、尚未遷移為 commit-ready result 的 debug / fallback path。
+
+正式 async resident path 不應為過渡相容保留 catch-all result fallback；scanner 應產生 commit-ready result，coordinator 應是 visible scan state 的 write owner。
+
 ### 9. 可觀測性與診斷
 
 - 重要行為是否能從 latest_scan metadata、worker log、runtime diagnostics、DB state 或 UI debug 看出 attempted / changed / before / after / reason / count / worker。

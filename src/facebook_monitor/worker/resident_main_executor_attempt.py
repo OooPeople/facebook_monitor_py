@@ -66,15 +66,13 @@ from facebook_monitor.worker.resident_failure_decisions import (
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureRecordDecision
 from facebook_monitor.worker.scan_commit_coordinator import FailureScanCommitRequest
 from facebook_monitor.worker.scan_commit_coordinator import commit_failure_request_for_db_async
-from facebook_monitor.worker.scan_commit_coordinator import (
-    commit_guarded_idle_after_success,
-)
 from facebook_monitor.worker.scan_commit_coordinator import commit_guarded_protective_skip
 from facebook_monitor.worker.scan_commit_coordinator import commit_success
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
@@ -117,7 +115,7 @@ class ResidentExecutorAttemptHost(Protocol):
         worker_id: str,
         page_id: str,
         commit_guard: ScanCommitGuard,
-    ) -> object:
+    ) -> FormalAsyncScanResult:
         """以 heartbeat/timeout 包住 scan callable。"""
 
     def runtime_restart_requested(self) -> bool:
@@ -330,27 +328,32 @@ async def _run_guarded_scan_and_commit_idle(
             page_id=state.page_id,
             commit_guard=commit_guard,
         )
-        if isinstance(scan_result, ProtectiveSkipScanResult):
+        commit_ready_result = _require_formal_async_scan_result(scan_result)
+        if isinstance(commit_ready_result, ProtectiveSkipScanResult):
             return commit_guarded_protective_skip(
                 app=app,
-                target_id=state.target_id,
                 target=resident_target.target,
-                metadata=dict(scan_result.metadata),
+                result=commit_ready_result,
                 commit_guard=commit_guard,
             )
-        if isinstance(scan_result, SuccessScanResult):
-            return commit_success(
-                app=app,
-                target=resident_target.target,
-                config=resident_target.config,
-                result=scan_result,
-                commit_guard=commit_guard,
-            )
-        return commit_guarded_idle_after_success(
+        return commit_success(
             app=app,
-            target_id=state.target_id,
+            target=resident_target.target,
+            config=resident_target.config,
+            result=commit_ready_result,
             commit_guard=commit_guard,
         )
+
+
+def _require_formal_async_scan_result(result: object) -> FormalAsyncScanResult:
+    """正式 async resident path 只接受 commit-ready scanner result。"""
+
+    if isinstance(result, (SuccessScanResult, ProtectiveSkipScanResult)):
+        return result
+    raise TypeError(
+        "formal async resident scanner must return SuccessScanResult "
+        f"or ProtectiveSkipScanResult, got {type(result).__name__}"
+    )
 
 
 def _require_commit_guard(state: ResidentQueueAttemptState) -> ScanCommitGuard:
@@ -608,7 +611,7 @@ async def _finish_failure_attempt_decision(
             state.target_id,
             worker_id,
             state.page_id,
-            failure_record_decision.owner_changed_reason,
+            failure_attempt_decision.outcome.reason,
         )
         transition = transition_from_attempt_outcome(
             target_id=state.target_id,

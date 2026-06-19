@@ -170,10 +170,6 @@ async def scan_posts_page_async(
     config: TargetConfig,
     scroll_rounds: int,
     scroll_wait_ms: int,
-    notification_sender: NtfySender = send_ntfy_notification,
-    desktop_notification_sender: DesktopSender = send_desktop_notification,
-    discord_notification_sender: DiscordSender = send_discord_notification,
-    commit_guard: ScanCommitGuard | None = None,
 ) -> SuccessScanResult | ProtectiveSkipScanResult:
     """resident main worker 掃描 page；visible scan state 交由 coordinator commit。"""
 

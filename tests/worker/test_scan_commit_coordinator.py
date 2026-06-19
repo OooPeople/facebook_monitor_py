@@ -11,6 +11,7 @@ import pytest
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
@@ -23,6 +24,7 @@ from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
@@ -30,9 +32,6 @@ from facebook_monitor.notifications.outbox_service import build_notification_ide
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_commit_coordinator import FailureScanCommitRequest
 from facebook_monitor.worker.scan_commit_coordinator import commit_failure_request_for_db_async
-from facebook_monitor.worker.scan_commit_coordinator import (
-    commit_guarded_idle_after_success,
-)
 from facebook_monitor.worker.scan_commit_coordinator import commit_guarded_protective_skip
 from facebook_monitor.worker.scan_commit_coordinator import commit_success
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
@@ -40,6 +39,7 @@ from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_result
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
@@ -87,61 +87,6 @@ def _assert_no_visible_scan_writes(app: ApplicationContext, target_id: str) -> N
     assert latest_items == []
     assert history == []
     assert pending_outbox == []
-
-
-def test_scan_commit_coordinator_commits_idle_with_existing_guard(
-    tmp_path: Path,
-) -> None:
-    """success finalize 後的 idle wrapper 只包既有 guarded idle helper。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app:
-        fixture = _create_running_target_with_guard(app)
-        outcome = commit_guarded_idle_after_success(
-            app=app,
-            target_id=fixture.target.id,
-            commit_guard=fixture.commit_guard,
-        )
-        state = app.repositories.runtime_states.get(fixture.target.id)
-
-    assert outcome.kind == ScanCommitOutcomeKind.IDLE_COMMITTED
-    assert outcome.committed_visible_scan_state is False
-    assert outcome.side_effects.updated_runtime_state is True
-    assert outcome.side_effects.wrote_scan_run is False
-    assert state is not None
-    assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert state.active_worker_id == ""
-    assert state.active_page_id == ""
-
-
-def test_scan_commit_coordinator_idle_reports_guard_mismatch_without_overwrite(
-    tmp_path: Path,
-) -> None:
-    """舊 success attempt 的 idle wrapper 不可覆寫新的 running owner。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app:
-        fixture = _create_running_target_with_guard(app)
-        current_state = app.services.targets.mark_target_running(
-            fixture.target.id,
-            "worker-b",
-            page_id="page-b",
-        )
-        outcome = commit_guarded_idle_after_success(
-            app=app,
-            target_id=fixture.target.id,
-            commit_guard=fixture.commit_guard,
-        )
-        state = app.repositories.runtime_states.get(fixture.target.id)
-
-    assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
-    assert outcome.stale_or_inactive is True
-    assert outcome.side_effects.any is False
-    assert state is not None
-    assert state.runtime_status == TargetRuntimeStatus.RUNNING
-    assert state.active_worker_id == "worker-b"
-    assert state.active_page_id == "page-b"
-    assert state.last_started_at == current_state.last_started_at
 
 
 def test_scan_commit_coordinator_commits_success_and_idle(
@@ -285,6 +230,69 @@ def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
     assert seen_count == 0
 
 
+def test_scan_commit_coordinator_success_post_write_idle_failure_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """success 寫入後若 idle guard 失敗，整筆 scan commit 必須 rollback。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app, include_keywords=("票券",))
+    config = replace(
+        fixture.config,
+        enable_ntfy=True,
+        ntfy_topic="phase6-success-rollback",
+    )
+
+    def reject_idle(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    with pytest.raises(WorkerFailure) as exc_info:
+        with SqliteApplicationContext(db_path) as app:
+            monkeypatch.setattr(
+                app.services.targets,
+                "guarded_mark_target_idle",
+                reject_idle,
+            )
+            commit_success(
+                app=app,
+                target=fixture.target,
+                config=config,
+                result=SuccessScanResult(
+                    target_id=fixture.target.id,
+                    url=fixture.target.canonical_url,
+                    items=(
+                        NormalizedScanItem(
+                            item_kind=ItemKind.POST,
+                            item_key="post:success-idle-rollback",
+                            alias_keys=("post:success-idle-rollback",),
+                            group_id=fixture.target.group_id,
+                            text="票券",
+                        ),
+                    ),
+                    item_count=1,
+                    metadata={"worker": "phase6"},
+                ),
+                commit_guard=fixture.commit_guard,
+            )
+
+    assert exc_info.value.reason == TARGET_STOPPED_REASON
+    with SqliteApplicationContext(db_path) as app:
+        _assert_no_visible_scan_writes(app, fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+        seen_count = app.repositories.seen_items.connection.execute(
+            "SELECT COUNT(*) FROM seen_items WHERE scope_id = ?",
+            (fixture.target.scope_id,),
+        ).fetchone()[0]
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
+    assert seen_count == 0
+
+
 def test_scan_commit_coordinator_success_reports_target_inactive_without_writes(
     tmp_path: Path,
 ) -> None:
@@ -317,9 +325,7 @@ def test_scan_commit_coordinator_success_reports_target_inactive_without_writes(
         )
         state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        latest_items = app.repositories.latest_scan_items.list_by_target(
-            fixture.target.id
-        )
+        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
         history = app.repositories.match_history.list_by_target(fixture.target.id)
         pending_outbox = app.repositories.notification_outbox.list_pending()
 
@@ -472,9 +478,7 @@ def test_scan_commit_coordinator_success_reports_page_mismatch_without_writes(
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app, include_keywords=("票券",))
         old_state = app.services.targets.ensure_runtime_state(fixture.target.id)
-        app.repositories.runtime_states.save(
-            replace(old_state, active_page_id="page-b")
-        )
+        app.repositories.runtime_states.save(replace(old_state, active_page_id="page-b"))
         outcome = commit_success(
             app=app,
             target=fixture.target,
@@ -905,9 +909,8 @@ def test_scan_commit_coordinator_failure_reports_runtime_outbox_count(
             latest_scan_run_id = outcome.scan_run_id
             latest_outbox_count = outcome.runtime_failure_notification_count
             assert outcome.side_effects.wrote_scan_run is True
-            assert (
-                outcome.side_effects.enqueued_runtime_failure_notification_outbox
-                is (outcome.runtime_failure_notification_count > 0)
+            assert outcome.side_effects.enqueued_runtime_failure_notification_outbox is (
+                outcome.runtime_failure_notification_count > 0
             )
             assert outcome.side_effects.updated_runtime_state is True
         return latest_scan_run_id, latest_outbox_count
@@ -1050,9 +1053,7 @@ def test_scan_commit_coordinator_skip_target_inactive_writes_nothing(
         )
         state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        latest_items = app.repositories.latest_scan_items.list_by_target(
-            fixture.target.id
-        )
+        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
         pending_outbox = app.repositories.notification_outbox.list_pending()
 
     assert outcome.kind == ScanCommitOutcomeKind.TARGET_INACTIVE
@@ -1064,6 +1065,51 @@ def test_scan_commit_coordinator_skip_target_inactive_writes_nothing(
     assert latest_scan is None
     assert latest_items == []
     assert pending_outbox == []
+
+
+def test_scan_commit_coordinator_skip_post_write_guard_failure_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """skipped scan 寫入後若 runtime guard 失敗，必須 rollback 而非回 rejection。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    def reject_skip_decision(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    with pytest.raises(WorkerFailure) as exc_info:
+        with SqliteApplicationContext(db_path) as app:
+            monkeypatch.setattr(
+                app.services.targets,
+                "guarded_apply_scan_skip_decision",
+                reject_skip_decision,
+            )
+            commit_guarded_protective_skip(
+                app=app,
+                target=fixture.target,
+                result=ProtectiveSkipScanResult(
+                    target_id=fixture.target.id,
+                    url=fixture.target.canonical_url,
+                    metadata={
+                        "worker": "resident_main",
+                        "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
+                    },
+                ),
+                commit_guard=fixture.commit_guard,
+            )
+
+    assert exc_info.value.reason == TARGET_STOPPED_REASON
+    with SqliteApplicationContext(db_path) as app:
+        _assert_no_visible_scan_writes(app, fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
 
 
 def test_scan_commit_coordinator_failure_reports_guard_mismatch_without_writes(
@@ -1111,6 +1157,97 @@ def test_scan_commit_coordinator_failure_reports_guard_mismatch_without_writes(
     assert state.active_page_id == current_guard.page_id
     assert latest_scan is None
     assert pending_outbox == []
+
+
+def test_scan_commit_coordinator_failure_post_write_guard_failure_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """failure scan 寫入後若 runtime guard 失敗，必須 rollback 而非回 rejection。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    def reject_failure_decision(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    with pytest.raises(WorkerFailure) as exc_info:
+        with SqliteApplicationContext(db_path) as app:
+            monkeypatch.setattr(
+                app.services.targets,
+                "guarded_apply_scan_failure_decision",
+                reject_failure_decision,
+            )
+            record_guarded_scan_failure_result(
+                app=app,
+                target_id=fixture.target.id,
+                reason=UNKNOWN_REASON,
+                message="post-write guard mismatch",
+                source="unknown_exception",
+                worker_path="resident_main",
+                commit_guard=fixture.commit_guard,
+                exception_class="RuntimeError",
+            )
+
+    assert exc_info.value.reason == TARGET_STOPPED_REASON
+    with SqliteApplicationContext(db_path) as app:
+        _assert_no_visible_scan_writes(app, fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
+
+
+def test_scan_commit_coordinator_failure_public_path_post_write_guard_failure_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """public async failure coordinator 也必須 propagates post-write guard failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+
+    def reject_failure_decision(
+        self: TargetApplicationService,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(
+        TargetApplicationService,
+        "guarded_apply_scan_failure_decision",
+        reject_failure_decision,
+    )
+
+    async def run_test() -> None:
+        with pytest.raises(WorkerFailure) as exc_info:
+            await _commit_failure_request_for_test(
+                db_path=db_path,
+                target_id=fixture.target.id,
+                reason=UNKNOWN_REASON,
+                message="public post-write guard mismatch",
+                source="unknown_exception",
+                worker_path="resident_main",
+                commit_guard=fixture.commit_guard,
+                exception_class="RuntimeError",
+            )
+        assert exc_info.value.reason == TARGET_STOPPED_REASON
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        _assert_no_visible_scan_writes(app, fixture.target.id)
+        state = app.repositories.runtime_states.get(fixture.target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
 
 
 def test_scan_commit_coordinator_failure_reports_target_inactive_without_writes(
@@ -1274,9 +1411,7 @@ def test_scan_commit_coordinator_failure_reports_page_mismatch_without_writes(
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app)
         old_state = app.services.targets.ensure_runtime_state(fixture.target.id)
-        app.repositories.runtime_states.save(
-            replace(old_state, active_page_id="page-b")
-        )
+        app.repositories.runtime_states.save(replace(old_state, active_page_id="page-b"))
 
     async def run_test() -> None:
         outcome = await _commit_failure_request_for_test(

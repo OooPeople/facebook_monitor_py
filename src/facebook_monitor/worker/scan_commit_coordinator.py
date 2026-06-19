@@ -1,6 +1,7 @@
-"""Thin coordinator for resident scan commit helpers.
+"""Coordinator for resident scan commit helpers.
 
-職責：集中 formal resident scan commit side effects，並轉成 typed outcome。
+職責：集中 formal resident scan commit side effects、guard rejection 分類，
+並轉成 typed outcome。
 本模組不擁有 scanner、Playwright page、scheduler policy 或通知投遞策略。
 """
 
@@ -11,7 +12,6 @@ from enum import StrEnum
 from pathlib import Path
 
 from facebook_monitor.application.context import ApplicationContext
-from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -35,6 +35,8 @@ from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitSideEffects
 from facebook_monitor.worker.scan_finalize import ScanFinalizeResult
 from facebook_monitor.worker.scan_failure_finalize import (
+    GuardedScanFailureFinalizeRejected,
+    GuardedScanFailureFinalizeRejectedKind,
     GuardedScanFailureFinalizeResult,
     record_guarded_scan_failure_result_for_db_async,
 )
@@ -88,45 +90,6 @@ class _ScanCommitPermission:
         return self.kind == _ScanCommitPermissionKind.ALLOWED
 
 
-def commit_guarded_idle_after_success(
-    *,
-    app: ApplicationContext,
-    target_id: str,
-    commit_guard: ScanCommitGuard,
-) -> ScanCommitOutcome:
-    """legacy finalizing scanner 專用：success finalize 後只補 guarded idle。
-
-    Formal async resident scanner 必須回傳 commit-ready result，並走
-    `commit_success()` / `commit_guarded_protective_skip()`。本 helper 只保留
-    給 sync / one-shot finalizing path 尚未遷移時使用；那些路徑改為
-    commit-ready result 後即可移除。
-    """
-
-    permission = _classify_scan_commit_permission(
-        app=app,
-        target_id=target_id,
-        commit_guard=commit_guard,
-    )
-    if not permission.allowed:
-        return _commit_rejection_outcome(target_id=target_id, permission=permission)
-    committed = mark_target_idle_for_scan_commit(
-        app=app,
-        target_id=target_id,
-        commit_guard=commit_guard,
-    )
-    if not committed:
-        return ScanCommitOutcome(
-            kind=ScanCommitOutcomeKind.GUARD_MISMATCH,
-            target_id=target_id,
-            reason="scan_commit_guard_mismatch",
-        )
-    return ScanCommitOutcome(
-        kind=ScanCommitOutcomeKind.IDLE_COMMITTED,
-        target_id=target_id,
-        side_effects=ScanCommitSideEffects(updated_runtime_state=True),
-    )
-
-
 def commit_guarded_protective_skip(
     *,
     app: ApplicationContext,
@@ -144,22 +107,12 @@ def commit_guarded_protective_skip(
     )
     if not permission.allowed:
         return _commit_rejection_outcome(target_id=target.id, permission=permission)
-    try:
-        finalize_result: ScanFinalizeResult = record_guarded_skipped_scan(
-            app=app,
-            target=target,
-            metadata=dict(result.metadata),
-            commit_guard=commit_guard,
-        )
-    except WorkerFailure as exc:
-        if exc.reason != TARGET_STOPPED_REASON:
-            raise
-        permission = _classify_scan_commit_permission(
-            app=app,
-            target_id=target.id,
-            commit_guard=commit_guard,
-        )
-        return _commit_rejection_outcome(target_id=target.id, permission=permission)
+    finalize_result: ScanFinalizeResult = record_guarded_skipped_scan(
+        app=app,
+        target=target,
+        metadata=dict(result.metadata),
+        commit_guard=commit_guard,
+    )
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.SKIP_COMMITTED,
         target_id=target.id,
@@ -190,28 +143,18 @@ def commit_success(
     )
     if not permission.allowed:
         return _commit_rejection_outcome(target_id=target.id, permission=permission)
-    try:
-        finalize_result = finalize_scan_items(
-            app=app,
-            target=target,
-            config=config,
-            items=list(result.items),
-            item_count=result.item_count,
-            metadata=dict(result.metadata),
-            notification_sender=notification_sender,
-            desktop_notification_sender=desktop_notification_sender,
-            discord_notification_sender=discord_notification_sender,
-            commit_guard=commit_guard,
-        )
-    except WorkerFailure as exc:
-        if exc.reason == TARGET_STOPPED_REASON:
-            permission = _classify_scan_commit_permission(
-                app=app,
-                target_id=target.id,
-                commit_guard=commit_guard,
-            )
-            return _commit_rejection_outcome(target_id=target.id, permission=permission)
-        raise
+    finalize_result = finalize_scan_items(
+        app=app,
+        target=target,
+        config=config,
+        items=list(result.items),
+        item_count=result.item_count,
+        metadata=dict(result.metadata),
+        notification_sender=notification_sender,
+        desktop_notification_sender=desktop_notification_sender,
+        discord_notification_sender=discord_notification_sender,
+        commit_guard=commit_guard,
+    )
     committed_idle = mark_target_idle_for_scan_commit(
         app=app,
         target_id=target.id,
@@ -252,17 +195,8 @@ async def commit_failure_request_for_db_async(
         scan_request_id=request.scan_request_id,
         runtime_error_message=request.runtime_error_message,
     )
-    if result is None:
-        permission = _classify_scan_commit_permission_for_db(
-            db_path=request.db_path,
-            target_id=request.target_id,
-            commit_guard=request.commit_guard,
-        )
-        return ScanCommitOutcome(
-            kind=_outcome_kind_for_commit_rejection(permission),
-            target_id=request.target_id,
-            reason=permission.reason or "scan_failure_guard_mismatch",
-        )
+    if isinstance(result, GuardedScanFailureFinalizeRejected):
+        return _failure_rejection_outcome(target_id=request.target_id, result=result)
     decision = result.decision
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.FAILURE_COMMITTED,
@@ -270,9 +204,7 @@ async def commit_failure_request_for_db_async(
         side_effects=_side_effects_for_failure(result),
         reason=decision.reason,
         scan_run_id=result.scan_run_id,
-        request_runtime_restart=(
-            decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION
-        ),
+        request_runtime_restart=(decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION),
         discard_page=decision.discard_page,
         failure_decision=decision,
         runtime_failure_notification_count=result.runtime_failure_notification_count,
@@ -379,22 +311,6 @@ def _expected_item_kind_for_target(target: TargetDescriptor) -> ItemKind:
     return ItemKind.POST
 
 
-def _classify_scan_commit_permission_for_db(
-    *,
-    db_path: Path,
-    target_id: str,
-    commit_guard: ScanCommitGuard | None,
-) -> _ScanCommitPermission:
-    """用獨立 DB context 判斷 failure finalize 的 guard rejection 類型。"""
-
-    with SqliteApplicationContext(db_path) as app:
-        return _classify_scan_commit_permission(
-            app=app,
-            target_id=target_id,
-            commit_guard=commit_guard,
-        )
-
-
 def _classify_scan_commit_permission(
     *,
     app: ApplicationContext,
@@ -474,6 +390,21 @@ def _commit_rejection_outcome(
     )
 
 
+def _failure_rejection_outcome(
+    *,
+    target_id: str,
+    result: GuardedScanFailureFinalizeRejected,
+) -> ScanCommitOutcome:
+    """將 failure finalize 的 typed rejection 轉成 public outcome。"""
+
+    kind = (
+        ScanCommitOutcomeKind.TARGET_INACTIVE
+        if result.kind == GuardedScanFailureFinalizeRejectedKind.TARGET_INACTIVE
+        else ScanCommitOutcomeKind.GUARD_MISMATCH
+    )
+    return ScanCommitOutcome(kind=kind, target_id=target_id, reason=result.reason)
+
+
 def _outcome_kind_for_commit_rejection(
     permission: _ScanCommitPermission,
 ) -> ScanCommitOutcomeKind:
@@ -487,7 +418,6 @@ def _outcome_kind_for_commit_rejection(
 __all__ = [
     "FailureScanCommitRequest",
     "commit_failure_request_for_db_async",
-    "commit_guarded_idle_after_success",
     "commit_guarded_protective_skip",
     "commit_success",
 ]

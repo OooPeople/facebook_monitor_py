@@ -289,15 +289,18 @@ def test_resident_running_claim_rejected_does_not_release_reserved_page(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(fake_scan_page),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         with SqliteApplicationContext(db_path) as app:
@@ -312,9 +315,7 @@ def test_resident_running_claim_rejected_does_not_release_reserved_page(
         assert result.skipped is True
         return target_queue, planner, executor, release_if_calls, release_calls
 
-    target_queue, planner, executor, release_if_calls, release_calls = asyncio.run(
-        run_test()
-    )
+    target_queue, planner, executor, release_if_calls, release_calls = asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
@@ -367,15 +368,18 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(fake_scan_page),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
 
@@ -459,15 +463,18 @@ def test_resident_scheduler_stopping_cancellation_records_guarded_idle_failure(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(blocking_scan_page),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         task = asyncio.create_task(executor._run_queue_item("worker-1", item))  # noqa: SLF001
@@ -549,15 +556,18 @@ def test_resident_page_prepare_playwright_failure_discards_page_and_cleans_attem
             schedule_planner=planner,
             scan_page=as_async_scan_callable(fake_scan_page),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
@@ -699,9 +709,7 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="scheduler-stopping-full-stale",
-                canonical_url=(
-                    "https://www.facebook.com/groups/scheduler-stopping-full-stale"
-                ),
+                canonical_url=("https://www.facebook.com/groups/scheduler-stopping-full-stale"),
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
@@ -724,7 +732,9 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
             raise
         raise AssertionError("scan should be cancelled")
 
-    async def run_test() -> tuple[TargetQueue, RecordingSchedulePlanner, ExecutorWorkerPool, FakeAsyncPage]:
+    async def run_test() -> tuple[
+        TargetQueue, RecordingSchedulePlanner, ExecutorWorkerPool, FakeAsyncPage
+    ]:
         target_queue = TargetQueue()
         planner = RecordingSchedulePlanner()
         page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
@@ -744,15 +754,18 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
             "_run_scan_with_heartbeat",
             cancellable_scan_with_heartbeat,
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         task = asyncio.create_task(executor._run_queue_item("worker-a", item))  # noqa: SLF001
@@ -1219,9 +1232,7 @@ def test_resident_success_result_writes_visible_scan_state_once(
                     group_id="resident-success",
                     author="作者",
                     text="這是一篇票券貼文",
-                    permalink=(
-                        "https://www.facebook.com/groups/resident-success/posts/1"
-                    ),
+                    permalink=("https://www.facebook.com/groups/resident-success/posts/1"),
                     raw_target_kind=kwargs["target"].target_kind.value,
                 ),
             ),
@@ -1243,15 +1254,18 @@ def test_resident_success_result_writes_visible_scan_state_once(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(scan_to_success_result),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
@@ -1329,10 +1343,7 @@ def test_resident_success_result_is_committed_by_coordinator(
                     group_id="resident-success-result",
                     author="作者",
                     text="這是一篇票券貼文",
-                    permalink=(
-                        "https://www.facebook.com/groups/"
-                        "resident-success-result/posts/1"
-                    ),
+                    permalink=("https://www.facebook.com/groups/resident-success-result/posts/1"),
                     raw_target_kind=kwargs["target"].target_kind.value,
                 ),
             ),
@@ -1354,15 +1365,18 @@ def test_resident_success_result_is_committed_by_coordinator(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(scan_to_success_result),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
@@ -1411,8 +1425,7 @@ def test_resident_comments_success_result_writes_visible_state_once(
                 group_id="resident-comments",
                 parent_post_id=parent_post_id,
                 canonical_url=(
-                    "https://www.facebook.com/groups/resident-comments/posts/"
-                    f"{parent_post_id}"
+                    f"https://www.facebook.com/groups/resident-comments/posts/{parent_post_id}"
                 ),
                 config=TargetConfigPatch(
                     include_keywords=("票券",),
@@ -1466,15 +1479,18 @@ def test_resident_comments_success_result_writes_visible_state_once(
             scan_page=as_async_scan_callable(scan_to_success_result),
             scan_comments_target_page=scan_to_success_result,
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
@@ -1550,6 +1566,11 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
         app.repositories.scan_scope_state.mark_initialized(target.scope_id)
 
     async def stale_finalize_scan(**kwargs: Any) -> PostsScanSummary:
+        runtime_state = kwargs["app"].services.targets.ensure_runtime_state(
+            kwargs["target"].id,
+        )
+        commit_guard = scan_commit_guard_from_runtime_state(runtime_state)
+        assert commit_guard is not None
         with SqliteApplicationContext(db_path) as app:
             app.services.targets.pause_target_monitoring(target.id)
             app.services.targets.restart_target_monitoring(target.id)
@@ -1568,7 +1589,7 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
             ],
             item_count=1,
             metadata={"worker": "resident_main"},
-            commit_guard=kwargs["commit_guard"],
+            commit_guard=commit_guard,
         )
         raise AssertionError("stale finalize should raise WorkerFailure")
 
@@ -1586,15 +1607,18 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
             schedule_planner=planner,
             scan_page=as_async_scan_callable(stale_finalize_scan),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
@@ -1664,15 +1688,18 @@ def test_resident_manual_scan_request_during_running_survives_guarded_finish(
             schedule_planner=TargetSchedulePlanner(),
             scan_page=as_async_scan_callable(request_scan_before_finish),
         )
-        assert await executor.enqueue_due_targets(
-            (
-                DueTarget(
-                    target_id=target.id,
-                    interval_seconds=60,
-                    due_at=utc_now(),
-                ),
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
             )
-        ) == 1
+            == 1
+        )
         item = await target_queue.get()
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001

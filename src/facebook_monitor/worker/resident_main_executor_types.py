@@ -8,7 +8,6 @@ from typing import Protocol
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 
@@ -57,7 +56,6 @@ class AsyncScanCallable(Protocol):
         config: TargetConfig,
         scroll_rounds: int,
         scroll_wait_ms: int,
-        commit_guard: ScanCommitGuard | None = None,
     ) -> FormalAsyncScanResult:
         """掃描已準備好的 target page，並回傳 coordinator commit-ready result。"""
 

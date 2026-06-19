@@ -263,10 +263,6 @@ async def scan_comments_target_page_async(
     config: TargetConfig,
     scroll_rounds: int = 0,
     scroll_wait_ms: int = 0,
-    notification_sender: NtfySender = send_ntfy_notification,
-    desktop_notification_sender: DesktopSender = send_desktop_notification,
-    discord_notification_sender: DiscordSender = send_discord_notification,
-    commit_guard: ScanCommitGuard | None = None,
 ) -> SuccessScanResult | ProtectiveSkipScanResult:
     """async 版本：掃描留言；visible scan state 交由 coordinator commit。"""
 

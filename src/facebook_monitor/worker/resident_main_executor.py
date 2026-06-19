@@ -532,7 +532,6 @@ class ExecutorWorkerPool:
                 config=config,
                 scroll_rounds=scroll_rounds,
                 scroll_wait_ms=scroll_wait_ms,
-                commit_guard=commit_guard,
             )
         )
         owner_key = build_recovery_owner_key(

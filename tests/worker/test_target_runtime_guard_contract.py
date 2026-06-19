@@ -48,9 +48,7 @@ APPLICATION_RUNTIME_SERVICE_FILES = (
     *TARGET_RUNTIME_MODULE_FILES,
 )
 FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_MODULES = {
-    path.stem
-    for path in TARGET_RUNTIME_MODULE_FILES
-    if path.stem != FORMAL_RUNTIME_FACADE_MODULE
+    path.stem for path in TARGET_RUNTIME_MODULE_FILES if path.stem != FORMAL_RUNTIME_FACADE_MODULE
 }
 FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_FULL_MODULES = {
     f"facebook_monitor.application.{module}"
@@ -131,7 +129,6 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
 }
 SCAN_COMMIT_HELPERS = {
-    "commit_guarded_idle_after_success",
     "commit_guarded_protective_skip",
     "commit_success",
     "FailureScanCommitRequest",
@@ -239,7 +236,9 @@ class _RuntimeStateRepositoryAliasVisitor(ast.NodeVisitor):
             self._record_targets((node.target,), node.value)
         self.generic_visit(node)
 
-    def _record_targets(self, targets: tuple[ast.expr, ...] | list[ast.expr], value: ast.AST) -> None:
+    def _record_targets(
+        self, targets: tuple[ast.expr, ...] | list[ast.expr], value: ast.AST
+    ) -> None:
         if not _is_runtime_state_repository_expr(value):
             return
         for target in targets:
@@ -321,8 +320,7 @@ def _runtime_subservice_import_guard_files() -> tuple[Path, ...]:
         if not (
             path.parent == APPLICATION_DIR
             and (
-                path.stem.startswith("target_runtime_")
-                or path.stem == FORMAL_RUNTIME_FACADE_MODULE
+                path.stem.startswith("target_runtime_") or path.stem == FORMAL_RUNTIME_FACADE_MODULE
             )
         )
     )
@@ -499,15 +497,13 @@ def test_non_runtime_modules_do_not_import_runtime_subservices() -> None:
                     for alias in node.names:
                         if alias.name.startswith("target_runtime_"):
                             violations.append(
-                                f"{relative_path}:{node.lineno}:from {module} "
-                                f"import {alias.name}"
+                                f"{relative_path}:{node.lineno}:from {module} import {alias.name}"
                             )
                     continue
                 if module in FORBIDDEN_FORMAL_RUNTIME_SUBSERVICE_FULL_MODULES:
                     for alias in node.names:
                         violations.append(
-                            f"{relative_path}:{node.lineno}:from {module} "
-                            f"import {alias.name}"
+                            f"{relative_path}:{node.lineno}:from {module} import {alias.name}"
                         )
                     continue
                 if module == "facebook_monitor.application.target_runtime_service":
@@ -515,21 +511,17 @@ def test_non_runtime_modules_do_not_import_runtime_subservices() -> None:
                         if alias.name in PUBLIC_RUNTIME_FACADE_SYMBOLS:
                             continue
                         violations.append(
-                            f"{relative_path}:{node.lineno}:from {module} "
-                            f"import {alias.name}"
+                            f"{relative_path}:{node.lineno}:from {module} import {alias.name}"
                         )
                     continue
                 if module.startswith("facebook_monitor.application.target_runtime_"):
                     for alias in node.names:
                         violations.append(
-                            f"{relative_path}:{node.lineno}:from {module} "
-                            f"import {alias.name}"
+                            f"{relative_path}:{node.lineno}:from {module} import {alias.name}"
                         )
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if not alias.name.startswith(
-                        "facebook_monitor.application.target_runtime_"
-                    ):
+                    if not alias.name.startswith("facebook_monitor.application.target_runtime_"):
                         continue
                     violations.append(f"{relative_path}:{node.lineno}:import {alias.name}")
 
@@ -574,9 +566,7 @@ def test_formal_runtime_paths_pass_explicit_guard_to_scan_commit_helpers() -> No
                 None,
             )
             if guard_keyword is None:
-                violations.append(
-                    f"{relative_path}:{lineno}:{context}:{name}:missing commit_guard"
-                )
+                violations.append(f"{relative_path}:{lineno}:{context}:{name}:missing commit_guard")
                 continue
             for keyword in node.keywords:
                 if keyword is not guard_keyword:
@@ -626,9 +616,7 @@ def test_formal_runtime_paths_do_not_mutate_runtime_state_repository_directly() 
                 path_parts,
                 aliases=alias_visitor.aliases,
             ):
-                violations.append(
-                    f"{relative_path}:{node.lineno}:{'.'.join(path_parts)}"
-                )
+                violations.append(f"{relative_path}:{node.lineno}:{'.'.join(path_parts)}")
 
     assert violations == []
 

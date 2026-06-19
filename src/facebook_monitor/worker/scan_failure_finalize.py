@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import logging
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.core.scan_failures import PROFILE_SESSION_FAILURE_REASONS
+from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.user_messages import format_failure_message
 from facebook_monitor.core.user_messages import format_failure_retry_exhausted_message
@@ -105,6 +107,26 @@ class GuardedScanFailureFinalizeResult:
         return self.scan_run_id > 0
 
 
+class GuardedScanFailureFinalizeRejectedKind(StrEnum):
+    """guarded failure finalize 在寫入前被拒絕的分類。"""
+
+    TARGET_INACTIVE = "target_inactive"
+    GUARD_MISMATCH = "guard_mismatch"
+
+
+@dataclass(frozen=True)
+class GuardedScanFailureFinalizeRejected:
+    """保存 failure finalize 未寫入時的 guard rejection reason。"""
+
+    kind: GuardedScanFailureFinalizeRejectedKind
+    reason: str
+
+
+GuardedScanFailureFinalizeOutcome = (
+    GuardedScanFailureFinalizeResult | GuardedScanFailureFinalizeRejected
+)
+
+
 def record_scan_failure(
     *,
     app: ApplicationContext,
@@ -184,21 +206,29 @@ def record_guarded_scan_failure_result(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
-) -> GuardedScanFailureFinalizeResult | None:
+) -> GuardedScanFailureFinalizeOutcome:
     """在同一 transaction 內確認 guard，並回傳 failure side-effect 摘要。"""
 
     begin_scan_commit_transaction(app)
     target = app.repositories.targets.get(target_id)
     if target is None:
-        return None
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.TARGET_INACTIVE,
+            "target_missing_before_commit",
+        )
     try:
         ensure_target_allows_scan_commit(
             app=app,
             target=target,
             commit_guard=commit_guard,
         )
-    except WorkerFailure:
-        return None
+    except WorkerFailure as exc:
+        return _classify_guarded_scan_failure_rejection(
+            app=app,
+            target_id=target.id,
+            commit_guard=commit_guard,
+            fallback_reason=exc.reason,
+        )
     decision = app.services.targets.decide_scan_failure(
         target_id,
         reason,
@@ -249,7 +279,10 @@ def record_guarded_scan_failure_result(
             page_id=commit_guard.page_id,
         )
         if guarded_state is None:
-            return None
+            raise WorkerFailure(
+                TARGET_STOPPED_REASON,
+                "target stopped before failure runtime commit",
+            )
         updated_state = guarded_state
     runtime_failure_notification_count = 0
     if decision.terminal and scan_run_id > 0:
@@ -305,7 +338,7 @@ def record_guarded_scan_failure_decision(
         scan_request_id=scan_request_id,
         runtime_error_message=runtime_error_message,
     )
-    if result is None:
+    if isinstance(result, GuardedScanFailureFinalizeRejected):
         return None
     return result.decision
 
@@ -368,10 +401,10 @@ async def record_guarded_scan_failure_result_for_db_async(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
-) -> GuardedScanFailureFinalizeResult | None:
+) -> GuardedScanFailureFinalizeOutcome:
     """async resident 用 result-returning guarded failure finalize。"""
 
-    def operation() -> GuardedScanFailureFinalizeResult | None:
+    def operation() -> GuardedScanFailureFinalizeOutcome:
         with SqliteApplicationContext(db_path) as app:
             return record_guarded_scan_failure_result(
                 app=app,
@@ -393,6 +426,68 @@ async def record_guarded_scan_failure_result_for_db_async(
         operation,
         operation_name="record_guarded_scan_failure_result",
         logger=logger,
+    )
+
+
+def _classify_guarded_scan_failure_rejection(
+    *,
+    app: ApplicationContext,
+    target_id: str,
+    commit_guard: ScanCommitGuard | None,
+    fallback_reason: str,
+) -> GuardedScanFailureFinalizeRejected:
+    """把 failure guard rejection 分成 inactive 與 guard mismatch。"""
+
+    target = app.repositories.targets.get(target_id)
+    if target is None:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.TARGET_INACTIVE,
+            "target_missing_before_commit",
+        )
+    if not target.enabled or target.paused:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.TARGET_INACTIVE,
+            "target_inactive_before_commit",
+        )
+    runtime_state = app.repositories.runtime_states.get(target_id)
+    if runtime_state is None:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            "runtime_state_missing_before_commit",
+        )
+    if runtime_state.desired_state != TargetDesiredState.ACTIVE:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.TARGET_INACTIVE,
+            "target_inactive_before_commit",
+        )
+    if commit_guard is None:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            fallback_reason or "scan_failure_guard_mismatch",
+        )
+    if runtime_state.runtime_status != TargetRuntimeStatus.RUNNING:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            "runtime_not_running_before_commit",
+        )
+    if runtime_state.active_worker_id != commit_guard.worker_id:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            "owner_changed_before_commit",
+        )
+    if runtime_state.last_started_at != commit_guard.started_at:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            "scan_started_at_changed_before_commit",
+        )
+    if commit_guard.page_id and runtime_state.active_page_id != commit_guard.page_id:
+        return GuardedScanFailureFinalizeRejected(
+            GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+            "page_owner_changed_before_commit",
+        )
+    return GuardedScanFailureFinalizeRejected(
+        GuardedScanFailureFinalizeRejectedKind.GUARD_MISMATCH,
+        fallback_reason or "scan_failure_guard_mismatch",
     )
 
 

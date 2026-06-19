@@ -176,6 +176,11 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
         app.services.targets.restart_target_monitoring(target.id)
 
     async def locked_finalize_scan_page(**kwargs: Any) -> PostsScanSummary:
+        runtime_state = kwargs["app"].services.targets.ensure_runtime_state(
+            kwargs["target"].id,
+        )
+        commit_guard = scan_commit_guard_from_runtime_state(runtime_state)
+        assert commit_guard is not None
         lock_connection = sqlite3.connect(db_path, timeout=0.1)
         lock_connection.execute("PRAGMA busy_timeout = 100")
         lock_connection.execute("BEGIN IMMEDIATE")
@@ -187,12 +192,14 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
                     "worker": "resident_main",
                     "skip_reason": SORT_ADJUST_UNCONFIRMED_REASON,
                 },
-                commit_guard=kwargs["commit_guard"],
+                commit_guard=commit_guard,
             )
         finally:
             lock_connection.rollback()
             lock_connection.close()
-        raise AssertionError("record_protective_skip_for_test should fail while writer lock is held")
+        raise AssertionError(
+            "record_protective_skip_for_test should fail while writer lock is held"
+        )
 
     summary = asyncio.run(
         run_resident_main_cycle(
@@ -240,9 +247,11 @@ def test_resident_main_scan_connection_uses_short_busy_timeout(
 
     async def inspect_scan_db_timeout(**kwargs: Any) -> object:
         nonlocal observed_timeout_ms
-        row = kwargs["app"].repositories.runtime_states.connection.execute(
-            "PRAGMA busy_timeout"
-        ).fetchone()
+        row = (
+            kwargs["app"]
+            .repositories.runtime_states.connection.execute("PRAGMA busy_timeout")
+            .fetchone()
+        )
         observed_timeout_ms = int(row[0])
         return build_success_scan_result_for_test(
             target=kwargs["target"],

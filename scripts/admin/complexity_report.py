@@ -160,8 +160,10 @@ class ReviewAnnotation:
     symbol: str
     category: str
     reason: str
+    must_not_add: tuple[str, ...] = ()
+    split_trigger: str = ""
 
-    def to_json(self) -> dict[str, str]:
+    def to_json(self) -> dict[str, object]:
         """轉成穩定 JSON shape。"""
 
         return {
@@ -170,6 +172,8 @@ class ReviewAnnotation:
             "symbol": self.symbol,
             "category": self.category,
             "reason": self.reason,
+            "must_not_add": list(self.must_not_add),
+            "split_trigger": self.split_trigger,
         }
 
 
@@ -650,20 +654,24 @@ def _render_known_large_text(
         return lines
     if functions:
         lines.append("functions:")
-        lines.append("rank  path:line  lang  ccn  nloc  function  category  reason")
+        lines.append(
+            "rank  path:line  lang  ccn  nloc  function  category  reason  governance"
+        )
         for rank, (metric, annotation) in enumerate(functions, start=1):
             lines.append(
                 f"{rank:>4}  {metric.display_path}:{metric.start_line}  "
                 f"{metric.language:<6}  {metric.ccn:>3}  {metric.nloc:>4}  "
-                f"{metric.display_name}  {annotation.category}  {annotation.reason}"
+                f"{metric.display_name}  {annotation.category}  {annotation.reason}  "
+                f"{_annotation_governance_text(annotation)}"
             )
     if files:
         lines.append("files:")
-        lines.append("rank  path  lang  lines  category  reason")
+        lines.append("rank  path  lang  lines  category  reason  governance")
         for rank, (file_metric, annotation) in enumerate(files, start=1):
             lines.append(
                 f"{rank:>4}  {file_metric.display_path}  {file_metric.language:<6}  "
-                f"{file_metric.total_lines:>5}  {annotation.category}  {annotation.reason}"
+                f"{file_metric.total_lines:>5}  {annotation.category}  "
+                f"{annotation.reason}  {_annotation_governance_text(annotation)}"
             )
     return lines
 
@@ -680,20 +688,24 @@ def _render_watchlist_text(
         return lines
     if functions:
         lines.append("functions:")
-        lines.append("rank  path:line  lang  ccn  nloc  function  category  reason")
+        lines.append(
+            "rank  path:line  lang  ccn  nloc  function  category  reason  governance"
+        )
         for rank, (metric, annotation) in enumerate(functions, start=1):
             lines.append(
                 f"{rank:>4}  {metric.display_path}:{metric.start_line}  "
                 f"{metric.language:<6}  {metric.ccn:>3}  {metric.nloc:>4}  "
-                f"{metric.display_name}  {annotation.category}  {annotation.reason}"
+                f"{metric.display_name}  {annotation.category}  {annotation.reason}  "
+                f"{_annotation_governance_text(annotation)}"
             )
     if files:
         lines.append("files:")
-        lines.append("rank  path  lang  lines  category  reason")
+        lines.append("rank  path  lang  lines  category  reason  governance")
         for rank, (file_metric, annotation) in enumerate(files, start=1):
             lines.append(
                 f"{rank:>4}  {file_metric.display_path}  {file_metric.language:<6}  "
-                f"{file_metric.total_lines:>5}  {annotation.category}  {annotation.reason}"
+                f"{file_metric.total_lines:>5}  {annotation.category}  "
+                f"{annotation.reason}  {_annotation_governance_text(annotation)}"
             )
     return lines
 
@@ -850,8 +862,8 @@ def _render_known_large_markdown(
             [
                 "### Functions",
                 "",
-                "| Rank | Location | Language | CCN | NLOC | Function | Category | Reason |",
-                "|---:|---|---|---:|---:|---|---|---|",
+                "| Rank | Location | Language | CCN | NLOC | Function | Category | Reason | Governance |",
+                "|---:|---|---|---:|---:|---|---|---|---|",
             ]
         )
         for rank, (metric, annotation) in enumerate(functions, start=1):
@@ -859,7 +871,7 @@ def _render_known_large_markdown(
                 f"| {rank} | `{metric.display_path}:{metric.start_line}` | "
                 f"{metric.language} | {metric.ccn} | {metric.nloc} | "
                 f"`{metric.display_name}` | {annotation.category} | "
-                f"{annotation.reason} |"
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     if files:
         if functions:
@@ -868,15 +880,15 @@ def _render_known_large_markdown(
             [
                 "### Files",
                 "",
-                "| Rank | Path | Language | Lines | Category | Reason |",
-                "|---:|---|---|---:|---|---|",
+                "| Rank | Path | Language | Lines | Category | Reason | Governance |",
+                "|---:|---|---|---:|---|---|---|",
             ]
         )
         for rank, (file_metric, annotation) in enumerate(files, start=1):
             lines.append(
                 f"| {rank} | `{file_metric.display_path}` | {file_metric.language} | "
                 f"{file_metric.total_lines} | {annotation.category} | "
-                f"{annotation.reason} |"
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     return lines
 
@@ -896,8 +908,8 @@ def _render_watchlist_markdown(
             [
                 "### Functions",
                 "",
-                "| Rank | Location | Language | CCN | NLOC | Function | Category | Reason |",
-                "|---:|---|---|---:|---:|---|---|---|",
+                "| Rank | Location | Language | CCN | NLOC | Function | Category | Reason | Governance |",
+                "|---:|---|---|---:|---:|---|---|---|---|",
             ]
         )
         for rank, (metric, annotation) in enumerate(functions, start=1):
@@ -905,7 +917,7 @@ def _render_watchlist_markdown(
                 f"| {rank} | `{metric.display_path}:{metric.start_line}` | "
                 f"{metric.language} | {metric.ccn} | {metric.nloc} | "
                 f"`{metric.display_name}` | {annotation.category} | "
-                f"{annotation.reason} |"
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     if files:
         if functions:
@@ -914,17 +926,34 @@ def _render_watchlist_markdown(
             [
                 "### Files",
                 "",
-                "| Rank | Path | Language | Lines | Category | Reason |",
-                "|---:|---|---|---:|---|---|",
+                "| Rank | Path | Language | Lines | Category | Reason | Governance |",
+                "|---:|---|---|---:|---|---|---|",
             ]
         )
         for rank, (file_metric, annotation) in enumerate(files, start=1):
             lines.append(
                 f"| {rank} | `{file_metric.display_path}` | {file_metric.language} | "
                 f"{file_metric.total_lines} | {annotation.category} | "
-                f"{annotation.reason} |"
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     return lines
+
+
+def _annotation_governance_text(annotation: ReviewAnnotation) -> str:
+    """回傳 text report 使用的 compact governance 摘要。"""
+
+    parts: list[str] = []
+    if annotation.must_not_add:
+        parts.append(f"must_not_add={', '.join(annotation.must_not_add)}")
+    if annotation.split_trigger:
+        parts.append(f"split_trigger={annotation.split_trigger}")
+    return "; ".join(parts) if parts else "-"
+
+
+def _annotation_governance_markdown(annotation: ReviewAnnotation) -> str:
+    """回傳 markdown table cell 使用的 compact governance 摘要。"""
+
+    return _annotation_governance_text(annotation).replace("|", "\\|")
 
 
 def known_large_functions(
@@ -1234,9 +1263,19 @@ def _annotation_from_payload(
             symbol=str(payload.get("symbol") or ""),
             category=str(payload.get("category") or ""),
             reason=str(payload.get("reason") or ""),
+            must_not_add=_annotation_string_list(payload.get("must_not_add")),
+            split_trigger=str(payload.get("split_trigger") or ""),
         ),
         None,
     )
+
+
+def _annotation_string_list(value: object) -> tuple[str, ...]:
+    """解析 annotation 裡供人工治理用的字串清單。"""
+
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value if isinstance(item, str) and item)
 
 
 def _annotation_schema_warning(schema_version: object, *, source: str) -> str | None:

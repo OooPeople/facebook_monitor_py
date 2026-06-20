@@ -1,12 +1,16 @@
 # AGENTS.md
 
-本檔是本專案的人類 / Codex / 其他代理開工守則。它只放每次協作都需要先看到的規則與文件索引；穩定產品語義、操作步驟、工具細節與審查清單應放在 `docs/` 或 `packaging/` 內，避免 AGENTS 變成第二份規格書。
+本檔是本專案的人類 / Codex / 其他代理開工守則。它只放每次協作都需要先看到的規則與文件索引；
+穩定產品語義、操作步驟、工具細節與審查清單應放在 `docs/` 或 `packaging/` 內，
+避免 AGENTS 變成第二份規格書。
 
 ---
 
 ## 核心原則
 
-本專案是 Python + Playwright + FastAPI + SQLite 的本機 Facebook 監視工具。**Python 版是目前正式維護主體**，新功能與修正優先沿用本 repo 既有 domain / application / worker / Web UI 契約。
+本專案是 Python + Playwright + FastAPI + SQLite 的本機 Facebook 監視工具。
+**Python 版是目前正式維護主體**，新功能與修正優先沿用本 repo 既有
+domain / application / worker / Web UI 契約。
 
 - 原始 userscript repo 只作為歷史背景與必要時的行為追溯來源：<https://github.com/OooPeople/facebook_group_refresh>。
 - 不可只新增 UI、設定欄位、資料欄位或函式名稱，卻沒有接通 runtime 行為、結果寫回、diagnostics 與測試。
@@ -39,15 +43,30 @@
 - 交接摘要：本機 ignored 的 `docs/local/HANDOFF.md`
 - 長篇計畫、spike、逐次驗證與歷史推導：本機 ignored 的 `docs/local/archive/`
 
-使用者說「整理文件」時，意思是刪掉太細節、太瑣碎、容易過期的內容，檢查文件職責是否重疊、邊界是否模糊，並把穩定事實放回正確文件；不是把近期改動補寫到每一份文件。
+使用者說「整理文件」時，意思是刪掉太細節、太瑣碎、容易過期的內容，
+檢查文件職責是否重疊、邊界是否模糊，並把穩定事實放回正確文件；
+不是把近期改動補寫到每一份文件。
 
 ---
 
 ## 工作規則
 
 - 本專案使用 `uv` 管理環境；PowerShell 指令優先走 `.\scripts\uv.ps1`。
-- 驗證要分清楚「快速 / 聚焦檢查」、「本機上傳前完整檢查」、「release artifact 檢查」與「GitHub CI」。一般開發、文件整理與窄範圍修正預設跑快速 / 聚焦檢查；若改到 DB / migration、scheduler、worker、release/update、dependency、Web middleware 或其他高風險邊界，需自行升級到相對應的測試切片、ruff、mypy 或 audit。快速檢查回報時必須明講「只跑快速/局部檢查，不代表上傳完整驗證」。使用者提到「上傳」、「CI」、「GitHub checks」、「完整」、「所有上傳會跑的測試」時，必須先對照 `.github/workflows/ci.yml` 與 `docs/tooling.md#驗證分級與回報用語`，再跑對應完整驗證；不得把 target tests 或跳過 audit 的結果說成完整通過。
-- 本機上傳前完整檢查入口是 `.\scripts\uv.ps1 run python scripts\admin\release_validation.py --skip-sync`（環境已同步時）；若 dependency、`uv.lock`、workflow 或驗證腳本本身有變更，改跑不帶 `--skip-sync` 的 release validation 或先執行 locked sync。`--skip-audit`、`--skip-release-validation`、`--skip-artifact-manifest` 只允許離線、臨時快速檢查或 pre-finalize build 階段使用；回報必須列出實際 command 與 skip flags，不得用來回覆上傳/CI 是否會過。
+- 驗證要分清楚「快速 / 聚焦檢查」、「本機上傳前完整檢查」、「release artifact 檢查」
+  與「GitHub CI」。一般開發、文件整理與窄範圍修正預設跑快速 / 聚焦檢查；
+  若改到 DB / migration、scheduler、worker、release/update、dependency、
+  Web middleware 或其他高風險邊界，需自行升級到相對應的測試切片、ruff、
+  mypy 或 audit。快速檢查回報時必須明講「只跑快速/局部檢查，不代表上傳完整驗證」。
+  使用者提到「上傳」、「CI」、「GitHub checks」、「完整」、「所有上傳會跑的測試」時，
+  必須先對照 `.github/workflows/ci.yml` 與 `docs/tooling.md#驗證分級與回報用語`，
+  再跑對應完整驗證；不得把 target tests 或跳過 audit 的結果說成完整通過。
+- 本機上傳前完整檢查入口是
+  `.\scripts\uv.ps1 run python scripts\admin\release_validation.py --skip-sync`
+  （環境已同步時）；若 dependency、`uv.lock`、workflow 或驗證腳本本身有變更，
+  改跑不帶 `--skip-sync` 的 release validation 或先執行 locked sync。`--skip-audit`、
+  `--skip-release-validation`、`--skip-artifact-manifest` 只允許離線、臨時快速檢查或
+  pre-finalize build 階段使用；回報必須列出實際 command 與 skip flags，
+  不得用來回覆上傳/CI 是否會過。
 - 讀取或修改 `.md` 時使用 UTF-8。
 - 需要新增 probe 或工具時，優先寫小而可測的 scripts。
 - 不得新增新的 `phase_*` script；檔名必須反映角色與用途。
@@ -56,8 +75,14 @@
 - headless 失敗時，先測 persistent-context 行為，再評估 headed compatibility mode。
 - 不得為 speculative 功能提前建立正式 DB / repository / UI 架構；若需求已確認且需要持久狀態，必須走完整 schema / migration / repository / service / test 鏈。
 - 新增或修改模組、類別、函式時，補繁體中文 docstring 或必要註解，說明職責即可，避免逐行解說。
-- 測試 macOS / POSIX executable bit 時，不得在 Windows 上無條件 assert `Path.stat().st_mode & 0o111`；單元測試需使用平台 guard / helper，只在支援 POSIX mode 的平台檢查 executable bit。若要在 Windows 驗證 macOS release zip 權限，應檢查 zip metadata 或交由 artifact validation。
-- 使用者要求 commit message 時，先查看目前變動區內容（至少 `git status --short`、`git diff --stat`，必要時 `git diff --name-only` 或實際 diff），確認只描述目前 staged/unstaged 變更；不得只靠對話印象或前一輪工作摘要。再遵守 `GIT_COMMIT_RULES.md` 產生訊息。
+- 測試 macOS / POSIX executable bit 時，不得在 Windows 上無條件 assert
+  `Path.stat().st_mode & 0o111`；單元測試需使用平台 guard / helper，
+  只在支援 POSIX mode 的平台檢查 executable bit。若要在 Windows 驗證
+  macOS release zip 權限，應檢查 zip metadata 或交由 artifact validation。
+- 使用者要求 commit message 時，先查看目前變動區內容（至少 `git status --short`、
+  `git diff --stat`，必要時 `git diff --name-only` 或實際 diff），確認只描述目前
+  staged/unstaged 變更；不得只靠對話印象或前一輪工作摘要。再遵守
+  `GIT_COMMIT_RULES.md` 產生訊息。
 - 若問題長時間無法收斂，停止盲試，改查官方資料、外部資料或先回報阻塞點。
 
 ### 讀取正式 SQLite DB
@@ -88,9 +113,13 @@ sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)
   schema、runtime 或支援 migration source，不得作為正式 read/write path。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。
 - 跨層產品預設值必須集中於 `src/facebook_monitor/core/defaults.py`；模組內部演算法常數可留在該 module，但不得形成跨層重複來源。
-- UI 重構不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
-- Target cover image refresh 的細節以 `docs/ARCHITECTURE.md#target-與-state` 與 `docs/ARCHITECTURE.md#web-ui-語義` 為準。不得未經討論新增主動低頻 refresh，也不得讓 image-only refresh 覆蓋 target 顯示名稱。
-- `auto_adjust_sort`、`auto_load_more`、notification channels、comments target 都是高風險語義；修改前先查 `docs/ARCHITECTURE.md#facebook-行為邊界`，不得只補表面入口就宣稱完成。
+- UI 重構不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、
+  persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
+- Target cover image refresh 的細節以 `docs/ARCHITECTURE.md#target-與-state`
+  與 `docs/ARCHITECTURE.md#web-ui-語義` 為準。不得未經討論新增主動低頻 refresh，
+  也不得讓 image-only refresh 覆蓋 target 顯示名稱。
+- `auto_adjust_sort`、`auto_load_more`、notification channels、comments target 都是高風險語義；
+  修改前先查 `docs/ARCHITECTURE.md#facebook-行為邊界`，不得只補表面入口就宣稱完成。
 
 ---
 
@@ -106,7 +135,10 @@ sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)
 
 禁止用「已支援 auto load more」、「已完成 notification」、「已完成 comments」這類模糊描述包裝半套實作。
 
-處理 review / 計畫文件時，不得把 annotation、watchlist、文件治理或 characterization tests 回報為「完成實作」。除非文件明確把這些列為完成標準，否則只能標為「部分完成」。若使用者要求成熟 / 長期完成狀態，必須預設實作拆分或 runtime / code 改動；若代理認為某項不該做，必須先明確詢問使用者，不得自行降級或跳過。
+處理 review / 計畫文件時，不得把 annotation、watchlist、文件治理或 characterization tests
+回報為「完成實作」。除非文件明確把這些列為完成標準，否則只能標為「部分完成」。
+若使用者要求成熟 / 長期完成狀態，必須預設實作拆分或 runtime / code 改動；
+若代理認為某項不該做，必須先明確詢問使用者，不得自行降級或跳過。
 
 ---
 

@@ -591,10 +591,16 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
 
         await run_resident_attempt_cleanup(
             CleanupHost(),
-            ResidentAttemptCleanupPlan.for_attempt(
+            ResidentAttemptCleanupPlan.from_resources(
                 target_id=target_id,
-                owner_key="old-owner",
-                page_id="old-page",
+                resources=ResidentAttemptResources(
+                    queue_item_consumed=True,
+                    queue_owner_key="old-owner",
+                    active_attempt_key="old-owner",
+                    page_id="old-page",
+                    page_acquired=True,
+                    planner_dispatch_id="test-dispatch",
+                ),
             ),
         )
 

@@ -4,196 +4,276 @@
     {
       "path_glob": "src/facebook_monitor/persistence/migrations.py",
       "category": "migration_history",
-      "reason": "Published migration history is intentionally kept together; do not split only for ranking."
+      "reason": "已發布 SQLite migration history 集中保留，避免為了排行而拆散資料升級脈絡。",
+      "must_not_add": [
+        "runtime repository behavior",
+        "application service behavior"
+      ],
+      "split_trigger": "新增不相干 schema family 或 migration repair policy"
     },
     {
       "path_glob": "src/facebook_monitor/persistence/current_schema.py",
       "category": "schema_ddl",
-      "reason": "Central SQLite current schema DDL; size alone is not a refactor signal."
+      "reason": "SQLite current schema DDL 的單一真實來源；大小本身不是拆分訊號。",
+      "must_not_add": [
+        "migration execution logic",
+        "repository query behavior"
+      ],
+      "split_trigger": "DDL family 大到無法 review schema diff"
     },
     {
       "path_glob": "scripts/admin/create_macos_app_launcher.py",
       "symbol": "_native_launcher_source",
       "category": "native_embedded_source",
-      "reason": "Embedded Objective-C launcher source; large text block with low Python control-flow complexity."
-    },
-    {
-      "path_glob": "src/facebook_monitor/updates/download.py",
-      "category": "updater_download_pipeline",
-      "reason": "Security-sensitive updater download orchestration facade over plan/fetch/publish/marker modules. Do not add new trust policy, channel, key lifecycle, or artifact type without focused tests and a dedicated module."
-    },
-    {
-      "path_glob": "src/facebook_monitor/updates/download_paths.py",
-      "category": "updater_download_path_guards",
-      "reason": "Security-sensitive updater download path planning and filesystem guards. Do not add network fetch, trust policy, or apply behavior here; split if adding another artifact layout family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/updates/download_fetch.py",
-      "category": "updater_download_fetch_verify",
-      "reason": "Security-sensitive updater network fetch and staged verification boundary. Do not add filesystem publish, updater apply behavior, or trust-key lifecycle here; keep final URL, size, manifest, and asset checks covered by focused tests."
-    },
-    {
-      "path_glob": "src/facebook_monitor/updates/download_publish.py",
-      "category": "updater_download_marker_publish",
-      "reason": "Security-sensitive verified download marker and atomic publish logic. Do not add network fetch, trust policy, or updater apply behavior here; split if adding another marker schema family."
+      "reason": "內嵌 Objective-C launcher source；大型文字 payload 不代表 Python 控制流程複雜。",
+      "must_not_add": [
+        "Python runtime behavior",
+        "release validation policy"
+      ],
+      "split_trigger": "新增另一個平台或 native launcher payload"
     },
     {
       "path_glob": "src/facebook_monitor/diagnostics/_support_bundle_redaction.py",
       "category": "support_bundle_redaction_policy",
-      "reason": "Central sensitive-output redaction policy. Do not add collector-specific raw secret passthrough; split when adding a new major URL/path/token/header/metadata redaction family."
+      "reason": "敏感輸出 redaction policy 集中管理；避免 collector 自行放行 token、URL 或 path。",
+      "must_not_add": [
+        "collector-specific raw secret passthrough",
+        "support bundle collection orchestration"
+      ],
+      "split_trigger": "新增大型 URL/path/token/header/metadata redaction family"
     },
     {
       "path_glob": "src/facebook_monitor/facebook/comment_extractor.py",
       "category": "facebook_comment_extraction",
-      "reason": "External Facebook DOM extraction orchestration. Do not add DB writes, notification behavior, or runtime transitions; split raw payload, normalization, diagnostics, or collection loop when a new extraction source or diagnostics family is added."
+      "reason": "Facebook 留言 DOM extraction orchestration；外部脆弱區集中更利於審查。",
+      "must_not_add": [
+        "DB writes",
+        "notification behavior",
+        "runtime state transitions"
+      ],
+      "split_trigger": "新增 extraction source、diagnostics family 或 collection loop family"
     },
     {
       "path_glob": "src/facebook_monitor/facebook/feed_extractor.py",
       "category": "facebook_feed_extraction",
-      "reason": "External Facebook feed DOM extraction orchestration. Do not add DB writes, notification behavior, or runtime transitions; split raw payload, normalization, diagnostics, or collection loop when a new extraction source or diagnostics family is added."
+      "reason": "Facebook feed DOM extraction orchestration；外部脆弱區集中更利於審查。",
+      "must_not_add": [
+        "DB writes",
+        "notification behavior",
+        "runtime state transitions"
+      ],
+      "split_trigger": "新增 extraction source、diagnostics family 或 collection loop family"
     },
     {
       "path_glob": "src/facebook_monitor/facebook/sort_adjust_scripts.py",
       "category": "facebook_sort_browser_scripts",
-      "reason": "Bundled browser-side sort adjustment JavaScript payloads. Do not add Python business logic, DB access, or runtime state behavior; split again before adding another independent browser-side payload family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/sort_current_label_scripts.py",
-      "category": "facebook_sort_browser_scripts",
-      "reason": "Bundled browser-side current-label/menu-candidate JavaScript payloads. Do not add Python business logic, DB access, or runtime state behavior; split again before adding another independent browser-side payload family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/feed_extraction_diagnostics.py",
-      "category": "facebook_feed_extraction_diagnostics",
-      "reason": "Feed extraction metadata and seen-stop diagnostics vocabulary. Do not add DOM calls, scroll lifecycle, DB writes, or notification behavior here; split again if adding another diagnostics family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/comment_extraction_diagnostics.py",
-      "category": "facebook_comment_extraction_diagnostics",
-      "reason": "Comments extraction metadata and DOM-settle diagnostics vocabulary. Do not add DOM calls, guard lifecycle, DB writes, or notification behavior here; split again if adding another diagnostics family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/feed_extraction_normalizer.py",
-      "category": "facebook_feed_extraction_normalization",
-      "reason": "Feed DOM payload normalization and item debug metadata cleanup. Do not add page evaluation, scrolling, DB writes, or runtime state transitions here; split again if adding another feed payload source."
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/comment_extraction_normalizer.py",
-      "category": "facebook_comment_extraction_normalization",
-      "reason": "Comments DOM payload normalization and alias-based dedupe. Do not add page evaluation, DOM settle, guard lifecycle, DB writes, or runtime state transitions here; split again if adding another comments payload source."
-    },
-    {
-      "path_glob": "src/facebook_monitor/notifications/outbox_enqueue_service.py",
-      "category": "notification_outbox_enqueue",
-      "reason": "Notification outbox enqueue and after-commit wake boundary. Do not add sender implementations, retry UX, or blocking async resident dispatch; split message builders before adding another notification event family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/notifications/outbox_dispatch_service.py",
-      "category": "notification_outbox_dispatch",
-      "reason": "Notification outbox claim/send/retry/recovery boundary. Do not add scan finalize writes or enqueue policy here; split cleanup/retention if dispatch cleanup gains another policy family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/notifications/outbox_cleanup_service.py",
-      "category": "notification_outbox_cleanup",
-      "reason": "Thin notification outbox cleanup use-case names over existing repository cleanup policies. Do not add retry, dead-letter UX, pending/processing cleanup, or retention SQL here."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/dashboard_queries.py",
-      "category": "dashboard_read_model_aggregation",
-      "reason": "Dashboard read-side aggregation for target rows, sidebar sections, invariant warnings, previews, notification summaries, and degraded states. Keep new read-model families in focused modules before expanding this file."
+      "reason": "browser-side sort adjustment JavaScript payload 集中保存，避免 Python 行為混入。",
+      "must_not_add": [
+        "Python business logic",
+        "DB access",
+        "runtime state behavior"
+      ],
+      "split_trigger": "新增另一個獨立 browser-side payload family"
     },
     {
       "path_glob": "src/facebook_monitor/persistence/repositories/target_runtime_state.py",
       "category": "target_runtime_state_repository",
-      "reason": "Runtime state repository with guarded conditional updates. Do not add broad full-row saves in formal resident paths or unguarded worker transitions; split when adding a new runtime state family or recovery policy."
+      "reason": "target runtime state guarded conditional update 的 repository truth source。",
+      "must_not_add": [
+        "formal resident unguarded full-row saves",
+        "worker orchestration behavior"
+      ],
+      "split_trigger": "新增 runtime state family 或 recovery policy"
     },
     {
       "path_glob": "src/facebook_monitor/runtime/windows_tray.py",
       "category": "windows_tray_integration",
-      "reason": "Windows tray integration combines OS callback wiring and process control. Do not add worker, scheduler, or Web UI product logic here; split when adding another tray command family."
+      "reason": "Windows tray OS callback wiring 與 process control 集中；不得加入產品邏輯。",
+      "must_not_add": [
+        "worker scan commit behavior",
+        "dashboard business logic",
+        "updater apply policy"
+      ],
+      "split_trigger": "新增 tray command family 或 platform lifecycle behavior"
     }
   ],
   "watchlist": [
     {
+      "path_glob": "src/facebook_monitor/updates/download*.py",
+      "category": "updater_download_pipeline",
+      "reason": "download pipeline split modules；維持 path guard、fetch/hash verification、marker publish 邊界。",
+      "must_not_add": [
+        "update apply implementation",
+        "manifest key lifecycle or channel policy",
+        "runtime launcher behavior"
+      ],
+      "split_trigger": "新增 download policy family 或 cross-platform artifact source"
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/apply.py",
+      "category": "updater_apply_pipeline",
+      "reason": "release-critical apply orchestration；涉及 lock、staging、backup、replace、restore 與 revalidation。",
+      "must_not_add": [
+        "artifact download implementation",
+        "release metadata validation policy",
+        "manifest key lifecycle or channel policy",
+        "runtime dashboard behavior"
+      ],
+      "split_trigger": "新增 apply mode、rollback policy 或 platform replacement flow"
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/release_check.py",
+      "category": "release_metadata_gate",
+      "reason": "release metadata validation gate；download、apply、trust lifecycle 應留在各自模組。",
+      "must_not_add": [
+        "artifact download implementation",
+        "update apply implementation",
+        "manifest key lifecycle or channel policy"
+      ],
+      "split_trigger": "新增 release policy family 或整合 download/apply 行為"
+    },
+    {
       "path_glob": "src/facebook_monitor/worker/resident_main_executor_attempt.py",
       "symbol": "run_queue_item",
       "category": "resident_worker_state_machine",
-      "reason": "Formal resident attempt path; review before adding more failure or ownership branches."
+      "reason": "formal resident attempt path；新增 failure、ownership 或 cleanup branch 前需審查。",
+      "must_not_add": [
+        "notification sender implementation",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增另一個 attempt phase 或 ownership family"
     },
     {
       "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
       "symbol": "finalize_scan_items",
-      "category": "scan_commit_transaction",
-      "reason": "Shared scan commit path; changes can affect dedupe, history, latest scan, and notifications."
+      "category": "scan_success_commit_transaction",
+      "reason": "success scan commit transaction；影響 dedupe、history、latest scan 與 notification outbox。",
+      "must_not_add": [
+        "browser collection behavior",
+        "notification sender implementation",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增 commit decision family 或另一條 visible write path"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/scan_failure_finalize.py",
+      "category": "scan_failure_commit_transaction",
+      "reason": "failure guarded finalize path；影響 failure scan run、guard rejection、runtime failure decision。",
+      "must_not_add": [
+        "browser collection behavior",
+        "notification sender implementation",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增 failure decision family 或 runtime failure notification policy"
+    },
+    {
+      "path_glob": "src/facebook_monitor/persistence/repositories/notification_outbox.py",
+      "category": "notification_outbox_repository",
+      "reason": "notification outbox SQLite truth source；包含 enqueue、claim token、retry 與 stale recovery。",
+      "must_not_add": [
+        "notification sender implementation",
+        "message builder formatting",
+        "scan finalize orchestration"
+      ],
+      "split_trigger": "新增 outbox state family、claim policy 或 endpoint lifecycle policy"
+    },
+    {
+      "path_glob": "src/facebook_monitor/notifications/outbox_dispatch_service.py",
+      "category": "notification_outbox_dispatch",
+      "reason": "outbox claim/send/record/failure orchestration；保持 sender I/O 與 repository policy 分離。",
+      "must_not_add": [
+        "scan finalize writes",
+        "enqueue policy",
+        "retention SQL ownership migration"
+      ],
+      "split_trigger": "新增 channel family、failure taxonomy、rate limit 或 dead-letter UX"
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/dashboard_queries.py",
+      "category": "dashboard_read_model_facade",
+      "reason": "dashboard read-model facade；新增 read family 前應先拆 query 或 presenter。",
+      "must_not_add": [
+        "write behavior",
+        "scheduler runtime behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增獨立 dashboard read-model family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/feed_extraction_*",
+      "category": "facebook_feed_extraction_boundaries",
+      "reason": "Feed extraction normalization / diagnostics 邊界；小檔案仍需保護職責分離。",
+      "must_not_add": [
+        "DB writes",
+        "runtime state transitions",
+        "notification behavior",
+        "browser lifecycle orchestration"
+      ],
+      "split_trigger": "新增 feed extraction payload family 或 selector/wait/resource-loading 行為"
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/comment_extraction_*",
+      "category": "facebook_comment_extraction_boundaries",
+      "reason": "Comment extraction normalization / diagnostics 邊界；小檔案仍需保護職責分離。",
+      "must_not_add": [
+        "DB writes",
+        "runtime state transitions",
+        "notification behavior",
+        "browser lifecycle orchestration"
+      ],
+      "split_trigger": "新增 comment extraction payload family 或 selector/wait/resource-loading 行為"
     },
     {
       "path_glob": "src/facebook_monitor/facebook/sort_native_click.py",
       "category": "facebook_sort_behavior",
-      "reason": "auto_adjust_sort native click state machine spans sync/async Playwright stages and diagnostics."
+      "reason": "auto_adjust_sort native click state machine 橫跨 Playwright stages 與 diagnostics。",
+      "must_not_add": [
+        "DB writes",
+        "scheduler runtime behavior",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增 sort mode 或 browser-side wait/click policy"
     },
     {
       "path_glob": "src/facebook_monitor/application/services.py",
       "category": "application_facade",
-      "reason": "TargetApplicationService should remain a composition facade; add product logic in focused services first."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/routes/hit_records.py",
-      "category": "route_hotspot",
-      "reason": "Hit records route is acceptable now, but future search/export/detail/bulk behavior should move into focused query/action services."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/dashboard_presenters.py",
-      "category": "dashboard_presentation_helpers",
-      "reason": "Dashboard UI presenter helpers. Split before adding another independent target, card, sidebar, or settings presentation family."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/diagnostics_presenter.py",
-      "category": "dashboard_diagnostics_presentation",
-      "reason": "Scan/runtime diagnostics text and summary presentation. Keep extractor diagnostics parsing, dashboard rendering, and template strings separated before adding another diagnostics family."
+      "reason": "TargetApplicationService 應維持 composition facade；產品邏輯先進 focused service。",
+      "must_not_add": [
+        "new 50+ line use case implementation",
+        "worker scan commit behavior",
+        "dashboard template behavior"
+      ],
+      "split_trigger": "新增產品流程或 facade 持續膨脹"
     },
     {
       "path_glob": "src/facebook_monitor/worker/posts_pipeline.py",
       "symbol": "build_feed_seen_stop_predicate",
       "category": "async_scanner_seen_stop_read_side",
-      "reason": "Async commit-ready scanner still performs read-side DB seen-stop checks inside the feed collection loop. If collection loop behavior changes, consider prefetching bounded seen state before browser collection."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js",
-      "category": "dashboard_sidebar_shell",
-      "reason": "Dashboard sidebar aggregator shell. Keep feature logic in menu/groups/templates modules instead of growing this file again."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/static/dashboard/sidebar_groups_ui.js",
-      "category": "dashboard_sidebar_group_interactions",
-      "reason": "Dashboard sidebar group drag/drop and grouping interactions. Split again if adding another independent group-management workflow."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/templates/_target_card.html",
-      "category": "dashboard_target_card_shell",
-      "reason": "Target card shell. Keep modal, form, header, runtime note, and preview markup in target-card partials instead of growing this file again."
-    },
-    {
-      "path_glob": "src/facebook_monitor/webapp/templates/target_card/_config_form.html",
-      "category": "dashboard_target_card_config_form",
-      "reason": "Target card config form partial. Split field groups before adding another independent target configuration family."
+      "reason": "async scanner read-side DB seen-stop predicate；collection loop 改動時需重新評估。",
+      "must_not_add": [
+        "DB writes",
+        "scan finalize behavior",
+        "notification behavior"
+      ],
+      "split_trigger": "重做 collection loop、selector、wait 或 resource loading"
     },
     {
       "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
       "symbol": "TargetRow",
       "category": "dashboard_target_row_presenter",
-      "reason": "TargetRow 是 template-facing view model，集中 target 狀態、refresh、diagnostics、sidebar 與設定呈現；新增另一個獨立 UI presentation family 前應先拆 focused presenter。",
+      "reason": "TargetRow 是 template-facing view model；新增 UI presentation family 前應先拆 presenter。",
       "must_not_add": [
         "新的獨立 dashboard presentation family",
         "business write behavior",
         "notification dispatch behavior"
       ],
-      "split_trigger": "新增 target status/sidebar/diagnostics/refresh presentation family 或 TargetRow 持續膨脹"
+      "split_trigger": "新增 target status/sidebar/diagnostics/refresh presentation family"
     },
     {
       "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
       "symbol": "SidebarGroupSection",
       "category": "dashboard_sidebar_group_presenter",
-      "reason": "SidebarGroupSection 聚合 group monitoring、template form proxy 與 sidebar display state；新增 group workflow 前應先拆 group template/status presenter。",
+      "reason": "SidebarGroupSection 聚合 group sidebar display state；新增 group workflow 前先拆 presenter。",
       "must_not_add": [
         "group write behavior",
         "scheduler runtime behavior",
@@ -202,69 +282,26 @@
       "split_trigger": "新增 group workflow、group diagnostics 或 group-level presentation family"
     },
     {
-      "path_glob": "src/facebook_monitor/webapp/templates/_target_sidebar.html",
-      "category": "dashboard_sidebar_template_shell",
-      "reason": "_target_sidebar.html 應維持 sidebar include shell；新增 sidebar UI family 前需拆 partial 並保護現有 selector contract。",
-      "must_not_add": [
-        "new sidebar modal family without partial split",
-        "new JavaScript selector contract without documenting it"
-      ],
-      "split_trigger": "新增 sidebar UI family 或額外 group/target action area"
-    },
-    {
-      "path_glob": "src/facebook_monitor/updates/release_check.py",
-      "category": "release_metadata_gate",
-      "reason": "Release metadata validation gate；download/apply/trust lifecycle 應留在各自模組，不應塞回 release_check。",
-      "must_not_add": [
-        "artifact download implementation",
-        "update apply implementation",
-        "manifest key lifecycle or channel policy"
-      ],
-      "split_trigger": "新增獨立 release policy family 或整合 download/apply 行為"
-    },
-    {
       "path_glob": "src/facebook_monitor/launcher.py",
       "category": "runtime_launcher_glue",
-      "reason": "本機 runtime launcher glue 負責 CLI/startup/shutdown/tray/uvicorn coordination；新產品 use case 應進 application services 或 focused runtime modules。",
+      "reason": "本機 launcher glue 負責 CLI、startup、shutdown、tray 與 uvicorn coordination。",
       "must_not_add": [
         "dashboard business logic",
         "worker scan commit behavior",
         "updater apply policy"
       ],
-      "split_trigger": "新增 launcher mode、long-running runtime component 或 platform-specific lifecycle behavior"
+      "split_trigger": "新增 launcher mode、runtime component 或 platform lifecycle behavior"
     },
     {
       "path_glob": "src/facebook_monitor/worker/resident_metadata_refresh.py",
       "category": "resident_metadata_refresh",
-      "reason": "Resident metadata refresh job family；cover image refresh、scan commit 與 notification dispatch 不應放入此模組。",
+      "reason": "Resident metadata refresh job family；不得混入 cover refresh、scan commit 或 dispatch。",
       "must_not_add": [
         "cover image refresh behavior",
         "scan commit behavior",
         "notification dispatch behavior"
       ],
       "split_trigger": "新增不同 browser/wait/resource-loading 行為的 metadata refresh family"
-    },
-    {
-      "path_glob": "src/facebook_monitor/worker/resident_cover_image_refresh.py",
-      "category": "resident_cover_image_refresh",
-      "reason": "Resident cover image refresh job family；metadata refresh、scan commit 與 dashboard presentation 不應放入此模組。",
-      "must_not_add": [
-        "metadata refresh behavior",
-        "scan commit behavior",
-        "dashboard presentation behavior"
-      ],
-      "split_trigger": "新增另一種 image refresh source 或 refresh policy family"
-    },
-    {
-      "path_glob": "src/facebook_monitor/worker/resident_maintenance_errors.py",
-      "category": "resident_maintenance_error_handling",
-      "reason": "Resident maintenance 共用錯誤分類與 log 邊界；實際 maintenance job 行為應留在各 job module。",
-      "must_not_add": [
-        "new maintenance job implementation",
-        "browser page lifecycle behavior",
-        "notification dispatch behavior"
-      ],
-      "split_trigger": "新增錯誤 taxonomy family 或跨 job retry/recovery policy"
     }
   ]
 }

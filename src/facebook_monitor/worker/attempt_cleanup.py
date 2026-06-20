@@ -51,23 +51,6 @@ class ResidentAttemptCleanupPlan:
     mark_planner_finished: bool = True
 
     @classmethod
-    def for_attempt(
-        cls,
-        *,
-        target_id: str,
-        owner_key: str,
-        page_id: str,
-    ) -> ResidentAttemptCleanupPlan:
-        """依現有 attempt state 欄位建立 cleanup plan。"""
-
-        return cls(
-            target_id=target_id,
-            owner_key=owner_key,
-            active_attempt_key=owner_key,
-            page_id=page_id,
-        )
-
-    @classmethod
     def from_resources(
         cls,
         *,

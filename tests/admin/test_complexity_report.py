@@ -99,6 +99,8 @@ def test_complexity_report_known_large_is_separate_from_primary_ranking(
                         "symbol": "huge_known",
                         "category": "fixture",
                         "reason": "reviewed fixture",
+                        "must_not_add": ["DB writes"],
+                        "split_trigger": "new policy family",
                     }
                 ]
             }
@@ -120,6 +122,7 @@ def test_complexity_report_known_large_is_separate_from_primary_ranking(
     )
     payload = json.loads(render_report(report, top=5, format_name="json"))
     rendered = render_report(report, top=5)
+    rendered_markdown = render_report(report, top=5, format_name="markdown")
 
     assert [metric.name for metric in ranked] == ["current_hotspot"]
     assert payload["known_large_functions"][0]["name"] == "huge_known"
@@ -127,6 +130,9 @@ def test_complexity_report_known_large_is_separate_from_primary_ranking(
     assert "Known-large annotations" in rendered
     assert "huge_known" in rendered
     assert "reviewed fixture" in rendered
+    assert "must_not_add=DB writes; split_trigger=new policy family" in rendered
+    assert "| Governance |" in rendered_markdown
+    assert "must_not_add=DB writes; split_trigger=new policy family" in rendered_markdown
 
 
 def test_complexity_report_excludes_vendor_files(tmp_path: Path) -> None:
@@ -255,6 +261,40 @@ def test_complexity_report_annotation_warnings_do_not_drop_valid_items(
     assert any("missing path_glob" in warning for warning in result.warnings)
 
 
+def test_complexity_report_loads_annotation_governance_metadata(
+    tmp_path: Path,
+) -> None:
+    """annotation 裡的人工作業邊界需被 report model 承載。"""
+
+    annotation_path = tmp_path / "annotations.json"
+    annotation_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "watchlist": [
+                    {
+                        "path_glob": "src/example.py",
+                        "category": "fixture",
+                        "reason": "valid item",
+                        "must_not_add": ["DB writes", "", 123],
+                        "split_trigger": "new policy family",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_annotations_with_warnings(annotation_path)
+    annotation = result.annotations[0]
+
+    assert result.warnings == ()
+    assert annotation.must_not_add == ("DB writes",)
+    assert annotation.split_trigger == "new policy family"
+    assert annotation.to_json()["must_not_add"] == ["DB writes"]
+    assert annotation.to_json()["split_trigger"] == "new policy family"
+
+
 def test_default_maintainability_annotations_load_without_warnings() -> None:
     """追蹤中的 maintainability annotations 不應有 JSON/schema 警告。"""
 
@@ -262,3 +302,29 @@ def test_default_maintainability_annotations_load_without_warnings() -> None:
 
     assert result.warnings == ()
     assert result.annotations
+
+
+def test_default_maintainability_annotations_keep_review_signal() -> None:
+    """預設 annotations 應維持 known-large / watchlist 的人工治理訊號。"""
+
+    result = load_annotations_with_warnings(Path("docs/maintainability_annotations.json"))
+    known_large = [
+        annotation for annotation in result.annotations if annotation.status == "known_large"
+    ]
+    watchlist = [
+        annotation for annotation in result.annotations if annotation.status == "watchlist"
+    ]
+    watchlist_paths = {annotation.path_glob for annotation in watchlist}
+    all_paths = {annotation.path_glob for annotation in result.annotations}
+
+    assert len(known_large) == 9
+    assert len(watchlist) == 18
+    assert "src/facebook_monitor/updates/apply.py" in watchlist_paths
+    assert "src/facebook_monitor/worker/scan_failure_finalize.py" in watchlist_paths
+    assert (
+        "src/facebook_monitor/persistence/repositories/notification_outbox.py"
+        in watchlist_paths
+    )
+    assert "src/facebook_monitor/webapp/templates/_target_card.html" not in all_paths
+    assert "src/facebook_monitor/webapp/templates/_target_sidebar.html" not in all_paths
+    assert "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js" not in all_paths

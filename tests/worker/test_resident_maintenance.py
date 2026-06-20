@@ -41,7 +41,7 @@ from facebook_monitor.worker.resident_main import dispatch_pending_notification_
 from facebook_monitor.worker.resident_cover_image_refresh import (
     refresh_pending_target_cover_images,
 )
-from facebook_monitor.worker.resident_cover_image_refresh import (
+from facebook_monitor.worker.resident_cover_image_attempt import (
     refresh_target_group_cover_image_from_context,
 )
 from facebook_monitor.worker.resident_metadata_refresh import (

@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from facebook_monitor.updates.artifacts import update_artifact_policy_for_key
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION
-from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.pending_update_models import PendingUpdate
 from facebook_monitor.updates.platforms import detect_layout_policy
 from tests.helpers.macos_bundle import MACHO_ARM64_BYTES
 from tests.helpers.macos_bundle import write_path_to_zip_with_mode

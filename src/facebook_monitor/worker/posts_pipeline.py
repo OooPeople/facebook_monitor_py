@@ -17,8 +17,8 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
-from facebook_monitor.facebook.feed_extractor import ExtractCollectionMeta
-from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
+from facebook_monitor.facebook.feed_extraction_models import ExtractCollectionMeta
+from facebook_monitor.facebook.feed_extraction_models import ExtractRoundStats
 from facebook_monitor.facebook.feed_extractor import SeenItemPredicate
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics_async
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics

@@ -28,7 +28,7 @@ from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
-from facebook_monitor.notifications.outbox_enqueue_service import (
+from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
 )
 from facebook_monitor.worker.errors import WorkerFailure

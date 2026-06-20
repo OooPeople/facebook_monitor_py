@@ -1,6 +1,6 @@
 """Facebook sort current-label JavaScript payloads。
 
-職責：保存 auto_adjust_sort 的 current-label 與 menu candidate evaluate script。
+職責：保存 auto_adjust_sort 的 feed/comment current-label evaluate script。
 本模組只搬移既有 script constants，不改 Facebook DOM selector 語義。
 """
 
@@ -17,45 +17,6 @@ def _js_literal(value: object) -> str:
     """將 Python 常數輸出成 JavaScript literal。"""
 
     return json.dumps(value, ensure_ascii=False)
-
-SORT_MENU_CANDIDATE_TEXTS_SCRIPT = """
-() => {
-  const normalizeText = (value) => String(value || "").replace(/[\\u200B-\\u200D\\uFEFF]/g, "").replace(/\\s+/g, " ").trim();
-  const isVisibleElement = (element) => {
-    if (!(element instanceof HTMLElement)) return false;
-    const rect = element.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-    const style = window.getComputedStyle(element);
-    return style.visibility !== "hidden" && style.display !== "none";
-  };
-  const selectors = [
-    '[role="menu"]',
-    '[role="listbox"]',
-    '[role="dialog"]',
-    '[aria-modal="true"]',
-    '[role="menuitemradio"]',
-    '[role="menuitemcheckbox"]',
-    '[role="menuitem"]',
-    '[role="option"]',
-    '[role="radio"]',
-    '[role="button"]',
-    '[aria-checked]',
-    '[aria-selected]',
-    'span[dir="auto"]',
-  ];
-  const texts = [];
-  for (const selector of selectors) {
-    for (const element of document.querySelectorAll(selector)) {
-      if (!(element instanceof HTMLElement)) continue;
-      if (!isVisibleElement(element)) continue;
-      const text = normalizeText(element.innerText || element.textContent || "");
-      if (!text) continue;
-      texts.push(text.slice(0, 160));
-    }
-  }
-  return Array.from(new Set(texts)).slice(0, 30);
-}
-"""
 
 COMMENT_SORT_CURRENT_LABEL_SCRIPT = """
 () => {

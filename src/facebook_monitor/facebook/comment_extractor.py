@@ -11,21 +11,13 @@ from typing import Any
 
 from facebook_monitor.core.dedupe import aliases_overlap
 from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
-from facebook_monitor.facebook.comment_extraction_diagnostics import (
-    CommentCollectionMeta as CommentCollectionMeta,
+from facebook_monitor.facebook.comment_extraction_collection_meta import (
+    build_comment_collection_meta,
 )
-from facebook_monitor.facebook.comment_extraction_diagnostics import (
-    CommentDomSettleResult as CommentDomSettleResult,
-)
-from facebook_monitor.facebook.comment_extraction_diagnostics import (
-    CommentExtractRoundStats as CommentExtractRoundStats,
-)
-from facebook_monitor.facebook.comment_extraction_diagnostics import (
-    build_comment_collection_meta as build_comment_collection_meta,
-)
-from facebook_monitor.facebook.comment_extraction_diagnostics import (
-    build_comment_round_stats as build_comment_round_stats,
-)
+from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
+from facebook_monitor.facebook.comment_extraction_models import CommentDomSettleResult
+from facebook_monitor.facebook.comment_extraction_models import CommentExtractRoundStats
+from facebook_monitor.facebook.comment_extraction_rounds import build_comment_round_stats
 from facebook_monitor.facebook.comment_extraction_normalizer import (
     normalize_comment_debug_metadata as normalize_comment_debug_metadata,
 )

@@ -7,7 +7,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 
-from facebook_monitor.updates.handoff import load_pending_update
+from facebook_monitor.updates.pending_update_io import load_pending_update
 from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_INFO_PLIST
 from facebook_monitor.versioning import parse_version

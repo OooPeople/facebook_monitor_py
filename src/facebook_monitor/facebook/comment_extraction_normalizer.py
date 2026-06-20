@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from facebook_monitor.core.dedupe import aliases_overlap
-from facebook_monitor.facebook.comment_extraction_diagnostics import CommentCollectionMeta
+from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.text_cleanup import clean_facebook_multiline_text

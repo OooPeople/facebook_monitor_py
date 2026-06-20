@@ -979,12 +979,12 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert "命中 1 筆" in dashboard.sidebar_items[0].status_summary
     assert row.hit_record_total_count == 1
     assert row.hit_records_heading == "命中紀錄（1）"
-    assert row.settings_summary.lines[0].icon_key == "refresh"
-    assert row.settings_summary.lines[0].label == "刷新"
-    assert row.settings_summary.lines[0].value == "浮動 25-35 秒"
-    assert row.settings_summary.lines[-1].icon_key == "notification"
-    assert row.settings_summary.lines[-1].label == "通知"
-    assert row.settings_summary.lines[-1].value == "ntfy"
+    assert row.settings_presenter.settings_summary.lines[0].icon_key == "refresh"
+    assert row.settings_presenter.settings_summary.lines[0].label == "刷新"
+    assert row.settings_presenter.settings_summary.lines[0].value == "浮動 25-35 秒"
+    assert row.settings_presenter.settings_summary.lines[-1].icon_key == "notification"
+    assert row.settings_presenter.settings_summary.lines[-1].label == "通知"
+    assert row.settings_presenter.settings_summary.lines[-1].value == "ntfy"
     assert latest_preview.author_name == "王小明"
     assert latest_preview.badge_kind == "hit"
     assert latest_preview.content_preview == "最近掃描內容 第二行"

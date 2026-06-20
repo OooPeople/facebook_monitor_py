@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.target_registry_service import InvalidTargetMetadataError
+from facebook_monitor.application.target_metadata_policy import InvalidTargetMetadataError
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest

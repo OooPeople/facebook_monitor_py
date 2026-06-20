@@ -40,8 +40,10 @@ from facebook_monitor.facebook.sort_results import SORT_REASON_ALREADY_PREFERRED
 from facebook_monitor.facebook.sort_results import SORT_REASON_SORT_UPDATE_UNCONFIRMED
 from facebook_monitor.facebook.sort_results import SORT_REASON_UPDATED_TO_PREFERRED_SORT
 from facebook_monitor.facebook.sort_results import SortAdjustResult
-from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_CURRENT_LABEL_SCRIPT
-from facebook_monitor.facebook.sort_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
+from facebook_monitor.facebook.sort_current_label_scripts import (
+    COMMENT_SORT_CURRENT_LABEL_SCRIPT,
+)
+from facebook_monitor.facebook.sort_current_label_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
 
 
 _FEED_NATIVE_SORT_SPEC = NativeSortSpec(

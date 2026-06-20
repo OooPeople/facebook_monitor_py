@@ -9,7 +9,7 @@ from datetime import timedelta
 import logging
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.application.target_registry_service import InvalidTargetMetadataError
+from facebook_monitor.application.target_metadata_policy import InvalidTargetMetadataError
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import utc_now
@@ -19,7 +19,7 @@ from facebook_monitor.facebook.group_metadata import (
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
 from facebook_monitor.worker.resident_maintenance_errors import StopCheckCallable
-from facebook_monitor.worker.resident_maintenance_errors import (
+from facebook_monitor.worker.resident_maintenance_eligibility import (
     filter_maintenance_refresh_target_ids,
 )
 from facebook_monitor.worker.resident_maintenance_errors import (

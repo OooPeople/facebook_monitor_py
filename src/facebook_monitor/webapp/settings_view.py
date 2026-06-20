@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import Request
 
 from facebook_monitor.application.notification_admin import load_notification_outbox_health
-from facebook_monitor.updates.handoff import pending_update_path
+from facebook_monitor.updates.pending_update_models import pending_update_path
 from facebook_monitor.updates.release_check import UpdateCheckResult
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_profile_dir

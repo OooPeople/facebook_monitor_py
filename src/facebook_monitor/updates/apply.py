@@ -36,10 +36,12 @@ from facebook_monitor.updates.artifacts import UpdateArtifactPolicy
 from facebook_monitor.updates.artifacts import release_artifact_policy_for_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.checksum import calculate_sha256
-from facebook_monitor.updates.handoff import PendingUpdate
-from facebook_monitor.updates.handoff import load_pending_update
-from facebook_monitor.updates.handoff import validate_pending_update_artifact_set
-from facebook_monitor.updates.handoff import validate_pending_update_paths
+from facebook_monitor.updates.pending_update_io import load_pending_update
+from facebook_monitor.updates.pending_update_models import PendingUpdate
+from facebook_monitor.updates.pending_update_validation import (
+    validate_pending_update_artifact_set,
+)
+from facebook_monitor.updates.pending_update_validation import validate_pending_update_paths
 from facebook_monitor.updates.manifest import verify_release_manifest
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
 from facebook_monitor.updates.platforms import detect_layout_policy

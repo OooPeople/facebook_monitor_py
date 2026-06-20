@@ -38,7 +38,7 @@ from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
-from facebook_monitor.notifications.outbox_enqueue_service import (
+from facebook_monitor.notifications.outbox_match_enqueue import (
     queue_match_notifications_after_commit,
 )
 from facebook_monitor.worker.errors import WorkerFailure

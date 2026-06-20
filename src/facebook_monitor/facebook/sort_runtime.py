@@ -23,8 +23,8 @@ from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.facebook.sort_results import build_disabled_sort_adjust_result
 from facebook_monitor.facebook.sort_results import normalize_sort_adjust_result
 from facebook_monitor.facebook.sort_results import with_sort_diagnostics
-from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_ADJUST_SCRIPT
-from facebook_monitor.facebook.sort_scripts import FEED_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_adjust_scripts import COMMENT_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_adjust_scripts import FEED_SORT_ADJUST_SCRIPT
 
 
 def ensure_preferred_feed_sort(page: Any, *, enabled: bool) -> SortAdjustResult:

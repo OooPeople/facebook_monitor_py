@@ -18,7 +18,7 @@
       </section>
       <section class="modal-section modal-section-card">
         <h4>刷新設定</h4>
-        {% set refresh_source = row %}
+        {% set refresh_source = row.settings_presenter %}
         {% set refresh_form_id = config_form_id %}
         {% include "_refresh_settings_fields.html" %}
       </section>

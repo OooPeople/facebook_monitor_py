@@ -363,7 +363,7 @@ def _stub_runtime_outbox_dispatch(monkeypatch: MonkeyPatch) -> list[Path]:
         )
 
     monkeypatch.setattr(
-        "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",
+        "facebook_monitor.notifications.outbox_enqueue_wake.wake_notification_outbox_dispatcher_for_db",
         fake_wake,
     )
     monkeypatch.setattr(

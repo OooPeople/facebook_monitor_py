@@ -120,7 +120,9 @@ def render_collapsed_summary_html(templates: Jinja2Templates, row: TargetRow) ->
     """以 Jinja 單一來源產生收合摘要 partial HTML。"""
 
     template = templates.env.get_template("_collapsed_summary_fields.html")
-    return template.render(summary_sections=row.card_summary.sections).strip()
+    return template.render(
+        summary_sections=row.card_summary_presenter.summary.sections
+    ).strip()
 
 
 def render_preview_rows_html(

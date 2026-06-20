@@ -13,7 +13,9 @@ from facebook_monitor.facebook.sort_native_locators import safe_locator_count_as
 from facebook_monitor.facebook.sort_results import SORT_MENU_ROOT_SELECTOR
 from facebook_monitor.facebook.sort_results import SORT_NATIVE_STAGE_FIND_OPTION
 from facebook_monitor.facebook.sort_results import SORT_OPTION_WAIT_INTERVAL_MS
-from facebook_monitor.facebook.sort_scripts import SORT_MENU_CANDIDATE_TEXTS_SCRIPT
+from facebook_monitor.facebook.sort_menu_candidate_scripts import (
+    SORT_MENU_CANDIDATE_TEXTS_SCRIPT,
+)
 
 
 def _should_recover_sort_menu_before_fallback(diagnostics: dict[str, Any]) -> bool:

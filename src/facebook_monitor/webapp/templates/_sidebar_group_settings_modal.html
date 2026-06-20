@@ -5,6 +5,7 @@
   aria-labelledby="sidebar-template-title-{{ group.group_id }}"
 >
   {% set template = group.template %}
+  {% set template_settings = group.template_presenter %}
   <div class="modal-shell">
     <header class="modal-header">
       <div>
@@ -26,7 +27,7 @@
               rows="3"
               maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
               data-sidebar-template-field
-            >{{ group.include_text }}</textarea>
+            >{{ template_settings.include_text }}</textarea>
           </label>
           <label>
             關鍵字 2
@@ -35,7 +36,7 @@
               rows="3"
               maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
               data-sidebar-template-field
-            >{{ group.include_text_2 }}</textarea>
+            >{{ template_settings.include_text_2 }}</textarea>
           </label>
           <label>
             關鍵字 3
@@ -44,7 +45,7 @@
               rows="3"
               maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
               data-sidebar-template-field
-            >{{ group.include_text_3 }}</textarea>
+            >{{ template_settings.include_text_3 }}</textarea>
           </label>
           <label>
             排除關鍵字
@@ -53,7 +54,7 @@
               rows="3"
               maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
               data-sidebar-template-field
-            >{{ group.exclude_text }}</textarea>
+            >{{ template_settings.exclude_text }}</textarea>
           </label>
           <label>
             排除字忽略片語
@@ -62,7 +63,7 @@
               rows="3"
               maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
               data-sidebar-template-field
-            >{{ group.exclude_ignore_phrases_text }}</textarea>
+            >{{ template_settings.exclude_ignore_phrases_text }}</textarea>
           </label>
         </div>
       </section>
@@ -72,7 +73,7 @@
           {% set scan_source = template %}
           {% set scan_input_attrs = "data-sidebar-template-field" %}
           {% include "_scan_settings_fields.html" %}
-          {% set refresh_source = group %}
+          {% set refresh_source = template_settings %}
           {% set refresh_input_attrs = "data-sidebar-template-field" %}
           {% set refresh_mode_name = "refresh_mode_" ~ group.group_id %}
           {% set refresh_mode_payload_name = "refresh_mode" %}

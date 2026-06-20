@@ -27,11 +27,15 @@ from facebook_monitor.facebook.sort_runtime import ensure_preferred_comment_sort
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_comment_sort
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_feed_sort
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_feed_sort_async
-from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_ADJUST_SCRIPT
-from facebook_monitor.facebook.sort_scripts import COMMENT_SORT_CURRENT_LABEL_SCRIPT
-from facebook_monitor.facebook.sort_scripts import FEED_SORT_ADJUST_SCRIPT
-from facebook_monitor.facebook.sort_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
-from facebook_monitor.facebook.sort_scripts import SORT_MENU_CANDIDATE_TEXTS_SCRIPT
+from facebook_monitor.facebook.sort_adjust_scripts import COMMENT_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_adjust_scripts import FEED_SORT_ADJUST_SCRIPT
+from facebook_monitor.facebook.sort_current_label_scripts import (
+    COMMENT_SORT_CURRENT_LABEL_SCRIPT,
+)
+from facebook_monitor.facebook.sort_current_label_scripts import FEED_SORT_CURRENT_LABEL_SCRIPT
+from facebook_monitor.facebook.sort_menu_candidate_scripts import (
+    SORT_MENU_CANDIDATE_TEXTS_SCRIPT,
+)
 
 
 SUPPORTED_FAKE_SORT_OPTION_ROLES = (

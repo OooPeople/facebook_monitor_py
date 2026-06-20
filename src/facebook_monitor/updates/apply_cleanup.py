@@ -12,7 +12,7 @@ import uuid
 from facebook_monitor.updates.artifacts import release_sha256_asset_name
 from facebook_monitor.updates.artifacts import sanitize_release_asset_name
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
-from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.pending_update_models import PendingUpdate
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
 from facebook_monitor.updates.validation import is_reparse_or_symlink
 

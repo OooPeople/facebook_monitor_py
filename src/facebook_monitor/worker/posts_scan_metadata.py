@@ -14,8 +14,8 @@ from facebook_monitor.facebook.collection_policy import (
     CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
 )
 from facebook_monitor.facebook.collection_policy import get_dynamic_max_windows
-from facebook_monitor.facebook.feed_extractor import ExtractCollectionMeta
-from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
+from facebook_monitor.facebook.feed_extraction_models import ExtractCollectionMeta
+from facebook_monitor.facebook.feed_extraction_models import ExtractRoundStats
 from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON

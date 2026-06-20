@@ -8,29 +8,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cached_property
 
-from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
-from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
-from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
-from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresenter
-from facebook_monitor.webapp.dashboard_presenters import TargetIdentityPresenter
-from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
-from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
-import facebook_monitor.webapp.dashboard_target_diagnostics as target_diagnostics
-import facebook_monitor.webapp.dashboard_target_errors as target_errors
+from facebook_monitor.webapp.dashboard_card_summary_presenters import (
+    TargetCardSummaryPresenter,
+)
+from facebook_monitor.webapp.dashboard_identity_presenters import TargetIdentityPresenter
+from facebook_monitor.webapp.dashboard_settings_presenters import TargetSettingsPresenter
+from facebook_monitor.webapp.dashboard_status_presenters import TargetStatusPresenter
+from facebook_monitor.webapp.dashboard_target_diagnostics import TargetDiagnosticsPresenter
+from facebook_monitor.webapp.dashboard_target_errors import TargetErrorPresenter
+from facebook_monitor.webapp.dashboard_target_header import TargetHeaderPresenter
+from facebook_monitor.webapp.dashboard_target_preview import TargetPreviewPresenter
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
+from facebook_monitor.webapp.dashboard_target_sidebar import TargetSidebarPresenter
+from facebook_monitor.webapp.dashboard_target_status import TargetMonitoringPresenter
 from facebook_monitor.webapp.dashboard_target_refresh import NextRefreshDisplay
 import facebook_monitor.webapp.dashboard_target_refresh as target_refresh
-from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
-import facebook_monitor.webapp.dashboard_target_sidebar as target_sidebar
-import facebook_monitor.webapp.dashboard_target_status as target_status
-from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
@@ -84,87 +83,12 @@ class SidebarGroupSection:
         return self.group_id or ""
 
     @property
-    def template_presenter(self) -> TargetSettingsPresenter | None:
+    def template_presenter(self) -> TargetSettingsPresenter:
         """回傳 group template 設定 presenter。"""
 
         if self.template is None:
-            return None
+            return TargetSettingsPresenter(config=TargetConfig(target_id=""))
         return TargetSettingsPresenter(config=self.template.to_target_config(target_id=""))
-
-    @property
-    def include_text(self) -> str:
-        """回傳 template include keywords 表單文字。"""
-
-        presenter = self.template_presenter
-        return presenter.include_text if presenter else ""
-
-    @property
-    def include_text_2(self) -> str:
-        """回傳 template include keyword 第 2 組表單文字。"""
-
-        presenter = self.template_presenter
-        return presenter.include_text_2 if presenter else ""
-
-    @property
-    def include_text_3(self) -> str:
-        """回傳 template include keyword 第 3 組表單文字。"""
-
-        presenter = self.template_presenter
-        return presenter.include_text_3 if presenter else ""
-
-    @property
-    def exclude_text(self) -> str:
-        """回傳 template exclude keywords 表單文字。"""
-
-        presenter = self.template_presenter
-        return presenter.exclude_text if presenter else ""
-
-    @property
-    def exclude_ignore_phrases_text(self) -> str:
-        """回傳 template 排除字忽略片語表單文字。"""
-
-        presenter = self.template_presenter
-        return presenter.exclude_ignore_phrases_text if presenter else ""
-
-    @property
-    def refresh_mode(self) -> str:
-        """回傳 template refresh mode。"""
-
-        presenter = self.template_presenter
-        return presenter.refresh_mode if presenter else FLOATING_REFRESH_MODE
-
-    @property
-    def fixed_refresh_value(self) -> int:
-        """回傳 template 固定刷新秒數。"""
-
-        presenter = self.template_presenter
-        return (
-            presenter.fixed_refresh_value
-            if presenter
-            else PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec
-        )
-
-    @property
-    def min_refresh_value(self) -> int:
-        """回傳 template 浮動刷新最小秒數。"""
-
-        presenter = self.template_presenter
-        return (
-            presenter.min_refresh_value
-            if presenter
-            else PYTHON_TARGET_CONFIG_DEFAULTS.min_refresh_sec
-        )
-
-    @property
-    def max_refresh_value(self) -> int:
-        """回傳 template 浮動刷新最大秒數。"""
-
-        presenter = self.template_presenter
-        return (
-            presenter.max_refresh_value
-            if presenter
-            else PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
-        )
 
 @dataclass(frozen=True)
 class TargetRow:
@@ -192,51 +116,130 @@ class TargetRow:
 
         return f"target-{self.target_id}"
 
+    @cached_property
+    def identity_presenter(self) -> TargetIdentityPresenter:
+        """回傳 target identity presenter。"""
+
+        return TargetIdentityPresenter(self.target)
+
+    @cached_property
+    def preview_presenter(self) -> TargetPreviewPresenter:
+        """回傳右側 preview panel presenter。"""
+
+        return TargetPreviewPresenter(
+            target_kind=self.target.target_kind,
+            latest_scan_items=self.latest_scan_items,
+            hit_record_preview_items=self.hit_record_preview_items,
+            hit_record_total_count=self.hit_record_total_count,
+        )
+
+    @cached_property
+    def monitoring_presenter(self) -> TargetMonitoringPresenter:
+        """回傳 target 啟停狀態與主操作 presenter。"""
+
+        return TargetMonitoringPresenter(
+            target=self.target,
+            runtime_state=self.runtime_state,
+        )
+
+    @cached_property
+    def error_presenter(self) -> TargetErrorPresenter:
+        """回傳 runtime error 與最近 failed scan presenter。"""
+
+        return TargetErrorPresenter(
+            runtime_state=self.runtime_state,
+            latest_scan_run=self.latest_scan_run,
+            latest_failed_scan_run=self.latest_failed_scan_run,
+        )
+
+    @cached_property
+    def diagnostics_presenter(self) -> TargetDiagnosticsPresenter:
+        """回傳 scan diagnostics presenter。"""
+
+        return TargetDiagnosticsPresenter(
+            target=self.target,
+            config=self.config,
+            runtime_state=self.runtime_state,
+            latest_scan_run=self.latest_scan_run,
+            latest_scan_items=tuple(item.item for item in self.latest_scan_items),
+            notification_outbox_summary=self.notification_outbox_summary,
+            latest_failed_scan_run=self.latest_failed_scan_run,
+        )
+
+    @cached_property
+    def header_presenter(self) -> TargetHeaderPresenter:
+        """回傳 target card header presenter。"""
+
+        return TargetHeaderPresenter(
+            target_kind=self.target.target_kind,
+            latest_scan_run=self.latest_scan_run,
+            next_refresh_label=self.next_refresh_label,
+            latest_failed_scan_run=self.latest_failed_scan_run,
+            latest_error_indicator_label=self.latest_error_indicator_label,
+        )
+
+    @cached_property
+    def sidebar_presenter(self) -> TargetSidebarPresenter:
+        """回傳 sidebar target presenter。"""
+
+        return TargetSidebarPresenter(
+            target=self.target,
+            target_id=self.target_id,
+            display_name=self.display_name,
+            anchor_id=self.anchor_id,
+            status_label=self.status_label,
+            status_class=self.status_class,
+            mode_class=self.mode_class,
+            hit_record_total_count=self.hit_record_total_count,
+            latest_scan_run=self.latest_scan_run,
+            latest_failed_scan_run=self.latest_failed_scan_run,
+            latest_failed_scan_summary=self.latest_failed_scan_summary,
+            latest_error_indicator_label=self.latest_error_indicator_label,
+            content_unavailable_current=self.content_unavailable_current,
+            thumbnail_url=self.thumbnail_url,
+        )
+
     @property
     def latest_items_heading(self) -> str:
         """回傳右側最近掃描項目的標題。"""
 
-        label = "留言" if self.target.target_kind == TargetKind.COMMENTS else "貼文"
-        return f"最近掃描{label}（{len(self.latest_scan_items)}）"
+        return self.preview_presenter.latest_items_heading
 
     @property
     def latest_item_link_label(self) -> str:
         """回傳右側項目 permalink 的連結文字。"""
 
-        return "開啟連結"
+        return self.preview_presenter.latest_item_link_label
 
     @property
     def latest_scan_preview_rows(self) -> tuple[TargetPreviewRow, ...]:
         """回傳最近掃描 preview rows。"""
 
-        return tuple(
-            item.to_preview_row(link_label=self.latest_item_link_label)
-            for item in self.latest_scan_items
-        )
+        return self.preview_presenter.latest_scan_preview_rows
 
     @property
     def hit_record_preview_rows(self) -> tuple[TargetPreviewRow, ...]:
         """回傳命中紀錄 preview rows。"""
 
-        return tuple(item.to_preview_row() for item in self.hit_record_preview_items)
+        return self.preview_presenter.hit_record_preview_rows
 
     @property
     def hit_records_heading(self) -> str:
         """回傳命中紀錄 preview 標題。"""
 
-        return f"命中紀錄（{self.hit_record_total_count}）"
+        return self.preview_presenter.hit_records_heading
 
     @property
     def display_name(self) -> str:
         """回傳 UI 顯示名稱。"""
 
-        return TargetIdentityPresenter(self.target).display_name
+        return self.identity_presenter.display_name
 
     @property
     def rename_display_name(self) -> str:
         """回傳更名 modal 的預填名稱。"""
 
-        return TargetIdentityPresenter(self.target).rename_value
+        return self.identity_presenter.rename_value
 
     @property
     def thumbnail_url(self) -> str:
@@ -251,25 +254,25 @@ class TargetRow:
     def mode_label(self) -> str:
         """回傳 target card header 使用的掃描模式文字。"""
 
-        return "留言模式" if self.target.target_kind == TargetKind.COMMENTS else "貼文模式"
+        return self.header_presenter.mode_label
 
     @property
     def mode_class(self) -> str:
         """回傳掃描模式 chip 對應 CSS class。"""
 
-        return "comments" if self.target.target_kind == TargetKind.COMMENTS else "posts"
+        return self.header_presenter.mode_class
 
     @property
     def scanning_supported(self) -> bool:
         """回傳目前 target 是否已接上 worker 掃描流程。"""
 
-        return target_status.scanning_supported(self)
+        return self.monitoring_presenter.scanning_supported
 
     @property
     def status_presenter(self) -> TargetStatusPresenter:
         """回傳 target 狀態 presenter。"""
 
-        return target_status.status_presenter(self)
+        return self.monitoring_presenter.status_presenter
 
     @property
     def settings_presenter(self) -> TargetSettingsPresenter:
@@ -293,46 +296,37 @@ class TargetRow:
     def header_summary_label(self) -> str:
         """回傳 target header 的低干擾摘要，避免主畫面顯示診斷 ID。"""
 
-        parts = [
-            self.mode_label,
-            f"最近掃描 {self.latest_scan_header_time_label}",
-            f"下次刷新：{self.next_refresh_label}",
-        ]
-        if self.latest_failed_scan_run:
-            parts.append(self.latest_error_indicator_label)
-        return " · ".join(parts)
+        return self.header_presenter.header_summary_label
 
     @property
     def status_label(self) -> str:
         """回傳 target 啟停狀態文字。"""
 
-        return target_status.status_label(self)
+        return self.monitoring_presenter.status_label
 
     @property
     def status_class(self) -> str:
         """回傳 target 狀態對應 CSS class。"""
 
-        return target_status.status_class(self)
+        return self.monitoring_presenter.status_class
 
     @property
     def runtime_error(self) -> str:
         """回傳 runtime error 顯示文字。"""
 
-        return target_errors.runtime_error(self)
+        return self.error_presenter.runtime_error
 
     @property
     def runtime_skip_reason(self) -> str:
         """回傳最近一次 scan guard skip 原因。"""
 
-        return target_errors.runtime_skip_reason(self)
+        return self.error_presenter.runtime_skip_reason
 
     @property
     def latest_scan_header_time_label(self) -> str:
         """回傳 target header 使用的最近掃描短時間。"""
 
-        if not self.latest_scan_run:
-            return "尚無掃描"
-        return self.latest_scan_run.finished_at.astimezone().strftime("%H:%M:%S")
+        return self.header_presenter.latest_scan_header_time_label
 
     @property
     def next_refresh_label(self) -> str:
@@ -356,154 +350,76 @@ class TargetRow:
     def scan_cycle_result_label(self) -> str:
         """回傳右側結果 panel 使用的最近一輪結束原因。"""
 
-        return target_diagnostics.scan_cycle_result_label(self)
+        return self.diagnostics_presenter.scan_cycle_result_label
 
     @property
     def latest_scan_diagnostics_summary(self) -> str:
         """回傳最近成功掃描的診斷短摘要。"""
 
-        return target_diagnostics.latest_scan_diagnostics_summary(self)
+        return self.diagnostics_presenter.latest_scan_diagnostics_summary
 
     @property
     def latest_scan_diagnostics_text(self) -> str:
         """回傳可複製的 scan-level diagnostics。"""
 
-        return target_diagnostics.latest_scan_diagnostics_text(self)
+        return self.diagnostics_presenter.latest_scan_diagnostics_text
 
     @property
     def latest_error_label(self) -> str:
         """回傳最近錯誤時間。"""
 
-        return target_errors.latest_error_label(self)
+        return self.error_presenter.latest_error_label
 
     @property
     def latest_failed_scan_summary(self) -> str:
         """回傳最近失敗掃描摘要。"""
 
-        return target_errors.latest_failed_scan_summary(self)
+        return self.error_presenter.latest_failed_scan_summary
 
     @property
     def latest_error_indicator_label(self) -> str:
         """回傳 target header 的最近錯誤短標籤。"""
 
-        return target_errors.latest_error_indicator_label(self)
+        return self.error_presenter.latest_error_indicator_label
 
     @property
     def latest_error_indicator_title(self) -> str:
         """回傳 target header 最近錯誤說明。"""
 
-        return target_errors.latest_error_indicator_title(self)
+        return self.error_presenter.latest_error_indicator_title
 
     @property
     def latest_error_indicator_kind(self) -> str:
         """回傳最近錯誤 UI 類型。"""
 
-        return target_errors.latest_error_indicator_kind(self)
+        return self.error_presenter.latest_error_indicator_kind
 
     @property
     def retrying_failure_current(self) -> bool:
         """回傳最近 failed scan 是否仍代表等待下輪重試的目前狀態。"""
 
-        return target_errors.retrying_failure_current(self)
+        return self.error_presenter.retrying_failure_current
 
     @property
     def content_unavailable_current(self) -> bool:
         """回傳連結失效是否仍代表目前狀態。"""
 
-        return target_errors.content_unavailable_current(self)
-
-    @property
-    def notification_summary_label(self) -> str:
-        """回傳設定摘要用的通知通道列表。"""
-
-        return self.settings_presenter.notification_summary_label
-
-    @property
-    def include_text(self) -> str:
-        """回傳 include keywords 表單文字。"""
-
-        return self.settings_presenter.include_text
-
-    @property
-    def include_text_2(self) -> str:
-        """回傳 include keyword 第 2 組表單文字。"""
-
-        return self.settings_presenter.include_text_2
-
-    @property
-    def include_text_3(self) -> str:
-        """回傳 include keyword 第 3 組表單文字。"""
-
-        return self.settings_presenter.include_text_3
-
-    @property
-    def exclude_text(self) -> str:
-        """回傳 exclude keywords 表單文字。"""
-
-        return self.settings_presenter.exclude_text
-
-    @property
-    def exclude_ignore_phrases_text(self) -> str:
-        """回傳排除字忽略片語表單文字。"""
-
-        return self.settings_presenter.exclude_ignore_phrases_text
-
-    @property
-    def fixed_refresh_value(self) -> int:
-        """回傳表單使用的固定掃描間隔秒數。"""
-
-        return self.settings_presenter.fixed_refresh_value
-
-    @property
-    def refresh_mode(self) -> str:
-        """回傳目前 refresh mode。"""
-
-        return self.settings_presenter.refresh_mode
-
-    @property
-    def refresh_mode_label(self) -> str:
-        """回傳 refresh mode 摘要。"""
-
-        return self.settings_presenter.refresh_mode_label
-
-    @property
-    def settings_summary(self) -> SettingsSummary:
-        """回傳 target card 設定摘要 view model。"""
-
-        return self.settings_presenter.settings_summary
-
-    @property
-    def card_summary(self) -> TargetCardSummary:
-        """回傳收合卡片可共用的摘要 view model。"""
-
-        return self.card_summary_presenter.summary
+        return self.error_presenter.content_unavailable_current
 
     @property
     def sidebar_item(self) -> SidebarTargetItem:
         """回傳 sidebar 使用的 target 摘要。"""
 
-        return target_sidebar.sidebar_item(self)
-
-    @property
-    def min_refresh_value(self) -> int:
-        """回傳表單使用的浮動最小掃描間隔秒數。"""
-
-        return self.settings_presenter.min_refresh_value
-
-    @property
-    def max_refresh_value(self) -> int:
-        """回傳表單使用的浮動最大掃描間隔秒數。"""
-
-        return self.settings_presenter.max_refresh_value
+        return self.sidebar_presenter.item
 
     @property
     def monitoring_action(self) -> str:
         """回傳主操作按鈕應提交的 monitoring action。"""
 
-        return target_status.monitoring_action(self)
+        return self.monitoring_presenter.monitoring_action
 
     @property
     def monitoring_button_label(self) -> str:
         """回傳主操作按鈕文字，維持開始 / 暫停語義。"""
 
-        return target_status.monitoring_button_label(self)
+        return self.monitoring_presenter.monitoring_button_label

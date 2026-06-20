@@ -35,10 +35,10 @@ from facebook_monitor.notifications.outbox_dispatch_service import (
     dispatch_new_pending_notification_outbox_for_db,
 )
 from facebook_monitor.notifications.outbox_dispatch_service import retry_failed_notification_outbox
-from facebook_monitor.notifications.outbox_enqueue_service import (
+from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
 )
-from facebook_monitor.notifications.outbox_enqueue_service import (
+from facebook_monitor.notifications.outbox_match_enqueue import (
     queue_match_notifications_after_commit,
 )
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
@@ -361,7 +361,7 @@ def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
         return True
 
     monkeypatch.setattr(
-        "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",
+        "facebook_monitor.notifications.outbox_enqueue_wake.wake_notification_outbox_dispatcher_for_db",
         fake_wake,
     )
 

@@ -18,7 +18,7 @@ from facebook_monitor.runtime.update_operation_lock import acquire_update_operat
 from facebook_monitor.runtime.update_operation_lock import UpdateOperationLockError
 from facebook_monitor.updates.capability import UpdateCapability
 from facebook_monitor.updates.download import UpdateDownloadResult
-from facebook_monitor.updates.handoff import pending_update_path
+from facebook_monitor.updates.pending_update_models import pending_update_path
 from facebook_monitor.updates.launcher import UpdaterLaunchResult
 from facebook_monitor.updates.release_check import UpdateCheckResult
 

@@ -10,9 +10,9 @@ from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import resolve_runtime_paths_from_args
 from facebook_monitor.updates.apply import apply_loaded_pending_update_file
 from facebook_monitor.updates.apply import apply_pending_update_file
-from facebook_monitor.updates.handoff import load_pending_update
-from facebook_monitor.updates.handoff import pending_update_path
-from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.pending_update_io import load_pending_update
+from facebook_monitor.updates.pending_update_models import PendingUpdate
+from facebook_monitor.updates.pending_update_models import pending_update_path
 from facebook_monitor.updates.launcher import launch_restarted_app
 
 

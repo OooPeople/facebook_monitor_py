@@ -11,7 +11,7 @@ from facebook_monitor.updates.launcher import copy_updater_to_temp
 from facebook_monitor.updates.launcher import find_bundled_updater
 from facebook_monitor.updates.launcher import launch_restarted_app
 from facebook_monitor.updates.launcher import launch_temp_updater
-from facebook_monitor.updates.handoff import PendingUpdate
+from facebook_monitor.updates.pending_update_models import PendingUpdate
 from facebook_monitor.updates.platforms import MACOS_APP_BUNDLE_LAUNCHER
 from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 

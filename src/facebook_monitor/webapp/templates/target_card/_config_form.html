@@ -1,4 +1,5 @@
 <aside class="target-settings panel">
+  {% set settings = row.settings_presenter %}
   <form
     class="config-form compact-config-form"
     id="config-{{ row.target.id }}"
@@ -67,7 +68,7 @@
             name="include_keywords"
             rows="2"
             maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
-          >{{ row.include_text }}</textarea>
+          >{{ settings.include_text }}</textarea>
         </label>
       </div>
       <div
@@ -83,7 +84,7 @@
             name="include_keywords_2"
             rows="2"
             maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
-          >{{ row.include_text_2 }}</textarea>
+          >{{ settings.include_text_2 }}</textarea>
         </label>
       </div>
       <div
@@ -99,7 +100,7 @@
             name="include_keywords_3"
             rows="2"
             maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
-          >{{ row.include_text_3 }}</textarea>
+          >{{ settings.include_text_3 }}</textarea>
         </label>
       </div>
     </div>
@@ -148,7 +149,7 @@
             name="exclude_keywords"
             rows="2"
             maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
-          >{{ row.exclude_text }}</textarea>
+          >{{ settings.exclude_text }}</textarea>
         </label>
       </div>
       <div
@@ -165,12 +166,12 @@
             rows="2"
             maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
             placeholder="例如：全收;回收"
-          >{{ row.exclude_ignore_phrases_text }}</textarea>
+          >{{ settings.exclude_ignore_phrases_text }}</textarea>
         </label>
       </div>
     </div>
     <div class="settings-summary" aria-label="設定摘要">
-      {% for summary_line in row.settings_summary.lines %}
+      {% for summary_line in settings.settings_summary.lines %}
         <div class="settings-summary-row">
           <span class="settings-summary-icon" aria-hidden="true">
             {% if summary_line.icon_key == "refresh" %}

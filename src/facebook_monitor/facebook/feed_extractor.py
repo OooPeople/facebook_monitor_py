@@ -15,27 +15,12 @@ from facebook_monitor.facebook.collection_policy import (
 )
 from facebook_monitor.facebook.collection_policy import get_candidate_collection_limit
 from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD as FEED_SEEN_STOP_CONSECUTIVE_SEEN_THRESHOLD,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    ExtractCollectionMeta as ExtractCollectionMeta,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    ExtractRoundStats as ExtractRoundStats,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    FeedSeenStopState as FeedSeenStopState,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    build_collection_meta as build_collection_meta,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    build_extract_round_stats as build_extract_round_stats,
-)
-from facebook_monitor.facebook.feed_extraction_diagnostics import (
-    with_collection_debug_metadata as with_collection_debug_metadata,
-)
+from facebook_monitor.facebook.feed_extraction_collection_meta import build_collection_meta
+from facebook_monitor.facebook.feed_extraction_models import ExtractCollectionMeta
+from facebook_monitor.facebook.feed_extraction_models import ExtractRoundStats
+from facebook_monitor.facebook.feed_extraction_models import FeedSeenStopState
+from facebook_monitor.facebook.feed_extraction_rounds import build_extract_round_stats
+from facebook_monitor.facebook.feed_extraction_rounds import with_collection_debug_metadata
 from facebook_monitor.facebook.feed_extraction_normalizer import (
     normalize_debug_metadata as normalize_debug_metadata,
 )
@@ -312,4 +297,3 @@ def observe_seen_stop_item(
         state.consecutive_seen_count = 0
     if state.consecutive_seen_count >= state.threshold:
         state.triggered = True
-

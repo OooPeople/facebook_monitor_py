@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
-from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
 from facebook_monitor.core.keyword_highlight import HighlightSegment
 from facebook_monitor.core.keyword_highlight import build_highlight_segments
 from facebook_monitor.webapp.url_safety import safe_facebook_permalink

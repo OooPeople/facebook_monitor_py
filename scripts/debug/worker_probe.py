@@ -23,7 +23,7 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.facebook.feed_extractor import ExtractRoundStats
+from facebook_monitor.facebook.feed_extraction_models import ExtractRoundStats
 from facebook_monitor.facebook.feed_extractor import collect_items_with_diagnostics
 from facebook_monitor.runtime.paths import add_runtime_path_arguments
 from facebook_monitor.runtime.paths import default_runtime_paths

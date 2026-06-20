@@ -20,8 +20,8 @@ import time
 from typing import Any
 
 from facebook_monitor.runtime.paths import RuntimePaths
-from facebook_monitor.updates.handoff import PendingUpdate
-from facebook_monitor.updates.handoff import pending_update_path
+from facebook_monitor.updates.pending_update_models import PendingUpdate
+from facebook_monitor.updates.pending_update_models import pending_update_path
 from facebook_monitor.updates.platforms import detect_layout_policy
 from facebook_monitor.updates.platforms import layout_policy_for_updater_path
 from facebook_monitor.updates.platforms import supported_layout_policies

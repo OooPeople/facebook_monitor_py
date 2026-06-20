@@ -12,11 +12,11 @@ from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.download import UpdateDownloadResult
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_NAME
 from facebook_monitor.updates.download import VERIFIED_DOWNLOAD_SET_MARKER_SCHEMA_VERSION
-from facebook_monitor.updates.handoff import load_pending_update
-from facebook_monitor.updates.handoff import PendingUpdate
-from facebook_monitor.updates.handoff import pending_update_path
-from facebook_monitor.updates.handoff import validate_pending_update_paths
 from facebook_monitor.updates.handoff import write_pending_update
+from facebook_monitor.updates.pending_update_io import load_pending_update
+from facebook_monitor.updates.pending_update_models import PendingUpdate
+from facebook_monitor.updates.pending_update_models import pending_update_path
+from facebook_monitor.updates.pending_update_validation import validate_pending_update_paths
 from facebook_monitor.updates.manifest import release_manifest_asset_name
 from facebook_monitor.updates.manifest import release_manifest_signature_asset_name
 from facebook_monitor.updates.release_check import UpdateCheckResult

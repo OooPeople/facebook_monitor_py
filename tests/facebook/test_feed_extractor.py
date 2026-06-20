@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from facebook_monitor.facebook.feed_extractor import build_extract_round_stats
 from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.feed_extraction_rounds import build_extract_round_stats
 from facebook_monitor.facebook.feed_extractor import normalize_feed_extraction_payload
 from facebook_monitor.facebook.feed_extractor import normalize_debug_metadata
 from facebook_monitor.facebook.permalink import extract_comment_permalink_details

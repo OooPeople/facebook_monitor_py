@@ -12,6 +12,7 @@ import pytest
 
 import facebook_monitor.facebook.comment_extractor as comment_extractor
 from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
+from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more_guard_held
 from facebook_monitor.facebook.comment_extractor import (
     collect_comment_items_with_load_more_guard_held_async,
@@ -289,7 +290,7 @@ def test_collect_comments_releases_guard_when_snapshot_restore_fails(
         "extract_visible_comment_items",
         lambda _page, *, group_id, parent_post_id, max_items: (
             [],
-            comment_extractor.CommentCollectionMeta(
+            CommentCollectionMeta(
                 target_count=max_items,
                 candidate_count=0,
                 parsed_count=0,
@@ -340,7 +341,7 @@ def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
     ):
         return (
             [],
-            comment_extractor.CommentCollectionMeta(
+            CommentCollectionMeta(
                 target_count=max_items,
                 candidate_count=0,
                 parsed_count=0,

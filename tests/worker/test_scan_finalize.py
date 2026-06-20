@@ -29,7 +29,7 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_dispatch_service import (
     dispatch_new_pending_notification_outbox,
 )
-from facebook_monitor.notifications.outbox_enqueue_service import (
+from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
 )
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState

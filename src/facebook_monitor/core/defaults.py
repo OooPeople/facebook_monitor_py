@@ -117,6 +117,7 @@ class NotificationRuntimeDefaults:
 
     stale_processing_seconds: int = 300
     dispatch_batch_limit: int = 10
+    dispatch_max_batches_per_wake: int = 3
     events_per_target_limit: int = 500
     ntfy_server: str = "https://ntfy.sh"
     ntfy_timeout_seconds: float = 15.0

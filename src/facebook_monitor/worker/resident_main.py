@@ -574,7 +574,9 @@ def dispatch_pending_notification_outbox(options: ResidentRuntimeOptions) -> int
     try:
         if wake_notification_outbox_dispatcher_for_db(options.db_path):
             return 0
-        return dispatch_new_pending_notification_outbox_for_db(db_path=options.db_path)
+        return dispatch_new_pending_notification_outbox_for_db(
+            db_path=options.db_path,
+        ).dispatched_count
     except sqlite3.OperationalError as exc:
         if _is_sqlite_database_locked(exc):
             logger.warning("pending notification outbox dispatch skipped: database locked")

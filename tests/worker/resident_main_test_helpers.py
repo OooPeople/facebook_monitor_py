@@ -12,6 +12,9 @@ from pytest import MonkeyPatch
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
+from facebook_monitor.notifications.outbox_dispatch_models import (
+    PendingNotificationOutboxDispatchResult,
+)
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main_executor_types import (
@@ -349,11 +352,15 @@ def _stub_runtime_outbox_dispatch(monkeypatch: MonkeyPatch) -> list[Path]:
         dispatch_calls.append(db_path)
         return True
 
-    def fake_dispatch(**kwargs: object) -> int:
+    def fake_dispatch(**kwargs: object) -> PendingNotificationOutboxDispatchResult:
         db_path = kwargs["db_path"]
         assert isinstance(db_path, Path)
         dispatch_calls.append(db_path)
-        return 0
+        return PendingNotificationOutboxDispatchResult(
+            dispatched_count=0,
+            claimed_count=0,
+            batch_count=0,
+        )
 
     monkeypatch.setattr(
         "facebook_monitor.notifications.outbox_enqueue_service.wake_notification_outbox_dispatcher_for_db",

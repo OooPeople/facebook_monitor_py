@@ -16,6 +16,9 @@ from threading import Thread
 from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
+from facebook_monitor.notifications.outbox_dispatch_models import (
+    PendingNotificationOutboxDispatchResult,
+)
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
@@ -24,7 +27,7 @@ from facebook_monitor.notifications.senders import NtfySender
 
 logger = logging.getLogger(__name__)
 DEFAULT_DISPATCHER_STOP_TIMEOUT_SECONDS = 5.0
-NotificationOutboxDispatchCallable = Callable[..., int]
+NotificationOutboxDispatchCallable = Callable[..., PendingNotificationOutboxDispatchResult]
 _REGISTRY_LOCK = RLock()
 _DISPATCHERS_BY_DB_PATH: dict[Path, "NotificationOutboxDispatcher"] = {}
 
@@ -43,6 +46,9 @@ class NotificationOutboxDispatcher:
             PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.stale_processing_seconds
         ),
         batch_limit: int = PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.dispatch_batch_limit,
+        max_batches_per_wake: int = (
+            PYTHON_NOTIFICATION_RUNTIME_DEFAULTS.dispatch_max_batches_per_wake
+        ),
         stop_timeout_seconds: float = DEFAULT_DISPATCHER_STOP_TIMEOUT_SECONDS,
         dispatch_pending: NotificationOutboxDispatchCallable | None = None,
     ) -> None:
@@ -51,7 +57,8 @@ class NotificationOutboxDispatcher:
         self.desktop_sender = desktop_sender
         self.discord_sender = discord_sender
         self.stale_processing_seconds = stale_processing_seconds
-        self.batch_limit = batch_limit
+        self.batch_limit = max(int(batch_limit), 1)
+        self.max_batches_per_wake = max(int(max_batches_per_wake), 1)
         self.stop_timeout_seconds = max(float(stop_timeout_seconds), 0.0)
         self.dispatch_pending = dispatch_pending or _dispatch_pending_outbox_for_db
         self._wake_event = Event()
@@ -111,7 +118,7 @@ class NotificationOutboxDispatcher:
         return stopped
 
     def _run(self) -> None:
-        """背景 thread 主迴圈；每次 wake drain 一批目前 pending outbox。"""
+        """背景 thread 主迴圈；每次 wake 只處理 bounded 批次。"""
 
         while not self._stop_event.is_set():
             self._wake_event.wait()
@@ -119,19 +126,21 @@ class NotificationOutboxDispatcher:
             if self._stop_event.is_set():
                 break
             try:
-                dispatched_count = int(
-                    self.dispatch_pending(
-                        db_path=self.db_path,
-                        ntfy_sender=self.ntfy_sender,
-                        desktop_sender=self.desktop_sender,
-                        discord_sender=self.discord_sender,
-                        stale_processing_seconds=self.stale_processing_seconds,
-                        batch_limit=self.batch_limit,
-                    )
+                dispatch_result = self.dispatch_pending(
+                    db_path=self.db_path,
+                    ntfy_sender=self.ntfy_sender,
+                    desktop_sender=self.desktop_sender,
+                    discord_sender=self.discord_sender,
+                    stale_processing_seconds=self.stale_processing_seconds,
+                    batch_limit=self.batch_limit,
+                    should_stop=self._stop_event.is_set,
+                    max_batches=self.max_batches_per_wake,
                 )
                 self.dispatch_count += 1
-                self.last_dispatch_count = dispatched_count
+                self.last_dispatch_count = dispatch_result.dispatched_count
                 self.last_error = ""
+                if dispatch_result.should_continue and not self._stop_event.is_set():
+                    self._wake_event.set()
             except Exception as exc:
                 self.dispatch_count += 1
                 self.last_dispatch_count = 0
@@ -181,7 +190,7 @@ def _normalize_db_path(db_path: Path) -> Path:
     return Path(db_path).expanduser().resolve()
 
 
-def _dispatch_pending_outbox_for_db(**kwargs: object) -> int:
+def _dispatch_pending_outbox_for_db(**kwargs: object) -> PendingNotificationOutboxDispatchResult:
     """延遲匯入 outbox service，避免 dispatcher 與 service 形成 import cycle。"""
 
     from facebook_monitor.notifications.outbox_dispatch_service import (

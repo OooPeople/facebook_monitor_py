@@ -61,7 +61,7 @@ def dispatch_pending_notifications_for_test(
         ntfy_sender=ntfy_sender or _fake_success_ntfy_sender,
         desktop_sender=desktop_sender or _fake_success_desktop_sender,
         discord_sender=discord_sender or _fake_success_discord_sender,
-    )
+    ).dispatched_count
 
 
 def _fake_success_ntfy_sender(

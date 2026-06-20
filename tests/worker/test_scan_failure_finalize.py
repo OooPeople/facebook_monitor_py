@@ -487,7 +487,7 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
             error_message="背景掃描執行錯誤",
         )
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
@@ -510,7 +510,7 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
 
     assert len(entries) == 1
     assert duplicate_entries == ()
-    assert sent_count == 1
+    assert result.dispatched_count == 1
     assert sent_messages
     assert event is not None
     assert event.event_kind == NotificationEventKind.RUNTIME_FAILURE

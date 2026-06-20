@@ -25,6 +25,9 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.notifications.outbox_dispatch_models import (
+    PendingNotificationOutboxDispatchResult,
+)
 from facebook_monitor.notifications.outbox_dispatcher import NotificationOutboxDispatcher
 from facebook_monitor.notifications.outbox_dispatcher import (
     register_notification_outbox_dispatcher,
@@ -788,11 +791,15 @@ def test_resident_scheduler_tick_dispatches_existing_pending_outbox(
         )
     dispatched_db_paths: list[Path] = []
 
-    def fake_dispatch(**kwargs: object) -> int:
+    def fake_dispatch(**kwargs: object) -> PendingNotificationOutboxDispatchResult:
         db_path_arg = kwargs["db_path"]
         assert isinstance(db_path_arg, Path)
         dispatched_db_paths.append(db_path_arg)
-        return 1
+        return PendingNotificationOutboxDispatchResult(
+            dispatched_count=1,
+            claimed_count=1,
+            batch_count=1,
+        )
 
     monkeypatch.setattr(
         "facebook_monitor.worker.resident_main.dispatch_new_pending_notification_outbox_for_db",
@@ -849,13 +856,17 @@ def test_dispatch_pending_notification_outbox_wakes_registered_dispatcher(
     db_path = tmp_path / "app.db"
     wake_dispatches: list[Path] = []
 
-    def fake_background_dispatch(**kwargs: object) -> int:
+    def fake_background_dispatch(**kwargs: object) -> PendingNotificationOutboxDispatchResult:
         db_path_arg = kwargs["db_path"]
         assert isinstance(db_path_arg, Path)
         wake_dispatches.append(db_path_arg)
-        return 0
+        return PendingNotificationOutboxDispatchResult(
+            dispatched_count=0,
+            claimed_count=0,
+            batch_count=0,
+        )
 
-    def unexpected_sync_dispatch(**_kwargs: object) -> int:
+    def unexpected_sync_dispatch(**_kwargs: object) -> PendingNotificationOutboxDispatchResult:
         raise AssertionError("registered dispatcher should handle pending outbox")
 
     monkeypatch.setattr(
@@ -892,7 +903,7 @@ def test_dispatch_pending_notification_outbox_treats_sqlite_lock_as_transient(
 
     db_path = tmp_path / "app.db"
 
-    def raise_locked(**_kwargs: object) -> int:
+    def raise_locked(**_kwargs: object) -> PendingNotificationOutboxDispatchResult:
         """模擬 dispatch 開頭遇到其他 writer 持鎖。"""
 
         raise sqlite3.OperationalError("database is locked")

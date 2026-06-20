@@ -31,6 +31,9 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.notifications.outbox_dispatch_service import (
     dispatch_new_pending_notification_outbox,
 )
+from facebook_monitor.notifications.outbox_dispatch_service import (
+    dispatch_new_pending_notification_outbox_for_db,
+)
 from facebook_monitor.notifications.outbox_dispatch_service import retry_failed_notification_outbox
 from facebook_monitor.notifications.outbox_enqueue_service import (
     build_notification_idempotency_key,
@@ -51,7 +54,7 @@ def _dispatch_pending_for_db(
     """測試 helper：明確模擬 background dispatcher drain pending outbox。"""
 
     with SqliteApplicationContext(db_path) as app:
-        return dispatch_new_pending_notification_outbox(app=app, **kwargs)
+        return dispatch_new_pending_notification_outbox(app=app, **kwargs).dispatched_count
 
 
 def test_queue_match_notifications_reports_no_entries_for_duplicate_dedupe(
@@ -948,12 +951,12 @@ def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(
             )
             return NtfyResult(ok=True, status_code=200, message="sent")
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
 
-    assert sent_count == 1
+    assert result.dispatched_count == 1
     assert in_transaction_during_send == [False]
 
 
@@ -1000,12 +1003,12 @@ def test_outbox_dispatch_refreshes_polluted_match_group_line(
             )
         )
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
 
-    assert sent_count == 1
+    assert result.dispatched_count == 1
     assert sent_messages == ["社團：測試社團\n本文"]
 
 
@@ -1058,12 +1061,12 @@ def test_outbox_dispatch_refreshes_only_first_match_group_header_with_channel_fo
             )
         )
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             discord_sender=fake_discord_sender,
         )
 
-    assert sent_count == 1
+    assert result.dispatched_count == 1
     assert sent_messages == ["社團：我的 \\<測試\\> 名稱\n社團：正文不要改"]
 
 
@@ -1114,12 +1117,12 @@ def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
             )
         )
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
 
-    assert sent_count == 1
+    assert result.dispatched_count == 1
     assert sent_messages == ["監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3"]
 
 
@@ -1168,14 +1171,14 @@ def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(
             )
         )
 
-        processed_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(idempotency_key)
         event = app.repositories.notification_events.latest_by_target(target.id)
 
-    assert processed_count == 1
+    assert result.dispatched_count == 1
     assert sent_topics == []
     assert entry is not None
     assert entry.status == NotificationOutboxStatus.SKIPPED
@@ -1233,14 +1236,14 @@ def test_outbox_dispatch_skips_scheduler_stopping_runtime_failure_pending_row(
             )
         )
 
-        processed_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(idempotency_key)
         event = app.repositories.notification_events.latest_by_target(target.id)
 
-    assert processed_count == 1
+    assert result.dispatched_count == 1
     assert sent_topics == []
     assert entry is not None
     assert entry.status == NotificationOutboxStatus.SKIPPED
@@ -1405,15 +1408,219 @@ def test_outbox_pending_dispatch_drains_all_default_batches(tmp_path: Path) -> N
                 )
             )
 
-        sent_count = dispatch_new_pending_notification_outbox(
+        result = dispatch_new_pending_notification_outbox(
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
         pending = app.repositories.notification_outbox.list_pending(limit=20)
 
-    assert sent_count == 11
+    assert result.dispatched_count == 11
     assert len(sent_topics) == 11
     assert len(pending) == 0
+
+
+def test_outbox_pending_dispatch_stops_before_claiming_next_batch(
+    tmp_path: Path,
+) -> None:
+    """stop predicate 變 true 後，pending dispatch 不得 claim 下一批。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="topic"),
+            )
+        )
+        for index in range(11):
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:stop-item-{index}:ntfy",
+                    target_id=target.id,
+                    item_key=f"stop-item-{index}",
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                    endpoint="topic",
+                )
+            )
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+            batch_limit=5,
+            should_stop=lambda: len(sent_topics) >= 5,
+        )
+        pending = app.repositories.notification_outbox.list_pending(limit=20)
+
+    assert result.dispatched_count == 5
+    assert len(sent_topics) == 5
+    assert len(pending) == 6
+
+
+def test_outbox_pending_dispatch_respects_max_batches(
+    tmp_path: Path,
+) -> None:
+    """max_batches 限制本輪 dispatch 最多 claim 幾個 pending batch。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="topic"),
+            )
+        )
+        for index in range(11):
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:bounded-item-{index}:ntfy",
+                    target_id=target.id,
+                    item_key=f"bounded-item-{index}",
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                    endpoint="topic",
+                )
+            )
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+            batch_limit=5,
+            max_batches=1,
+        )
+        pending = app.repositories.notification_outbox.list_pending(limit=20)
+
+    assert result.dispatched_count == 5
+    assert len(sent_topics) == 5
+    assert len(pending) == 6
+
+
+def test_outbox_pending_dispatch_result_counts_claimed_failed_batch(
+    tmp_path: Path,
+) -> None:
+    """sender 例外時，bounded drain result 仍需回報 claimed batch 容量。"""
+
+    db_path = tmp_path / "app.db"
+
+    def failing_ntfy_sender(
+        _config: NtfyConfig,
+        _title: str,
+        _message: str,
+    ) -> NtfyResult:
+        raise RuntimeError("ntfy unavailable")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="topic"),
+            )
+        )
+        for index in range(11):
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:failed-batch-item-{index}:ntfy",
+                    target_id=target.id,
+                    item_key=f"failed-batch-item-{index}",
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                    endpoint="topic",
+                )
+            )
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=failing_ntfy_sender,
+            batch_limit=5,
+            max_batches=1,
+        )
+        pending = app.repositories.notification_outbox.list_pending(limit=20)
+        failed_count = app.repositories.notification_outbox.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM notification_outbox
+            WHERE status = ?
+            """,
+            (NotificationOutboxStatus.FAILED.value,),
+        ).fetchone()[0]
+
+    assert result.dispatched_count == 0
+    assert result.claimed_count == 5
+    assert result.batch_count == 1
+    assert result.reached_batch_limit
+    assert result.should_continue
+    assert len(pending) == 6
+    assert failed_count == 5
+
+
+def test_outbox_pending_dispatch_for_db_returns_typed_result(
+    tmp_path: Path,
+) -> None:
+    """DB wrapper 應保留 pending dispatch 的 typed drain result。"""
+
+    db_path = tmp_path / "app.db"
+    sent_topics: list[str] = []
+
+    def fake_ntfy_sender(config: NtfyConfig, title: str, message: str) -> NtfyResult:
+        sent_topics.append(config.topic)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="111",
+                canonical_url="https://www.facebook.com/groups/111",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="topic"),
+            )
+        )
+        for index in range(3):
+            app.repositories.notification_outbox.enqueue(
+                NotificationOutboxEntry(
+                    idempotency_key=f"{target.id}:for-db-item-{index}:ntfy",
+                    target_id=target.id,
+                    item_key=f"for-db-item-{index}",
+                    item_kind=ItemKind.POST,
+                    channel=NotificationChannel.NTFY,
+                    title="title",
+                    message="message",
+                    endpoint="topic",
+                )
+            )
+
+    result = dispatch_new_pending_notification_outbox_for_db(
+        db_path=db_path,
+        ntfy_sender=fake_ntfy_sender,
+        batch_limit=2,
+        max_batches=1,
+    )
+
+    assert result.dispatched_count == 2
+    assert result.claimed_count == 2
+    assert result.batch_count == 1
+    assert result.reached_batch_limit
+    assert result.should_continue
+    assert sent_topics == ["topic", "topic"]
 
 
 def test_failed_outbox_retry_refreshes_current_target_endpoint(tmp_path: Path) -> None:

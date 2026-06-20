@@ -19,7 +19,10 @@ def filter_maintenance_refresh_target_ids(
         return ()
     with SqliteApplicationContext(options.db_path) as app:
         runtime_states = app.repositories.runtime_states.list_by_targets(list(target_ids))
-        targets = {target_id: app.repositories.targets.get(target_id) for target_id in target_ids}
+        targets = {
+            target_id: app.repositories.targets.get(target_id)
+            for target_id in target_ids
+        }
     return tuple(
         target_id
         for target_id in target_ids
@@ -39,7 +42,10 @@ def filter_maintenance_cover_refresh_states(
     target_ids = [state.target_id for state in states]
     with SqliteApplicationContext(options.db_path) as app:
         runtime_states = app.repositories.runtime_states.list_by_targets(target_ids)
-        targets = {target_id: app.repositories.targets.get(target_id) for target_id in target_ids}
+        targets = {
+            target_id: app.repositories.targets.get(target_id)
+            for target_id in target_ids
+        }
     return [
         state
         for state in states

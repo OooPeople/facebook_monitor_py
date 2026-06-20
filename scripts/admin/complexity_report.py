@@ -9,6 +9,7 @@ metrics，再由本 repo 的 wrapper 加上 known-large / watchlist annotation�
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass
 import fnmatch
 import json
@@ -20,7 +21,7 @@ from typing import Sequence
 import lizard  # type: ignore[import-untyped]
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_PATHS = ("src", "scripts")
 DEFAULT_TOP = 20
 DEFAULT_EXTENSIONS = (".py", ".js", ".css", ".html")
@@ -33,8 +34,9 @@ DEFAULT_EXCLUDE_GLOBS = (
     "src/facebook_monitor/webapp/static/vendor/**",
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ANNOTATION_SCHEMA_VERSION = 1
+ANNOTATION_SCHEMA_VERSION = 2
 ALLOWED_ANNOTATION_STATUSES = frozenset({"known_large", "watchlist"})
+ALLOWED_SYMBOL_KINDS = frozenset({"file", "function", "class"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ class FunctionMetric:
     ccn: int
     token_count: int
     parameter_count: int
+    owner_class: str = ""
 
     @property
     def display_path(self) -> str:
@@ -81,7 +84,7 @@ class FunctionMetric:
     def to_json(self) -> dict[str, object]:
         """轉成穩定 JSON shape。"""
 
-        return {
+        payload: dict[str, object] = {
             "path": self.display_path,
             "language": self.language,
             "line": self.start_line,
@@ -94,6 +97,9 @@ class FunctionMetric:
             "parameter_count": self.parameter_count,
             "line_count": self.line_count,
         }
+        if self.owner_class:
+            payload["owner_class"] = self.owner_class
+        return payload
 
 
 @dataclass(frozen=True)
@@ -152,12 +158,74 @@ class AnalysisError:
 
 
 @dataclass(frozen=True)
+class ClassRange:
+    """保存 Python class 的 source line range，供 class-level annotation 使用。"""
+
+    name: str
+    qualified_name: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True)
+class ClassMetric:
+    """保存單一 Python class 的 range 與內部函式摘要。"""
+
+    path: Path
+    language: str
+    name: str
+    long_name: str
+    start_line: int
+    end_line: int
+    method_count: int
+    nloc: int
+    max_ccn: int
+    max_function_nloc: int
+
+    @property
+    def display_path(self) -> str:
+        """回傳適合 terminal 顯示的 repo-relative path。"""
+
+        return self.path.as_posix()
+
+    @property
+    def line_count(self) -> int:
+        """回傳 class source line span。"""
+
+        return max(self.end_line - self.start_line + 1, 1)
+
+    @property
+    def display_name(self) -> str:
+        """回傳報告中使用的 class 名稱。"""
+
+        return self.long_name or self.name
+
+    def to_json(self) -> dict[str, object]:
+        """轉成穩定 JSON shape。"""
+
+        return {
+            "path": self.display_path,
+            "language": self.language,
+            "line": self.start_line,
+            "end_line": self.end_line,
+            "name": self.name,
+            "long_name": self.long_name,
+            "line_count": self.line_count,
+            "method_count": self.method_count,
+            "nloc": self.nloc,
+            "max_ccn": self.max_ccn,
+            "max_function_nloc": self.max_function_nloc,
+        }
+
+
+@dataclass(frozen=True)
 class ReviewAnnotation:
     """保存人工審查標註；標註只影響呈現，不是 gate。"""
 
     status: str
     path_glob: str
     symbol: str
+    symbol_kind: str
     category: str
     reason: str
     must_not_add: tuple[str, ...] = ()
@@ -170,6 +238,7 @@ class ReviewAnnotation:
             "status": self.status,
             "path_glob": self.path_glob,
             "symbol": self.symbol,
+            "symbol_kind": self.symbol_kind,
             "category": self.category,
             "reason": self.reason,
             "must_not_add": list(self.must_not_add),
@@ -192,6 +261,7 @@ class ComplexityReport:
     paths: tuple[Path, ...]
     source_files: tuple[FileMetric, ...]
     functions: tuple[FunctionMetric, ...]
+    classes: tuple[ClassMetric, ...]
     analysis_errors: tuple[AnalysisError, ...]
     excluded_file_count: int
     annotations: tuple[ReviewAnnotation, ...]
@@ -206,6 +276,7 @@ class ComplexityReport:
                 "paths": [path.as_posix() for path in self.paths],
                 "source_file_count": len(self.source_files),
                 "function_count": len(self.functions),
+                "class_count": len(self.classes),
                 "analysis_error_count": len(self.analysis_errors),
                 "excluded_file_count": self.excluded_file_count,
                 "annotation_count": len(self.annotations),
@@ -249,6 +320,14 @@ class ComplexityReport:
                     top=top,
                 )
             ],
+            "known_large_classes": [
+                _annotated_class_json(metric, annotation)
+                for metric, annotation in known_large_classes(
+                    self.classes,
+                    self.annotations,
+                    top=top,
+                )
+            ],
             "known_large_files": [
                 _annotated_file_json(metric, annotation)
                 for metric, annotation in known_large_files(
@@ -261,6 +340,14 @@ class ComplexityReport:
                 _annotated_function_json(metric, annotation)
                 for metric, annotation in watchlist_functions(
                     self.functions,
+                    self.annotations,
+                    top=top,
+                )
+            ],
+            "watchlist_classes": [
+                _annotated_class_json(metric, annotation)
+                for metric, annotation in watchlist_classes(
+                    self.classes,
                     self.annotations,
                     top=top,
                 )
@@ -290,8 +377,10 @@ def collect_report(
 
     input_paths = tuple(paths)
     normalized_paths = tuple(_report_path_for_path(path) for path in input_paths)
+    loaded_annotations = tuple(annotations)
     source_files: list[FileMetric] = []
     functions: list[FunctionMetric] = []
+    classes: list[ClassMetric] = []
     analysis_errors: list[AnalysisError] = []
     excluded_file_count = 0
     for source_path in iter_source_files(
@@ -302,20 +391,28 @@ def collect_report(
         if source_path is None:
             excluded_file_count += 1
             continue
-        file_metric, file_functions, error = analyze_source_file(source_path)
+        file_metric, file_functions, file_classes, error = analyze_source_file(source_path)
         if file_metric is not None:
             source_files.append(file_metric)
         functions.extend(file_functions)
+        classes.extend(file_classes)
         if error is not None:
             analysis_errors.append(error)
+    runtime_annotation_warnings = _annotation_runtime_warnings(
+        annotations=loaded_annotations,
+        source_files=source_files,
+        functions=functions,
+        classes=classes,
+    )
     return ComplexityReport(
         paths=normalized_paths,
         source_files=tuple(source_files),
         functions=tuple(functions),
+        classes=tuple(classes),
         analysis_errors=tuple(analysis_errors),
         excluded_file_count=excluded_file_count,
-        annotations=tuple(annotations),
-        annotation_warnings=tuple(annotation_warnings),
+        annotations=loaded_annotations,
+        annotation_warnings=(*tuple(annotation_warnings), *runtime_annotation_warnings),
     )
 
 
@@ -342,7 +439,12 @@ def iter_source_files(
 
 def analyze_source_file(
     source_path: SourcePath,
-) -> tuple[FileMetric | None, tuple[FunctionMetric, ...], AnalysisError | None]:
+) -> tuple[
+    FileMetric | None,
+    tuple[FunctionMetric, ...],
+    tuple[ClassMetric, ...],
+    AnalysisError | None,
+]:
     """分析單一 source 檔案；Python / JS 函式指標交由 Lizard。"""
 
     actual_path = source_path.actual_path
@@ -350,15 +452,21 @@ def analyze_source_file(
     try:
         text = actual_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        return None, (), AnalysisError(path=report_path, message=f"utf8_decode_error:{exc}")
+        return (
+            None,
+            (),
+            (),
+            AnalysisError(path=report_path, message=f"utf8_decode_error:{exc}"),
+        )
     except OSError as exc:
-        return None, (), AnalysisError(path=report_path, message=f"read_error:{exc}")
+        return None, (), (), AnalysisError(path=report_path, message=f"read_error:{exc}")
 
     lines = text.splitlines()
     language = _language_for_path(actual_path)
     functions: tuple[FunctionMetric, ...] = ()
     file_nloc = _estimated_code_line_count(lines, language=language)
     error: AnalysisError | None = None
+    class_ranges = _class_ranges_for_source(text, language=language)
     if actual_path.suffix.casefold() in LIZARD_EXTENSIONS:
         try:
             file_info = lizard.analyze_file(str(actual_path))
@@ -367,9 +475,18 @@ def analyze_source_file(
         else:
             file_nloc = int(getattr(file_info, "nloc", file_nloc) or 0)
             functions = tuple(
-                _function_metric_from_lizard(report_path, language, function_info)
+                _function_metric_from_lizard(
+                    report_path,
+                    language,
+                    function_info,
+                    class_ranges=class_ranges,
+                )
                 for function_info in getattr(file_info, "function_list", ())
             )
+    class_metrics = tuple(
+        _class_metric_from_range(report_path, language, class_range, functions)
+        for class_range in class_ranges
+    )
 
     file_metric = FileMetric(
         path=report_path,
@@ -382,13 +499,15 @@ def analyze_source_file(
         max_function_nloc=max((function.nloc for function in functions), default=0),
         max_token_count=max((function.token_count for function in functions), default=0),
     )
-    return file_metric, functions, error
+    return file_metric, functions, class_metrics, error
 
 
 def _function_metric_from_lizard(
     path: Path,
     language: str,
     function_info: object,
+    *,
+    class_ranges: Sequence[ClassRange] = (),
 ) -> FunctionMetric:
     """將 Lizard FunctionInfo 轉成 repo 穩定 report model。"""
 
@@ -405,7 +524,90 @@ def _function_metric_from_lizard(
         ccn=int(getattr(function_info, "cyclomatic_complexity", 0) or 0),
         token_count=int(getattr(function_info, "token_count", 0) or 0),
         parameter_count=int(getattr(function_info, "parameter_count", 0) or 0),
+        owner_class=_owner_class_for_line(class_ranges, start_line),
     )
+
+
+def _class_metric_from_range(
+    path: Path,
+    language: str,
+    class_range: ClassRange,
+    functions: Sequence[FunctionMetric],
+) -> ClassMetric:
+    """將 Python class range 與其 member functions 合併成 class report row。"""
+
+    member_functions = [
+        metric
+        for metric in functions
+        if metric.owner_class == class_range.qualified_name
+        or metric.owner_class.startswith(f"{class_range.qualified_name}.")
+    ]
+    return ClassMetric(
+        path=path,
+        language=language,
+        name=class_range.name,
+        long_name=class_range.qualified_name,
+        start_line=class_range.start_line,
+        end_line=class_range.end_line,
+        method_count=len(member_functions),
+        nloc=sum(metric.nloc for metric in member_functions),
+        max_ccn=max((metric.ccn for metric in member_functions), default=0),
+        max_function_nloc=max(
+            (metric.nloc for metric in member_functions),
+            default=0,
+        ),
+    )
+
+
+def _class_ranges_for_source(text: str, *, language: str) -> tuple[ClassRange, ...]:
+    """回傳 Python source 中的 class line ranges；其他語言先交給 Lizard 名稱。"""
+
+    if language != "python":
+        return ()
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return ()
+    ranges: list[ClassRange] = []
+    _append_python_class_ranges(module.body, ranges, parent_name="")
+    return tuple(ranges)
+
+
+def _append_python_class_ranges(
+    nodes: Sequence[ast.stmt],
+    ranges: list[ClassRange],
+    *,
+    parent_name: str,
+) -> None:
+    """遞迴收集 Python class ranges，保留 nested class 的 qualified name。"""
+
+    for node in nodes:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        qualified_name = f"{parent_name}.{node.name}" if parent_name else node.name
+        ranges.append(
+            ClassRange(
+                name=node.name,
+                qualified_name=qualified_name,
+                start_line=int(getattr(node, "lineno", 0) or 0),
+                end_line=int(getattr(node, "end_lineno", getattr(node, "lineno", 0)) or 0),
+            )
+        )
+        _append_python_class_ranges(node.body, ranges, parent_name=qualified_name)
+
+
+def _owner_class_for_line(class_ranges: Sequence[ClassRange], line: int) -> str:
+    """回傳包含指定 line 的最內層 class qualified name。"""
+
+    matches = [
+        class_range
+        for class_range in class_ranges
+        if class_range.start_line <= line <= class_range.end_line
+    ]
+    if not matches:
+        return ""
+    owner = max(matches, key=lambda class_range: class_range.start_line)
+    return owner.qualified_name
 
 
 def top_functions_by_ccn(
@@ -528,6 +730,7 @@ def _render_text_report(
             "summary: "
             f"source_files={len(report.source_files)} "
             f"functions={len(report.functions)} "
+            f"classes={len(report.classes)} "
             f"analysis_errors={len(report.analysis_errors)} "
             f"excluded_files={report.excluded_file_count} "
             f"annotations={len(report.annotations)} "
@@ -581,6 +784,7 @@ def _render_text_report(
     lines.extend(
         _render_known_large_text(
             known_large_functions(report.functions, report.annotations, top=top),
+            known_large_classes(report.classes, report.annotations, top=top),
             known_large_files(report.source_files, report.annotations, top=top),
         )
     )
@@ -588,6 +792,7 @@ def _render_text_report(
     lines.extend(
         _render_watchlist_text(
             watchlist_functions(report.functions, report.annotations, top=top),
+            watchlist_classes(report.classes, report.annotations, top=top),
             watchlist_files(report.source_files, report.annotations, top=top),
         )
     )
@@ -644,24 +849,40 @@ def _render_file_table_text(metrics: Sequence[FileMetric]) -> list[str]:
 
 def _render_known_large_text(
     functions: Sequence[tuple[FunctionMetric, ReviewAnnotation]],
+    classes: Sequence[tuple[ClassMetric, ReviewAnnotation]],
     files: Sequence[tuple[FileMetric, ReviewAnnotation]],
 ) -> list[str]:
     """輸出 known-large 摘要，避免主排名被已審查項目佔滿。"""
 
     lines = ["Known-large annotations"]
-    if not functions and not files:
+    if not functions and not classes and not files:
         lines.append("No known-large entries matched the scanned paths.")
         return lines
+    if classes:
+        lines.append("classes:")
+        lines.append(
+            "rank  path:line  lang  lines  methods  max_ccn  class  category  reason  governance"
+        )
+        for rank, (class_metric, annotation) in enumerate(classes, start=1):
+            lines.append(
+                f"{rank:>4}  {class_metric.display_path}:{class_metric.start_line}  "
+                f"{class_metric.language:<6}  {class_metric.line_count:>5}  "
+                f"{class_metric.method_count:>7}  {class_metric.max_ccn:>7}  "
+                f"{class_metric.display_name}  {annotation.category}  "
+                f"{annotation.reason}  "
+                f"{_annotation_governance_text(annotation)}"
+            )
     if functions:
         lines.append("functions:")
         lines.append(
             "rank  path:line  lang  ccn  nloc  function  category  reason  governance"
         )
-        for rank, (metric, annotation) in enumerate(functions, start=1):
+        for rank, (function_metric, annotation) in enumerate(functions, start=1):
             lines.append(
-                f"{rank:>4}  {metric.display_path}:{metric.start_line}  "
-                f"{metric.language:<6}  {metric.ccn:>3}  {metric.nloc:>4}  "
-                f"{metric.display_name}  {annotation.category}  {annotation.reason}  "
+                f"{rank:>4}  {function_metric.display_path}:{function_metric.start_line}  "
+                f"{function_metric.language:<6}  {function_metric.ccn:>3}  "
+                f"{function_metric.nloc:>4}  {function_metric.display_name}  "
+                f"{annotation.category}  {annotation.reason}  "
                 f"{_annotation_governance_text(annotation)}"
             )
     if files:
@@ -678,24 +899,40 @@ def _render_known_large_text(
 
 def _render_watchlist_text(
     functions: Sequence[tuple[FunctionMetric, ReviewAnnotation]],
+    classes: Sequence[tuple[ClassMetric, ReviewAnnotation]],
     files: Sequence[tuple[FileMetric, ReviewAnnotation]],
 ) -> list[str]:
     """輸出人工 watchlist 摘要。"""
 
     lines = ["Watchlist annotations"]
-    if not functions and not files:
+    if not functions and not classes and not files:
         lines.append("No watchlist entries matched the scanned paths.")
         return lines
+    if classes:
+        lines.append("classes:")
+        lines.append(
+            "rank  path:line  lang  lines  methods  max_ccn  class  category  reason  governance"
+        )
+        for rank, (class_metric, annotation) in enumerate(classes, start=1):
+            lines.append(
+                f"{rank:>4}  {class_metric.display_path}:{class_metric.start_line}  "
+                f"{class_metric.language:<6}  {class_metric.line_count:>5}  "
+                f"{class_metric.method_count:>7}  {class_metric.max_ccn:>7}  "
+                f"{class_metric.display_name}  {annotation.category}  "
+                f"{annotation.reason}  "
+                f"{_annotation_governance_text(annotation)}"
+            )
     if functions:
         lines.append("functions:")
         lines.append(
             "rank  path:line  lang  ccn  nloc  function  category  reason  governance"
         )
-        for rank, (metric, annotation) in enumerate(functions, start=1):
+        for rank, (function_metric, annotation) in enumerate(functions, start=1):
             lines.append(
-                f"{rank:>4}  {metric.display_path}:{metric.start_line}  "
-                f"{metric.language:<6}  {metric.ccn:>3}  {metric.nloc:>4}  "
-                f"{metric.display_name}  {annotation.category}  {annotation.reason}  "
+                f"{rank:>4}  {function_metric.display_path}:{function_metric.start_line}  "
+                f"{function_metric.language:<6}  {function_metric.ccn:>3}  "
+                f"{function_metric.nloc:>4}  {function_metric.display_name}  "
+                f"{annotation.category}  {annotation.reason}  "
                 f"{_annotation_governance_text(annotation)}"
             )
     if files:
@@ -722,6 +959,7 @@ def _render_markdown_report(
         f"- Scanned paths: `{', '.join(path.as_posix() for path in report.paths)}`",
         f"- Source files: `{len(report.source_files)}`",
         f"- Functions: `{len(report.functions)}`",
+        f"- Classes: `{len(report.classes)}`",
         f"- Analysis errors: `{len(report.analysis_errors)}`",
         f"- Excluded files: `{report.excluded_file_count}`",
         f"- Annotations: `{len(report.annotations)}`",
@@ -773,6 +1011,7 @@ def _render_markdown_report(
     lines.extend(
         _render_known_large_markdown(
             known_large_functions(report.functions, report.annotations, top=top),
+            known_large_classes(report.classes, report.annotations, top=top),
             known_large_files(report.source_files, report.annotations, top=top),
         )
     )
@@ -780,6 +1019,7 @@ def _render_markdown_report(
     lines.extend(
         _render_watchlist_markdown(
             watchlist_functions(report.functions, report.annotations, top=top),
+            watchlist_classes(report.classes, report.annotations, top=top),
             watchlist_files(report.source_files, report.annotations, top=top),
         )
     )
@@ -849,15 +1089,35 @@ def _render_file_table_markdown(
 
 def _render_known_large_markdown(
     functions: Sequence[tuple[FunctionMetric, ReviewAnnotation]],
+    classes: Sequence[tuple[ClassMetric, ReviewAnnotation]],
     files: Sequence[tuple[FileMetric, ReviewAnnotation]],
 ) -> list[str]:
     """輸出 markdown known-large 摘要。"""
 
     lines = ["## Known-Large Annotations", ""]
-    if not functions and not files:
+    if not functions and not classes and not files:
         lines.append("No known-large entries matched the scanned paths.")
         return lines
+    if classes:
+        lines.extend(
+            [
+                "### Classes",
+                "",
+                "| Rank | Location | Language | Lines | Methods | Max CCN | Class | Category | Reason | Governance |",
+                "|---:|---|---|---:|---:|---:|---|---|---|---|",
+            ]
+        )
+        for rank, (class_metric, annotation) in enumerate(classes, start=1):
+            lines.append(
+                f"| {rank} | `{class_metric.display_path}:{class_metric.start_line}` | "
+                f"{class_metric.language} | {class_metric.line_count} | "
+                f"{class_metric.method_count} | {class_metric.max_ccn} | "
+                f"`{class_metric.display_name}` | {annotation.category} | "
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
+            )
     if functions:
+        if classes:
+            lines.append("")
         lines.extend(
             [
                 "### Functions",
@@ -866,15 +1126,16 @@ def _render_known_large_markdown(
                 "|---:|---|---|---:|---:|---|---|---|---|",
             ]
         )
-        for rank, (metric, annotation) in enumerate(functions, start=1):
+        for rank, (function_metric, annotation) in enumerate(functions, start=1):
             lines.append(
-                f"| {rank} | `{metric.display_path}:{metric.start_line}` | "
-                f"{metric.language} | {metric.ccn} | {metric.nloc} | "
-                f"`{metric.display_name}` | {annotation.category} | "
+                f"| {rank} | `{function_metric.display_path}:{function_metric.start_line}` | "
+                f"{function_metric.language} | {function_metric.ccn} | "
+                f"{function_metric.nloc} | `{function_metric.display_name}` | "
+                f"{annotation.category} | "
                 f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     if files:
-        if functions:
+        if functions or classes:
             lines.append("")
         lines.extend(
             [
@@ -895,15 +1156,35 @@ def _render_known_large_markdown(
 
 def _render_watchlist_markdown(
     functions: Sequence[tuple[FunctionMetric, ReviewAnnotation]],
+    classes: Sequence[tuple[ClassMetric, ReviewAnnotation]],
     files: Sequence[tuple[FileMetric, ReviewAnnotation]],
 ) -> list[str]:
     """輸出 markdown watchlist 摘要。"""
 
     lines = ["## Watchlist Annotations", ""]
-    if not functions and not files:
+    if not functions and not classes and not files:
         lines.append("No watchlist entries matched the scanned paths.")
         return lines
+    if classes:
+        lines.extend(
+            [
+                "### Classes",
+                "",
+                "| Rank | Location | Language | Lines | Methods | Max CCN | Class | Category | Reason | Governance |",
+                "|---:|---|---|---:|---:|---:|---|---|---|---|",
+            ]
+        )
+        for rank, (class_metric, annotation) in enumerate(classes, start=1):
+            lines.append(
+                f"| {rank} | `{class_metric.display_path}:{class_metric.start_line}` | "
+                f"{class_metric.language} | {class_metric.line_count} | "
+                f"{class_metric.method_count} | {class_metric.max_ccn} | "
+                f"`{class_metric.display_name}` | {annotation.category} | "
+                f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
+            )
     if functions:
+        if classes:
+            lines.append("")
         lines.extend(
             [
                 "### Functions",
@@ -912,15 +1193,16 @@ def _render_watchlist_markdown(
                 "|---:|---|---|---:|---:|---|---|---|---|",
             ]
         )
-        for rank, (metric, annotation) in enumerate(functions, start=1):
+        for rank, (function_metric, annotation) in enumerate(functions, start=1):
             lines.append(
-                f"| {rank} | `{metric.display_path}:{metric.start_line}` | "
-                f"{metric.language} | {metric.ccn} | {metric.nloc} | "
-                f"`{metric.display_name}` | {annotation.category} | "
+                f"| {rank} | `{function_metric.display_path}:{function_metric.start_line}` | "
+                f"{function_metric.language} | {function_metric.ccn} | "
+                f"{function_metric.nloc} | `{function_metric.display_name}` | "
+                f"{annotation.category} | "
                 f"{annotation.reason} | {_annotation_governance_markdown(annotation)} |"
             )
     if files:
-        if functions:
+        if functions or classes:
             lines.append("")
         lines.extend(
             [
@@ -1007,6 +1289,32 @@ def known_large_files(
     )[:top]
 
 
+def known_large_classes(
+    classes: Sequence[ClassMetric],
+    annotations: Sequence[ReviewAnnotation],
+    *,
+    top: int,
+) -> list[tuple[ClassMetric, ReviewAnnotation]]:
+    """回傳符合 known-large class annotation 的 class 排名。"""
+
+    rows = [
+        (metric, annotation)
+        for metric in classes
+        if (annotation := _annotation_for_class(metric, annotations)) is not None
+        and annotation.status == "known_large"
+    ]
+    return sorted(
+        rows,
+        key=lambda row: (
+            row[0].line_count,
+            row[0].nloc,
+            row[0].max_ccn,
+            row[0].display_path,
+        ),
+        reverse=True,
+    )[:top]
+
+
 def watchlist_functions(
     functions: Sequence[FunctionMetric],
     annotations: Sequence[ReviewAnnotation],
@@ -1027,6 +1335,32 @@ def watchlist_functions(
             row[0].ccn,
             row[0].nloc,
             row[0].token_count,
+            row[0].display_path,
+        ),
+        reverse=True,
+    )[:top]
+
+
+def watchlist_classes(
+    classes: Sequence[ClassMetric],
+    annotations: Sequence[ReviewAnnotation],
+    *,
+    top: int,
+) -> list[tuple[ClassMetric, ReviewAnnotation]]:
+    """回傳符合 watchlist class annotation 的 class 排名。"""
+
+    rows = [
+        (metric, annotation)
+        for metric in classes
+        if (annotation := _annotation_for_class(metric, annotations)) is not None
+        and annotation.status == "watchlist"
+    ]
+    return sorted(
+        rows,
+        key=lambda row: (
+            row[0].line_count,
+            row[0].nloc,
+            row[0].max_ccn,
             row[0].display_path,
         ),
         reverse=True,
@@ -1093,7 +1427,10 @@ def _is_known_large_function(
     annotations: Sequence[ReviewAnnotation],
 ) -> bool:
     annotation = _annotation_for_function(metric, annotations)
-    return annotation is not None and annotation.status == "known_large"
+    if annotation is not None and annotation.status == "known_large":
+        return True
+    class_annotation = _annotation_for_function_owner_class(metric, annotations)
+    return class_annotation is not None and class_annotation.status == "known_large"
 
 
 def _is_known_large_file(
@@ -1109,15 +1446,40 @@ def _annotation_for_function(
     annotations: Sequence[ReviewAnnotation],
 ) -> ReviewAnnotation | None:
     for annotation in annotations:
-        if annotation.symbol:
-            if not (
-                metric.name == annotation.symbol
-                or metric.long_name == annotation.symbol
-                or metric.long_name.startswith(f"{annotation.symbol}(")
-                or metric.long_name.startswith(f"{annotation.symbol} ")
-                or metric.long_name.endswith(f".{annotation.symbol}")
-            ):
-                continue
+        if annotation.symbol_kind == "class":
+            continue
+        if annotation.symbol and not _function_symbol_matches(metric, annotation.symbol):
+            continue
+        if _path_matches_annotation(metric.path, annotation):
+            return annotation
+    return None
+
+
+def _annotation_for_class(
+    metric: ClassMetric,
+    annotations: Sequence[ReviewAnnotation],
+) -> ReviewAnnotation | None:
+    for annotation in annotations:
+        if annotation.symbol_kind != "class":
+            continue
+        if not _class_symbol_matches(metric, annotation.symbol):
+            continue
+        if _path_matches_annotation(metric.path, annotation):
+            return annotation
+    return None
+
+
+def _annotation_for_function_owner_class(
+    metric: FunctionMetric,
+    annotations: Sequence[ReviewAnnotation],
+) -> ReviewAnnotation | None:
+    for annotation in annotations:
+        if annotation.symbol_kind != "class":
+            continue
+        if not metric.owner_class:
+            continue
+        if not _class_name_matches(metric.owner_class, annotation.symbol):
+            continue
         if _path_matches_annotation(metric.path, annotation):
             return annotation
     return None
@@ -1128,11 +1490,38 @@ def _annotation_for_file(
     annotations: Sequence[ReviewAnnotation],
 ) -> ReviewAnnotation | None:
     for annotation in annotations:
-        if annotation.symbol:
+        if annotation.symbol_kind != "file":
             continue
         if _path_matches_annotation(metric.path, annotation):
             return annotation
     return None
+
+
+def _function_symbol_matches(metric: FunctionMetric, symbol: str) -> bool:
+    """比對 function-level annotation；保留舊 long_name/suffix 命中規則。"""
+
+    return (
+        metric.name == symbol
+        or metric.long_name == symbol
+        or metric.long_name.startswith(f"{symbol}(")
+        or metric.long_name.startswith(f"{symbol} ")
+        or metric.long_name.endswith(f".{symbol}")
+    )
+
+
+def _class_symbol_matches(metric: ClassMetric, symbol: str) -> bool:
+    """比對 class-level annotation 的 class 名稱。"""
+
+    return _class_name_matches(metric.name, symbol) or _class_name_matches(
+        metric.long_name,
+        symbol,
+    )
+
+
+def _class_name_matches(name: str, symbol: str) -> bool:
+    """支援 simple class name 與 dotted qualified class name。"""
+
+    return name == symbol or name.endswith(f".{symbol}")
 
 
 def _path_matches_annotation(path: Path, annotation: ReviewAnnotation) -> bool:
@@ -1148,6 +1537,15 @@ def _annotated_function_json(
     return payload
 
 
+def _annotated_class_json(
+    metric: ClassMetric,
+    annotation: ReviewAnnotation,
+) -> dict[str, object]:
+    payload = metric.to_json()
+    payload["annotation"] = annotation.to_json()
+    return payload
+
+
 def _annotated_file_json(
     metric: FileMetric,
     annotation: ReviewAnnotation,
@@ -1155,6 +1553,49 @@ def _annotated_file_json(
     payload = metric.to_json()
     payload["annotation"] = annotation.to_json()
     return payload
+
+
+def _annotation_runtime_warnings(
+    *,
+    annotations: Sequence[ReviewAnnotation],
+    source_files: Sequence[FileMetric],
+    functions: Sequence[FunctionMetric],
+    classes: Sequence[ClassMetric],
+) -> tuple[str, ...]:
+    """找出 path 在本次掃描範圍內、但 symbol 無法命中的 annotation。"""
+
+    warnings: list[str] = []
+    for annotation in annotations:
+        if annotation.symbol_kind == "file":
+            continue
+        matching_files = [
+            metric
+            for metric in source_files
+            if _path_matches_annotation(metric.path, annotation)
+        ]
+        if not matching_files:
+            continue
+        if annotation.symbol_kind == "function":
+            matched = any(
+                _path_matches_annotation(metric.path, annotation)
+                and _function_symbol_matches(metric, annotation.symbol)
+                for metric in functions
+            )
+        else:
+            matched = any(
+                _path_matches_annotation(metric.path, annotation)
+                and _class_symbol_matches(metric, annotation.symbol)
+                for metric in classes
+            )
+        if not matched:
+            warnings.append(
+                (
+                    f"{annotation.status}: {annotation.symbol_kind} symbol "
+                    f"{annotation.symbol!r} did not match scanned path "
+                    f"{annotation.path_glob!r}"
+                )
+            )
+    return tuple(warnings)
 
 
 def load_annotations(path: Path | None) -> tuple[ReviewAnnotation, ...]:
@@ -1256,11 +1697,26 @@ def _annotation_from_payload(
     path_glob = str(payload.get("path_glob") or "")
     if not path_glob:
         return None, f"{source}: missing path_glob"
+    symbol = str(payload.get("symbol") or "")
+    symbol_kind = _annotation_symbol_kind(payload.get("symbol_kind"), symbol=symbol)
+    if symbol_kind is None:
+        return (
+            None,
+            (
+                f"{source}: unsupported symbol_kind={payload.get('symbol_kind')!r}; "
+                f"allowed={sorted(ALLOWED_SYMBOL_KINDS)}"
+            ),
+        )
+    if symbol_kind == "file" and symbol:
+        return None, f"{source}: file annotation must not define symbol"
+    if symbol_kind in {"function", "class"} and not symbol:
+        return None, f"{source}: {symbol_kind} annotation requires symbol"
     return (
         ReviewAnnotation(
             status=status,
             path_glob=path_glob,
-            symbol=str(payload.get("symbol") or ""),
+            symbol=symbol,
+            symbol_kind=symbol_kind,
             category=str(payload.get("category") or ""),
             reason=str(payload.get("reason") or ""),
             must_not_add=_annotation_string_list(payload.get("must_not_add")),
@@ -1268,6 +1724,15 @@ def _annotation_from_payload(
         ),
         None,
     )
+
+
+def _annotation_symbol_kind(value: object, *, symbol: str) -> str | None:
+    """解析 annotation symbol kind；舊資料依是否有 symbol 自動推斷。"""
+
+    if value is None or value == "":
+        return "function" if symbol else "file"
+    symbol_kind = str(value)
+    return symbol_kind if symbol_kind in ALLOWED_SYMBOL_KINDS else None
 
 
 def _annotation_string_list(value: object) -> tuple[str, ...]:

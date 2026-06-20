@@ -9,9 +9,11 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.webapp.scan_diagnostics_text import build_completed_scan_diagnostics_text
-from facebook_monitor.webapp.scan_diagnostics_text import build_empty_scan_diagnostics_text
-from facebook_monitor.webapp.scan_diagnostics_text import ScanDiagnosticsTextContext
+from facebook_monitor.webapp.scan_diagnostics_text import (
+    ScanDiagnosticsTextContext,
+    build_completed_scan_diagnostics_text,
+    build_empty_scan_diagnostics_text,
+)
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_failure_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_stop_reason
 

@@ -8,8 +8,6 @@ from facebook_monitor.core.models import CoverImageRefreshRequestStatus
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.worker.resident_maintenance_eligibility import (
     filter_maintenance_cover_refresh_states,
-)
-from facebook_monitor.worker.resident_maintenance_eligibility import (
     filter_maintenance_refresh_target_ids,
 )
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
@@ -17,6 +15,9 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 COVER_IMAGE_REFRESH_TARGET_LIMIT_PER_TICK = (
     PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_refresh_target_limit_per_tick
+)
+COVER_IMAGE_LOAD_FAILURE_MIN_INTERVAL_SECONDS = (
+    PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
 )
 
 
@@ -49,9 +50,7 @@ def queue_polluted_cover_image_refresh_candidates(options: ResidentRuntimeOption
                 result = cover_refresh.request_refresh_for_current_url(
                     target.id,
                     reported_url=target.group_cover_image_url,
-                    min_interval_seconds=(
-                        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.cover_image_load_failure_min_interval_seconds
-                    ),
+                    min_interval_seconds=COVER_IMAGE_LOAD_FAILURE_MIN_INTERVAL_SECONDS,
                 )
                 if result.status == CoverImageRefreshRequestStatus.QUEUED:
                     queued_count += 1

@@ -52,6 +52,12 @@ def append_runtime_state_lines(
 ) -> None:
     """附加完整 runtime state diagnostics。"""
 
+    last_page_reloaded_at = format_optional_datetime_for_ui(
+        runtime_state.last_page_reloaded_at
+    )
+    last_enqueued_at = format_optional_datetime_for_ui(runtime_state.last_enqueued_at)
+    last_started_at = format_optional_datetime_for_ui(runtime_state.last_started_at)
+    last_finished_at = format_optional_datetime_for_ui(runtime_state.last_finished_at)
     lines.extend(
         [
             f"runtime_status={runtime_state.runtime_status.value}",
@@ -59,11 +65,11 @@ def append_runtime_state_lines(
             f"running={runtime_state.running}",
             f"active_worker_id={runtime_state.active_worker_id or '(none)'}",
             f"active_page_id={runtime_state.active_page_id or '(none)'}",
-            f"last_page_reloaded_at={format_optional_datetime_for_ui(runtime_state.last_page_reloaded_at)}",
+            f"last_page_reloaded_at={last_page_reloaded_at}",
             f"enqueue_reason={runtime_state.enqueue_reason or '(none)'}",
-            f"last_enqueued_at={format_optional_datetime_for_ui(runtime_state.last_enqueued_at)}",
-            f"last_started_at={format_optional_datetime_for_ui(runtime_state.last_started_at)}",
-            f"last_finished_at={format_optional_datetime_for_ui(runtime_state.last_finished_at)}",
+            f"last_enqueued_at={last_enqueued_at}",
+            f"last_started_at={last_started_at}",
+            f"last_finished_at={last_finished_at}",
             f"scan_guard_count={runtime_state.scan_guard_count}",
             "last_skip_reason="
             + (
@@ -89,13 +95,16 @@ def format_outbox_summary_line(summary: NotificationOutboxSummary | None) -> str
 
     if summary is None:
         return "outbox=(unavailable)"
+    oldest_pending_at = format_optional_datetime_for_ui(
+        summary.oldest_pending_updated_at
+    )
     return (
         "outbox="
         f"pending:{summary.pending_count},"
         f"processing:{summary.processing_count},"
         f"failed:{summary.failed_count},"
         f"terminal:{summary.terminal_count},"
-        f"oldest_pending:{format_optional_datetime_for_ui(summary.oldest_pending_updated_at)},"
+        f"oldest_pending:{oldest_pending_at},"
         f"max_attempts:{summary.max_attempts}"
     )
 
@@ -109,22 +118,23 @@ def append_scan_result_lines(
 ) -> None:
     """附加 scan result diagnostics，保留 failed-only 欄位與 fallback 文案。"""
 
+    scan_failed = scan.status == ScanStatus.FAILED
     scan_lines = [
         f"scan_status={scan.status.value}",
         f"failure_reason={format_scan_failure_reason(str(metadata.get('reason') or ''))}"
-        if scan.status == ScanStatus.FAILED
+        if scan_failed
         else "",
         f"retryable={metadata.get('retryable', '(unknown)')}"
-        if scan.status == ScanStatus.FAILED
+        if scan_failed
         else "",
         f"runtime_action={metadata.get('runtime_action', '(unknown)')}"
-        if scan.status == ScanStatus.FAILED
+        if scan_failed
         else "",
         f"retry_streak={metadata.get('retry_streak', '(none)')}"
-        if scan.status == ScanStatus.FAILED
+        if scan_failed
         else "",
         f"retry_limit={metadata.get('retry_limit', '(none)')}"
-        if scan.status == ScanStatus.FAILED
+        if scan_failed
         else "",
         f"finished_at={format_datetime_for_ui(scan.finished_at)}",
         f"item_count={scan.item_count}",
@@ -180,4 +190,9 @@ def append_metadata_json_line(
 ) -> None:
     """附加完整 scan metadata JSON；此行必須維持最後一行。"""
 
-    lines.append("metadata_json=" + json.dumps(metadata, ensure_ascii=False, sort_keys=True))
+    metadata_json = json.dumps(
+        metadata,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    lines.append("metadata_json=" + metadata_json)

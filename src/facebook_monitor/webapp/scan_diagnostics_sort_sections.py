@@ -52,10 +52,12 @@ def append_sort_diagnostics_block(
     )
     menu_candidate_texts = value.get("menu_candidate_texts")
     if menu_candidate_texts:
-        lines.append(f"menu_candidate_texts={format_diagnostic_value(menu_candidate_texts)}")
+        menu_candidate_text = format_diagnostic_value(menu_candidate_texts)
+        lines.append(f"menu_candidate_texts={menu_candidate_text}")
     for key in _SORT_DIAGNOSTIC_KEYS:
         if key not in value:
             continue
         if is_empty_diagnostic_value(value[key]):
             continue
-        lines.append(f"{key}={format_diagnostic_value(value[key])}")
+        formatted_value = format_diagnostic_value(value[key])
+        lines.append(f"{key}={formatted_value}")

@@ -12,20 +12,22 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.webapp.scan_diagnostics_base_sections import (
     append_empty_runtime_status_line,
+    append_latest_failed_scan_lines,
+    append_metadata_json_line,
+    append_outbox_summary_line,
+    append_runtime_state_lines,
+    append_scan_result_lines,
+    append_target_identity_lines,
 )
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_latest_failed_scan_lines
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_metadata_json_line
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_outbox_summary_line
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_runtime_state_lines
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_scan_result_lines
-from facebook_monitor.webapp.scan_diagnostics_base_sections import append_target_identity_lines
-from facebook_monitor.webapp.scan_diagnostics_comments_sections import append_comments_meta
 from facebook_monitor.webapp.scan_diagnostics_comments_sections import (
+    append_comments_meta,
     format_comment_round_debug,
 )
 from facebook_monitor.webapp.scan_diagnostics_items import append_latest_scan_items
-from facebook_monitor.webapp.scan_diagnostics_posts_sections import append_collected_meta
-from facebook_monitor.webapp.scan_diagnostics_posts_sections import format_scan_round_debug
+from facebook_monitor.webapp.scan_diagnostics_posts_sections import (
+    append_collected_meta,
+    format_scan_round_debug,
+)
 from facebook_monitor.webapp.scan_diagnostics_round_sections import append_rounds
 from facebook_monitor.webapp.scan_diagnostics_sort_sections import (
     append_sort_diagnostics_block,

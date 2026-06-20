@@ -11,8 +11,10 @@ from scripts.admin.complexity_report import load_annotations_with_warnings
 from scripts.admin.complexity_report import main
 from scripts.admin.complexity_report import render_report
 from scripts.admin.complexity_report import ReviewAnnotation
+from scripts.admin.complexity_report import known_large_classes
 from scripts.admin.complexity_report import known_large_functions
 from scripts.admin.complexity_report import top_functions_by_ccn
+from scripts.admin.complexity_report import watchlist_classes
 
 
 def test_complexity_report_collects_all_functions_and_ranks(tmp_path: Path) -> None:
@@ -170,10 +172,11 @@ def test_complexity_report_json_output_is_stable(tmp_path: Path) -> None:
     report = collect_report([source], include_extensions=(".py",), exclude_globs=())
     payload = json.loads(render_report(report, top=3, format_name="json"))
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["summary"]["top"] == 3
     assert payload["summary"]["metric_source"] == "lizard"
     assert payload["summary"]["note"] == "ranking_only_review_hint"
+    assert payload["summary"]["class_count"] == 0
     assert payload["top_functions_by_ccn"][0]["name"] == "small"
     assert "token_count" in payload["top_functions_by_ccn"][0]
     assert "estimated_code_lines" in payload["top_files_by_lines"][0]
@@ -202,6 +205,7 @@ def test_complexity_report_normalizes_absolute_repo_paths_for_annotations() -> N
             status="known_large",
             path_glob="scripts/admin/complexity_report.py",
             symbol="main",
+            symbol_kind="function",
             category="fixture",
             reason="absolute path should still match relative annotation",
         ),
@@ -219,6 +223,169 @@ def test_complexity_report_normalizes_absolute_repo_paths_for_annotations() -> N
     assert {metric.path.as_posix() for metric in report.functions} == {
         "scripts/admin/complexity_report.py"
     }
+
+
+def test_complexity_report_class_symbol_annotation_matches_ast_owner(
+    tmp_path: Path,
+) -> None:
+    """class-level annotation 應靠 AST owner range 命中，不依賴 Lizard long_name。"""
+
+    source = tmp_path / "dashboard_models.py"
+    source.write_text(
+        "\n".join(
+            [
+                "class TargetRow:",
+                "    @property",
+                "    def status_label(self):",
+                "        return 'running'",
+                "",
+                "    def branchy(self, value):",
+                "        if value:",
+                "            return 'yes'",
+                "        return 'no'",
+                "",
+                "class OtherRow:",
+                "    def ignored(self):",
+                "        return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=source.resolve().as_posix(),
+            symbol="TargetRow",
+            symbol_kind="class",
+            category="fixture_class",
+            reason="class row should be reported once",
+        ),
+    )
+
+    report = collect_report(
+        [source],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+    rows = watchlist_classes(report.classes, report.annotations, top=10)
+    payload = json.loads(render_report(report, top=10, format_name="json"))
+    rendered_markdown = render_report(report, top=10, format_name="markdown")
+
+    assert report.annotation_warnings == ()
+    assert [metric.display_name for metric, _ in rows] == ["TargetRow"]
+    assert rows[0][0].method_count == 2
+    assert any(
+        item["name"] == "TargetRow"
+        for item in payload["watchlist_classes"]
+    )
+    assert "### Classes" in rendered_markdown
+    assert "TargetRow" in rendered_markdown
+
+
+def test_complexity_report_class_known_large_hides_member_functions(
+    tmp_path: Path,
+) -> None:
+    """class-level known-large 應預設隱藏 member functions，但保留 class 摘要。"""
+
+    source = tmp_path / "sample.py"
+    source.write_text(
+        "\n".join(
+            [
+                "class LegacyPresenter:",
+                "    def noisy(self, value):",
+                "        if value:",
+                "            return 1",
+                "        return 0",
+                "",
+                "def current_hotspot(value):",
+                "    if value:",
+                "        return 1",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="known_large",
+            path_glob=source.resolve().as_posix(),
+            symbol="LegacyPresenter",
+            symbol_kind="class",
+            category="fixture_class",
+            reason="hide class methods from primary ranking",
+        ),
+    )
+
+    report = collect_report(
+        [source],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+    ranked = top_functions_by_ccn(
+        report.functions,
+        top=10,
+        annotations=report.annotations,
+    )
+    ranked_with_known = top_functions_by_ccn(
+        report.functions,
+        top=10,
+        annotations=report.annotations,
+        include_known_large=True,
+    )
+    known_rows = known_large_classes(report.classes, report.annotations, top=10)
+
+    assert [metric.name for metric in ranked] == ["current_hotspot"]
+    assert {metric.name for metric in ranked_with_known} == {
+        "current_hotspot",
+        "noisy",
+    }
+    assert [metric.display_name for metric, _ in known_rows] == ["LegacyPresenter"]
+
+
+def test_complexity_report_symbol_warning_only_for_in_scope_scan(
+    tmp_path: Path,
+) -> None:
+    """只有 path_glob 命中本次掃描範圍時，symbol no-op 才應產生 warning。"""
+
+    source = tmp_path / "sample.py"
+    source.write_text(
+        "class PresentClass:\n    def current(self):\n        return 1\n",
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=source.resolve().as_posix(),
+            symbol="MissingClass",
+            symbol_kind="class",
+            category="fixture_class",
+            reason="missing class should warn",
+        ),
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=(tmp_path / "outside.py").resolve().as_posix(),
+            symbol="AlsoMissing",
+            symbol_kind="class",
+            category="fixture_class",
+            reason="out-of-scope class should not warn",
+        ),
+    )
+
+    report = collect_report(
+        [source],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+
+    assert report.annotation_warnings == (
+        (
+            "watchlist: class symbol 'MissingClass' did not match scanned path "
+            f"'{source.resolve().as_posix()}'"
+        ),
+    )
 
 
 def test_complexity_report_annotation_warnings_do_not_drop_valid_items(
@@ -261,6 +428,52 @@ def test_complexity_report_annotation_warnings_do_not_drop_valid_items(
     assert any("missing path_glob" in warning for warning in result.warnings)
 
 
+def test_complexity_report_rejects_invalid_symbol_kind(
+    tmp_path: Path,
+) -> None:
+    """symbol_kind 錯誤或缺少必要 symbol 時應明確 warning。"""
+
+    annotation_path = tmp_path / "annotations.json"
+    annotation_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "watchlist": [
+                    {
+                        "path_glob": "src/example.py",
+                        "symbol_kind": "class",
+                        "category": "fixture",
+                        "reason": "missing symbol",
+                    },
+                    {
+                        "path_glob": "src/example.py",
+                        "symbol": "Example",
+                        "symbol_kind": "file",
+                        "category": "fixture",
+                        "reason": "file annotation with symbol",
+                    },
+                    {
+                        "path_glob": "src/example.py",
+                        "symbol": "Example",
+                        "symbol_kind": "module",
+                        "category": "fixture",
+                        "reason": "invalid kind",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = load_annotations_with_warnings(annotation_path)
+
+    assert result.annotations == ()
+    assert len(result.warnings) == 3
+    assert any("class annotation requires symbol" in warning for warning in result.warnings)
+    assert any("file annotation must not define symbol" in warning for warning in result.warnings)
+    assert any("unsupported symbol_kind='module'" in warning for warning in result.warnings)
+
+
 def test_complexity_report_loads_annotation_governance_metadata(
     tmp_path: Path,
 ) -> None:
@@ -270,7 +483,7 @@ def test_complexity_report_loads_annotation_governance_metadata(
     annotation_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "watchlist": [
                     {
                         "path_glob": "src/example.py",
@@ -289,8 +502,10 @@ def test_complexity_report_loads_annotation_governance_metadata(
     annotation = result.annotations[0]
 
     assert result.warnings == ()
+    assert annotation.symbol_kind == "file"
     assert annotation.must_not_add == ("DB writes",)
     assert annotation.split_trigger == "new policy family"
+    assert annotation.to_json()["symbol_kind"] == "file"
     assert annotation.to_json()["must_not_add"] == ["DB writes"]
     assert annotation.to_json()["split_trigger"] == "new policy family"
 
@@ -316,15 +531,46 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     ]
     watchlist_paths = {annotation.path_glob for annotation in watchlist}
     all_paths = {annotation.path_glob for annotation in result.annotations}
+    class_symbols = {
+        annotation.symbol
+        for annotation in watchlist
+        if annotation.symbol_kind == "class"
+    }
 
-    assert len(known_large) == 9
-    assert len(watchlist) == 18
+    assert len(known_large) == 8
+    assert len(watchlist) == 22
+    assert "src/facebook_monitor/facebook/feed_extractor.py" not in {
+        annotation.path_glob for annotation in known_large
+    }
+    assert "src/facebook_monitor/facebook/feed_extractor.py" in watchlist_paths
     assert "src/facebook_monitor/updates/apply.py" in watchlist_paths
     assert "src/facebook_monitor/worker/scan_failure_finalize.py" in watchlist_paths
     assert (
         "src/facebook_monitor/persistence/repositories/notification_outbox.py"
         in watchlist_paths
     )
+    assert "src/facebook_monitor/webapp/scan_diagnostics_*.py" in watchlist_paths
+    assert "src/facebook_monitor/worker/resident_cover_image_*.py" in watchlist_paths
+    assert "src/facebook_monitor/worker/resident_maintenance_*.py" in watchlist_paths
+    assert {"TargetRow", "SidebarGroupSection"} <= class_symbols
     assert "src/facebook_monitor/webapp/templates/_target_card.html" not in all_paths
     assert "src/facebook_monitor/webapp/templates/_target_sidebar.html" not in all_paths
     assert "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js" not in all_paths
+
+
+def test_default_dashboard_model_class_annotations_match_report() -> None:
+    """正式 dashboard model class annotations 應實際出現在 watchlist class rows。"""
+
+    result = load_annotations_with_warnings(Path("docs/maintainability_annotations.json"))
+    report = collect_report(
+        [Path("src/facebook_monitor/webapp/dashboard_models.py")],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=result.annotations,
+        annotation_warnings=result.warnings,
+    )
+    rows = watchlist_classes(report.classes, report.annotations, top=20)
+    names = {metric.display_name for metric, _ in rows}
+
+    assert report.annotation_warnings == ()
+    assert {"TargetRow", "SidebarGroupSection"} <= names

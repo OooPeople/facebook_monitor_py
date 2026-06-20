@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "known_large": [
     {
       "path_glob": "src/facebook_monitor/persistence/migrations.py",
@@ -24,6 +24,7 @@
     {
       "path_glob": "scripts/admin/create_macos_app_launcher.py",
       "symbol": "_native_launcher_source",
+      "symbol_kind": "function",
       "category": "native_embedded_source",
       "reason": "內嵌 Objective-C launcher source；大型文字 payload 不代表 Python 控制流程複雜。",
       "must_not_add": [
@@ -46,17 +47,6 @@
       "path_glob": "src/facebook_monitor/facebook/comment_extractor.py",
       "category": "facebook_comment_extraction",
       "reason": "Facebook 留言 DOM extraction orchestration；外部脆弱區集中更利於審查。",
-      "must_not_add": [
-        "DB writes",
-        "notification behavior",
-        "runtime state transitions"
-      ],
-      "split_trigger": "新增 extraction source、diagnostics family 或 collection loop family"
-    },
-    {
-      "path_glob": "src/facebook_monitor/facebook/feed_extractor.py",
-      "category": "facebook_feed_extraction",
-      "reason": "Facebook feed DOM extraction orchestration；外部脆弱區集中更利於審查。",
       "must_not_add": [
         "DB writes",
         "notification behavior",
@@ -135,6 +125,7 @@
     {
       "path_glob": "src/facebook_monitor/worker/resident_main_executor_attempt.py",
       "symbol": "run_queue_item",
+      "symbol_kind": "function",
       "category": "resident_worker_state_machine",
       "reason": "formal resident attempt path；新增 failure、ownership 或 cleanup branch 前需審查。",
       "must_not_add": [
@@ -146,6 +137,7 @@
     {
       "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
       "symbol": "finalize_scan_items",
+      "symbol_kind": "function",
       "category": "scan_success_commit_transaction",
       "reason": "success scan commit transaction；影響 dedupe、history、latest scan 與 notification outbox。",
       "must_not_add": [
@@ -200,6 +192,17 @@
       "split_trigger": "新增獨立 dashboard read-model family"
     },
     {
+      "path_glob": "src/facebook_monitor/facebook/feed_extractor.py",
+      "category": "facebook_feed_extraction_entrypoint",
+      "reason": "Facebook feed DOM extraction orchestration 入口；已不再是 known_large，但仍需保護 extraction 與 DB/notification/runtime 邊界。",
+      "must_not_add": [
+        "DB writes",
+        "notification behavior",
+        "runtime state transitions"
+      ],
+      "split_trigger": "新增 extraction source、diagnostics family 或 collection loop family"
+    },
+    {
       "path_glob": "src/facebook_monitor/facebook/feed_extraction_*",
       "category": "facebook_feed_extraction_boundaries",
       "reason": "Feed extraction normalization / diagnostics 邊界；小檔案仍需保護職責分離。",
@@ -248,6 +251,7 @@
     {
       "path_glob": "src/facebook_monitor/worker/posts_pipeline.py",
       "symbol": "build_feed_seen_stop_predicate",
+      "symbol_kind": "function",
       "category": "async_scanner_seen_stop_read_side",
       "reason": "async scanner read-side DB seen-stop predicate；collection loop 改動時需重新評估。",
       "must_not_add": [
@@ -260,6 +264,7 @@
     {
       "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
       "symbol": "TargetRow",
+      "symbol_kind": "class",
       "category": "dashboard_target_row_presenter",
       "reason": "TargetRow 是 template-facing view model；新增 UI presentation family 前應先拆 presenter。",
       "must_not_add": [
@@ -272,6 +277,7 @@
     {
       "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
       "symbol": "SidebarGroupSection",
+      "symbol_kind": "class",
       "category": "dashboard_sidebar_group_presenter",
       "reason": "SidebarGroupSection 聚合 group sidebar display state；新增 group workflow 前先拆 presenter。",
       "must_not_add": [
@@ -280,6 +286,17 @@
         "notification dispatch behavior"
       ],
       "split_trigger": "新增 group workflow、group diagnostics 或 group-level presentation family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/scan_diagnostics_*.py",
+      "category": "dashboard_scan_diagnostics_presentation_family",
+      "reason": "Dashboard scan diagnostics presentation 依 section 與 formatting helper 拆分；不得混入 extractor parsing、DB 寫入或 browser collection 行為。",
+      "must_not_add": [
+        "extractor diagnostics parsing",
+        "database write behavior",
+        "browser collection behavior"
+      ],
+      "split_trigger": "新增與既有 scan/runtime presentation sections 無關的 diagnostics family"
     },
     {
       "path_glob": "src/facebook_monitor/launcher.py",
@@ -302,6 +319,28 @@
         "notification dispatch behavior"
       ],
       "split_trigger": "新增不同 browser/wait/resource-loading 行為的 metadata refresh family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_cover_image_*.py",
+      "category": "resident_cover_image_maintenance_family",
+      "reason": "Resident cover image maintenance 依 queue/attempt/refresh helper 拆分；image-only refresh 不得混入 target metadata、scan commit 或 notification dispatch。",
+      "must_not_add": [
+        "target metadata refresh behavior",
+        "scan commit behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增另一個 resident maintenance job family 或重大 selector/wait/resource-loading 行為"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_maintenance_*.py",
+      "category": "resident_maintenance_shared_helpers",
+      "reason": "Resident maintenance eligibility/error helper family；只承載 maintenance 共用判斷與錯誤記錄，不擁有 scan commit 或 dispatch。",
+      "must_not_add": [
+        "scan commit behavior",
+        "notification dispatch behavior",
+        "browser collection orchestration"
+      ],
+      "split_trigger": "新增獨立 maintenance policy、retention policy 或 state-machine transition family"
     }
   ]
 }

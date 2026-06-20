@@ -28,6 +28,7 @@ from facebook_monitor.webapp.scan_diagnostics_sort_sections import (
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_failure_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_cycle_result_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_stop_reason
+from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
 
 
 _STARTED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -91,6 +92,7 @@ def _config(*, max_items_per_scan: int | None = None) -> TargetConfig:
 def test_empty_scan_diagnostics_text_keeps_ordered_lines() -> None:
     """尚無掃描時，診斷文字順序與 outbox 位置不可漂移。"""
 
+    oldest_pending_at = format_datetime_for_ui(_OLD_PENDING_AT)
     text = build_scan_diagnostics_text(
         target=_target(),
         config=_config(),
@@ -108,7 +110,7 @@ def test_empty_scan_diagnostics_text_keeps_ordered_lines() -> None:
         "runtime_status=running",
         "scan_status=(none)",
         "outbox=pending:1,processing:2,failed:3,terminal:4,"
-        "oldest_pending:2026-01-02 11:05:05,max_attempts:5",
+        f"oldest_pending:{oldest_pending_at},max_attempts:5",
         "note=尚無掃描診斷",
     ]
 
@@ -166,6 +168,9 @@ def test_success_scan_diagnostics_text_keeps_ordered_sections() -> None:
         debug_metadata={"textLength": 7},
     )
 
+    started_at = format_datetime_for_ui(_STARTED_AT)
+    finished_at = format_datetime_for_ui(_FINISHED_AT)
+    oldest_pending_at = format_datetime_for_ui(_OLD_PENDING_AT)
     lines = build_scan_diagnostics_text(
         target=_target(),
         config=_config(max_items_per_scan=3),
@@ -186,17 +191,17 @@ def test_success_scan_diagnostics_text_keeps_ordered_sections() -> None:
         "running=True",
         "active_worker_id=worker-1",
         "active_page_id=page-1",
-        "last_page_reloaded_at=2026-01-02 11:04:05",
+        f"last_page_reloaded_at={started_at}",
         "enqueue_reason=manual",
-        "last_enqueued_at=2026-01-02 11:04:05",
-        "last_started_at=2026-01-02 11:04:05",
-        "last_finished_at=2026-01-02 11:04:35",
+        f"last_enqueued_at={started_at}",
+        f"last_started_at={started_at}",
+        f"last_finished_at={finished_at}",
         "scan_guard_count=2",
         "last_skip_reason=(none)",
         "outbox=pending:1,processing:2,failed:3,terminal:4,"
-        "oldest_pending:2026-01-02 11:05:05,max_attempts:5",
+        f"oldest_pending:{oldest_pending_at},max_attempts:5",
         "scan_status=success",
-        "finished_at=2026-01-02 11:04:35",
+        f"finished_at={finished_at}",
         "item_count=2",
         "matched_count=1",
         "new_count=1",

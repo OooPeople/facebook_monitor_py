@@ -12,10 +12,12 @@ from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetCoverImageRefreshState
 from facebook_monitor.facebook.group_metadata import (
     AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
+    GroupMetadataError,
+    resolve_group_cover_image_with_context,
 )
-from facebook_monitor.facebook.group_metadata import GroupMetadataError
-from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
-from facebook_monitor.facebook.group_metadata_validation import has_polluted_group_cover_image_url
+from facebook_monitor.facebook.group_metadata_validation import (
+    has_polluted_group_cover_image_url,
+)
 from facebook_monitor.worker.resident_maintenance_errors import is_scheduler_runtime_refresh_failure
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 

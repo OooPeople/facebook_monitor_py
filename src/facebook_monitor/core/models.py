@@ -347,18 +347,6 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
-class GlobalNotificationSettings:
-    """保存舊版全域通知設定資料，保留給 migration / secret storage 相容性。"""
-
-    enable_desktop_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_desktop_notification
-    enable_ntfy: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_ntfy
-    ntfy_topic: str = PYTHON_TARGET_CONFIG_DEFAULTS.ntfy_topic
-    enable_discord_notification: bool = PYTHON_TARGET_CONFIG_DEFAULTS.enable_discord_notification
-    discord_webhook: str = PYTHON_TARGET_CONFIG_DEFAULTS.discord_webhook
-    updated_at: datetime = field(default_factory=utc_now)
-
-
-@dataclass(frozen=True)
 class TargetRuntimeState:
     """保存 scheduler 對單一 target 的期望狀態與實際執行狀態。"""
 
@@ -424,8 +412,7 @@ class SeenAliasMarkResult:
 class MatchHistoryEntry:
     """保存一次 keyword match 的歷史紀錄。
 
-    `notified_at` 是既有 DB 欄位名；目前實際語義是 match 被記錄進
-    history 的時間，不保證外部通知已成功送達。
+    `recorded_at` 是 match 被記錄進 history 的時間，不保證外部通知已成功送達。
     """
 
     target_id: str
@@ -441,7 +428,7 @@ class MatchHistoryEntry:
     comment_id: str = ""
     include_rule: str = ""
     timestamp_text: str = ""
-    notified_at: datetime | None = None
+    recorded_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     include_rules: tuple[str, ...] = ()
     include_group_matches: tuple[KeywordGroupMatch, ...] = ()

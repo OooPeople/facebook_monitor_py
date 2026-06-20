@@ -27,7 +27,9 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/resident_main_executor.py",
     ROOT / "src/facebook_monitor/worker/resident_main_executor_attempt.py",
     ROOT / "src/facebook_monitor/worker/resident_failure_decisions.py",
-    ROOT / "src/facebook_monitor/worker/resident_maintenance.py",
+    ROOT / "src/facebook_monitor/worker/resident_cover_image_refresh.py",
+    ROOT / "src/facebook_monitor/worker/resident_maintenance_errors.py",
+    ROOT / "src/facebook_monitor/worker/resident_metadata_refresh.py",
     ROOT / "src/facebook_monitor/worker/resident_shared.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_coordinator.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_outcomes.py",
@@ -161,7 +163,7 @@ SUCCESS_COMMITTED_ALLOWED_FILES = {
 }
 ALLOWED_EXPLICIT_NONE_SCAN_COMMIT_GUARDS = {
     (
-        "src/facebook_monitor/worker/resident_maintenance.py",
+        "src/facebook_monitor/worker/resident_maintenance_errors.py",
         "record_refresh_runtime_failure",
         "record_guarded_scan_failure_decision_for_db",
     ),
@@ -449,7 +451,7 @@ def test_formal_runtime_paths_do_not_call_legacy_or_unguarded_skip_api() -> None
 
 
 def test_formal_runtime_paths_only_coordinator_produces_success_committed() -> None:
-    """Phase 6 後 SUCCESS_COMMITTED 只能由 coordinator 產生或由 model/transition 使用。"""
+    """正式 runtime 只允許 coordinator 產生 SUCCESS_COMMITTED。"""
 
     violations: list[str] = []
     for path in FORMAL_RUNTIME_BOUNDARY_FILES:

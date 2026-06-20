@@ -468,7 +468,7 @@ def _record_match_notification_side_effects(
 
     result = classified.result
     item = result.item
-    notified_at = utc_now()
+    recorded_at = utc_now()
     history_entry = MatchHistoryEntry(
         target_id=target.id,
         group_id=target.group_id,
@@ -485,8 +485,8 @@ def _record_match_notification_side_effects(
         include_rules=classified.keyword_evaluation.include_rules,
         include_group_matches=classified.keyword_evaluation.include_group_matches,
         timestamp_text=item.timestamp_text,
-        notified_at=notified_at,
-        created_at=notified_at,
+        recorded_at=recorded_at,
+        created_at=recorded_at,
     )
     app.repositories.match_history.add(history_entry)
 

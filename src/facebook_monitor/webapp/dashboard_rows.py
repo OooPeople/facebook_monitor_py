@@ -113,7 +113,7 @@ def read_target_card_row(
             lambda: app_context.repositories.match_history.list_by_target(
                 target_id,
                 limit=5,
-                notified_since=session_started_at,
+                recorded_since=session_started_at,
             ),
             tables=("match_history",),
             violations=violations,
@@ -142,6 +142,6 @@ def read_target_card_row(
         ),
         hit_record_total_count=app_context.repositories.match_history.count_by_target(
             target_id,
-            notified_since=session_started_at,
+            recorded_since=session_started_at,
         ),
     )

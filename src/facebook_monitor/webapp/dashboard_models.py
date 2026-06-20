@@ -6,62 +6,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
 from functools import cached_property
-from math import ceil
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
 from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
-from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import NotificationOutboxSummary
 from facebook_monitor.core.models import ScanRun
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import utc_now
-from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
 from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
-from facebook_monitor.core.user_messages import format_runtime_skip_message
 from facebook_monitor.webapp.dashboard_presenters import SettingsSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummary
 from facebook_monitor.webapp.dashboard_presenters import TargetCardSummaryPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetIdentityPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetSettingsPresenter
 from facebook_monitor.webapp.dashboard_presenters import TargetStatusPresenter
-from facebook_monitor.webapp.dashboard_presenters import format_latest_error_indicator_label
-from facebook_monitor.webapp.dashboard_presenters import format_latest_error_indicator_title
-from facebook_monitor.webapp.dashboard_presenters import format_runtime_error_message
-from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_runtime_error
-from facebook_monitor.webapp.dashboard_presenters import is_content_unavailable_scan
-from facebook_monitor.webapp.dashboard_presenters import is_retrying_failure_scan
-from facebook_monitor.webapp.diagnostics_presenter import build_scan_diagnostics_view
-from facebook_monitor.webapp.diagnostics_presenter import format_scan_cycle_result_reason
-from facebook_monitor.webapp.diagnostics_presenter import format_datetime_for_ui
+import facebook_monitor.webapp.dashboard_target_diagnostics as target_diagnostics
+import facebook_monitor.webapp.dashboard_target_errors as target_errors
+from facebook_monitor.webapp.dashboard_target_refresh import NextRefreshDisplay
+import facebook_monitor.webapp.dashboard_target_refresh as target_refresh
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
+import facebook_monitor.webapp.dashboard_target_sidebar as target_sidebar
+import facebook_monitor.webapp.dashboard_target_status as target_status
 from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
 from facebook_monitor.webapp.preview_models import TargetPreviewRow
-
-
-@dataclass(frozen=True)
-class SidebarTargetItem:
-    """保存 Phase 5 sidebar 需要的 target 摘要資料。"""
-
-    target_id: str
-    display_name: str
-    anchor_id: str
-    base_status_summary: str
-    status_class: str
-    status_detail: str
-    status_summary: str
-    mode_label: str
-    mode_class: str
-    hit_count: int
-    latest_error_summary: str = ""
-    thumbnail_url: str = ""
-    active: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,15 +166,6 @@ class SidebarGroupSection:
             else PYTHON_TARGET_CONFIG_DEFAULTS.max_refresh_sec
         )
 
-
-@dataclass(frozen=True)
-class NextRefreshDisplay:
-    """保存下一次刷新在 UI 顯示與前端倒數校準所需資料。"""
-
-    label: str
-    seconds: int | None = None
-
-
 @dataclass(frozen=True)
 class TargetRow:
     """保存 target 清單顯示所需資料。"""
@@ -300,17 +263,13 @@ class TargetRow:
     def scanning_supported(self) -> bool:
         """回傳目前 target 是否已接上 worker 掃描流程。"""
 
-        return self.target.target_kind in {TargetKind.POSTS, TargetKind.COMMENTS}
+        return target_status.scanning_supported(self)
 
     @property
     def status_presenter(self) -> TargetStatusPresenter:
         """回傳 target 狀態 presenter。"""
 
-        return TargetStatusPresenter(
-            target=self.target,
-            runtime_state=self.runtime_state,
-            scanning_supported=self.scanning_supported,
-        )
+        return target_status.status_presenter(self)
 
     @property
     def settings_presenter(self) -> TargetSettingsPresenter:
@@ -347,27 +306,25 @@ class TargetRow:
     def status_label(self) -> str:
         """回傳 target 啟停狀態文字。"""
 
-        return self.status_presenter.label
+        return target_status.status_label(self)
 
     @property
     def status_class(self) -> str:
         """回傳 target 狀態對應 CSS class。"""
 
-        return self.status_presenter.css_class
+        return target_status.status_class(self)
 
     @property
     def runtime_error(self) -> str:
         """回傳 runtime error 顯示文字。"""
 
-        if self.runtime_state.runtime_status != TargetRuntimeStatus.ERROR:
-            return ""
-        return format_runtime_error_message(self.runtime_state.last_error)
+        return target_errors.runtime_error(self)
 
     @property
     def runtime_skip_reason(self) -> str:
         """回傳最近一次 scan guard skip 原因。"""
 
-        return format_runtime_skip_message(self.runtime_state.last_skip_reason)
+        return target_errors.runtime_skip_reason(self)
 
     @property
     def latest_scan_header_time_label(self) -> str:
@@ -381,183 +338,79 @@ class TargetRow:
     def next_refresh_label(self) -> str:
         """回傳 target header 使用的下一次刷新狀態。"""
 
-        return self.next_refresh_display.label
+        return target_refresh.next_refresh_label(self)
 
     @property
     def next_refresh_seconds(self) -> int | None:
         """回傳前端本地倒數用的剩餘秒數；不可倒數時回傳 None。"""
 
-        return self.next_refresh_display.seconds
+        return target_refresh.next_refresh_seconds(self)
 
     @cached_property
     def next_refresh_display(self) -> NextRefreshDisplay:
         """一次產生下一次刷新顯示值，避免同一 row 重複計算倒數。"""
 
-        if (
-            not self.target.enabled
-            or self.target.paused
-            or self.runtime_state.desired_state != TargetDesiredState.ACTIVE
-        ):
-            return NextRefreshDisplay(label="未排程")
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
-            return NextRefreshDisplay(label="未排程")
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
-            return NextRefreshDisplay(label="排隊中")
-        if self.runtime_state.runtime_status == TargetRuntimeStatus.RUNNING:
-            return NextRefreshDisplay(label="掃描中")
-        if self.runtime_state.scan_requested_at is not None:
-            return NextRefreshDisplay(label="即將刷新")
-        remaining_seconds = self._next_refresh_remaining_seconds()
-        if remaining_seconds is None or remaining_seconds <= 0:
-            return NextRefreshDisplay(label="即將刷新")
-        return NextRefreshDisplay(
-            label=_format_countdown_seconds(remaining_seconds),
-            seconds=remaining_seconds,
-        )
-
-    def _next_refresh_remaining_seconds(self) -> int | None:
-        """依後端目前排程狀態計算下一次刷新剩餘秒數。"""
-
-        if self.runtime_state.display_next_due_at is not None:
-            remaining_seconds = ceil(
-                (self.runtime_state.display_next_due_at - utc_now()).total_seconds()
-            )
-            return max(remaining_seconds, 0)
-
-        last_reference_at = self.runtime_state.last_started_at
-        if last_reference_at is None and self.latest_scan_run:
-            last_reference_at = self.latest_scan_run.finished_at
-        if last_reference_at is None:
-            return None
-        interval_seconds = resolve_refresh_interval_seconds(
-            config=self.config,
-            default_interval_seconds=self.settings_presenter.fixed_refresh_value,
-            target_id=self.target_id,
-            latest_finished_at=self.latest_scan_run.finished_at
-            if self.latest_scan_run
-            else None,
-        )
-        due_at = last_reference_at + timedelta(seconds=max(interval_seconds, 1))
-        remaining_seconds = ceil((due_at - utc_now()).total_seconds())
-        if remaining_seconds <= 0:
-            return 0
-        return remaining_seconds
+        return target_refresh.next_refresh_display(self)
 
     @property
     def scan_cycle_result_label(self) -> str:
         """回傳右側結果 panel 使用的最近一輪結束原因。"""
 
-        if not self.latest_scan_run:
-            return ""
-        metadata = self.latest_scan_run.metadata or {}
-        reason = str(metadata.get("stop_reason") or "")
-        if not reason:
-            return ""
-        return f"本輪：{format_scan_cycle_result_reason(reason)}"
+        return target_diagnostics.scan_cycle_result_label(self)
 
     @property
     def latest_scan_diagnostics_summary(self) -> str:
         """回傳最近成功掃描的診斷短摘要。"""
 
-        return build_scan_diagnostics_view(
-            target=self.target,
-            config=self.config,
-            runtime_state=self.runtime_state,
-            latest_scan_run=self.latest_scan_run,
-            notification_outbox_summary=self.notification_outbox_summary,
-            latest_failed_scan_run=self.latest_failed_scan_run,
-        ).summary
+        return target_diagnostics.latest_scan_diagnostics_summary(self)
 
     @property
     def latest_scan_diagnostics_text(self) -> str:
         """回傳可複製的 scan-level diagnostics。"""
 
-        return build_scan_diagnostics_view(
-            target=self.target,
-            config=self.config,
-            runtime_state=self.runtime_state,
-            latest_scan_run=self.latest_scan_run,
-            latest_scan_items=tuple(row.item for row in self.latest_scan_items),
-            notification_outbox_summary=self.notification_outbox_summary,
-            latest_failed_scan_run=self.latest_failed_scan_run,
-        ).text
+        return target_diagnostics.latest_scan_diagnostics_text(self)
 
     @property
     def latest_error_label(self) -> str:
         """回傳最近錯誤時間。"""
 
-        if not self.latest_failed_scan_run:
-            return ""
-        return format_datetime_for_ui(self.latest_failed_scan_run.finished_at)
+        return target_errors.latest_error_label(self)
 
     @property
     def latest_failed_scan_summary(self) -> str:
         """回傳最近失敗掃描摘要。"""
 
-        return self.card_summary_presenter.latest_failed_scan_summary
+        return target_errors.latest_failed_scan_summary(self)
 
     @property
     def latest_error_indicator_label(self) -> str:
         """回傳 target header 的最近錯誤短標籤。"""
 
-        return format_latest_error_indicator_label(
-            self.latest_failed_scan_run,
-            content_unavailable_current=self.content_unavailable_current,
-            retrying_current=self.retrying_failure_current,
-        )
+        return target_errors.latest_error_indicator_label(self)
 
     @property
     def latest_error_indicator_title(self) -> str:
         """回傳 target header 最近錯誤說明。"""
 
-        return format_latest_error_indicator_title(
-            self.latest_failed_scan_run,
-            content_unavailable_current=self.content_unavailable_current,
-            retrying_current=self.retrying_failure_current,
-        )
+        return target_errors.latest_error_indicator_title(self)
 
     @property
     def latest_error_indicator_kind(self) -> str:
         """回傳最近錯誤 UI 類型。"""
 
-        if self.content_unavailable_current:
-            return "content-unavailable"
-        if self.retrying_failure_current:
-            return "retrying"
-        return "error" if self.latest_failed_scan_run else ""
+        return target_errors.latest_error_indicator_kind(self)
 
     @property
     def retrying_failure_current(self) -> bool:
         """回傳最近 failed scan 是否仍代表等待下輪重試的目前狀態。"""
 
-        failed_scan = self.latest_failed_scan_run
-        if not is_retrying_failure_scan(failed_scan):
-            return False
-        latest_scan = self.latest_scan_run
-        if latest_scan is None:
-            return True
-        if failed_scan is None:
-            return False
-        return failed_scan.finished_at >= latest_scan.finished_at
+        return target_errors.retrying_failure_current(self)
 
     @property
     def content_unavailable_current(self) -> bool:
         """回傳連結失效是否仍代表目前狀態。"""
 
-        failed_scan = self.latest_failed_scan_run
-        if not is_content_unavailable_scan(failed_scan):
-            return False
-        if (
-            self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR
-            and is_content_unavailable_runtime_error(self.runtime_state.last_error)
-        ):
-            return True
-        latest_scan = self.latest_scan_run
-        if latest_scan is None:
-            return True
-        if failed_scan is None:
-            return False
-        return failed_scan.finished_at >= latest_scan.finished_at
+        return target_errors.content_unavailable_current(self)
 
     @property
     def notification_summary_label(self) -> str:
@@ -621,44 +474,15 @@ class TargetRow:
 
     @property
     def card_summary(self) -> TargetCardSummary:
-        """回傳 Phase 9 收合卡片可共用的摘要 view model。"""
+        """回傳收合卡片可共用的摘要 view model。"""
 
         return self.card_summary_presenter.summary
 
     @property
     def sidebar_item(self) -> SidebarTargetItem:
-        """回傳 Phase 5 sidebar 使用的 target 摘要。"""
+        """回傳 sidebar 使用的 target 摘要。"""
 
-        base_status_summary = self.status_label
-        if self.content_unavailable_current:
-            status_detail = self.latest_error_indicator_label
-        elif self.hit_record_total_count:
-            status_detail = f"命中 {self.hit_record_total_count} 筆"
-        elif not self.latest_scan_run:
-            status_detail = "尚未掃描"
-        else:
-            status_detail = ""
-        status_summary = (
-            f"{base_status_summary} · {status_detail}"
-            if status_detail
-            else base_status_summary
-        )
-        latest_error_summary = self.latest_failed_scan_summary if self.latest_failed_scan_run else ""
-        return SidebarTargetItem(
-            target_id=self.target_id,
-            display_name=self.display_name,
-            anchor_id=self.anchor_id,
-            base_status_summary=base_status_summary,
-            status_class=self.status_class,
-            status_detail=status_detail,
-            status_summary=status_summary,
-            mode_label="留言" if self.target.target_kind == TargetKind.COMMENTS else "貼文",
-            mode_class=self.mode_class,
-            hit_count=self.hit_record_total_count,
-            latest_error_summary=latest_error_summary,
-            thumbnail_url=self.thumbnail_url,
-            active=self.target.enabled and not self.target.paused,
-        )
+        return target_sidebar.sidebar_item(self)
 
     @property
     def min_refresh_value(self) -> int:
@@ -676,23 +500,10 @@ class TargetRow:
     def monitoring_action(self) -> str:
         """回傳主操作按鈕應提交的 monitoring action。"""
 
-        return "start" if self.target.paused or not self.target.enabled else "stop"
+        return target_status.monitoring_action(self)
 
     @property
     def monitoring_button_label(self) -> str:
         """回傳主操作按鈕文字，維持開始 / 暫停語義。"""
 
-        return "開始" if self.monitoring_action == "start" else "停止"
-
-
-def _format_countdown_seconds(seconds: int) -> str:
-    """格式化 header 的下一次刷新倒數。"""
-
-    bounded_seconds = max(int(seconds), 0)
-    if bounded_seconds < 60:
-        return f"{bounded_seconds}s"
-    minutes, remainder = divmod(bounded_seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {remainder}s" if remainder else f"{minutes}m"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+        return target_status.monitoring_button_label(self)

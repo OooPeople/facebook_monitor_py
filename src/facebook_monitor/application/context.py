@@ -22,9 +22,6 @@ from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepos
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
-from facebook_monitor.persistence.repositories.global_notification_settings import (
-    GlobalNotificationSettingsRepository,
-)
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
@@ -76,7 +73,6 @@ class RepositoryBundle:
     notification_events: NotificationEventRepository
     notification_dedupe: NotificationDedupeRepository
     notification_outbox: NotificationOutboxRepository
-    global_notification_settings: GlobalNotificationSettingsRepository
     app_settings: AppSettingsRepository
     sidebar_layout: SidebarLayoutRepository
     maintenance: RuntimeDataMaintenanceRepository
@@ -142,10 +138,6 @@ def build_repositories(
         notification_events=NotificationEventRepository(connection),
         notification_dedupe=NotificationDedupeRepository(connection),
         notification_outbox=NotificationOutboxRepository(
-            connection,
-            secret_codec=secret_codec,
-        ),
-        global_notification_settings=GlobalNotificationSettingsRepository(
             connection,
             secret_codec=secret_codec,
         ),

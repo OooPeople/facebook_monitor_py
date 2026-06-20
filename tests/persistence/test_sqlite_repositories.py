@@ -8,7 +8,6 @@ from pathlib import Path
 
 from facebook_monitor.core.keyword_groups import keyword_group_slots
 from facebook_monitor.core.models import ItemKind
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -41,7 +40,6 @@ from facebook_monitor.persistence.schema import initialize_schema
 
 from tests.persistence.sqlite_test_helpers import save_target_config_for_test
 from tests.persistence.sqlite_test_helpers import get_target_config_for_test
-from tests.persistence.sqlite_test_helpers import global_notification_settings_repository
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 
 
@@ -132,22 +130,6 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_config.enable_discord_notification
         assert loaded_config.discord_webhook == "https://discord.com/api/webhooks/example"
 
-        global_settings = GlobalNotificationSettings(
-            enable_desktop_notification=True,
-            enable_ntfy=True,
-            ntfy_topic="global-topic",
-            enable_discord_notification=True,
-            discord_webhook="https://discord.com/api/webhooks/global",
-        )
-        settings_repo = global_notification_settings_repository(connection)
-        settings_repo.save(global_settings)
-        loaded_settings = settings_repo.get()
-
-        assert loaded_settings.enable_desktop_notification
-        assert loaded_settings.enable_ntfy
-        assert loaded_settings.ntfy_topic == "global-topic"
-        assert loaded_settings.enable_discord_notification
-        assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/global"
         app_settings = AppSettingsRepository(connection)
         assert app_settings.get_theme() == "dark"
         assert app_settings.save_theme("dark") == "dark"

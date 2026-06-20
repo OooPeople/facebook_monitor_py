@@ -6,7 +6,6 @@ from datetime import timedelta
 from pathlib import Path
 
 from facebook_monitor.core.models import ItemKind
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationChannel
@@ -41,7 +40,6 @@ from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 from tests.persistence.sqlite_test_helpers import save_target_config_for_test
 from tests.persistence.sqlite_test_helpers import get_target_config_for_test
-from tests.persistence.sqlite_test_helpers import global_notification_settings_repository
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 from tests.persistence.sqlite_test_helpers import table_count
 
@@ -49,7 +47,7 @@ from tests.persistence.sqlite_test_helpers import table_count
 def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
     tmp_path: Path,
 ) -> None:
-    """runtime data 清理會刪除可重建資料，但保留 target/config/global settings。"""
+    """runtime data 清理會刪除可重建資料，但保留 target/config/app settings。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -73,9 +71,6 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
                 desired_state=TargetDesiredState.ACTIVE,
                 runtime_status=TargetRuntimeStatus.IDLE,
             )
-        )
-        global_notification_settings_repository(connection).save(
-            GlobalNotificationSettings(enable_ntfy=True, ntfy_topic="phase0test")
         )
         AppSettingsRepository(connection).save_theme("dark")
         SeenItemRepository(connection).mark_seen(
@@ -152,7 +147,6 @@ def test_runtime_data_maintenance_clears_debug_tables_but_keeps_settings(
         assert TargetRepository(connection).get(target.id) is not None
         assert get_target_config_for_test(connection, target.id) is not None
         assert TargetRuntimeStateRepository(connection).get(target.id) is not None
-        assert global_notification_settings_repository(connection).get().ntfy_topic == "phase0test"
         assert AppSettingsRepository(connection).get_theme() == "dark"
 
 

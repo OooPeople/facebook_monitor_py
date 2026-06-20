@@ -10,8 +10,8 @@ from facebook_monitor.persistence.current_schema import ensure_dashboard_revisio
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 36
-MIN_SUPPORTED_SCHEMA_VERSION = 10
+SCHEMA_VERSION = 38
+MIN_SUPPORTED_SCHEMA_VERSION = 35
 CURRENT_SCHEMA_TABLES = (
     "schema_metadata",
     "targets",
@@ -31,7 +31,6 @@ CURRENT_SCHEMA_TABLES = (
     "notification_outbox",
     "target_runtime_state",
     "target_cover_image_refresh_state",
-    "global_notification_settings",
     "app_settings",
     "sidebar_groups",
     "sidebar_target_placements",
@@ -277,7 +276,7 @@ def drop_redundant_target_scope_index(connection: sqlite3.Connection) -> None:
 
 
 def ensure_notification_outbox_dedupe_index(connection: sqlite3.Connection) -> None:
-    """在 v32 migration 補欄位後建立 outbox/dedupe 查詢索引。"""
+    """在 dedupe_id 欄位存在時建立 outbox/dedupe 查詢索引。"""
 
     columns = {
         str(row[1])
@@ -291,4 +290,3 @@ def ensure_notification_outbox_dedupe_index(connection: sqlite3.Connection) -> N
             ON notification_outbox(dedupe_id)
         """
     )
-

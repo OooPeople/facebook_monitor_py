@@ -84,7 +84,8 @@ sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)
 
 - 正式日常入口是 package entrypoint：`facebook-monitor`；profile 登入 / 檢查入口是 `facebook-monitor-login`。
 - async resident worker 是唯一正式產品主路徑；one-shot mode 與 sync resident worker 只作 fallback / debug tooling。
-- 正式 config store 是 `target_configs[target_id]`；`group_configs` 只保留為舊資料 migration 來源，不得作為正式 read/write path。
+- 正式 config store 是 `target_configs[target_id]`；`group_configs` 不再是正式
+  schema、runtime 或支援 migration source，不得作為正式 read/write path。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。
 - 跨層產品預設值必須集中於 `src/facebook_monitor/core/defaults.py`；模組內部演算法常數可留在該 module，但不得形成跨層重複來源。
 - UI 重構不得順手修改 worker scan pipeline、notification outbox、scheduler runtime、persistence migration 或 Facebook DOM helper；若 UI 需要新資料，優先走 read model / presenter。
@@ -105,12 +106,15 @@ sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)
 
 禁止用「已支援 auto load more」、「已完成 notification」、「已完成 comments」這類模糊描述包裝半套實作。
 
+處理 review / 計畫文件時，不得把 annotation、watchlist、文件治理或 characterization tests 回報為「完成實作」。除非文件明確把這些列為完成標準，否則只能標為「部分完成」。若使用者要求成熟 / 長期完成狀態，必須預設實作拆分或 runtime / code 改動；若代理認為某項不該做，必須先明確詢問使用者，不得自行降級或跳過。
+
 ---
 
 ## Review / Handoff
 
 - 使用者只要說「審查」、「review」、「架構審查」、「幫我看這次變更」或類似要求，除非明確限定只看某一項，預設都要依 `docs/ENGINEERING_REVIEW.md` 做完整工程審查。
 - 審查結果必須 findings first，依嚴重度排序；沒有阻塞問題也要明確說明審查面向、可接受的必要分散、剩餘低風險項目與已跑驗證。
+- 回報 review / 計畫文件完成度時，必須逐項列出「原文要求 / 已做內容 / 完成狀態 / 未完成內容」。不得用「大致完成」、「已治理」、「已列 watchlist」取代逐項狀態。
 - 每次完成一段功能後，handoff 必須包含：對照了哪些模組 / 資料模型 / 測試 / 文件契約、哪些語義已完整接通、哪些還沒完成、目前是完整功能 / 部分功能 / 只有殼，以及是否刻意偏離既有產品語義。
 - 若本次實作只完成部分語義，commit / handoff / review 中必須清楚寫「已完成」與「未完成」邊界，不得混寫。
 

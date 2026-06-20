@@ -1,6 +1,9 @@
 # Web UI Contract
 
-本文件只記錄 Web UI 呈現、互動一致性與 route / presenter 邊界。target lifecycle、scheduler、scan pipeline、notification outbox、dedupe、runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者操作步驟看 `docs/USAGE.md`；browser-level manual QA checklist 看 `docs/tooling.md`。
+本文件只記錄 Web UI 呈現、互動一致性與 route / presenter 邊界。target
+lifecycle、scheduler、scan pipeline、notification outbox、dedupe、
+runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者操作步驟看
+`docs/USAGE.md`；browser-level manual QA checklist 看 `docs/tooling.md`。
 
 ## 邊界
 
@@ -35,7 +38,10 @@
 ## Target Card 與結果呈現
 
 - target card header 顯示 target identity、target kind、最近掃描與下次刷新；左側圓形位置保留給社團縮圖。
-- 社團縮圖載入失敗時，target card 先退回文字 avatar，並在同一頁面 session 中針對同一 target/URL 只上報一次；image-only maintenance 的產品語義以 `docs/ARCHITECTURE.md#web-ui-語義` 與 `docs/ARCHITECTURE.md#target-與-state` 為準。
+- 社團縮圖載入失敗時，target card 先退回文字 avatar，並在同一頁面 session
+  中針對同一 target/URL 只上報一次；image-only maintenance 的產品語義以
+  `docs/ARCHITECTURE.md#web-ui-語義` 與
+  `docs/ARCHITECTURE.md#target-與-state` 為準。
 - 貼文 / 留言模式 chip 是 target kind 分類標籤，不是執行狀態 badge，也不得與 `已啟用` / `已停止` 混淆。
 - 右側結果 panel header 可顯示最近一輪 scan cycle result；這是掃描結果摘要，不是錯誤或使用者停止狀態。
 - 最近通知摘要不放在 target card header；通知狀態由 notification events、outbox diagnostics 與相關 read model 承接。
@@ -53,7 +59,10 @@
 ## Partial Update 與資料邊界
 
 - 前端收到 dashboard batch payload 後更新 sidebar 與 target cards；partial update 的 revision 來源以 `docs/ARCHITECTURE.md#web-ui-語義` 為準。
-- 前端 revision transport 預設使用 EventSource 長 SSE；無 EventSource 支援或 SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。EventSource open 後必須停止 fallback polling，任一時間最多保留一個 EventSource 與一個 polling interval。
+- 前端 revision transport 預設使用 EventSource 長 SSE；無 EventSource 支援或
+  SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。
+- EventSource open 後必須停止 fallback polling，任一時間最多保留一個
+  EventSource 與一個 polling interval。
 - route / template / static module 應消費 read model 或 presenter payload；不直接承擔 scan、dedupe、outbox 或 persistence owner 語義。
 - 新 UI 欄位若只是呈現既有狀態，優先擴充 read model / presenter；若需要新增持久狀態，必須先回到 `docs/ARCHITECTURE.md` 定義資料 owner 與 runtime 語義。
 

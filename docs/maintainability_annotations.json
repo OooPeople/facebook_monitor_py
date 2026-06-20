@@ -103,11 +103,6 @@
       "reason": "Dashboard read-side aggregation for target rows, sidebar sections, invariant warnings, previews, notification summaries, and degraded states. Keep new read-model families in focused modules before expanding this file."
     },
     {
-      "path_glob": "src/facebook_monitor/worker/resident_maintenance.py",
-      "category": "resident_metadata_cover_maintenance",
-      "reason": "Resident metadata and cover image maintenance jobs share scheduler/browser runtime failure handling. Do not add scan commit, notification dispatch, or a new maintenance job family here before splitting metadata and cover image concerns."
-    },
-    {
       "path_glob": "src/facebook_monitor/persistence/repositories/target_runtime_state.py",
       "category": "target_runtime_state_repository",
       "reason": "Runtime state repository with guarded conditional updates. Do not add broad full-row saves in formal resident paths or unguarded worker transitions; split when adding a new runtime state family or recovery policy."
@@ -147,12 +142,6 @@
       "reason": "Hit records route is acceptable now, but future search/export/detail/bulk behavior should move into focused query/action services."
     },
     {
-      "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
-      "symbol": "TargetRow",
-      "category": "dashboard_target_row_view_model",
-      "reason": "Template-friendly target card view model. Split sidebar, refresh/status, diagnostics, or error-indicator presentation before adding another independent UI display family here."
-    },
-    {
       "path_glob": "src/facebook_monitor/webapp/dashboard_presenters.py",
       "category": "dashboard_presentation_helpers",
       "reason": "Dashboard UI presenter helpers. Split before adding another independent target, card, sidebar, or settings presentation family."
@@ -167,12 +156,6 @@
       "symbol": "build_feed_seen_stop_predicate",
       "category": "async_scanner_seen_stop_read_side",
       "reason": "Async commit-ready scanner still performs read-side DB seen-stop checks inside the feed collection loop. If collection loop behavior changes, consider prefetching bounded seen state before browser collection."
-    },
-    {
-      "path_glob": "src/facebook_monitor/notifications/outbox_dispatch_service.py",
-      "symbol": "dispatch_notification_outbox_entries",
-      "category": "notification_outbox_single_entry_dispatch",
-      "reason": "Single-entry dispatch prepares target metadata, applies skip policy, sends channels, and records results. Split prepare/dispatch/record helpers before adding new channel or failure-policy families."
     },
     {
       "path_glob": "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js",

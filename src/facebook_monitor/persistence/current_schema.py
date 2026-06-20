@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS match_history (
     permalink TEXT NOT NULL,
     include_rule TEXT NOT NULL,
     timestamp_text TEXT NOT NULL,
-    notified_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -273,16 +273,6 @@ CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
     last_result TEXT NOT NULL DEFAULT '' CHECK (last_result IN ('', 'queued', 'attempted', 'succeeded_changed', 'succeeded_unchanged', 'stale_skipped', 'failed')),
     changed INTEGER NOT NULL DEFAULT 0 CHECK (changed IN (0, 1)),
     error TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS global_notification_settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    enable_desktop_notification INTEGER NOT NULL CHECK (enable_desktop_notification IN (0, 1)),
-    enable_ntfy INTEGER NOT NULL CHECK (enable_ntfy IN (0, 1)),
-    ntfy_topic TEXT NOT NULL,
-    enable_discord_notification INTEGER NOT NULL CHECK (enable_discord_notification IN (0, 1)),
-    discord_webhook TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 

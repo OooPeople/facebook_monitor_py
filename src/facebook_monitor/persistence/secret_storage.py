@@ -22,7 +22,6 @@ DEFAULT_SECRET_KEY_FILENAME = "secrets.key"
 SECRET_REENCRYPTION_MARKER_KEY = "notification_secrets_reencrypted_v1"
 NOTIFICATION_SECRET_TABLES = (
     "target_configs",
-    "global_notification_settings",
     "sidebar_group_config_templates",
 )
 OUTBOX_SECRET_COLUMNS = (("notification_outbox", "endpoint"),)

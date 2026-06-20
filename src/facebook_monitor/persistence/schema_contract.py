@@ -201,11 +201,6 @@ BOOLEAN_CONTRACTS: tuple[SchemaBooleanContract, ...] = (
         ),
     ),
     SchemaBooleanContract("scan_scope_state", "scope_id", ("initialized",)),
-    SchemaBooleanContract(
-        "global_notification_settings",
-        "id",
-        ("enable_desktop_notification", "enable_ntfy", "enable_discord_notification"),
-    ),
     SchemaBooleanContract("sidebar_groups", "id", ("collapsed",)),
     SchemaBooleanContract(
         "sidebar_group_config_templates",
@@ -321,7 +316,7 @@ DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
     SchemaDatetimeContract(
         "match_history",
         "id",
-        ("notified_at", "created_at"),
+        ("recorded_at", "created_at"),
         required_fields=("created_at",),
     ),
     SchemaDatetimeContract(
@@ -373,12 +368,6 @@ DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
             "last_failed_at",
             "updated_at",
         ),
-        required_fields=("updated_at",),
-    ),
-    SchemaDatetimeContract(
-        "global_notification_settings",
-        "id",
-        ("updated_at",),
         required_fields=("updated_at",),
     ),
     SchemaDatetimeContract(

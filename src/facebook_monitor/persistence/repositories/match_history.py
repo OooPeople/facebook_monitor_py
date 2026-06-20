@@ -29,8 +29,8 @@ class MatchHistoryRepository:
     def add(self, entry: MatchHistoryEntry) -> int:
         """新增或刷新 target-scoped match history，保留該 target 最近 N 筆。"""
 
-        notified_at = entry.notified_at or utc_now()
-        created_at = entry.created_at or notified_at
+        recorded_at = entry.recorded_at or utc_now()
+        created_at = entry.created_at or recorded_at
         if entry.item_key:
             self.connection.execute(
                 """
@@ -58,7 +58,7 @@ class MatchHistoryRepository:
             INSERT INTO match_history (
                 target_id, group_id, group_name, item_kind, parent_post_id,
                 comment_id, item_key, author, text, display_text, permalink, include_rule,
-                timestamp_text, notified_at, created_at
+                timestamp_text, recorded_at, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -76,7 +76,7 @@ class MatchHistoryRepository:
                 entry.permalink,
                 entry.include_rule,
                 entry.timestamp_text,
-                encode_datetime(notified_at),
+                encode_datetime(recorded_at),
                 encode_datetime(created_at),
             ),
         )
@@ -95,8 +95,8 @@ class MatchHistoryRepository:
             FROM match_history
             WHERE target_id = ?
             ORDER BY
-                CASE WHEN notified_at = '' THEN 1 ELSE 0 END,
-                notified_at DESC,
+                CASE WHEN recorded_at = '' THEN 1 ELSE 0 END,
+                recorded_at DESC,
                 id DESC
             LIMIT ?
             """,
@@ -135,8 +135,8 @@ class MatchHistoryRepository:
                 FROM match_history
                 WHERE target_id = ?
                 ORDER BY
-                    CASE WHEN notified_at = '' THEN 1 ELSE 0 END,
-                    notified_at DESC,
+                    CASE WHEN recorded_at = '' THEN 1 ELSE 0 END,
+                    recorded_at DESC,
                     id DESC
                 LIMIT ?
             )
@@ -156,28 +156,23 @@ class MatchHistoryRepository:
             for row in target_rows
         )
 
-    def prune_global_limit(self, limit: int = MATCH_HISTORY_TARGET_LIMIT) -> int:
-        """相容舊呼叫：委派正式 all-target retention 名稱。"""
-
-        return self.prune_all_target_limits(limit=limit)
-
     def list_by_target(
         self,
         target_id: str,
         limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
         *,
         offset: int = 0,
-        notified_since: datetime | None = None,
+        recorded_since: datetime | None = None,
     ) -> list[MatchHistoryEntry]:
         """依 target id 查詢最近 match history。"""
 
         bounded_limit = max(int(limit), 1)
         bounded_offset = max(int(offset), 0)
-        notified_since_filter = ""
+        recorded_since_filter = ""
         params: list[object] = [target_id]
-        if notified_since is not None:
-            notified_since_filter = "AND match_history.notified_at >= ?"
-            params.append(encode_datetime(notified_since))
+        if recorded_since is not None:
+            recorded_since_filter = "AND match_history.recorded_at >= ?"
+            params.append(encode_datetime(recorded_since))
         params.extend([bounded_limit, bounded_offset])
         rows = self.connection.execute(
             f"""
@@ -187,11 +182,11 @@ class MatchHistoryRepository:
               ON latest_scan_items.target_id = match_history.target_id
              AND latest_scan_items.item_key = match_history.item_key
             WHERE match_history.target_id = ?
-              {notified_since_filter}
+              {recorded_since_filter}
             ORDER BY
                 CASE WHEN latest_scan_items.item_index IS NULL THEN 1 ELSE 0 END,
                 latest_scan_items.item_index ASC,
-                match_history.notified_at DESC,
+                match_history.recorded_at DESC,
                 match_history.id DESC
             LIMIT ?
             OFFSET ?
@@ -205,7 +200,7 @@ class MatchHistoryRepository:
         target_ids: list[str],
         *,
         limit_per_target: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit_per_target,
-        notified_since: datetime | None = None,
+        recorded_since: datetime | None = None,
     ) -> dict[str, list[MatchHistoryEntry]]:
         """一次查詢多個 target 的最近 match history。"""
 
@@ -213,11 +208,11 @@ class MatchHistoryRepository:
         if not unique_target_ids:
             return {}
         placeholders = ",".join("?" for _ in unique_target_ids)
-        notified_since_filter = ""
+        recorded_since_filter = ""
         params: list[object] = [*unique_target_ids]
-        if notified_since is not None:
-            notified_since_filter = "AND match_history.notified_at >= ?"
-            params.append(encode_datetime(notified_since))
+        if recorded_since is not None:
+            recorded_since_filter = "AND match_history.recorded_at >= ?"
+            params.append(encode_datetime(recorded_since))
         params.append(max(int(limit_per_target), 1))
         rows = self.connection.execute(
             f"""
@@ -233,7 +228,7 @@ class MatchHistoryRepository:
                                    ELSE 0
                                END,
                                latest_scan_items.item_index ASC,
-                               match_history.notified_at DESC,
+                               match_history.recorded_at DESC,
                                match_history.id DESC
                        ) AS row_number
                 FROM match_history
@@ -241,14 +236,14 @@ class MatchHistoryRepository:
                  ON latest_scan_items.target_id = match_history.target_id
                  AND latest_scan_items.item_key = match_history.item_key
                 WHERE match_history.target_id IN ({placeholders})
-                  {notified_since_filter}
+                  {recorded_since_filter}
             )
             WHERE row_number <= ?
             ORDER BY
                 target_id,
                 CASE WHEN latest_item_index IS NULL THEN 1 ELSE 0 END,
                 latest_item_index ASC,
-                notified_at DESC,
+                recorded_at DESC,
                 id DESC
             """,
             tuple(params),
@@ -264,21 +259,21 @@ class MatchHistoryRepository:
         self,
         target_id: str,
         *,
-        notified_since: datetime | None = None,
+        recorded_since: datetime | None = None,
     ) -> int:
         """計算單一 target 的 match history 筆數。"""
 
-        notified_since_filter = ""
+        recorded_since_filter = ""
         params: list[object] = [target_id]
-        if notified_since is not None:
-            notified_since_filter = "AND notified_at >= ?"
-            params.append(encode_datetime(notified_since))
+        if recorded_since is not None:
+            recorded_since_filter = "AND recorded_at >= ?"
+            params.append(encode_datetime(recorded_since))
         row = self.connection.execute(
             f"""
             SELECT COUNT(*) AS count
             FROM match_history
             WHERE target_id = ?
-              {notified_since_filter}
+              {recorded_since_filter}
             """,
             tuple(params),
         ).fetchone()
@@ -288,7 +283,7 @@ class MatchHistoryRepository:
         self,
         target_ids: list[str],
         *,
-        notified_since: datetime | None = None,
+        recorded_since: datetime | None = None,
     ) -> dict[str, int]:
         """一次計算多個 target 的 match history 筆數。"""
 
@@ -296,17 +291,17 @@ class MatchHistoryRepository:
         if not unique_target_ids:
             return {}
         placeholders = ",".join("?" for _ in unique_target_ids)
-        notified_since_filter = ""
+        recorded_since_filter = ""
         params: list[object] = [*unique_target_ids]
-        if notified_since is not None:
-            notified_since_filter = "AND notified_at >= ?"
-            params.append(encode_datetime(notified_since))
+        if recorded_since is not None:
+            recorded_since_filter = "AND recorded_at >= ?"
+            params.append(encode_datetime(recorded_since))
         rows = self.connection.execute(
             f"""
             SELECT target_id, COUNT(*) AS count
             FROM match_history
             WHERE target_id IN ({placeholders})
-              {notified_since_filter}
+              {recorded_since_filter}
             GROUP BY target_id
             """,
             tuple(params),
@@ -419,4 +414,3 @@ def _include_rules_for_entry(entry: MatchHistoryEntry) -> tuple[KeywordGroupMatc
         KeywordGroupMatch(group_id="", group_label="", rule=rule)
         for rule in rules
     )
-

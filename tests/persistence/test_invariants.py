@@ -13,7 +13,7 @@ from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
-from tests.persistence.sqlite_test_helpers import create_raw_v10_fixture_schema
+from tests.persistence.sqlite_test_helpers import create_min_supported_v35_fixture_schema
 
 
 EXPECTED_ENUM_CONTRACT_KEYS = {
@@ -53,9 +53,6 @@ EXPECTED_BOOLEAN_CONTRACT_KEYS = {
     ("target_configs", "enable_ntfy"),
     ("target_configs", "enable_discord_notification"),
     ("scan_scope_state", "initialized"),
-    ("global_notification_settings", "enable_desktop_notification"),
-    ("global_notification_settings", "enable_ntfy"),
-    ("global_notification_settings", "enable_discord_notification"),
     ("sidebar_groups", "collapsed"),
     ("sidebar_group_config_templates", "jitter_enabled"),
     ("sidebar_group_config_templates", "auto_load_more"),
@@ -86,7 +83,7 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
 EXPECTED_DATETIME_CONTRACT_KEYS = {
     ("targets", "created_at"),
     ("targets", "updated_at"),
-    ("match_history", "notified_at"),
+    ("match_history", "recorded_at"),
     ("match_history", "created_at"),
     ("latest_scan_items", "scanned_at"),
     ("scan_runs", "started_at"),
@@ -107,7 +104,6 @@ EXPECTED_DATETIME_CONTRACT_KEYS = {
     ("target_cover_image_refresh_state", "last_succeeded_at"),
     ("target_cover_image_refresh_state", "last_failed_at"),
     ("target_cover_image_refresh_state", "updated_at"),
-    ("global_notification_settings", "updated_at"),
     ("sidebar_groups", "created_at"),
     ("sidebar_groups", "updated_at"),
     ("sidebar_target_placements", "updated_at"),
@@ -302,12 +298,14 @@ def test_schema_contract_has_independent_expected_key_set() -> None:
     assert datetime_keys == EXPECTED_DATETIME_CONTRACT_KEYS
 
 
-def test_schema_contract_fields_exist_after_legacy_migration(tmp_path: Path) -> None:
-    """代表性舊 DB migration 到 current 後仍需符合 schema contract 查詢形狀。"""
+def test_schema_contract_fields_exist_after_min_supported_migration(
+    tmp_path: Path,
+) -> None:
+    """最低支援 v35 DB migration 到 current 後仍需符合 schema contract 查詢形狀。"""
 
-    db_path = tmp_path / "legacy.db"
+    db_path = tmp_path / "min-supported.db"
     with SqliteConnection(db_path) as sqlite:
-        create_raw_v10_fixture_schema(sqlite.require_connection())
+        create_min_supported_v35_fixture_schema(sqlite.require_connection())
 
     with SqliteApplicationContext(db_path) as app:
         _assert_schema_contract_queries_are_valid(app.repositories.targets.connection)

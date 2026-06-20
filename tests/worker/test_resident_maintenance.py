@@ -38,11 +38,17 @@ from facebook_monitor.notifications.outbox_dispatcher import (
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.worker.resident_main import dispatch_pending_notification_outbox
-from facebook_monitor.worker.resident_maintenance import METADATA_REFRESH_TARGET_LIMIT_PER_TICK
-from facebook_monitor.worker.resident_maintenance import refresh_pending_target_cover_images
-from facebook_monitor.worker.resident_maintenance import refresh_requested_target_metadata
-from facebook_monitor.worker.resident_maintenance import (
+from facebook_monitor.worker.resident_cover_image_refresh import (
+    refresh_pending_target_cover_images,
+)
+from facebook_monitor.worker.resident_cover_image_refresh import (
     refresh_target_group_cover_image_from_context,
+)
+from facebook_monitor.worker.resident_metadata_refresh import (
+    METADATA_REFRESH_TARGET_LIMIT_PER_TICK,
+)
+from facebook_monitor.worker.resident_metadata_refresh import (
+    refresh_requested_target_metadata,
 )
 from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
@@ -1409,7 +1415,7 @@ def test_resident_scheduler_tick_keeps_cover_refresh_pending_on_shutdown(
             shutdown_context = FakeShutdownMetadataBrowserContext(request_stop)
             with caplog.at_level(
                 logging.INFO,
-                logger="facebook_monitor.worker.resident_maintenance",
+                logger="facebook_monitor.worker.resident_maintenance_errors",
             ):
                 summary = await run_resident_main_scheduler_tick(
                     options=executor.options,

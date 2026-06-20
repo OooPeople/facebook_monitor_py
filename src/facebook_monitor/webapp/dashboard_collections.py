@@ -194,14 +194,14 @@ def read_dashboard_row_data(
             lambda: app_context.repositories.match_history.list_by_targets(
                 target_ids,
                 limit_per_target=5,
-                notified_since=session_started_at,
+                recorded_since=session_started_at,
             ),
             tables=("match_history",),
             violations=violations,
         ),
         hit_record_counts=app_context.repositories.match_history.count_by_targets(
             target_ids,
-            notified_since=session_started_at,
+            recorded_since=session_started_at,
         ),
     )
 

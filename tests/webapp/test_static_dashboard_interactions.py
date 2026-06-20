@@ -110,6 +110,9 @@ def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> No
     dashboard_models = Path("src/facebook_monitor/webapp/dashboard_models.py").read_text(
         encoding="utf-8"
     )
+    dashboard_target_refresh = Path(
+        "src/facebook_monitor/webapp/dashboard_target_refresh.py"
+    ).read_text(encoding="utf-8")
     main_js = Path("src/facebook_monitor/webapp/static/dashboard/main.js").read_text(
         encoding="utf-8"
     )
@@ -123,9 +126,9 @@ def test_next_refresh_countdown_runs_on_frontend_with_thresholded_resync() -> No
     assert "data-next-refresh-seconds" in card_template
     assert "row.next_refresh_seconds" in card_template
     assert '"next_refresh_seconds": row.next_refresh_seconds' in dashboard_payloads
-    assert "class NextRefreshDisplay" in dashboard_models
+    assert "class NextRefreshDisplay" in dashboard_target_refresh
     assert "@cached_property\n    def next_refresh_display" in dashboard_models
-    assert "self.runtime_state.display_next_due_at" in dashboard_models
+    assert "row.runtime_state.display_next_due_at" in dashboard_target_refresh
     assert '"next_refresh_countdown.js"' in assets
     assert "setupNextRefreshCountdowns" in main_js
     assert "syncNextRefreshCountdown" in partial_updates_js

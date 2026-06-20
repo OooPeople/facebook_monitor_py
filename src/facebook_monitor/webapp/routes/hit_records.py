@@ -1,6 +1,6 @@
 """Hit record routes。
 
-職責：提供 UI 重構 Phase 1 所需的 target-scoped 命中紀錄查詢與清空 API。
+職責：提供 target-scoped 命中紀錄查詢與清空 API。
 """
 
 from __future__ import annotations

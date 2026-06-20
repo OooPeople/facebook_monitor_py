@@ -159,7 +159,7 @@ class HitRecordPreviewRow:
     def secondary_text(self) -> str:
         """回傳 preview row 的次要文字。"""
 
-        return format_datetime_for_ui(self.entry.notified_at or self.entry.created_at)
+        return format_datetime_for_ui(self.entry.recorded_at or self.entry.created_at)
 
     def to_preview_row(self) -> TargetPreviewRow:
         """轉成最近掃描 / 命中紀錄共用 preview row。"""

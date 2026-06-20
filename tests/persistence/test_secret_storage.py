@@ -7,15 +7,11 @@ import sqlite3
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.persistence.repositories.global_notification_settings import (
-    GlobalNotificationSettingsRepository,
-)
 from facebook_monitor.persistence.repositories.notification_outbox import NotificationOutboxRepository
 from facebook_monitor.persistence.repositories.target_configs import TargetConfigRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
@@ -54,14 +50,6 @@ def test_application_context_encrypts_notification_secrets_at_rest(tmp_path: Pat
                 discord_webhook="https://discord.com/api/webhooks/example",
             ),
         )
-        app.repositories.global_notification_settings.save(
-            GlobalNotificationSettings(
-                enable_ntfy=True,
-                ntfy_topic="global-topic",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/global",
-            )
-        )
         app.repositories.notification_outbox.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-hash:discord",
@@ -79,23 +67,17 @@ def test_application_context_encrypts_notification_secrets_at_rest(tmp_path: Pat
     with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         target_row = connection.execute("SELECT * FROM target_configs").fetchone()
-        global_row = connection.execute("SELECT * FROM global_notification_settings").fetchone()
         outbox_row = connection.execute("SELECT * FROM notification_outbox").fetchone()
 
     assert target_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert target_row["ntfy_topic"] != "phase0test"
     assert target_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert target_row["discord_webhook"] != "https://discord.com/api/webhooks/example"
-    assert global_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
-    assert global_row["ntfy_topic"] != "global-topic"
-    assert global_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
-    assert global_row["discord_webhook"] != "https://discord.com/api/webhooks/global"
     assert outbox_row["endpoint"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert outbox_row["endpoint"] != "https://discord.com/api/webhooks/outbox"
 
     with SqliteApplicationContext(db_path) as app:
         loaded_config = app.repositories.configs.get_for_target_id(target.id)
-        loaded_settings = app.repositories.global_notification_settings.get()
         loaded_outbox = app.repositories.notification_outbox.get_by_idempotency_key(
             f"{target.id}:item-hash:discord"
         )
@@ -103,8 +85,6 @@ def test_application_context_encrypts_notification_secrets_at_rest(tmp_path: Pat
     assert loaded_config is not None
     assert loaded_config.ntfy_topic == "phase0test"
     assert loaded_config.discord_webhook == "https://discord.com/api/webhooks/example"
-    assert loaded_settings.ntfy_topic == "global-topic"
-    assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/global"
     assert loaded_outbox is not None
     assert loaded_outbox.endpoint == "https://discord.com/api/webhooks/outbox"
 
@@ -134,14 +114,6 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
                 discord_webhook="https://discord.com/api/webhooks/legacy",
             ),
         )
-        GlobalNotificationSettingsRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC).save(
-            GlobalNotificationSettings(
-                enable_ntfy=True,
-                ntfy_topic="legacy-global",
-                enable_discord_notification=True,
-                discord_webhook="https://discord.com/api/webhooks/legacy-global",
-            )
-        )
         NotificationOutboxRepository(connection, secret_codec=PLAINTEXT_SECRET_CODEC).enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-hash:legacy",
@@ -158,7 +130,6 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
 
     with SqliteApplicationContext(db_path) as app:
         loaded_config = app.repositories.configs.get_for_target_id(target.id)
-        loaded_settings = app.repositories.global_notification_settings.get()
         loaded_outbox = app.repositories.notification_outbox.get_by_idempotency_key(
             f"{target.id}:item-hash:legacy"
         )
@@ -166,15 +137,12 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
     assert loaded_config is not None
     assert loaded_config.ntfy_topic == "legacy-topic"
     assert loaded_config.discord_webhook == "https://discord.com/api/webhooks/legacy"
-    assert loaded_settings.ntfy_topic == "legacy-global"
-    assert loaded_settings.discord_webhook == "https://discord.com/api/webhooks/legacy-global"
     assert loaded_outbox is not None
     assert loaded_outbox.endpoint == "https://discord.com/api/webhooks/legacy-outbox"
 
     with closing(sqlite3.connect(db_path)) as connection:
         connection.row_factory = sqlite3.Row
         target_row = connection.execute("SELECT * FROM target_configs").fetchone()
-        global_row = connection.execute("SELECT * FROM global_notification_settings").fetchone()
         outbox_row = connection.execute("SELECT * FROM notification_outbox").fetchone()
         marker_row = connection.execute(
             "SELECT value FROM app_settings WHERE key = ?",
@@ -183,8 +151,6 @@ def test_application_context_reads_legacy_plaintext_notification_secrets(
 
     assert target_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert target_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
-    assert global_row["ntfy_topic"].startswith(ENCRYPTED_SECRET_PREFIX)
-    assert global_row["discord_webhook"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert outbox_row["endpoint"].startswith(ENCRYPTED_SECRET_PREFIX)
     assert marker_row is not None
     assert marker_row["value"] == "1"
@@ -339,4 +305,3 @@ def test_application_context_fails_fast_when_secret_key_missing_for_encrypted_db
         assert "missing" in str(exc)
     else:
         raise AssertionError("encrypted DB without secrets.key should fail fast")
-

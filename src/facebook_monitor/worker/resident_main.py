@@ -47,7 +47,8 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets_detailed
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async_commit_ready
-import facebook_monitor.worker.resident_maintenance as resident_maintenance
+import facebook_monitor.worker.resident_cover_image_refresh as resident_cover_image_refresh
+import facebook_monitor.worker.resident_metadata_refresh as resident_metadata_refresh
 import facebook_monitor.worker.resident_runtime_errors as resident_runtime_errors
 from facebook_monitor.worker.resident_shared import ResidentCycleSummary
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
@@ -447,7 +448,7 @@ async def run_resident_main_scheduler_tick(
     run_bounded_retention_maintenance_if_due(options)
     metadata_refresh_count = 0
     if not stop_requested() and not executor.runtime_restart_requested():
-        metadata_refresh_count = await resident_maintenance.refresh_requested_target_metadata(
+        metadata_refresh_count = await resident_metadata_refresh.refresh_requested_target_metadata(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,
@@ -455,7 +456,7 @@ async def run_resident_main_scheduler_tick(
         )
     cover_image_refresh_count = 0
     if not stop_requested() and not executor.runtime_restart_requested():
-        cover_image_refresh_count = await resident_maintenance.refresh_pending_target_cover_images(
+        cover_image_refresh_count = await resident_cover_image_refresh.refresh_pending_target_cover_images(
             options=options,
             browser_context=browser_context,
             should_stop=stop_requested,

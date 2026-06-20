@@ -10,10 +10,10 @@ from typing import Any
 
 from fastapi.templating import Jinja2Templates
 
-from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_read_models import DatabaseInvariantWarning
 from facebook_monitor.webapp.dashboard_read_models import ProfileSessionWarning
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 
 
 def serialize_sidebar_item(item: SidebarTargetItem) -> dict[str, object]:

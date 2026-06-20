@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.webapp.dashboard_models import SidebarGroupSection
-from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class DashboardViewModel:
 
     @property
     def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
-        """回傳 Phase 5 sidebar 使用的 target 摘要。"""
+        """回傳 sidebar 使用的 target 摘要。"""
 
         return tuple(row.sidebar_item for row in self.rows)
 

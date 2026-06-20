@@ -43,7 +43,7 @@ class FullHitRecordRow:
     def recorded_at(self) -> str:
         """回傳命中紀錄寫入時間。"""
 
-        recorded_at = self.entry.notified_at or self.entry.created_at
+        recorded_at = self.entry.recorded_at or self.entry.created_at
         return format_datetime_for_ui(recorded_at)
 
     @property

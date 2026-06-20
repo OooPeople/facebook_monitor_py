@@ -12,7 +12,6 @@ from fastapi.templating import Jinja2Templates
 from facebook_monitor.webapp.dependencies import get_db_path
 from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.dependencies import run_web_read_operation
-from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_payloads import serialize_profile_session_warning
 from facebook_monitor.webapp.dashboard_payloads import serialize_database_invariant_warning
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_item
@@ -21,6 +20,7 @@ from facebook_monitor.webapp.dashboard_payloads import serialize_target_card
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
 from facebook_monitor.webapp.dashboard_read_models import DashboardViewModel
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 
 
 DashboardViewLoader = Callable[..., DashboardViewModel]
@@ -40,7 +40,7 @@ def register_dashboard_partial_routes(
 
     @app.get("/api/sidebar")
     async def dashboard_sidebar(request: Request) -> dict[str, object]:
-        """提供 Phase 10 partial update 使用的 sidebar read model。"""
+        """提供 partial update 使用的 sidebar read model。"""
 
         db_path = get_db_path(request)
         session_started_at = get_session_started_at(request)
@@ -86,7 +86,7 @@ def register_dashboard_partial_routes(
 
     @app.get("/api/targets/{target_id}/card")
     async def target_card(request: Request, target_id: str) -> dict[str, object]:
-        """提供 Phase 10 target-level partial update 的單卡 read model。"""
+        """提供 target-level partial update 的單卡 read model。"""
 
         db_path = get_db_path(request)
         session_started_at = get_session_started_at(request)

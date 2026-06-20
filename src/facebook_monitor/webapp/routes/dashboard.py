@@ -12,7 +12,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 
-from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_queries import get_dashboard_view
 from facebook_monitor.webapp.dashboard_queries import get_target_card
@@ -20,6 +19,7 @@ from facebook_monitor.webapp.dashboard_queries import list_sidebar_items
 from facebook_monitor.webapp.dashboard_read_models import DashboardRevision
 from facebook_monitor.webapp.dashboard_read_models import DashboardViewModel
 from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 from facebook_monitor.webapp.routes.dashboard_page import register_dashboard_page_routes
 from facebook_monitor.webapp.routes.dashboard_partial_routes import (
     register_dashboard_partial_routes,

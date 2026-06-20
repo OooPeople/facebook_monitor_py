@@ -12,7 +12,6 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.webapp.dashboard_collections import read_configs_by_target
 from facebook_monitor.webapp.dashboard_collections import read_dashboard_collections
-from facebook_monitor.webapp.dashboard_models import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadResult
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
@@ -21,6 +20,7 @@ from facebook_monitor.webapp.dashboard_read_models import DatabaseInvariantWarni
 from facebook_monitor.webapp.dashboard_rows import build_dashboard_rows
 from facebook_monitor.webapp.dashboard_rows import read_target_card_row
 from facebook_monitor.webapp.dashboard_sidebar import build_sidebar_groups
+from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_warnings import build_database_invariant_warning
 from facebook_monitor.webapp.dashboard_warnings import build_profile_session_warning
 from facebook_monitor.webapp.read_model_context import read_application_context

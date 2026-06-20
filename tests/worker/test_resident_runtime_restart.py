@@ -296,7 +296,7 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
         fake_launch_persistent_context_async,
     )
     monkeypatch.setattr(
-        "facebook_monitor.worker.resident_maintenance.refresh_requested_target_metadata",
+        "facebook_monitor.worker.resident_metadata_refresh.refresh_requested_target_metadata",
         fake_refresh_requested_target_metadata,
     )
 

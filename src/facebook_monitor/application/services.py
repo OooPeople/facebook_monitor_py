@@ -1,6 +1,6 @@
-"""Application service facade。
+"""Application service composition façade。
 
-職責：保留 `TargetApplicationService` 作為 target application facade，並把
+職責：提供 `TargetApplicationService` 作為 target application façade，並把
 實際職責委派給 target registry/config/runtime/monitoring command services。
 """
 
@@ -51,7 +51,7 @@ from facebook_monitor.persistence.repositories.targets import TargetRepository
 
 
 class TargetApplicationService:
-    """相容 facade：委派 target registry/config/runtime/monitoring services。"""
+    """正式 composition façade：委派 target registry/config/runtime/monitoring services。"""
 
     def __init__(
         self,

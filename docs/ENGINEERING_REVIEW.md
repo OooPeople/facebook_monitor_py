@@ -6,7 +6,9 @@
 
 - Google Engineering Practices：design、functionality、complexity、tests、naming、comments、style、documentation。
 - GitLab Code Review Guidelines：quality、performance、reliability、security、observability、maintainability、backwards compatibility、deployment。
-- OWASP Code Review Guide / Secure Code Review Cheat Sheet：manual security review、trust boundary、input validation、authentication / authorization、data flow、error handling、configuration、dependency risk。
+- OWASP Code Review Guide / Secure Code Review Cheat Sheet：manual security review、
+  trust boundary、input validation、authentication / authorization、data flow、
+  error handling、configuration、dependency risk。
 
 ## 標準審查流程
 
@@ -77,7 +79,10 @@
 
 review resident worker / scan commit state machine 時，需區分長期防禦與過渡相容：
 
-- 長期防禦邊界：scan commit guard、target inactive guard、owner / page / started_at mismatch guard、scanner result target identity validation、cleanup resource ownership、SQLite retry / stale recovery、notification outbox idempotency、support bundle redaction。
+- 長期防禦邊界：scan commit guard、target inactive guard、owner / page /
+  started_at mismatch guard、scanner result target identity validation、
+  cleanup resource ownership、SQLite retry / stale recovery、notification outbox
+  idempotency、support bundle redaction。
 - 過渡相容邊界：sync / one-shot finalizing scanner summary、尚未遷移為 commit-ready result 的 debug / fallback path。
 
 正式 async resident path 不應為過渡相容保留 catch-all result fallback；scanner 應產生 commit-ready result，coordinator 應是 visible scan state 的 write owner。

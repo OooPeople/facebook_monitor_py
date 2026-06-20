@@ -169,7 +169,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
                 display_text="本次啟動期間的票券命中\n補充第二行",
                 permalink="https://www.facebook.com/groups/111/posts/3333333333",
                 include_rule="票券",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )
@@ -213,7 +213,7 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         encoding="utf-8"
     )
     assert "通知狀態" not in hit_records_js
-    assert "item.notified_at" not in hit_records_js
+    assert "item.recorded_at" in hit_records_js
     assert sidebar_response.status_code == 200
     sidebar_payload = sidebar_response.json()
     assert sidebar_payload["items"][0]["target_id"] == first_target.id
@@ -379,7 +379,7 @@ def test_hit_record_api_returns_503_for_corrupt_match_history_datetime(
                 item_key="bad-history-datetime",
                 text="日期壞掉的命中紀錄",
                 include_rule="日期",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )
@@ -431,7 +431,7 @@ def test_hit_record_count_ignores_other_target_corrupt_match_history_datetime(
                 item_key="other-target-bad-history-datetime",
                 text="其他 target 日期壞掉的命中紀錄",
                 include_rule="日期",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )
@@ -448,10 +448,10 @@ def test_hit_record_count_ignores_other_target_corrupt_match_history_datetime(
     assert response.json()["total_count"] == 0
 
 
-def test_hit_record_count_returns_503_for_corrupt_match_history_notified_at(
+def test_hit_record_count_returns_503_for_corrupt_match_history_recorded_at(
     tmp_path: Path,
 ) -> None:
-    """notified_at 壞掉時，count 也不可宣稱 read model 可用。"""
+    """recorded_at 壞掉時，count 也不可宣稱 read model 可用。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -459,7 +459,7 @@ def test_hit_record_count_returns_503_for_corrupt_match_history_notified_at(
             UpsertGroupPostsTargetRequest(
                 group_id="hit-history-notified-at-corrupt",
                 canonical_url="https://www.facebook.com/groups/hit-history-notified-at-corrupt",
-                group_name="hit history notified_at corrupt",
+                group_name="hit history recorded_at corrupt",
             )
         )
     app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
@@ -473,12 +473,12 @@ def test_hit_record_count_returns_503_for_corrupt_match_history_notified_at(
                 item_key="bad-history-notified-at",
                 text="通知時間壞掉的命中紀錄",
                 include_rule="日期",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )
         app_context.repositories.match_history.connection.execute(
-            "UPDATE match_history SET notified_at = ? WHERE target_id = ?",
+            "UPDATE match_history SET recorded_at = ? WHERE target_id = ?",
             ("not-a-datetime", target.id),
         )
 
@@ -514,7 +514,7 @@ def test_hit_record_preview_count_ignores_corrupt_match_history_before_session(
                 item_key="old-bad-history-datetime",
                 text="舊 session 日期壞掉的命中紀錄",
                 include_rule="日期",
-                notified_at=app.state.session_started_at - timedelta(seconds=1),
+                recorded_at=app.state.session_started_at - timedelta(seconds=1),
                 created_at=app.state.session_started_at - timedelta(seconds=1),
             )
         )
@@ -585,7 +585,7 @@ def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> No
                 text='<svg onload="alert(1)"></svg> unsafe hit permalink',
                 permalink="javascript:alert(1)",
                 include_rule="unsafe",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )
@@ -635,7 +635,7 @@ def test_hit_record_preview_splits_multiple_matched_keyword_badges(tmp_path: Pat
                 author="王小明",
                 text="售6/5,6/6的票各一張",
                 include_rule="6/5;6/6",
-                notified_at=app.state.session_started_at + timedelta(seconds=1),
+                recorded_at=app.state.session_started_at + timedelta(seconds=1),
                 created_at=app.state.session_started_at + timedelta(seconds=1),
             )
         )

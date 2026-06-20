@@ -1,6 +1,10 @@
 # Frontend Vendor Provenance
 
-本文件記錄 Web UI 直接 vendored 的第三方前端檔案來源、版本、授權與更新方式。機器可驗證的 checksum 主來源是 `src/facebook_monitor/webapp/static/vendor/frontend-vendor.manifest.json`；release validation 會讀該 manifest 驗證 repository 內實際保存的第三方檔案。Web UI 呈現契約仍看 `docs/WEB_UI_CONTRACT.md`。
+本文件記錄 Web UI 直接 vendored 的第三方前端檔案來源、版本、授權與更新方式。
+機器可驗證的 checksum 主來源是
+`src/facebook_monitor/webapp/static/vendor/frontend-vendor.manifest.json`；
+release validation 會讀該 manifest 驗證 repository 內實際保存的第三方檔案。
+Web UI 呈現契約仍看 `docs/WEB_UI_CONTRACT.md`。
 
 ## SortableJS
 

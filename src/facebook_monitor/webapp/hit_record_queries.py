@@ -73,7 +73,7 @@ def list_hit_record_preview_rows(
                     lambda: app_context.repositories.match_history.list_by_target(
                         target_id,
                         limit=limit,
-                        notified_since=session_started_at,
+                        recorded_since=session_started_at,
                     ),
                     tables=("match_history",),
                     violations=violations,
@@ -149,11 +149,11 @@ def count_hit_records(
             _raise_if_hit_record_count_is_invariant_unsafe(
                 app_context.repositories.match_history.connection,
                 target_id=target_id,
-                notified_since=session_started_at,
+                recorded_since=session_started_at,
             )
             return app_context.repositories.match_history.count_by_target(
                 target_id,
-                notified_since=session_started_at,
+                recorded_since=session_started_at,
             )
     except sqlite3.OperationalError as exc:
         raise_dashboard_read_unavailable_if_locked(exc)
@@ -164,19 +164,19 @@ def _raise_if_hit_record_count_is_invariant_unsafe(
     connection: sqlite3.Connection,
     *,
     target_id: str,
-    notified_since: datetime | None,
+    recorded_since: datetime | None,
 ) -> None:
     """確認 count 查詢範圍內沒有會讓 hit-record mapper 失敗的 datetime。"""
 
     rows = connection.execute(
         """
-        SELECT id, notified_at, created_at
+        SELECT id, recorded_at, created_at
         FROM match_history
         WHERE target_id = ?
         """,
         (target_id,),
     ).fetchall()
-    since_text = encode_datetime(notified_since)
+    since_text = encode_datetime(recorded_since)
     for row in rows:
         if _hit_record_datetime_row_blocks_count(row, since_text=since_text):
             raise DashboardReadUnavailable("database invariant violation")
@@ -189,15 +189,15 @@ def _hit_record_datetime_row_blocks_count(
 ) -> bool:
     """回傳單筆 match_history datetime 是否會讓對應 read model 不可讀。"""
 
-    notified_at = str(row["notified_at"] or "")
+    recorded_at = str(row["recorded_at"] or "")
     if since_text:
-        if not notified_at:
+        if not recorded_at:
             return False
-        if not _is_valid_datetime_text(notified_at):
+        if not _is_valid_datetime_text(recorded_at):
             return True
-        if notified_at < since_text:
+        if recorded_at < since_text:
             return False
-    elif notified_at and not _is_valid_datetime_text(notified_at):
+    elif recorded_at and not _is_valid_datetime_text(recorded_at):
         return True
     created_at = str(row["created_at"] or "")
     return not created_at or not _is_valid_datetime_text(created_at)

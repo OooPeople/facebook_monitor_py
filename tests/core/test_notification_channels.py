@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from facebook_monitor.application.target_requests import TargetConfigPatch
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.notification_channels import NOTIFICATION_ENDPOINT_FIELDS
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
@@ -28,7 +27,6 @@ def test_notification_setting_fields_exist_on_config_models() -> None:
 
     for model in (
         TargetConfig,
-        GlobalNotificationSettings,
         SidebarGroupConfigTemplate,
         TargetConfigPatch,
     ):

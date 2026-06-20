@@ -16,7 +16,6 @@ from facebook_monitor.core.input_limits import MAX_DISPLAY_NAME_LENGTH
 from facebook_monitor.core.input_limits import MAX_NOTIFICATION_ENDPOINT_LENGTH
 from facebook_monitor.core.input_limits import MAX_NTFY_TOPIC_LENGTH
 from facebook_monitor.core.input_limits import MAX_TARGET_URL_LENGTH
-from facebook_monitor.core.models import GlobalNotificationSettings
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.facebook.group_metadata import GroupMetadata
@@ -285,14 +284,12 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/example_token"
 
 
-def test_create_target_route_does_not_copy_global_notification_secrets(
+def test_create_target_route_uses_blank_notification_defaults(
     tmp_path: Path,
 ) -> None:
-    """新增 target 不再套用全域通知預設，避免看不見的設定影響新 target。"""
+    """新增 target 只使用表單與 target-scoped defaults，不讀任何全域通知設定。"""
 
     db_path = tmp_path / "app.db"
-    global_topic = "global-topic"
-    global_webhook = "https://discord.com/api/webhooks/1234567890/global_token"
     client = TestClient(
         create_app(
             db_path=db_path,
@@ -300,15 +297,6 @@ def test_create_target_route_does_not_copy_global_notification_secrets(
             group_name_resolver=lambda _profile_dir, _url: "測試社團",
         )
     )
-    with SqliteApplicationContext(db_path) as app_context:
-        app_context.repositories.global_notification_settings.save(
-            GlobalNotificationSettings(
-                enable_ntfy=True,
-                ntfy_topic=global_topic,
-                enable_discord_notification=True,
-                discord_webhook=global_webhook,
-            )
-        )
 
     form_response = client.get("/targets/new")
     create_response = client.post(
@@ -325,8 +313,6 @@ def test_create_target_route_does_not_copy_global_notification_secrets(
     )
 
     assert form_response.status_code == 200
-    assert global_topic not in form_response.text
-    assert global_webhook not in form_response.text
     assert 'name="ntfy_topic_keep" type="hidden" value="on"' not in form_response.text
     assert "已設定；留空代表不變更" not in form_response.text
     assert create_response.status_code == 303

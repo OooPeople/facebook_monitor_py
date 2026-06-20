@@ -104,7 +104,7 @@ def test_match_history_repository_refreshes_duplicates_and_keeps_target_limit(
                     item_key=f"item-{index}",
                     text=f"命中 {index}",
                     include_rule="票",
-                    notified_at=base_time + timedelta(seconds=index),
+                    recorded_at=base_time + timedelta(seconds=index),
                     created_at=base_time + timedelta(seconds=index),
                 )
             )
@@ -121,7 +121,7 @@ def test_match_history_repository_refreshes_duplicates_and_keeps_target_limit(
                 item_key="item-2",
                 text="刷新後的命中",
                 include_rule="票",
-                notified_at=base_time + timedelta(minutes=1),
+                recorded_at=base_time + timedelta(minutes=1),
                 created_at=base_time + timedelta(minutes=1),
             )
         )
@@ -164,7 +164,7 @@ def test_match_history_repository_prunes_all_target_limits_independently(
                         item_key=f"{target.group_id}-{index}",
                         text=f"命中 {index}",
                         include_rule="票",
-                        notified_at=base_time + timedelta(seconds=index),
+                        recorded_at=base_time + timedelta(seconds=index),
                         created_at=base_time + timedelta(seconds=index),
                     )
                 )
@@ -261,7 +261,7 @@ def test_match_history_repository_batch_window_matches_single_target_order(
                 item_key="newer",
                 include_rule="票",
                 text="newer",
-                notified_at=base_time + timedelta(seconds=1),
+                recorded_at=base_time + timedelta(seconds=1),
                 created_at=base_time + timedelta(seconds=1),
             )
         )
@@ -273,7 +273,7 @@ def test_match_history_repository_batch_window_matches_single_target_order(
                 item_key="older",
                 include_rule="票",
                 text="older",
-                notified_at=base_time,
+                recorded_at=base_time,
                 created_at=base_time,
             )
         )

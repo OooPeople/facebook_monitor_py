@@ -10,6 +10,7 @@ import sqlite3
 
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.persistence.repositories.targets import TargetRepository
+from facebook_monitor.persistence.schema import MIN_SUPPORTED_SCHEMA_VERSION
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.persistence.schema import initialize_schema
@@ -83,17 +84,24 @@ def test_initialize_schema_rejects_too_old_schema_before_creating_current_tables
     """低於支援下限的 schema 不應先建立 current tables 才失敗。"""
 
     db_path = tmp_path / "app.db"
+    too_old_version = MIN_SUPPORTED_SCHEMA_VERSION - 1
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
-        connection.execute("INSERT INTO schema_metadata (key, value) VALUES ('version', '9')")
+        connection.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES ('version', ?)",
+            (str(too_old_version),),
+        )
 
     try:
         with SqliteConnection(db_path) as sqlite:
             initialize_schema(sqlite.require_connection())
     except RuntimeError as exc:
-        assert "Unsupported SQLite schema version 9" in str(exc)
-        assert "automatic migration from version 10" in str(exc)
+        assert f"Unsupported SQLite schema version {too_old_version}" in str(exc)
+        assert (
+            f"automatic migration from version {MIN_SUPPORTED_SCHEMA_VERSION}"
+            in str(exc)
+        )
     else:
         raise AssertionError("schema version below migration floor should fail fast")
 

@@ -115,7 +115,7 @@ def match_history_from_row(row: sqlite3.Row) -> MatchHistoryEntry:
         permalink=row["permalink"],
         include_rule=row["include_rule"],
         timestamp_text=row["timestamp_text"],
-        notified_at=decode_datetime(row["notified_at"]),
+        recorded_at=decode_datetime(row["recorded_at"]),
         created_at=created_at,
         include_rules=split_keyword_rule_text(row["include_rule"]),
     )

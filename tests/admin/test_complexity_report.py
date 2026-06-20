@@ -5,16 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.admin.complexity_report import collect_report
-from scripts.admin.complexity_report import load_annotations
-from scripts.admin.complexity_report import load_annotations_with_warnings
 from scripts.admin.complexity_report import main
-from scripts.admin.complexity_report import render_report
-from scripts.admin.complexity_report import ReviewAnnotation
-from scripts.admin.complexity_report import known_large_classes
-from scripts.admin.complexity_report import known_large_functions
-from scripts.admin.complexity_report import top_functions_by_ccn
-from scripts.admin.complexity_report import watchlist_classes
+from scripts.admin.complexity_report_annotations import load_annotations
+from scripts.admin.complexity_report_annotations import load_annotations_with_warnings
+from scripts.admin.complexity_report_collect import collect_report
+from scripts.admin.complexity_report_models import ReviewAnnotation
+from scripts.admin.complexity_report_rankings import known_large_classes
+from scripts.admin.complexity_report_rankings import known_large_files
+from scripts.admin.complexity_report_rankings import known_large_functions
+from scripts.admin.complexity_report_rankings import top_files_by_lines
+from scripts.admin.complexity_report_rankings import top_functions_by_ccn
+from scripts.admin.complexity_report_rankings import watchlist_classes
+from scripts.admin.complexity_report_rankings import watchlist_files
+from scripts.admin.complexity_report_rankings import watchlist_functions
+from scripts.admin.complexity_report_renderers import render_report
 
 
 def test_complexity_report_collects_all_functions_and_ranks(tmp_path: Path) -> None:
@@ -344,6 +348,270 @@ def test_complexity_report_class_known_large_hides_member_functions(
     assert [metric.display_name for metric, _ in known_rows] == ["LegacyPresenter"]
 
 
+def test_complexity_report_watchlist_sections_keep_symbol_kinds_separate(
+    tmp_path: Path,
+) -> None:
+    """file/function/class watchlist rows 不應在 report sections 互相展開。"""
+
+    source = tmp_path / "sample.py"
+    source.write_text(
+        "\n".join(
+            [
+                "class WatchedClass:",
+                "    def method(self, value):",
+                "        if value:",
+                "            return 1",
+                "        return 0",
+                "",
+                "def watched_function(value):",
+                "    if value:",
+                "        return 1",
+                "    return 0",
+                "",
+                "def file_level_only(value):",
+                "    if value:",
+                "        return 1",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=source.resolve().as_posix(),
+            symbol="",
+            symbol_kind="file",
+            category="fixture_file",
+            reason="file section only",
+        ),
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=source.resolve().as_posix(),
+            symbol="watched_function",
+            symbol_kind="function",
+            category="fixture_function",
+            reason="function section only",
+        ),
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=source.resolve().as_posix(),
+            symbol="WatchedClass",
+            symbol_kind="class",
+            category="fixture_class",
+            reason="class section only",
+        ),
+    )
+
+    report = collect_report(
+        [source],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+    function_rows = watchlist_functions(report.functions, report.annotations, top=10)
+    class_rows = watchlist_classes(report.classes, report.annotations, top=10)
+    file_rows = watchlist_files(report.source_files, report.annotations, top=10)
+    payload = json.loads(render_report(report, top=10, format_name="json"))
+
+    assert [metric.name for metric, _ in function_rows] == ["watched_function"]
+    assert [metric.display_name for metric, _ in class_rows] == ["WatchedClass"]
+    assert [metric.display_path for metric, _ in file_rows] == [
+        source.resolve().as_posix()
+    ]
+    assert [item["name"] for item in payload["watchlist_functions"]] == [
+        "watched_function"
+    ]
+    assert [item["name"] for item in payload["watchlist_classes"]] == [
+        "WatchedClass"
+    ]
+    assert [item["path"] for item in payload["watchlist_files"]] == [
+        source.resolve().as_posix()
+    ]
+
+
+def test_complexity_report_file_known_large_suppresses_primary_without_function_noise(
+    tmp_path: Path,
+) -> None:
+    """file-level known-large 可壓制主排行，但不展開成 known_large_functions。"""
+
+    known_source = tmp_path / "known.py"
+    known_source.write_text(
+        "\n".join(
+            [
+                "def known_file_hotspot(value):",
+                "    if value == 1:",
+                "        return 1",
+                "    if value == 2:",
+                "        return 2",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    current_source = tmp_path / "current.py"
+    current_source.write_text(
+        "\n".join(
+            [
+                "def current_hotspot(value):",
+                "    if value:",
+                "        return 1",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="known_large",
+            path_glob=known_source.resolve().as_posix(),
+            symbol="",
+            symbol_kind="file",
+            category="fixture_file",
+            reason="hide whole reviewed file from primary ranking",
+        ),
+    )
+
+    report = collect_report(
+        [tmp_path],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+    ranked_functions = top_functions_by_ccn(
+        report.functions,
+        top=10,
+        annotations=report.annotations,
+    )
+    ranked_files = top_files_by_lines(
+        report.source_files,
+        top=10,
+        annotations=report.annotations,
+    )
+    ranked_functions_with_known = top_functions_by_ccn(
+        report.functions,
+        top=10,
+        annotations=report.annotations,
+        include_known_large=True,
+    )
+    ranked_files_with_known = top_files_by_lines(
+        report.source_files,
+        top=10,
+        annotations=report.annotations,
+        include_known_large=True,
+    )
+    known_function_rows = known_large_functions(
+        report.functions,
+        report.annotations,
+        top=10,
+    )
+    known_file_rows = known_large_files(report.source_files, report.annotations, top=10)
+    payload = json.loads(render_report(report, top=10, format_name="json"))
+
+    assert {metric.name for metric in ranked_functions} == {"current_hotspot"}
+    assert {metric.display_path for metric in ranked_files} == {
+        current_source.resolve().as_posix()
+    }
+    assert {metric.name for metric in ranked_functions_with_known} == {
+        "current_hotspot",
+        "known_file_hotspot",
+    }
+    assert {metric.display_path for metric in ranked_files_with_known} == {
+        current_source.resolve().as_posix(),
+        known_source.resolve().as_posix(),
+    }
+    assert known_function_rows == []
+    assert [metric.display_path for metric, _ in known_file_rows] == [
+        known_source.resolve().as_posix()
+    ]
+    assert payload["known_large_functions"] == []
+    assert [item["path"] for item in payload["known_large_files"]] == [
+        known_source.resolve().as_posix()
+    ]
+
+
+def test_complexity_report_file_annotation_overlap_is_status_aware(
+    tmp_path: Path,
+) -> None:
+    """broad watchlist 在前時，specific known-large 仍應壓制主排行。"""
+
+    known_source = tmp_path / "known.py"
+    known_source.write_text(
+        "\n".join(
+            [
+                "def known_file_hotspot(value):",
+                "    if value == 1:",
+                "        return 1",
+                "    if value == 2:",
+                "        return 2",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    current_source = tmp_path / "current.py"
+    current_source.write_text(
+        "\n".join(
+            [
+                "def current_hotspot(value):",
+                "    if value:",
+                "        return 1",
+                "    return 0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    annotations = (
+        ReviewAnnotation(
+            status="watchlist",
+            path_glob=(tmp_path / "*.py").resolve().as_posix(),
+            symbol="",
+            symbol_kind="file",
+            category="fixture_broad_watchlist",
+            reason="broad file watchlist comes first",
+        ),
+        ReviewAnnotation(
+            status="known_large",
+            path_glob=known_source.resolve().as_posix(),
+            symbol="",
+            symbol_kind="file",
+            category="fixture_specific_known",
+            reason="specific known-large still suppresses",
+        ),
+    )
+
+    report = collect_report(
+        [tmp_path],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=annotations,
+    )
+    ranked_functions = top_functions_by_ccn(
+        report.functions,
+        top=10,
+        annotations=report.annotations,
+    )
+    ranked_files = top_files_by_lines(
+        report.source_files,
+        top=10,
+        annotations=report.annotations,
+    )
+    known_file_rows = known_large_files(report.source_files, report.annotations, top=10)
+    watchlist_file_rows = watchlist_files(report.source_files, report.annotations, top=10)
+
+    assert {metric.name for metric in ranked_functions} == {"current_hotspot"}
+    assert {metric.display_path for metric in ranked_files} == {
+        current_source.resolve().as_posix()
+    }
+    assert [metric.display_path for metric, _ in known_file_rows] == [
+        known_source.resolve().as_posix()
+    ]
+    assert {metric.display_path for metric, _ in watchlist_file_rows} == {
+        current_source.resolve().as_posix(),
+        known_source.resolve().as_posix(),
+    }
+
+
 def test_complexity_report_symbol_warning_only_for_in_scope_scan(
     tmp_path: Path,
 ) -> None:
@@ -538,7 +806,8 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     }
 
     assert len(known_large) == 8
-    assert len(watchlist) == 22
+    assert len(watchlist) == 23
+    assert "scripts/admin/complexity_report*.py" in watchlist_paths
     assert "src/facebook_monitor/facebook/feed_extractor.py" not in {
         annotation.path_glob for annotation in known_large
     }

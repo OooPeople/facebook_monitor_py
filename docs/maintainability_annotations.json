@@ -89,6 +89,18 @@
   ],
   "watchlist": [
     {
+      "path_glob": "scripts/admin/complexity_report*.py",
+      "category": "maintainability_report_tool",
+      "reason": "Complexity report-only 治理工具 family；已拆分 metric collection、annotation matching、ranking、renderer 與 CLI，新增治理 family 前應維持模組邊界。",
+      "must_not_add": [
+        "production runtime behavior",
+        "release validation policy",
+        "business logic",
+        "hard gate threshold"
+      ],
+      "split_trigger": "新增另一個 renderer、annotation kind、metric source 或 report policy family"
+    },
+    {
       "path_glob": "src/facebook_monitor/updates/download*.py",
       "category": "updater_download_pipeline",
       "reason": "download pipeline split modules；維持 path guard、fetch/hash verification、marker publish 邊界。",

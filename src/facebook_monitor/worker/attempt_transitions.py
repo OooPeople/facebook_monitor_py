@@ -34,13 +34,7 @@ def transition_from_scan_commit_outcome(
     reused_page: bool,
 ) -> ResidentAttemptTerminalTransition:
     """依 scan commit outcome 建立 terminal attempt outcome。"""
-    if commit_outcome.kind == ScanCommitOutcomeKind.IDLE_COMMITTED:
-        outcome = ResidentAttemptOutcome.succeeded(
-            target_id=target_id,
-            opened_page=opened_page,
-            reused_page=reused_page,
-        )
-    elif commit_outcome.kind == ScanCommitOutcomeKind.SUCCESS_COMMITTED:
+    if commit_outcome.kind == ScanCommitOutcomeKind.SUCCESS_COMMITTED:
         outcome = ResidentAttemptOutcome.succeeded(
             target_id=target_id,
             opened_page=opened_page,

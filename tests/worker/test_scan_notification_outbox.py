@@ -20,6 +20,7 @@ from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
 from facebook_monitor.core.models import NotificationStatus
+from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
@@ -33,6 +34,9 @@ from facebook_monitor.notifications.outbox_dispatch_service import (
 from facebook_monitor.notifications.outbox_dispatch_service import retry_failed_notification_outbox
 from facebook_monitor.notifications.outbox_enqueue_service import (
     build_notification_idempotency_key,
+)
+from facebook_monitor.notifications.outbox_enqueue_service import (
+    queue_match_notifications_after_commit,
 )
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 
@@ -48,6 +52,68 @@ def _dispatch_pending_for_db(
 
     with SqliteApplicationContext(db_path) as app:
         return dispatch_new_pending_notification_outbox(app=app, **kwargs)
+
+
+def test_queue_match_notifications_reports_no_entries_for_duplicate_dedupe(
+    tmp_path: Path,
+) -> None:
+    """match notification dedupe 已存在時，不應建立新的 outbox row。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="phase0test"),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        logical_seen = app.repositories.logical_items.mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="post:dedupe",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("post:dedupe",),
+        )
+
+        first_entries = queue_match_notifications_after_commit(
+            app=app,
+            target=target,
+            config=config,
+            item_key="post:dedupe",
+            logical_item_id=logical_seen.logical_item_id,
+            author="作者",
+            item_text="票券",
+            permalink="https://www.facebook.com/groups/123/posts/1",
+            matched_keyword="票券",
+            item_kind=ItemKind.POST,
+        )
+        duplicate_entries = queue_match_notifications_after_commit(
+            app=app,
+            target=target,
+            config=config,
+            item_key="post:dedupe-alias",
+            logical_item_id=logical_seen.logical_item_id,
+            author="作者",
+            item_text="票券",
+            permalink="https://www.facebook.com/groups/123/posts/1",
+            matched_keyword="票券",
+            item_kind=ItemKind.POST,
+        )
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+        dedupe_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_dedupe WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
+
+    assert len(first_entries) == 1
+    assert duplicate_entries == ()
+    assert len(pending_outbox) == 1
+    assert dedupe_count == 1
 
 
 def test_finalize_does_not_send_notification_when_transaction_rolls_back(

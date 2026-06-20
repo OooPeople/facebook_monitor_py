@@ -14,7 +14,7 @@ def side_effects_for_success(result: ScanFinalizeResult) -> ScanCommitSideEffect
         wrote_scan_run=result.scan_run_id > 0,
         wrote_latest_scan=result.scan_run_id > 0,
         wrote_match_history=bool(result.history_entries),
-        enqueued_match_notification_outbox=bool(result.notification_payloads),
+        enqueued_match_notification_outbox=result.match_notification_outbox_count > 0,
         updated_scope_state=not result.baseline_mode or bool(result.match_results),
         updated_runtime_state=True,
     )

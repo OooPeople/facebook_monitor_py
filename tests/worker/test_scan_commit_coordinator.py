@@ -174,6 +174,47 @@ def test_scan_commit_coordinator_commits_success_and_idle(
     assert outbox_entry.source_scan_run_id is None
 
 
+def test_scan_commit_success_does_not_report_outbox_when_channels_disabled(
+    tmp_path: Path,
+) -> None:
+    """有 match payload 但無啟用 channel 時，不可回報已 enqueue outbox。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app, include_keywords=("票券",))
+        outcome = commit_success(
+            app=app,
+            target=fixture.target,
+            config=fixture.config,
+            result=SuccessScanResult(
+                target_id=fixture.target.id,
+                url=fixture.target.canonical_url,
+                items=(
+                    NormalizedScanItem(
+                        item_kind=ItemKind.POST,
+                        item_key="post:no-channel-success",
+                        alias_keys=("post:no-channel-success",),
+                        group_id=fixture.target.group_id,
+                        author="作者",
+                        text="這是一篇票券貼文",
+                        permalink=f"{fixture.target.canonical_url}/posts/2",
+                    ),
+                ),
+                item_count=1,
+                metadata={"worker": "phase6"},
+            ),
+            commit_guard=fixture.commit_guard,
+        )
+        history = app.repositories.match_history.list_by_target(fixture.target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert outcome.kind == ScanCommitOutcomeKind.SUCCESS_COMMITTED
+    assert outcome.side_effects.wrote_match_history is True
+    assert outcome.side_effects.enqueued_match_notification_outbox is False
+    assert len(history) == 1
+    assert pending_outbox == []
+
+
 def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
     tmp_path: Path,
 ) -> None:

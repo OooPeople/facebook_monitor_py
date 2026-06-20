@@ -55,7 +55,7 @@ def queue_match_notifications_after_commit(
     matched_keyword: str,
     logical_item_id: int | None = None,
     item_kind: ItemKind = ItemKind.POST,
-) -> None:
+) -> tuple[NotificationOutboxEntry, ...]:
     """依目前設定寫入 match notification outbox，commit 後才做外部 I/O。"""
 
     entries = enqueue_match_notifications(
@@ -72,6 +72,7 @@ def queue_match_notifications_after_commit(
     )
     if entries:
         _queue_notification_outbox_dispatch_wake_after_commit(app)
+    return entries
 
 
 def queue_runtime_failure_notifications_after_commit(

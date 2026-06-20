@@ -17,7 +17,6 @@ class ScanCommitOutcomeKind(StrEnum):
     """scan commit helper 的內部結果分類。"""
 
     SUCCESS_COMMITTED = "success_committed"
-    IDLE_COMMITTED = "idle_committed"
     SKIP_COMMITTED = "skip_committed"
     FAILURE_COMMITTED = "failure_committed"
     GUARD_MISMATCH = "guard_mismatch"

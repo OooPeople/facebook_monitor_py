@@ -134,15 +134,6 @@ def test_scan_commit_outcome_classifies_visible_and_stale_results() -> None:
 def test_attempt_transition_maps_scan_commit_outcome_without_side_effects() -> None:
     """terminal transition 只產生 outcome 與 cleanup plan，不執行 cleanup。"""
 
-    success = transition_from_scan_commit_outcome(
-        target_id="target-1",
-        commit_outcome=ScanCommitOutcome(
-            kind=ScanCommitOutcomeKind.IDLE_COMMITTED,
-            target_id="target-1",
-        ),
-        opened_page=True,
-        reused_page=False,
-    )
     stale = transition_from_scan_commit_outcome(
         target_id="target-1",
         commit_outcome=ScanCommitOutcome(
@@ -174,16 +165,12 @@ def test_attempt_transition_maps_scan_commit_outcome_without_side_effects() -> N
         reused_page=False,
     )
 
-    success_result = success.outcome.to_scan_result()
     stale_result = stale.outcome.to_scan_result()
     committed_skip_result = committed_skip.outcome.to_scan_result()
     committed_success_result = committed_success.outcome.to_scan_result()
 
-    assert success_result.success is True
-    assert success_result.opened_page is True
     assert committed_success_result.success is True
     assert committed_success_result.opened_page is True
-    assert success.cleanup_plan is None
     assert committed_success.cleanup_plan is None
     assert stale.outcome.kind == ResidentAttemptOutcomeKind.OWNER_CHANGED
     assert stale_result.skipped is True

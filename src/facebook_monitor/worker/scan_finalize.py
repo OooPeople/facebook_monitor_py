@@ -106,6 +106,7 @@ class ScanFinalizeResult:
     match_results: tuple[ScanMatchResult, ...]
     history_entries: tuple[MatchHistoryEntry, ...]
     notification_payloads: tuple[MatchNotificationPayload, ...]
+    match_notification_outbox_count: int
     latest_items: tuple[LatestScanItem, ...]
     scan_summary: dict[str, Any]
 
@@ -145,6 +146,7 @@ class _ScanFinalizeAccumulator:
     matched_items: list[NormalizedScanItem]
     history_entries: list[MatchHistoryEntry]
     notification_payloads: list[MatchNotificationPayload]
+    match_notification_outbox_counts: list[int]
 
 
 @dataclass(frozen=True)
@@ -275,6 +277,7 @@ def _record_skipped_scan(
         match_results=(),
         history_entries=(),
         notification_payloads=(),
+        match_notification_outbox_count=0,
         latest_items=(),
         scan_summary=scan_metadata,
     )
@@ -369,6 +372,7 @@ def _process_scan_items_for_finalize(
         matched_items=[],
         history_entries=[],
         notification_payloads=[],
+        match_notification_outbox_counts=[],
     )
     keyword_matcher = compile_keyword_matcher(
         include_keywords=config.include_keywords,
@@ -392,7 +396,11 @@ def _process_scan_items_for_finalize(
             accumulator.matched_items.append(item)
         if not result.eligible_for_notify:
             continue
-        history_entry, notification_payload = _record_match_notification_side_effects(
+        (
+            history_entry,
+            notification_payload,
+            notification_outbox_count,
+        ) = _record_match_notification_side_effects(
             app=app,
             target=target,
             config=config,
@@ -400,6 +408,7 @@ def _process_scan_items_for_finalize(
         )
         accumulator.history_entries.append(history_entry)
         accumulator.notification_payloads.append(notification_payload)
+        accumulator.match_notification_outbox_counts.append(notification_outbox_count)
     return accumulator
 
 
@@ -454,7 +463,7 @@ def _record_match_notification_side_effects(
     target: TargetDescriptor,
     config: TargetConfig,
     classified: _ClassifiedScanItem,
-) -> tuple[MatchHistoryEntry, MatchNotificationPayload]:
+) -> tuple[MatchHistoryEntry, MatchNotificationPayload, int]:
     """寫入 match history 並註冊 notification outbox after-commit dispatch。"""
 
     result = classified.result
@@ -490,7 +499,7 @@ def _record_match_notification_side_effects(
         permalink=item.permalink,
         matched_keyword=result.matched_keyword,
     )
-    queue_match_notifications_after_commit(
+    notification_outbox_entries = queue_match_notifications_after_commit(
         app=app,
         target=target,
         config=config,
@@ -502,7 +511,7 @@ def _record_match_notification_side_effects(
         matched_keyword=notification_payload.matched_keyword,
         item_kind=notification_payload.item_kind,
     )
-    return history_entry, notification_payload
+    return history_entry, notification_payload, len(notification_outbox_entries)
 
 
 def _match_history_group_name(target: TargetDescriptor) -> str:
@@ -596,6 +605,7 @@ def _build_scan_finalize_result(
         match_results=tuple(accumulator.match_results),
         history_entries=tuple(accumulator.history_entries),
         notification_payloads=tuple(accumulator.notification_payloads),
+        match_notification_outbox_count=sum(accumulator.match_notification_outbox_counts),
         latest_items=latest_items,
         scan_summary=scan_metadata,
     )

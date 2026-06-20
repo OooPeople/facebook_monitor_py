@@ -864,6 +864,7 @@ def test_finalize_scan_items_persists_display_text_for_visible_results(
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
 
     assert result.notification_payloads[0].text == "第一行票券\n第二行座位"
+    assert result.match_notification_outbox_count == 1
     assert result.history_entries[0].text == "第一行票券 第二行座位"
     assert result.history_entries[0].display_text == "第一行票券\n第二行座位"
     assert result.latest_items[0].display_text == "第一行票券\n第二行座位"
@@ -916,6 +917,48 @@ def test_finalize_scan_items_keyword_ignores_display_only_text(tmp_path: Path) -
 
     assert result.matched_count == 0
     assert result.notification_payloads == ()
+    assert result.match_notification_outbox_count == 0
+
+
+def test_finalize_scan_items_counts_only_actual_notification_outbox_rows(
+    tmp_path: Path,
+) -> None:
+    """match payload 不等於 outbox row；無 channel 時 count 必須維持 0。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(include_keywords=("票券",)),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:no-channel-payload",
+                    alias_keys=("post:no-channel-payload",),
+                    group_id="123",
+                    text="這是一篇票券貼文",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+        )
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+
+    assert len(result.notification_payloads) == 1
+    assert result.match_notification_outbox_count == 0
+    assert pending_outbox == []
 
 
 def test_finalize_scan_items_uses_renamed_target_display_name_for_notifications(

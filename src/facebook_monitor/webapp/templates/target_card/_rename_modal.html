@@ -11,7 +11,12 @@
     <div class="modal-body rename-target-body">
       <label>
         名稱
-        <input name="display_name" type="text" value="{{ row.rename_display_name }}" maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}" placeholder="等社團名稱抓取完成後會自動回填，或輸入自訂名稱" autocomplete="off" required>
+        <input name="display_name" type="text" value="{{ row.rename_display_name }}"
+          maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}"
+          placeholder="等社團名稱抓取完成後會自動回填，或輸入自訂名稱"
+          autocomplete="off"
+          required
+        >
       </label>
     </div>
     <footer class="modal-footer">

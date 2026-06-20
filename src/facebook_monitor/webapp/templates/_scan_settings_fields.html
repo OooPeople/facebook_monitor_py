@@ -8,15 +8,33 @@
 {% set max_items_value = scan_source.max_items_per_scan if scan_source else scan_max_items_default %}
 <div class="settings-toggle-grid">
   <label class="checkbox">
-    <input name="auto_load_more" type="checkbox" {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %} {{ scan_input_attrs|safe }} {% if auto_load_more_checked %}checked{% endif %}>
+    <input
+      name="auto_load_more"
+      type="checkbox"
+      {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %}
+      {{ scan_input_attrs|safe }}
+      {% if auto_load_more_checked %}checked{% endif %}
+    >
     自動載入更多項目
   </label>
   <label class="checkbox">
-    <input name="auto_adjust_sort" type="checkbox" {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %} {{ scan_input_attrs|safe }} {% if auto_adjust_sort_checked %}checked{% endif %}>
+    <input
+      name="auto_adjust_sort"
+      type="checkbox"
+      {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %}
+      {{ scan_input_attrs|safe }}
+      {% if auto_adjust_sort_checked %}checked{% endif %}
+    >
     開始後自動調整成最新排序
   </label>
 </div>
 <label>
   目標掃描項目數（最多 {{ max_target_posts }} 筆）
-  <input name="max_items_per_scan" type="number" min="{{ min_target_posts }}" max="{{ max_target_posts }}" value="{{ max_items_value }}" {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %} {{ scan_input_attrs|safe }}>
+  <input
+    name="max_items_per_scan" type="number" min="{{ min_target_posts }}"
+    max="{{ max_target_posts }}"
+    value="{{ max_items_value }}"
+    {% if scan_form_id %}form="{{ scan_form_id }}"{% endif %}
+    {{ scan_input_attrs|safe }}
+  >
 </label>

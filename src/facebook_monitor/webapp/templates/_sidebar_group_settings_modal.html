@@ -1,4 +1,9 @@
-<dialog class="settings-modal sidebar-template-modal" data-sidebar-template-modal data-group-id="{{ group.group_id }}" aria-labelledby="sidebar-template-title-{{ group.group_id }}">
+<dialog
+  class="settings-modal sidebar-template-modal"
+  data-sidebar-template-modal
+  data-group-id="{{ group.group_id }}"
+  aria-labelledby="sidebar-template-title-{{ group.group_id }}"
+>
   {% set template = group.template %}
   <div class="modal-shell">
     <header class="modal-header">
@@ -16,23 +21,48 @@
         <div class="sidebar-template-keyword-grid">
           <label>
             關鍵字 1
-            <textarea name="include_keywords" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text }}</textarea>
+            <textarea
+              name="include_keywords"
+              rows="3"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+              data-sidebar-template-field
+            >{{ group.include_text }}</textarea>
           </label>
           <label>
             關鍵字 2
-            <textarea name="include_keywords_2" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text_2 }}</textarea>
+            <textarea
+              name="include_keywords_2"
+              rows="3"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+              data-sidebar-template-field
+            >{{ group.include_text_2 }}</textarea>
           </label>
           <label>
             關鍵字 3
-            <textarea name="include_keywords_3" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.include_text_3 }}</textarea>
+            <textarea
+              name="include_keywords_3"
+              rows="3"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+              data-sidebar-template-field
+            >{{ group.include_text_3 }}</textarea>
           </label>
           <label>
             排除關鍵字
-            <textarea name="exclude_keywords" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.exclude_text }}</textarea>
+            <textarea
+              name="exclude_keywords"
+              rows="3"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+              data-sidebar-template-field
+            >{{ group.exclude_text }}</textarea>
           </label>
           <label>
             排除字忽略片語
-            <textarea name="exclude_ignore_phrases" rows="3" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" data-sidebar-template-field>{{ group.exclude_ignore_phrases_text }}</textarea>
+            <textarea
+              name="exclude_ignore_phrases"
+              rows="3"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+              data-sidebar-template-field
+            >{{ group.exclude_ignore_phrases_text }}</textarea>
           </label>
         </div>
       </section>

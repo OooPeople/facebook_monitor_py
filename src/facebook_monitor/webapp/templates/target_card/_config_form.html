@@ -1,5 +1,12 @@
 <aside class="target-settings panel">
-  <form class="config-form compact-config-form" id="config-{{ row.target.id }}" method="post" action="/targets/{{ row.target.id }}/config" data-target-id="{{ row.target.id }}" data-target-anchor="{{ row.anchor_id }}">
+  <form
+    class="config-form compact-config-form"
+    id="config-{{ row.target.id }}"
+    method="post"
+    action="/targets/{{ row.target.id }}/config"
+    data-target-id="{{ row.target.id }}"
+    data-target-anchor="{{ row.anchor_id }}"
+  >
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="return_to" value="">
     <div class="section-title">
@@ -9,9 +16,30 @@
     <div class="keyword-rule-tabs" data-keyword-tabs data-keyword-default-tab="include-1">
       <div class="keyword-rule-tab-row">
         <div class="preview-tab-list keyword-rule-tab-list" role="tablist" aria-label="包含規則">
-          <button class="preview-tab keyword-rule-tab active" type="button" role="tab" aria-selected="true" aria-controls="include-keywords-panel-1-{{ row.target.id }}" data-keyword-tab="include-1">關鍵字 1</button>
-          <button class="preview-tab keyword-rule-tab" type="button" role="tab" aria-selected="false" aria-controls="include-keywords-panel-2-{{ row.target.id }}" data-keyword-tab="include-2">關鍵字 2</button>
-          <button class="preview-tab keyword-rule-tab" type="button" role="tab" aria-selected="false" aria-controls="include-keywords-panel-3-{{ row.target.id }}" data-keyword-tab="include-3">關鍵字 3</button>
+          <button
+            class="preview-tab keyword-rule-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="include-keywords-panel-1-{{ row.target.id }}"
+            data-keyword-tab="include-1"
+          >關鍵字 1</button>
+          <button
+            class="preview-tab keyword-rule-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="include-keywords-panel-2-{{ row.target.id }}"
+            data-keyword-tab="include-2"
+          >關鍵字 2</button>
+          <button
+            class="preview-tab keyword-rule-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="include-keywords-panel-3-{{ row.target.id }}"
+            data-keyword-tab="include-3"
+          >關鍵字 3</button>
           <button class="keyword-help-button" type="button" aria-label="查看關鍵字輸入規則" aria-controls="include-keyword-help-{{ row.target.id }}" data-include-keyword-help-button>
             <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M9.5 9a2.7 2.7 0 1 1 4.4 2.1c-1.3.9-1.9 1.5-1.9 2.9"/>
@@ -23,7 +51,12 @@
       <div class="keyword-rule-panel" id="include-keywords-panel-1-{{ row.target.id }}" role="tabpanel" data-keyword-panel="include-1">
         <label class="keyword-rule-field">
           <span class="keyword-rule-field-label">關鍵字 1</span>
-          <textarea id="include-keywords-{{ row.target.id }}" name="include_keywords" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}">{{ row.include_text }}</textarea>
+          <textarea
+            id="include-keywords-{{ row.target.id }}"
+            name="include_keywords"
+            rows="2"
+            maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+          >{{ row.include_text }}</textarea>
         </label>
       </div>
       <div class="keyword-rule-panel" id="include-keywords-panel-2-{{ row.target.id }}" role="tabpanel" data-keyword-panel="include-2" hidden>
@@ -42,8 +75,22 @@
     <div class="keyword-rule-tabs" data-keyword-tabs>
       <div class="keyword-rule-tab-row">
         <div class="preview-tab-list keyword-rule-tab-list" role="tablist" aria-label="排除規則">
-          <button class="preview-tab keyword-rule-tab active" type="button" role="tab" aria-selected="true" aria-controls="exclude-keywords-panel-{{ row.target.id }}" data-keyword-tab="exclude">排除關鍵字</button>
-          <button class="preview-tab keyword-rule-tab" type="button" role="tab" aria-selected="false" aria-controls="exclude-ignore-panel-{{ row.target.id }}" data-keyword-tab="ignore">排除字忽略片語</button>
+          <button
+            class="preview-tab keyword-rule-tab active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="exclude-keywords-panel-{{ row.target.id }}"
+            data-keyword-tab="exclude"
+          >排除關鍵字</button>
+          <button
+            class="preview-tab keyword-rule-tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="exclude-ignore-panel-{{ row.target.id }}"
+            data-keyword-tab="ignore"
+          >排除字忽略片語</button>
           <button class="keyword-help-button" type="button" aria-label="查看排除字忽略片語說明" aria-controls="keyword-help-{{ row.target.id }}" data-keyword-help-button>
             <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M9.5 9a2.7 2.7 0 1 1 4.4 2.1c-1.3.9-1.9 1.5-1.9 2.9"/>
@@ -61,7 +108,12 @@
       <div class="keyword-rule-panel" id="exclude-ignore-panel-{{ row.target.id }}" role="tabpanel" data-keyword-panel="ignore" hidden>
         <label class="keyword-rule-field">
           <span class="keyword-rule-field-label">排除字忽略片語</span>
-          <textarea name="exclude_ignore_phrases" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}" placeholder="例如：全收;回收">{{ row.exclude_ignore_phrases_text }}</textarea>
+          <textarea
+            name="exclude_ignore_phrases"
+            rows="2"
+            maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+            placeholder="例如：全收;回收"
+          >{{ row.exclude_ignore_phrases_text }}</textarea>
         </label>
       </div>
     </div>

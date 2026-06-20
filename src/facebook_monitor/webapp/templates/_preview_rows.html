@@ -12,7 +12,19 @@
                 {% endfor %}
               </div>
               {% if preview.content_preview %}
-                <p>{%- if preview.content_segments -%}{%- for segment in preview.content_segments -%}{%- if segment.highlighted -%}<mark class="keyword-highlight">{{ segment.text }}</mark>{%- else -%}{{ segment.text }}{%- endif -%}{%- endfor -%}{%- else -%}{{ preview.content_preview }}{%- endif -%}</p>
+                <p>
+                  {%- if preview.content_segments -%}
+                    {%- for segment in preview.content_segments -%}
+                      {%- if segment.highlighted -%}
+                        <mark class="keyword-highlight">{{ segment.text }}</mark>
+                      {%- else -%}
+                        {{ segment.text }}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- else -%}
+                    {{ preview.content_preview }}
+                  {%- endif -%}
+                </p>
               {% endif %}
             </div>
             <div class="preview-row-link">

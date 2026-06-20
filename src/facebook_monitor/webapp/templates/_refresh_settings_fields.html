@@ -18,14 +18,26 @@
   <div class="field-caption">刷新模式</div>
   <div class="refresh-mode-grid">
     <label class="radio option-card">
-      <input name="{{ refresh_mode_name }}" type="radio" value="floating" data-refresh-mode-input {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %} {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if floating_checked %}checked{% endif %}>
+      <input name="{{ refresh_mode_name }}" type="radio" value="floating"
+        data-refresh-mode-input
+        {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %}
+        {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+        {{ refresh_input_attrs|safe }}
+        {% if floating_checked %}checked{% endif %}
+      >
       <span>
         <strong>浮動刷新</strong>
         <small>在最小與最大秒數之間隨機刷新</small>
       </span>
     </label>
     <label class="radio option-card">
-      <input name="{{ refresh_mode_name }}" type="radio" value="fixed" data-refresh-mode-input {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %} {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }} {% if fixed_checked %}checked{% endif %}>
+      <input name="{{ refresh_mode_name }}" type="radio" value="fixed"
+        data-refresh-mode-input
+        {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %}
+        {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+        {{ refresh_input_attrs|safe }}
+        {% if fixed_checked %}checked{% endif %}
+      >
       <span>
         <strong>固定刷新</strong>
         <small>每固定秒數執行一次掃描</small>
@@ -36,14 +48,25 @@
 <div class="form-grid">
   <label data-refresh-fixed>
     刷新秒數
-    <input name="fixed_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input
+      name="fixed_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+      {{ refresh_input_attrs|safe }}
+    >
   </label>
   <label data-refresh-floating>
     最小刷新秒數
-    <input name="min_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ min_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input
+      name="min_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ min_value }}"
+      {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+      {{ refresh_input_attrs|safe }}
+    >
   </label>
   <label data-refresh-floating>
     最大刷新秒數
-    <input name="max_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ max_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %} {{ refresh_input_attrs|safe }}>
+    <input
+      name="max_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ max_value }}"
+      {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+      {{ refresh_input_attrs|safe }}
+    >
   </label>
 </div>

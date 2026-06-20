@@ -50,16 +50,29 @@
         </div>
       </div>
 
-      <form id="target-keyword-defaults-form" class="config-form settings-keyword-form" method="post" action="/settings/target-keywords">
+      <form
+        id="target-keyword-defaults-form"
+        class="config-form settings-keyword-form"
+        method="post"
+        action="/settings/target-keywords"
+      >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="settings-form-grid settings-form-grid--two">
           <label>
             排除關鍵字
-            <textarea name="exclude_keywords" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}">{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
+            <textarea
+              name="exclude_keywords"
+              rows="2"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+            >{{ target_keyword_defaults.exclude_keywords_text }}</textarea>
           </label>
           <label>
             排除字忽略片語
-            <textarea name="exclude_ignore_phrases" rows="2" maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}">{{ target_keyword_defaults.exclude_ignore_phrases_text }}</textarea>
+            <textarea
+              name="exclude_ignore_phrases"
+              rows="2"
+              maxlength="{{ input_limits.MAX_KEYWORD_TEXT_LENGTH }}"
+            >{{ target_keyword_defaults.exclude_ignore_phrases_text }}</textarea>
           </label>
         </div>
       </form>
@@ -70,7 +83,12 @@
           data-dirty-status="target-keyword-defaults-form"
           aria-live="polite"
         >尚未儲存</span>
-        <button class="button button--primary" type="submit" form="target-keyword-defaults-form" data-dirty-submit>保存關鍵字預設值</button>
+        <button
+          class="button button--primary"
+          type="submit"
+          form="target-keyword-defaults-form"
+          data-dirty-submit
+        >保存關鍵字預設值</button>
       </div>
     </section>
 
@@ -89,17 +107,25 @@
         </div>
         <div class="field-grid-cell">
           <dt>最新版本</dt>
-          <dd data-update-latest-version>{{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}</dd>
+          <dd data-update-latest-version>
+            {{ update_check.latest_version if update_check.latest_version else "尚未檢查" }}
+          </dd>
         </div>
       </dl>
 
       <div class="settings-card-actions settings-actions settings-actions--right">
-        {% if update_apply_supported and update_check.update_available and update_check.manifest_asset_download_url and update_check.manifest_signature_asset_download_url %}
+        {% if update_apply_supported
+          and update_check.update_available
+          and update_check.manifest_asset_download_url
+          and update_check.manifest_signature_asset_download_url %}
           <form method="post" action="/settings/updates/download-and-apply" data-update-install-form>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button button--primary" type="submit">下載新版並套用更新</button>
           </form>
-        {% elif update_download_supported and update_check.update_available and update_check.manifest_asset_download_url and update_check.manifest_signature_asset_download_url %}
+        {% elif update_download_supported
+          and update_check.update_available
+          and update_check.manifest_asset_download_url
+          and update_check.manifest_signature_asset_download_url %}
           <form method="post" action="/settings/updates/download">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="button button--primary" type="submit">下載並驗證更新</button>
@@ -121,7 +147,10 @@
       <div class="settings-card-head">
         <div class="settings-card-title">
           <h2>問題回報與診斷</h2>
-          <p>回報問題時下載支援診斷包；內容包含 redacted 最近 log 片段、runtime、掃描、通知與 DB 健康摘要，會排除 DB、profile、cookies、secrets、完整 logs 與完整貼文/留言內容。</p>
+          <p>
+            回報問題時下載支援診斷包；內容包含 redacted 最近 log 片段、runtime、掃描、
+            通知與 DB 健康摘要，會排除 DB、profile、cookies、secrets、完整 logs 與完整貼文/留言內容。
+          </p>
         </div>
       </div>
 
@@ -151,7 +180,10 @@
       </div>
     </section>
   </main>
-  <dialog class="settings-modal app-dialog update-progress-modal" data-update-progress-modal>
+  <dialog
+    class="settings-modal app-dialog update-progress-modal"
+    data-update-progress-modal
+  >
     <div class="modal-shell">
       <header class="modal-header">
         <div>
@@ -160,7 +192,9 @@
       </header>
       <div class="modal-body app-dialog-body">
         <p data-update-progress-text>正在下載新版...</p>
-        <p class="update-progress-help" data-update-progress-help hidden>當自動跳出新頁面時，這個分頁就可以關閉。</p>
+        <p class="update-progress-help" data-update-progress-help hidden>
+          當自動跳出新頁面時，這個分頁就可以關閉。
+        </p>
         <p class="update-progress-error" data-update-progress-error hidden></p>
       </div>
       <footer class="modal-footer" data-update-progress-footer hidden>
@@ -170,7 +204,9 @@
       </footer>
     </div>
   </dialog>
-  <template id="page-feedback">{{ {"message": message, "feedback": feedback, "error": error} | tojson }}</template>
+  <template id="page-feedback">
+    {{ {"message": message, "feedback": feedback, "error": error} | tojson }}
+  </template>
   <script type="module" src="/static/dashboard/settings.js?v={{ asset_version }}"></script>
 </body>
 </html>

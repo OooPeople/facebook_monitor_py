@@ -30,7 +30,12 @@
     </div>
 
     <section class="target new-target-card">
-      <form class="config-form new-target-form" method="post" action="/targets" data-new-target-form>
+      <form
+        class="config-form new-target-form"
+        method="post"
+        action="/targets"
+        data-new-target-form
+      >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input name="max_items_per_scan" type="hidden" value="{{ target_defaults.max_items_per_scan }}">
         {% if target_defaults.auto_load_more %}
@@ -46,11 +51,22 @@
           <div class="settings-form-stack">
             <label>
               Facebook group URL / post URL
-              <input name="group_url" type="text" required maxlength="{{ input_limits.MAX_TARGET_URL_LENGTH }}" placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321">
+              <input
+                name="group_url"
+                type="text"
+                required
+                maxlength="{{ input_limits.MAX_TARGET_URL_LENGTH }}"
+                placeholder="https://www.facebook.com/groups/123456789 或 https://www.facebook.com/groups/123456789/posts/987654321"
+              >
             </label>
             <label>
               自訂顯示名稱
-              <input name="display_name" type="text" maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}" placeholder="可留空，系統會嘗試使用社團名稱">
+              <input
+                name="display_name"
+                type="text"
+                maxlength="{{ input_limits.MAX_DISPLAY_NAME_LENGTH }}"
+                placeholder="可留空，系統會嘗試使用社團名稱"
+              >
             </label>
           </div>
         </section>
@@ -68,7 +84,11 @@
 
         <footer class="new-target-actions settings-actions settings-actions--right">
           <a class="button" href="/">返回</a>
-          <button class="button button--primary" type="submit" data-loading-text="建立中...">新增 target</button>
+          <button
+            class="button button--primary"
+            type="submit"
+            data-loading-text="建立中..."
+          >新增 target</button>
         </footer>
       </form>
     </section>

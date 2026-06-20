@@ -1,4 +1,10 @@
-<aside class="target-sidebar" aria-label="監看清單快速跳轉" data-sidebar-layout data-sidebar-layout-signature="{{ dashboard.sidebar_layout_signature }}" data-sidebar-template-signature="{{ dashboard.sidebar_template_signature }}">
+<aside
+  class="target-sidebar"
+  aria-label="監看清單快速跳轉"
+  data-sidebar-layout
+  data-sidebar-layout-signature="{{ dashboard.sidebar_layout_signature }}"
+  data-sidebar-template-signature="{{ dashboard.sidebar_template_signature }}"
+>
   <div class="sidebar-brand">
     <span class="sidebar-brand-name">Facebook Monitor</span>
   </div>
@@ -7,7 +13,12 @@
     <div class="sidebar-header-actions">
       <button class="button button--primary sidebar-sort-confirm" type="button" data-sidebar-confirm-sort hidden>確認</button>
       <details class="sidebar-menu" data-sidebar-menu>
-        <summary class="button button--icon sidebar-menu-trigger" aria-label="監看清單操作" aria-controls="sidebar-menu-panel" aria-expanded="false">
+        <summary
+          class="button button--icon sidebar-menu-trigger"
+          aria-label="監看清單操作"
+          aria-controls="sidebar-menu-panel"
+          aria-expanded="false"
+        >
           <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M4 7h16"/>
             <path d="M4 12h16"/>
@@ -15,9 +26,22 @@
           </svg>
         </summary>
         <div class="sidebar-menu-panel menu-panel" id="sidebar-menu-panel">
-          <button class="sidebar-menu-action menu-action" type="button" data-sidebar-create-group>新增群組</button>
-          <button class="sidebar-menu-action menu-action" type="button" data-sidebar-start-sort>調整順序</button>
-          <button class="sidebar-menu-action menu-action" type="button" data-sidebar-cancel-sort hidden>取消排序</button>
+          <button
+            class="sidebar-menu-action menu-action"
+            type="button"
+            data-sidebar-create-group
+          >新增群組</button>
+          <button
+            class="sidebar-menu-action menu-action"
+            type="button"
+            data-sidebar-start-sort
+          >調整順序</button>
+          <button
+            class="sidebar-menu-action menu-action"
+            type="button"
+            data-sidebar-cancel-sort
+            hidden
+          >取消排序</button>
         </div>
       </details>
     </div>
@@ -33,7 +57,13 @@
           data-system-group="{{ 1 if group.is_system else 0 }}"
         >
           <header class="sidebar-group-header">
-            <button class="sidebar-group-collapse" type="button" data-sidebar-group-collapse data-sidebar-group-drag-handle aria-label="收合群組">
+            <button
+              class="sidebar-group-collapse"
+              type="button"
+              data-sidebar-group-collapse
+              data-sidebar-group-drag-handle
+              aria-label="收合群組"
+            >
               <svg class="sidebar-action-icon sidebar-action-icon--chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="m6 9 6 6 6-6"/>
               </svg>
@@ -50,34 +80,75 @@
                   title="{{ group.monitoring_button_label }}"
                   {% if group.monitoring_disabled %}disabled{% endif %}
                 >
-                  <svg class="sidebar-action-icon sidebar-action-icon--play" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {% if group.monitoring_action == "stop" %}hidden{% endif %}>
+                  <svg
+                    class="sidebar-action-icon sidebar-action-icon--play"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    focusable="false"
+                    {% if group.monitoring_action == "stop" %}hidden{% endif %}
+                  >
                     <path d="M8 5v14l11-7Z"/>
                   </svg>
-                  <svg class="sidebar-action-icon sidebar-action-icon--stop" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {% if group.monitoring_action != "stop" %}hidden{% endif %}>
+                  <svg
+                    class="sidebar-action-icon sidebar-action-icon--stop"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                    focusable="false"
+                    {% if group.monitoring_action != "stop" %}hidden{% endif %}
+                  >
                     <rect x="6" y="6" width="12" height="12" rx="2"/>
                   </svg>
                 </button>
                 <div class="sidebar-group-action-strip">
-                  <button class="button--icon sidebar-group-menu" type="button" data-sidebar-group-rename aria-label="重新命名群組">
+                  <button
+                    class="button--icon sidebar-group-menu"
+                    type="button"
+                    data-sidebar-group-rename
+                    aria-label="重新命名群組"
+                  >
                     <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <path d="M12 20h9"/>
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
                     </svg>
                   </button>
-                  <button class="button--icon sidebar-group-menu" type="button" data-sidebar-group-settings aria-label="群組設定模板">
+                  <button
+                    class="button--icon sidebar-group-menu"
+                    type="button"
+                    data-sidebar-group-settings
+                    aria-label="群組設定模板"
+                  >
                     <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <circle cx="12" cy="12" r="3"/>
-                      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.9 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6.9h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.7 1Z"/>
+                      <path
+                        d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3
+                           1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1
+                           a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1
+                           a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1
+                           A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1
+                           A2 2 0 1 1 19.9 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6.9h.1a2 2 0 1 1 0 4h-.1
+                           a1.7 1.7 0 0 0-1.7 1Z"
+                      />
                     </svg>
                   </button>
-                  <button class="button--icon sidebar-group-menu sidebar-group-delete" type="button" data-sidebar-group-delete aria-label="刪除群組">
+                  <button
+                    class="button--icon sidebar-group-menu sidebar-group-delete"
+                    type="button"
+                    data-sidebar-group-delete
+                    aria-label="刪除群組"
+                  >
                     <svg class="sidebar-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <path d="M18 6 6 18"/>
                       <path d="m6 6 12 12"/>
                     </svg>
                   </button>
                 </div>
-                <button class="button--icon sidebar-group-actions-toggle" type="button" data-sidebar-group-actions-toggle aria-label="群組操作" aria-expanded="false">
+                <button
+                  class="button--icon sidebar-group-actions-toggle"
+                  type="button"
+                  data-sidebar-group-actions-toggle
+                  aria-label="群組操作"
+                  aria-expanded="false"
+                >
                   <svg class="sidebar-action-icon sidebar-action-icon--dots" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <circle cx="5" cy="12" r="1.8"/>
                     <circle cx="12" cy="12" r="1.8"/>
@@ -87,10 +158,23 @@
               </div>
             {% endif %}
           </header>
-          <ul class="sidebar-list" data-sidebar-list data-group-id="{{ group.dom_group_id }}">
+          <ul
+            class="sidebar-list"
+            data-sidebar-list
+            data-group-id="{{ group.dom_group_id }}"
+          >
             {% for item in group.items %}
-              <li class="sidebar-list-item" data-sidebar-item data-target-id="{{ item.target_id }}" data-sidebar-item-active="{{ 1 if item.active else 0 }}">
-                <a class="sidebar-target" href="#{{ item.anchor_id }}" data-sidebar-target="{{ item.anchor_id }}">
+              <li
+                class="sidebar-list-item"
+                data-sidebar-item
+                data-target-id="{{ item.target_id }}"
+                data-sidebar-item-active="{{ 1 if item.active else 0 }}"
+              >
+                <a
+                  class="sidebar-target"
+                  href="#{{ item.anchor_id }}"
+                  data-sidebar-target="{{ item.anchor_id }}"
+                >
                   <span class="sidebar-avatar{% if item.thumbnail_url %} has-image{% endif %}" aria-hidden="true">
                     {% if item.thumbnail_url %}
                       <img src="{{ item.thumbnail_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
@@ -110,7 +194,9 @@
                       data-sidebar-mode-label="{{ item.mode_label }}"
                       data-sidebar-mode-class="{{ item.mode_class }}"
                     >
-                      <span class="sidebar-status-token sidebar-status-pill {{ item.status_class }}">{{ item.base_status_summary }}</span>
+                      <span class="sidebar-status-token sidebar-status-pill {{ item.status_class }}">
+                        {{ item.base_status_summary }}
+                      </span>
                       <span class="sidebar-status-token target-mode-chip sidebar-mode-chip {{ item.mode_class }}">{{ item.mode_label }}</span>
                       {% if item.status_detail %}
                         <span class="sidebar-status-detail">{{ item.status_detail }}</span>
@@ -118,7 +204,12 @@
                     </span>
                   </span>
                 </a>
-                <button class="sidebar-drag-handle" type="button" data-sidebar-drag-handle aria-label="拖曳排序">
+                <button
+                  class="sidebar-drag-handle"
+                  type="button"
+                  data-sidebar-drag-handle
+                  aria-label="拖曳排序"
+                >
                   <svg class="sidebar-action-icon sidebar-action-icon--drag" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M5 7h14"/>
                     <path d="M5 12h14"/>
@@ -130,8 +221,12 @@
               <li class="sidebar-empty" data-sidebar-empty>
                 <span class="sidebar-avatar" aria-hidden="true">0</span>
                 <span class="sidebar-copy">
-                  <span class="sidebar-name">{% if group.is_system %}尚未建立 target{% else %}群組內沒有 target{% endif %}</span>
-                  <span class="sidebar-status">{% if group.is_system %}新增後會顯示在這裡{% else %}可將 target 拖曳到這裡{% endif %}</span>
+                  <span class="sidebar-name">
+                    {% if group.is_system %}尚未建立 target{% else %}群組內沒有 target{% endif %}
+                  </span>
+                  <span class="sidebar-status">
+                    {% if group.is_system %}新增後會顯示在這裡{% else %}可將 target 拖曳到這裡{% endif %}
+                  </span>
                 </span>
               </li>
             {% endfor %}

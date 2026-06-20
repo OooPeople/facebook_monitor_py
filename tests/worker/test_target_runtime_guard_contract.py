@@ -113,7 +113,7 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/scan_finalize.py",
-        "_record_skipped_scan",
+        "record_unguarded_skipped_scan_for_one_shot",
         "force_apply_scan_skip_decision",
     ),
     (

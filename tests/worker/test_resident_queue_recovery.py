@@ -41,7 +41,7 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 

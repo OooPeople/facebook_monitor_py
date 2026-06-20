@@ -39,7 +39,7 @@ from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
 from facebook_monitor.worker.scan_finalize import record_unguarded_skipped_scan_for_one_shot
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort

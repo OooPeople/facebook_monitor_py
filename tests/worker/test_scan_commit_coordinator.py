@@ -38,9 +38,9 @@ from facebook_monitor.worker.scan_commit_coordinator import commit_success
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_commit_requests import FailureScanCommitRequest
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_result
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
@@ -1109,11 +1109,11 @@ def test_scan_commit_coordinator_skip_target_inactive_writes_nothing(
     assert pending_outbox == []
 
 
-def test_scan_commit_coordinator_skip_post_write_guard_failure_rolls_back(
+def test_scan_commit_coordinator_skip_guard_failure_happens_before_visible_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """skipped scan 寫入後若 runtime guard 失敗，必須 rollback 而非回 rejection。"""
+    """skipped scan guard 失敗時不得先寫 visible scan state。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -1122,6 +1122,9 @@ def test_scan_commit_coordinator_skip_post_write_guard_failure_rolls_back(
     def reject_skip_decision(*_args: Any, **_kwargs: Any) -> None:
         return None
 
+    def fail_record_scan(*_args: Any, **_kwargs: Any) -> object:
+        raise AssertionError("guarded skip must not write scan runs before guard")
+
     with pytest.raises(WorkerFailure) as exc_info:
         with SqliteApplicationContext(db_path) as app:
             monkeypatch.setattr(
@@ -1129,6 +1132,7 @@ def test_scan_commit_coordinator_skip_post_write_guard_failure_rolls_back(
                 "guarded_apply_scan_skip_decision",
                 reject_skip_decision,
             )
+            monkeypatch.setattr(app.services.scans, "record_scan", fail_record_scan)
             commit_guarded_protective_skip(
                 app=app,
                 target=fixture.target,

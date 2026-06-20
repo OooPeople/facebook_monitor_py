@@ -35,7 +35,7 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_scan_db import RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,

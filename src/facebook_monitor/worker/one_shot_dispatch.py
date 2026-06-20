@@ -39,7 +39,7 @@ from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision_for_db,

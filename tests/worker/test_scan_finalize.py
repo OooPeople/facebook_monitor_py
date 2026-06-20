@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_runtime_decisions import ScanSkipDecision
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
@@ -36,7 +40,7 @@ from facebook_monitor.persistence.repositories.app_settings import ProfileSessio
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision,
@@ -1261,20 +1265,21 @@ def test_guarded_protective_skip_refuses_restarted_attempt_commit(tmp_path: Path
     assert latest_items[0].item_key == "previous"
 
 
-def test_guarded_protective_skip_post_write_guard_failure_rolls_back(
+def test_guarded_protective_skip_guard_failure_happens_before_visible_writes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """skip scan 寫入後若 runtime guard 失敗，不得留下部分 visible state。"""
+    """runtime guard 失敗時不得先寫 scan run 或 latest snapshot。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app)
 
     def reject_skip_decision(*_args: object, **_kwargs: object) -> None:
-        """模擬 runtime transition 在 scan run 寫入後才被 guard 擋下。"""
-
         return None
+
+    def fail_record_scan(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("guarded skip must not write scan runs before guard")
 
     with pytest.raises(WorkerFailure) as excinfo:
         with SqliteApplicationContext(db_path) as app:
@@ -1283,6 +1288,7 @@ def test_guarded_protective_skip_post_write_guard_failure_rolls_back(
                 "guarded_apply_scan_skip_decision",
                 reject_skip_decision,
             )
+            monkeypatch.setattr(app.services.scans, "record_scan", fail_record_scan)
             record_protective_skip_for_test(
                 app=app,
                 target=fixture.target,
@@ -1307,6 +1313,170 @@ def test_guarded_protective_skip_post_write_guard_failure_rolls_back(
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == fixture.commit_guard.worker_id
     assert state.active_page_id == fixture.commit_guard.page_id
+
+
+def test_guarded_protective_skip_writes_runtime_before_visible_scan_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正式 skip commit 順序必須是 runtime transition 再 scan_run/latest。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        events: list[str] = []
+        original_apply = app.services.targets.guarded_apply_scan_skip_decision
+        original_record_scan = app.services.scans.record_scan
+        original_replace_latest = app.repositories.latest_scan_items.replace_for_target
+
+        def record_apply(
+            target_id: str,
+            decision: ScanSkipDecision,
+            *,
+            worker_id: str,
+            started_at: datetime,
+            page_id: str = "",
+        ) -> object:
+            events.append("runtime_transition")
+            return original_apply(
+                target_id,
+                decision,
+                worker_id=worker_id,
+                started_at=started_at,
+                page_id=page_id,
+            )
+
+        def record_scan(request: RecordScanRequest) -> object:
+            events.append("record_scan")
+            return original_record_scan(request)
+
+        def record_replace_latest(
+            target_id: str,
+            items: Iterable[LatestScanItem],
+        ) -> object:
+            events.append("replace_latest")
+            return original_replace_latest(target_id, items)
+
+        monkeypatch.setattr(
+            app.services.targets,
+            "guarded_apply_scan_skip_decision",
+            record_apply,
+        )
+        monkeypatch.setattr(app.services.scans, "record_scan", record_scan)
+        monkeypatch.setattr(
+            app.repositories.latest_scan_items,
+            "replace_for_target",
+            record_replace_latest,
+        )
+
+        record_protective_skip_for_test(
+            app=app,
+            target=fixture.target,
+            metadata={"worker": "test_worker"},
+            commit_guard=fixture.commit_guard,
+        )
+
+    assert events == ["runtime_transition", "record_scan", "replace_latest"]
+
+
+def test_guarded_protective_skip_visible_write_failure_rolls_back_runtime_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """runtime transition 後若 visible write 失敗，整個 transaction 必須 rollback。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        app.repositories.latest_scan_items.replace_for_target(
+            fixture.target.id,
+            [
+                LatestScanItem(
+                    target_id=fixture.target.id,
+                    scan_run_id=99,
+                    item_kind=ItemKind.POST,
+                    item_key="previous",
+                    item_index=0,
+                    text="前一輪 snapshot",
+                )
+            ],
+        )
+
+    def fail_replace_latest(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("replace latest failed after runtime transition")
+
+    with pytest.raises(RuntimeError, match="replace latest failed"):
+        with SqliteApplicationContext(db_path) as app:
+            monkeypatch.setattr(
+                app.repositories.latest_scan_items,
+                "replace_for_target",
+                fail_replace_latest,
+            )
+            record_protective_skip_for_test(
+                app=app,
+                target=fixture.target,
+                metadata={"worker": "test_worker"},
+                commit_guard=fixture.commit_guard,
+            )
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(fixture.target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
+        scan_count = app.repositories.scan_runs.connection.execute(
+            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
+            (fixture.target.id,),
+        ).fetchone()[0]
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == fixture.commit_guard.page_id
+    assert state.consecutive_scan_skip_count == 0
+    assert latest_scan is None
+    assert scan_count == 0
+    assert len(latest_items) == 1
+    assert latest_items[0].item_key == "previous"
+
+
+def test_unguarded_protective_skip_uses_explicit_force_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """one-shot fallback skip 應走 explicit force path，不套用 resident guard。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        fixture = _create_running_target_with_guard(app)
+        force_calls: list[str] = []
+        original_force = app.services.targets.force_apply_scan_skip_decision
+
+        def fail_guarded_apply(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("unguarded skip must not use guarded runtime transition")
+
+        def record_force(target_id: str, decision: ScanSkipDecision) -> object:
+            force_calls.append("force")
+            return original_force(target_id, decision)
+
+        monkeypatch.setattr(
+            app.services.targets,
+            "guarded_apply_scan_skip_decision",
+            fail_guarded_apply,
+        )
+        monkeypatch.setattr(
+            app.services.targets,
+            "force_apply_scan_skip_decision",
+            record_force,
+        )
+
+        result = record_protective_skip_for_test(
+            app=app,
+            target=fixture.target,
+            metadata={"worker": "test_worker"},
+        )
+
+    assert force_calls == ["force"]
+    assert result.scan_summary["scan_skipped"] is True
 
 
 def test_finalize_scan_items_refuses_reused_worker_with_different_page(

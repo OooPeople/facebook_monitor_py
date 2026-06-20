@@ -24,7 +24,7 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision_for_db,
 )

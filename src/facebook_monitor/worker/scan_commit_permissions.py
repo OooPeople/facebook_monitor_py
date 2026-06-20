@@ -9,8 +9,8 @@ from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
 
 
 class ScanCommitPermissionKind(StrEnum):

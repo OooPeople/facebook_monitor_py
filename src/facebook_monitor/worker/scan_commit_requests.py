@@ -7,7 +7,7 @@ from pathlib import Path
 
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 
 
 @dataclass(frozen=True)

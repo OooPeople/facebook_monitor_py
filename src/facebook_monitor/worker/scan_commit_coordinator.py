@@ -28,15 +28,16 @@ from facebook_monitor.worker.scan_commit_validation import (
 from facebook_monitor.worker.scan_commit_validation import (
     validate_success_scan_result_for_target,
 )
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_failure_finalize import (
     GuardedScanFailureFinalizeRejected,
     GuardedScanFailureFinalizeRejectedKind,
     record_guarded_scan_failure_result_for_db_async,
 )
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
-from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
+from facebook_monitor.worker.scan_finalize import prepare_guarded_skipped_scan_commit
+from facebook_monitor.worker.scan_finalize import record_prepared_guarded_skipped_scan
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
@@ -51,18 +52,19 @@ def commit_guarded_protective_skip(
     """執行 guarded protective skip finalize，並回傳 typed outcome。"""
 
     validate_protective_skip_result_for_target(target=target, result=result)
-    permission = classify_scan_commit_permission(
-        app=app,
-        target_id=target.id,
-        commit_guard=commit_guard,
-    )
-    if not permission.allowed:
-        return _commit_rejection_outcome(target_id=target.id, permission=permission)
-    finalize_result = record_guarded_skipped_scan(
+    plan = prepare_guarded_skipped_scan_commit(
         app=app,
         target=target,
         metadata=dict(result.metadata),
         commit_guard=commit_guard,
+    )
+    if not plan.permission.allowed:
+        return _commit_rejection_outcome(target_id=target.id, permission=plan.permission)
+    finalize_result = record_prepared_guarded_skipped_scan(
+        app=app,
+        target=target,
+        commit_guard=commit_guard,
+        plan=plan,
     )
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.SKIP_COMMITTED,

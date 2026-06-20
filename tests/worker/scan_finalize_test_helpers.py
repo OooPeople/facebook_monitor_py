@@ -22,12 +22,12 @@ from facebook_monitor.notifications.outbox_dispatch_service import (
 from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
 from facebook_monitor.notifications.senders import NtfySender
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import UNGUARDED_SCAN_COMMIT
 from facebook_monitor.worker.scan_finalize import finalize_scan_items as _finalize_scan_items
 from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
 from facebook_monitor.worker.scan_finalize import record_unguarded_skipped_scan_for_one_shot
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 
 
 def finalize_scan_items(**kwargs: Any) -> Any:

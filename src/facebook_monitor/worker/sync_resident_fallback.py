@@ -52,9 +52,9 @@ from facebook_monitor.worker.resident_shared import list_active_resident_target_
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import force_mark_resident_target_error
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision_for_db,

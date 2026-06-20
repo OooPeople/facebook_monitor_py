@@ -34,8 +34,8 @@ from facebook_monitor.notifications.outbox_runtime_failure_enqueue import (
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_finalize import ensure_target_allows_scan_commit
 
 

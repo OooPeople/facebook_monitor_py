@@ -8,13 +8,13 @@ Extractor、sort 與 load-more 仍由 target-kind-specific pipeline 負責。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from datetime import timedelta
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.application.target_display import format_target_display_name
+from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.core.defaults import PYTHON_PERSISTENCE_RETENTION_DEFAULTS
 from facebook_monitor.core.keyword_rules import KeywordEvaluation
 from facebook_monitor.core.keyword_rules import KeywordGroupMatchResult
@@ -28,8 +28,6 @@ from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
-from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
@@ -42,6 +40,12 @@ from facebook_monitor.notifications.outbox_match_enqueue import (
     queue_match_notifications_after_commit,
 )
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import UNGUARDED_SCAN_COMMIT
+from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
+from facebook_monitor.worker.scan_commit_guard import runtime_state_matches_commit_guard
+from facebook_monitor.worker.scan_commit_permissions import ScanCommitPermission
+from facebook_monitor.worker.scan_commit_permissions import classify_scan_commit_permission
 from facebook_monitor.worker.scan_latest_snapshot import build_latest_scan_items
 from facebook_monitor.worker.scan_latest_snapshot import should_carry_over_previous_latest_items
 
@@ -150,33 +154,16 @@ class _ScanFinalizeAccumulator:
 
 
 @dataclass(frozen=True)
-class ScanCommitGuard:
-    """保存本輪 scan admission identity，避免 stop/start 後舊掃描寫回。"""
+class GuardedSkippedScanCommitPlan:
+    """保存 guarded protective skip commit 前的分類與待寫入 metadata。"""
 
-    worker_id: str
-    started_at: datetime
-    page_id: str = ""
+    permission: ScanCommitPermission
+    skip_decision: ScanSkipDecision | None
+    scan_metadata: dict[str, Any]
 
-
-UNGUARDED_SCAN_COMMIT: ScanCommitGuard | None = None
-"""明確標示 debug / one-shot 入口允許不綁定 runtime admission identity。"""
 
 SORT_ADJUST_UNCONFIRMED_STOP_REASON = "sort_adjust_unconfirmed_skip"
 SORT_ADJUST_UNCONFIRMED_SKIP_REASON = SORT_ADJUST_UNCONFIRMED_REASON
-
-
-def scan_commit_guard_from_runtime_state(
-    state: TargetRuntimeState,
-) -> ScanCommitGuard:
-    """由 running runtime state 建立本輪 scan commit guard。"""
-
-    if state.last_started_at is None:
-        raise ValueError("scan commit guard requires last_started_at")
-    return ScanCommitGuard(
-        worker_id=state.active_worker_id,
-        page_id=state.active_page_id,
-        started_at=state.last_started_at,
-    )
 
 
 def record_guarded_skipped_scan(
@@ -188,11 +175,19 @@ def record_guarded_skipped_scan(
 ) -> ScanFinalizeResult:
     """記錄正式 runtime guarded protective skipped scan。"""
 
-    return _record_skipped_scan(
+    plan = prepare_guarded_skipped_scan_commit(
         app=app,
         target=target,
         metadata=metadata,
         commit_guard=commit_guard,
+    )
+    if not plan.permission.allowed:
+        raise WorkerFailure(TARGET_STOPPED_REASON, "target stopped before skipped scan finalize")
+    return record_prepared_guarded_skipped_scan(
+        app=app,
+        target=target,
+        commit_guard=commit_guard,
+        plan=plan,
     )
 
 
@@ -204,29 +199,100 @@ def record_unguarded_skipped_scan_for_one_shot(
 ) -> ScanFinalizeResult:
     """記錄 debug / one-shot 入口允許的 unguarded protective skipped scan。"""
 
-    return _record_skipped_scan(
+    begin_scan_commit_transaction(app)
+    ensure_target_allows_scan_commit(
+        app=app,
+        target=target,
+        commit_guard=UNGUARDED_SCAN_COMMIT,
+    )
+    skip_decision, scan_metadata = _build_skipped_scan_commit_payload(
         app=app,
         target=target,
         metadata=metadata,
-        commit_guard=UNGUARDED_SCAN_COMMIT,
+    )
+    app.services.targets.force_apply_scan_skip_decision(target.id, skip_decision)
+    return _record_skipped_scan_visible_writes(
+        app=app,
+        target=target,
+        scan_metadata=scan_metadata,
     )
 
 
-def _record_skipped_scan(
+def prepare_guarded_skipped_scan_commit(
     *,
     app: ApplicationContext,
     target: TargetDescriptor,
     metadata: dict[str, Any],
-    commit_guard: ScanCommitGuard | None,
-) -> ScanFinalizeResult:
-    """記錄保護性 skipped scan；達門檻時升級為 worker failure。
+    commit_guard: ScanCommitGuard,
+) -> GuardedSkippedScanCommitPlan:
+    """在 write transaction 內分類 guarded skip commit capability。"""
 
-    scan_run / latest clear 與 guarded skip decision 必須留在同一個
-    transaction；guard rejection 或後段例外不得留下 partial visible state。
+    permission = classify_scan_commit_permission(
+        app=app,
+        target_id=target.id,
+        commit_guard=commit_guard,
+    )
+    if not permission.allowed:
+        return GuardedSkippedScanCommitPlan(
+            permission=permission,
+            skip_decision=None,
+            scan_metadata={},
+        )
+    skip_decision, scan_metadata = _build_skipped_scan_commit_payload(
+        app=app,
+        target=target,
+        metadata=metadata,
+    )
+    return GuardedSkippedScanCommitPlan(
+        permission=permission,
+        skip_decision=skip_decision,
+        scan_metadata=scan_metadata,
+    )
+
+
+def record_prepared_guarded_skipped_scan(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    commit_guard: ScanCommitGuard,
+    plan: GuardedSkippedScanCommitPlan,
+) -> ScanFinalizeResult:
+    """先套用 guarded runtime transition，再寫 scan visible state。
+
+    guarded skip runtime transition 必須先於 scan_run / latest clear。這讓
+    guard rejection 在任何 visible scan write 前就 fail closed；後段例外仍由
+    同一個 transaction rollback，避免留下 partial visible state。
     """
 
-    begin_scan_commit_transaction(app)
-    ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)
+    if not plan.permission.allowed or plan.skip_decision is None:
+        raise WorkerFailure(TARGET_STOPPED_REASON, "target stopped before skipped scan finalize")
+    updated_state = app.services.targets.guarded_apply_scan_skip_decision(
+        target.id,
+        plan.skip_decision,
+        worker_id=commit_guard.worker_id,
+        started_at=commit_guard.started_at,
+        page_id=commit_guard.page_id,
+    )
+    if updated_state is None:
+        raise WorkerFailure(
+            TARGET_STOPPED_REASON,
+            "target stopped before skipped scan finalize",
+        )
+    return _record_skipped_scan_visible_writes(
+        app=app,
+        target=target,
+        scan_metadata=plan.scan_metadata,
+    )
+
+
+def _build_skipped_scan_commit_payload(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    metadata: dict[str, Any],
+) -> tuple[ScanSkipDecision, dict[str, Any]]:
+    """建立 protective skip decision 與 scan metadata；不寫 visible state。"""
+
     skip_reason = str(metadata.get("skip_reason") or SORT_ADJUST_UNCONFIRMED_SKIP_REASON)
     skip_decision = app.services.targets.decide_scan_skip(
         target.id,
@@ -249,6 +315,17 @@ def _record_skipped_scan(
     scan_metadata.setdefault("matched_count", 0)
     scan_metadata.setdefault("skip_streak", skip_decision.skip_streak)
     scan_metadata.setdefault("skip_limit", skip_decision.skip_limit)
+    return skip_decision, scan_metadata
+
+
+def _record_skipped_scan_visible_writes(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    scan_metadata: dict[str, Any],
+) -> ScanFinalizeResult:
+    """寫入 skipped scan_run 與 latest clear；呼叫端必須已完成 runtime transition。"""
+
     scan_run_id = app.services.scans.record_scan(
         RecordScanRequest(
             target_id=target.id,
@@ -259,21 +336,6 @@ def _record_skipped_scan(
         )
     )
     app.repositories.latest_scan_items.replace_for_target(target.id, [])
-    if commit_guard is None:
-        app.services.targets.force_apply_scan_skip_decision(target.id, skip_decision)
-    else:
-        updated_state = app.services.targets.guarded_apply_scan_skip_decision(
-            target.id,
-            skip_decision,
-            worker_id=commit_guard.worker_id,
-            started_at=commit_guard.started_at,
-            page_id=commit_guard.page_id,
-        )
-        if updated_state is None:
-            raise WorkerFailure(
-                TARGET_STOPPED_REASON,
-                "target stopped before skipped scan finalize",
-            )
     return ScanFinalizeResult(
         scan_run_id=scan_run_id,
         new_items=(),
@@ -626,15 +688,7 @@ def target_matches_scan_commit_guard(
     if commit_guard is None:
         return True
     runtime_state = app.services.targets.ensure_runtime_state(target_id)
-    return _runtime_state_matches_commit_guard(runtime_state, commit_guard)
-
-
-def begin_scan_commit_transaction(app: ApplicationContext) -> None:
-    """開始 guarded scan write transaction，避免 guard check 後被 stop/start 穿插。"""
-
-    connection = app.repositories.runtime_states.connection
-    if not connection.in_transaction:
-        connection.execute("BEGIN IMMEDIATE")
+    return runtime_state_matches_commit_guard(runtime_state, commit_guard)
 
 
 def mark_target_idle_for_scan_commit(
@@ -699,24 +753,7 @@ def _target_allows_scan_commit(
     runtime_state = app.services.targets.ensure_runtime_state(target.id)
     if runtime_state.desired_state != TargetDesiredState.ACTIVE:
         return False
-    return _runtime_state_matches_commit_guard(runtime_state, commit_guard)
-
-
-def _runtime_state_matches_commit_guard(
-    runtime_state: TargetRuntimeState,
-    commit_guard: ScanCommitGuard | None,
-) -> bool:
-    """比對 runtime 是否仍是同一個 running attempt。"""
-
-    if commit_guard is None:
-        return True
-    if runtime_state.runtime_status != TargetRuntimeStatus.RUNNING:
-        return False
-    if runtime_state.active_worker_id != commit_guard.worker_id:
-        return False
-    if runtime_state.last_started_at != commit_guard.started_at:
-        return False
-    return not commit_guard.page_id or runtime_state.active_page_id == commit_guard.page_id
+    return runtime_state_matches_commit_guard(runtime_state, commit_guard)
 
 
 def build_scan_match_result(

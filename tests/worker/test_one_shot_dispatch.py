@@ -20,7 +20,7 @@ from facebook_monitor.worker.one_shot_dispatch import record_failure
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 

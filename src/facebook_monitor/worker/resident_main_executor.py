@@ -48,8 +48,8 @@ from facebook_monitor.worker.resident_shared import force_mark_resident_target_i
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
-from facebook_monitor.worker.scan_finalize import begin_scan_commit_transaction
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_finalize import target_matches_scan_commit_guard
 
 

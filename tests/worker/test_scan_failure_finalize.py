@@ -33,8 +33,8 @@ from facebook_monitor.notifications.outbox_runtime_failure_enqueue import (
     queue_runtime_failure_notifications_after_commit,
 )
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
-from facebook_monitor.worker.scan_finalize import UNGUARDED_SCAN_COMMIT
-from facebook_monitor.worker.scan_finalize import scan_commit_guard_from_runtime_state
+from facebook_monitor.worker.scan_commit_guard import UNGUARDED_SCAN_COMMIT
+from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision,
 )

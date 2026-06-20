@@ -231,6 +231,7 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
     failure_reason TEXT NOT NULL DEFAULT '',
     failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
     attempts INTEGER NOT NULL CHECK (attempts >= 0),
+    processing_token TEXT NOT NULL DEFAULT '',
     last_error TEXT NOT NULL,
     notification_event_id INTEGER,
     created_at TEXT NOT NULL,

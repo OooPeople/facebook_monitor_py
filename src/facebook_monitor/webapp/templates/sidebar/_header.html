@@ -1,0 +1,48 @@
+<div class="sidebar-header">
+  <h2>監看清單</h2>
+  <div class="sidebar-header-actions">
+    <button
+      class="button button--primary sidebar-sort-confirm"
+      type="button"
+      data-sidebar-confirm-sort
+      hidden
+    >確認</button>
+    <details class="sidebar-menu" data-sidebar-menu>
+      <summary
+        class="button button--icon sidebar-menu-trigger"
+        aria-label="監看清單操作"
+        aria-controls="sidebar-menu-panel"
+        aria-expanded="false"
+      >
+        <svg
+          class="sidebar-action-icon"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M4 7h16"/>
+          <path d="M4 12h16"/>
+          <path d="M4 17h16"/>
+        </svg>
+      </summary>
+      <div class="sidebar-menu-panel menu-panel" id="sidebar-menu-panel">
+        <button
+          class="sidebar-menu-action menu-action"
+          type="button"
+          data-sidebar-create-group
+        >新增群組</button>
+        <button
+          class="sidebar-menu-action menu-action"
+          type="button"
+          data-sidebar-start-sort
+        >調整順序</button>
+        <button
+          class="sidebar-menu-action menu-action"
+          type="button"
+          data-sidebar-cancel-sort
+          hidden
+        >取消排序</button>
+      </div>
+    </details>
+  </div>
+</div>

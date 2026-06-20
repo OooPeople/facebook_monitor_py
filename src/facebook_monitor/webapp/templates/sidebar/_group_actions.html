@@ -1,0 +1,90 @@
+<div class="sidebar-group-actions" data-sidebar-group-actions>
+  <button
+    class="button--icon sidebar-group-monitoring{% if group.monitoring_action == 'stop' %} is-active{% endif %}"
+    type="button"
+    data-sidebar-group-monitoring="{{ group.monitoring_action }}"
+    data-group-id="{{ group.group_id }}"
+    aria-label="{{ group.monitoring_button_label }}"
+    title="{{ group.monitoring_button_label }}"
+    {% if group.monitoring_disabled %}disabled{% endif %}
+  >
+    <svg
+      class="sidebar-action-icon sidebar-action-icon--play"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+      {% if group.monitoring_action == "stop" %}hidden{% endif %}
+    >
+      <path d="M8 5v14l11-7Z"/>
+    </svg>
+    <svg
+      class="sidebar-action-icon sidebar-action-icon--stop"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+      {% if group.monitoring_action != "stop" %}hidden{% endif %}
+    >
+      <rect x="6" y="6" width="12" height="12" rx="2"/>
+    </svg>
+  </button>
+  <div class="sidebar-group-action-strip">
+    <button
+      class="button--icon sidebar-group-menu"
+      type="button"
+      data-sidebar-group-rename
+      aria-label="重新命名群組"
+    >
+      <svg
+        class="sidebar-action-icon"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path d="M12 20h9"/>
+        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+      </svg>
+    </button>
+    <button
+      class="button--icon sidebar-group-menu"
+      type="button"
+      data-sidebar-group-settings
+      aria-label="群組設定模板"
+    >
+      {% include "sidebar/_icon_settings.html" %}
+    </button>
+    <button
+      class="button--icon sidebar-group-menu sidebar-group-delete"
+      type="button"
+      data-sidebar-group-delete
+      aria-label="刪除群組"
+    >
+      <svg
+        class="sidebar-action-icon"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path d="M18 6 6 18"/>
+        <path d="m6 6 12 12"/>
+      </svg>
+    </button>
+  </div>
+  <button
+    class="button--icon sidebar-group-actions-toggle"
+    type="button"
+    data-sidebar-group-actions-toggle
+    aria-label="群組操作"
+    aria-expanded="false"
+  >
+    <svg
+      class="sidebar-action-icon sidebar-action-icon--dots"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="5" cy="12" r="1.8"/>
+      <circle cx="12" cy="12" r="1.8"/>
+      <circle cx="19" cy="12" r="1.8"/>
+    </svg>
+  </button>
+</div>

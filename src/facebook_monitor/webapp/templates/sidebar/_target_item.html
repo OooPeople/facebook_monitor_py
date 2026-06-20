@@ -1,0 +1,68 @@
+<li
+  class="sidebar-list-item"
+  data-sidebar-item
+  data-target-id="{{ item.target_id }}"
+  data-sidebar-item-active="{{ 1 if item.active else 0 }}"
+>
+  <a
+    class="sidebar-target"
+    href="#{{ item.anchor_id }}"
+    data-sidebar-target="{{ item.anchor_id }}"
+  >
+    <span
+      class="sidebar-avatar{% if item.thumbnail_url %} has-image{% endif %}"
+      aria-hidden="true"
+    >
+      {% if item.thumbnail_url %}
+        <img
+          src="{{ item.thumbnail_url }}"
+          alt=""
+          referrerpolicy="no-referrer"
+          loading="lazy"
+        >
+      {% else %}
+        {{ item.display_name[:1] or "?" }}
+      {% endif %}
+    </span>
+    <span class="sidebar-copy">
+      <span class="sidebar-name">{{ item.display_name }}</span>
+      <span
+        class="sidebar-status"
+        data-sidebar-status="{{ item.target_id }}"
+        data-sidebar-base-status="{{ item.base_status_summary }}"
+        data-sidebar-status-class="{{ item.status_class }}"
+        data-sidebar-status-detail="{{ item.status_detail }}"
+        data-sidebar-default-detail="{{ item.status_detail }}"
+        data-sidebar-mode-label="{{ item.mode_label }}"
+        data-sidebar-mode-class="{{ item.mode_class }}"
+      >
+        <span class="sidebar-status-token sidebar-status-pill {{ item.status_class }}">
+          {{ item.base_status_summary }}
+        </span>
+        <span class="sidebar-status-token target-mode-chip sidebar-mode-chip {{ item.mode_class }}">
+          {{ item.mode_label }}
+        </span>
+        {% if item.status_detail %}
+          <span class="sidebar-status-detail">{{ item.status_detail }}</span>
+        {% endif %}
+      </span>
+    </span>
+  </a>
+  <button
+    class="sidebar-drag-handle"
+    type="button"
+    data-sidebar-drag-handle
+    aria-label="拖曳排序"
+  >
+    <svg
+      class="sidebar-action-icon sidebar-action-icon--drag"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M5 7h14"/>
+      <path d="M5 12h14"/>
+      <path d="M5 17h14"/>
+    </svg>
+  </button>
+</li>

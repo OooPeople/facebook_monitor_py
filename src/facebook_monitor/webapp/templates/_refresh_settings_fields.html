@@ -20,7 +20,9 @@
     <label class="radio option-card">
       <input name="{{ refresh_mode_name }}" type="radio" value="floating"
         data-refresh-mode-input
-        {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %}
+        {% if refresh_mode_payload_name %}
+          data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"
+        {% endif %}
         {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
         {{ refresh_input_attrs|safe }}
         {% if floating_checked %}checked{% endif %}
@@ -33,7 +35,9 @@
     <label class="radio option-card">
       <input name="{{ refresh_mode_name }}" type="radio" value="fixed"
         data-refresh-mode-input
-        {% if refresh_mode_payload_name %}data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"{% endif %}
+        {% if refresh_mode_payload_name %}
+          data-sidebar-template-payload-name="{{ refresh_mode_payload_name }}"
+        {% endif %}
         {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
         {{ refresh_input_attrs|safe }}
         {% if fixed_checked %}checked{% endif %}
@@ -49,14 +53,21 @@
   <label data-refresh-fixed>
     刷新秒數
     <input
-      name="fixed_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ fixed_value }}" {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
+      name="fixed_refresh_sec"
+      type="number"
+      min="{{ min_refresh_seconds }}"
+      value="{{ fixed_value }}"
+      {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
       {{ refresh_input_attrs|safe }}
     >
   </label>
   <label data-refresh-floating>
     最小刷新秒數
     <input
-      name="min_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ min_value }}"
+      name="min_refresh_sec"
+      type="number"
+      min="{{ min_refresh_seconds }}"
+      value="{{ min_value }}"
       {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
       {{ refresh_input_attrs|safe }}
     >
@@ -64,7 +75,10 @@
   <label data-refresh-floating>
     最大刷新秒數
     <input
-      name="max_refresh_sec" type="number" min="{{ min_refresh_seconds }}" value="{{ max_value }}"
+      name="max_refresh_sec"
+      type="number"
+      min="{{ min_refresh_seconds }}"
+      value="{{ max_value }}"
       {% if refresh_form_id %}form="{{ refresh_form_id }}"{% endif %}
       {{ refresh_input_attrs|safe }}
     >

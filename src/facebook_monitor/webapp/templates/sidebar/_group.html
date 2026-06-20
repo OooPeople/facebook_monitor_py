@@ -1,0 +1,43 @@
+<section
+  class="sidebar-group{% if group.collapsed %} collapsed{% endif %}"
+  data-sidebar-group
+  data-group-id="{{ group.dom_group_id }}"
+  data-system-group="{{ 1 if group.is_system else 0 }}"
+>
+  <header class="sidebar-group-header">
+    <button
+      class="sidebar-group-collapse"
+      type="button"
+      data-sidebar-group-collapse
+      data-sidebar-group-drag-handle
+      aria-label="收合群組"
+    >
+      <svg
+        class="sidebar-action-icon sidebar-action-icon--chevron"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path d="m6 9 6 6 6-6"/>
+      </svg>
+    </button>
+    <span class="sidebar-group-name">{{ group.name }}</span>
+    {% if not group.is_system %}
+      {% include "sidebar/_group_actions.html" %}
+    {% endif %}
+  </header>
+  <ul
+    class="sidebar-list"
+    data-sidebar-list
+    data-group-id="{{ group.dom_group_id }}"
+  >
+    {% for item in group.items %}
+      {% include "sidebar/_target_item.html" %}
+    {% else %}
+      {% include "sidebar/_empty_state.html" %}
+    {% endfor %}
+  </ul>
+</section>
+{% if not group.is_system %}
+  {% include "_sidebar_group_settings_modal.html" %}
+{% endif %}

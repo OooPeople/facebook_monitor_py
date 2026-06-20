@@ -94,10 +94,32 @@ def migrate_37_to_38(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE match_history RENAME COLUMN notified_at TO recorded_at")
 
 
+def migrate_38_to_39(connection: sqlite3.Connection) -> None:
+    """為 notification outbox processing claim 加入 runtime lease token。"""
+
+    if not table_exists(connection, "notification_outbox"):
+        return
+    columns = {
+        str(row["name"])
+        for row in connection.execute(
+            "PRAGMA table_info(notification_outbox)"
+        ).fetchall()
+    }
+    if "processing_token" in columns:
+        return
+    connection.execute(
+        """
+        ALTER TABLE notification_outbox
+        ADD COLUMN processing_token TEXT NOT NULL DEFAULT ''
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     35: migrate_35_to_36,
     36: migrate_36_to_37,
     37: migrate_37_to_38,
+    38: migrate_38_to_39,
 }
 
 
@@ -280,6 +302,7 @@ __all__ = [
     "migrate_35_to_36",
     "migrate_36_to_37",
     "migrate_37_to_38",
+    "migrate_38_to_39",
     "rebuild_targets_table_with_check_constraints",
     "run_known_migrations",
     "table_exists",

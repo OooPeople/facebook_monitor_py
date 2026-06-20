@@ -955,12 +955,15 @@ def test_bounded_retention_maintenance_runs_once_per_interval(
                 title="old",
                 message="old",
             )
-        )
+        ).entry
         assert outbox.id is not None
-        app.repositories.notification_outbox.mark_result(
+        claimed = app.repositories.notification_outbox.claim_pending()[0]
+        assert app.repositories.notification_outbox.mark_result(
             entry_id=outbox.id,
             status=NotificationOutboxStatus.SENT,
             attempts=1,
+            processing_status=claimed.entry.status,
+            claim_token=claimed.claim_token,
         )
         app.repositories.notification_outbox.connection.execute(
             """

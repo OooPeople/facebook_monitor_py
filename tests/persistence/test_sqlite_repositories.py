@@ -307,13 +307,16 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
                 endpoint="phase0test",
                 permalink="https://www.facebook.com/groups/example/posts/1",
             )
-        )
+        ).entry
         assert outbox_entry.id is not None
         assert outbox_entry.status == NotificationOutboxStatus.PENDING
-        outbox_repo.mark_result(
+        claimed = outbox_repo.claim_pending()[0]
+        assert outbox_repo.mark_result(
             entry_id=outbox_entry.id,
             status=NotificationOutboxStatus.SENT,
             attempts=1,
+            processing_status=claimed.entry.status,
+            claim_token=claimed.claim_token,
             notification_event_id=event_id,
         )
         loaded_outbox = outbox_repo.get_by_idempotency_key(f"{target.id}:item-hash:ntfy")

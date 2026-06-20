@@ -47,6 +47,7 @@ from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
+from facebook_monitor.worker.scan_commit_outcomes import ScanCommitSideEffects
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
@@ -111,6 +112,7 @@ def test_scan_commit_outcome_classifies_visible_and_stale_results() -> None:
         scan_run_id=123,
         matched_count=1,
         new_count=1,
+        side_effects=ScanCommitSideEffects(wrote_scan_run=True),
     )
     stale = ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.GUARD_MISMATCH,

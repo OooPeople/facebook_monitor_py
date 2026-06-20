@@ -12,6 +12,7 @@ from datetime import timezone
 import logging
 import os
 from pathlib import Path
+import secrets
 from typing import BinaryIO
 from typing import Callable
 from typing import Literal
@@ -219,7 +220,11 @@ def create_support_bundle(
 
     generated_at = utc_now().astimezone(timezone.utc)
     timestamp = generated_at.strftime("%Y%m%d-%H%M%S")
-    filename = f"{SUPPORT_BUNDLE_FILENAME_PREFIX}{timestamp}{SUPPORT_BUNDLE_FILENAME_SUFFIX}"
+    filename_token = secrets.token_hex(4)
+    filename = (
+        f"{SUPPORT_BUNDLE_FILENAME_PREFIX}{timestamp}-{filename_token}"
+        f"{SUPPORT_BUNDLE_FILENAME_SUFFIX}"
+    )
     bundle_dir = paths.exports_dir / "support-bundles"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = bundle_dir / filename
@@ -242,9 +247,13 @@ def create_support_bundle(
                     "\n".join(
                         [
                             "Facebook Monitor support bundle",
-                            "This bundle intentionally excludes the SQLite DB, browser profile, cookies, secrets, full logs, and full post/comment text.",
-                            "It includes bounded redacted log tails, runtime snapshots, scan summaries, notification summaries, cover image host histograms, and database health checks.",
-                            "Paths, URLs, IDs, errors, and secret-like values are redacted or aliased before writing on a best-effort basis.",
+                            "This bundle intentionally excludes the SQLite DB, browser profile, "
+                            "cookies, secrets, full logs, and full post/comment text.",
+                            "It includes bounded redacted log tails, runtime snapshots, "
+                            "scan summaries, notification summaries, cover image host "
+                            "histograms, and database health checks.",
+                            "Paths, URLs, IDs, errors, and secret-like values are redacted "
+                            "or aliased before writing on a best-effort basis.",
                             "Please review the extracted files before sharing this bundle.",
                             "",
                         ]

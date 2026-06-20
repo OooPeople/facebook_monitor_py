@@ -15,20 +15,16 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_NOTIFICATION_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationOutboxStatus
+from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.notifications.channel_dispatch import dispatch_notification_outbox_entry
-from facebook_monitor.notifications.channel_dispatch import (
-    record_failed_notification_event_for_outbox_error,
-)
+from facebook_monitor.notifications.channel_dispatch import record_notification_event
+from facebook_monitor.notifications.channel_dispatch import send_notification_outbox_entry
 from facebook_monitor.notifications.desktop import send_desktop_notification
 from facebook_monitor.notifications.discord import send_discord_notification
 from facebook_monitor.notifications.outbox_dispatch_results import (
     INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
 )
 from facebook_monitor.notifications.outbox_dispatch_results import outbox_result_message
-from facebook_monitor.notifications.outbox_dispatch_results import (
-    record_skipped_runtime_failure_outbox_entry,
-)
 from facebook_monitor.notifications.outbox_dispatch_results import (
     runtime_failure_outbox_entry_should_skip,
 )
@@ -46,6 +42,12 @@ from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.notifications.senders import DesktopSender
 from facebook_monitor.notifications.senders import DiscordSender
 from facebook_monitor.notifications.senders import NtfySender
+from facebook_monitor.persistence.repositories.notification_outbox import (
+    ClaimedNotificationOutboxEntry,
+)
+from facebook_monitor.persistence.repositories.notification_outbox import (
+    StaleNotificationOutboxClaim,
+)
 
 
 DEFAULT_STALE_PROCESSING_SECONDS = (
@@ -59,9 +61,21 @@ class _PreparedOutboxDispatch:
     """保存單筆 outbox dispatch 已載入的 target 與 attempt 語義。"""
 
     entry_id: int
-    entry: NotificationOutboxEntry
+    claimed: ClaimedNotificationOutboxEntry
     target: TargetDescriptor
     attempts: int
+
+    @property
+    def entry(self) -> NotificationOutboxEntry:
+        """回傳此 claim 對應的 outbox entry。"""
+
+        return self.claimed.entry
+
+    @property
+    def claim_token(self) -> str:
+        """回傳目前 processing lease token。"""
+
+        return self.claimed.claim_token
 
 
 @dataclass(frozen=True)
@@ -69,8 +83,9 @@ class _OutboxDispatchOutcome:
     """保存單筆 outbox dispatch 可寫回 repository 的結果。"""
 
     status: NotificationOutboxStatus
-    message: str
-    notification_event_id: int | None
+    event_status: NotificationStatus
+    event_message: str
+    outbox_message: str
 
 
 def dispatch_new_pending_notification_outbox(
@@ -196,7 +211,7 @@ def recover_stale_processing_outbox(
 def dispatch_notification_outbox_entries(
     *,
     app: ApplicationContext,
-    entries: list[NotificationOutboxEntry],
+    entries: list[ClaimedNotificationOutboxEntry],
     ntfy_sender: NtfySender,
     desktop_sender: DesktopSender,
     discord_sender: DiscordSender,
@@ -204,7 +219,8 @@ def dispatch_notification_outbox_entries(
     """發送已 claim 的 outbox events，並將結果寫回 notification_events。"""
 
     dispatched_count = 0
-    for entry in entries:
+    for claimed_entry in entries:
+        entry = claimed_entry.entry
         if entry.id is None:
             continue
         entry_id = int(entry.id)
@@ -213,7 +229,7 @@ def dispatch_notification_outbox_entries(
         try:
             prepared = prepare_outbox_entry_for_dispatch(
                 app=app,
-                entry=entry,
+                claimed_entry=claimed_entry,
                 entry_id=entry_id,
                 attempts=attempts,
             )
@@ -232,34 +248,40 @@ def dispatch_notification_outbox_entries(
             )
             app.repositories.notification_outbox.connection.commit()
             dispatched_count += 1
+        except StaleNotificationOutboxClaim:
+            app.repositories.notification_outbox.connection.rollback()
         except Exception as exc:
-            record_outbox_dispatch_failure(
-                app=app,
-                entry=entry,
-                entry_id=entry_id,
-                attempts=attempts,
-                target=target,
-                exc=exc,
-            )
-            app.repositories.notification_outbox.connection.commit()
+            try:
+                record_outbox_dispatch_failure(
+                    app=app,
+                    claimed_entry=claimed_entry,
+                    entry_id=entry_id,
+                    attempts=attempts,
+                    target=target,
+                    exc=exc,
+                )
+                app.repositories.notification_outbox.connection.commit()
+            except StaleNotificationOutboxClaim:
+                app.repositories.notification_outbox.connection.rollback()
     return dispatched_count
 
 
 def prepare_outbox_entry_for_dispatch(
     *,
     app: ApplicationContext,
-    entry: NotificationOutboxEntry,
+    claimed_entry: ClaimedNotificationOutboxEntry,
     entry_id: int,
     attempts: int,
 ) -> _PreparedOutboxDispatch:
     """載入 dispatch 所需 target；target 已刪除時交由 failure recorder 寫回。"""
 
+    entry = claimed_entry.entry
     target = app.repositories.targets.get(entry.target_id)
     if target is None:
         raise ValueError(f"Target not found: {entry.target_id}")
     return _PreparedOutboxDispatch(
         entry_id=entry_id,
-        entry=entry,
+        claimed=claimed_entry,
         target=target,
         attempts=attempts,
     )
@@ -276,21 +298,17 @@ def dispatch_prepared_outbox_entry(
     """依單筆 outbox entry 狀態執行 skip 或實際 channel dispatch。"""
 
     if runtime_failure_outbox_entry_should_skip(prepared.entry):
-        event_id = record_skipped_runtime_failure_outbox_entry(
-            app=app,
-            target=prepared.target,
-            entry=prepared.entry,
-        )
         return _OutboxDispatchOutcome(
             status=NotificationOutboxStatus.SKIPPED,
-            message=INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
-            notification_event_id=event_id,
+            event_status=NotificationStatus.SKIPPED,
+            event_message=INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
+            outbox_message=INVALID_RUNTIME_FAILURE_NOTIFICATION_MESSAGE,
         )
     refreshed_entry = mark_processing_and_refresh_outbox_entry(
         app=app,
         prepared=prepared,
     )
-    event_id, status, result_message = dispatch_notification_outbox_entry(
+    result = send_notification_outbox_entry(
         app=app,
         target=prepared.target,
         entry=refreshed_entry,
@@ -299,9 +317,10 @@ def dispatch_prepared_outbox_entry(
         discord_sender=discord_sender,
     )
     return _OutboxDispatchOutcome(
-        status=status,
-        message=outbox_result_message(status, result_message),
-        notification_event_id=event_id,
+        status=result.outbox_status,
+        event_status=result.event_status,
+        event_message=result.message,
+        outbox_message=outbox_result_message(result.outbox_status, result.message),
     )
 
 
@@ -312,15 +331,13 @@ def mark_processing_and_refresh_outbox_entry(
 ) -> NotificationOutboxEntry:
     """標記 processing 後刷新 endpoint 與顯示 metadata，保留既有 commit 邊界。"""
 
-    app.repositories.notification_outbox.touch_processing(
-        entry_id=prepared.entry_id,
-        status=prepared.entry.status,
-    )
+    ensure_current_outbox_claim(app=app, prepared=prepared)
     app.repositories.notification_outbox.connection.commit()
     entry = refresh_outbox_entry_delivery_endpoint(
         app=app,
         target=prepared.target,
         entry=prepared.entry,
+        claim_token=prepared.claim_token,
     )
     return refresh_outbox_entry_display_metadata_lines(
         target=prepared.target,
@@ -336,19 +353,34 @@ def record_outbox_dispatch_result(
 ) -> None:
     """將單筆 outbox dispatch 成功或 skip 結果寫回 repository。"""
 
-    app.repositories.notification_outbox.mark_result(
+    ensure_current_outbox_claim(app=app, prepared=prepared)
+    event_id = record_notification_event(
+        app=app,
+        target=prepared.target,
+        item_key=prepared.entry.item_key,
+        channel=prepared.entry.channel,
+        status=outcome.event_status,
+        message=outcome.event_message,
+        entry=prepared.entry,
+    )
+    if not app.repositories.notification_outbox.mark_result(
         entry_id=prepared.entry_id,
         status=outcome.status,
         attempts=prepared.attempts,
-        message=outcome.message,
-        notification_event_id=outcome.notification_event_id,
-    )
+        processing_status=prepared.entry.status,
+        claim_token=prepared.claim_token,
+        message=outcome.outbox_message,
+        notification_event_id=event_id,
+    ):
+        raise StaleNotificationOutboxClaim(
+            f"notification outbox claim is stale: entry_id={prepared.entry_id}"
+        )
 
 
 def record_outbox_dispatch_failure(
     *,
     app: ApplicationContext,
-    entry: NotificationOutboxEntry,
+    claimed_entry: ClaimedNotificationOutboxEntry,
     entry_id: int,
     attempts: int,
     target: TargetDescriptor | None,
@@ -356,24 +388,67 @@ def record_outbox_dispatch_failure(
 ) -> None:
     """將單筆 outbox dispatch 例外轉成 failed outbox row 與事件紀錄。"""
 
+    entry = claimed_entry.entry
     error_message = safe_exception_message(
         f"{entry.channel.value}_dispatch_failed",
         exc,
     )
-    app.repositories.notification_outbox.mark_result(
+    if target is not None:
+        prepared = _PreparedOutboxDispatch(
+            entry_id=entry_id,
+            claimed=claimed_entry,
+            target=target,
+            attempts=attempts,
+        )
+        ensure_current_outbox_claim(app=app, prepared=prepared)
+        event_id = record_notification_event(
+            app=app,
+            target=target,
+            item_key=entry.item_key,
+            channel=entry.channel,
+            status=NotificationStatus.FAILED,
+            message=error_message,
+            entry=entry,
+        )
+    else:
+        if not app.repositories.notification_outbox.touch_processing(
+            entry_id=entry_id,
+            status=entry.status,
+            claim_token=claimed_entry.claim_token,
+        ):
+            raise StaleNotificationOutboxClaim(
+                f"notification outbox claim is stale: entry_id={entry_id}"
+            )
+        event_id = None
+    if not app.repositories.notification_outbox.mark_result(
         entry_id=entry_id,
         status=NotificationOutboxStatus.FAILED,
         attempts=attempts,
+        processing_status=entry.status,
+        claim_token=claimed_entry.claim_token,
         message=error_message,
-        notification_event_id=record_failed_notification_event_for_outbox_error(
-            app=app,
-            target=target,
-            entry=entry,
-            message=error_message,
+        notification_event_id=event_id,
+    ):
+        raise StaleNotificationOutboxClaim(
+            f"notification outbox claim is stale: entry_id={entry_id}"
         )
-        if target is not None
-        else None,
-    )
+
+
+def ensure_current_outbox_claim(
+    *,
+    app: ApplicationContext,
+    prepared: _PreparedOutboxDispatch,
+) -> None:
+    """確認目前 processing row 仍屬於本次 claim，並刷新 heartbeat。"""
+
+    if not app.repositories.notification_outbox.touch_processing(
+        entry_id=prepared.entry_id,
+        status=prepared.entry.status,
+        claim_token=prepared.claim_token,
+    ):
+        raise StaleNotificationOutboxClaim(
+            f"notification outbox claim is stale: entry_id={prepared.entry_id}"
+        )
 
 
 __all__ = [

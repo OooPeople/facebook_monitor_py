@@ -1,6 +1,10 @@
 <div class="target-header">
   <div class="target-title-block">
-    <div class="target-avatar thumb{% if row.thumbnail_url %} has-image{% endif %}" aria-hidden="true" data-target-avatar>
+    <div
+      class="target-avatar thumb{% if row.thumbnail_url %} has-image{% endif %}"
+      aria-hidden="true"
+      data-target-avatar
+    >
       {% if row.thumbnail_url %}
         <img src="{{ row.thumbnail_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
       {% else %}
@@ -17,8 +21,16 @@
         <span class="target-subtitle-separator" aria-hidden="true">·</span>
         <span data-latest-scan-header>最近掃描 {{ row.latest_scan_header_time_label }}</span>
         <span class="target-subtitle-separator" aria-hidden="true">·</span>
-        <span data-next-refresh data-next-refresh-seconds="{{ row.next_refresh_seconds if row.next_refresh_seconds is not none else '' }}">下次刷新：{{ row.next_refresh_label }}</span>
-        <span class="target-subtitle-separator" aria-hidden="true" data-latest-error-separator {% if not row.latest_failed_scan_run %}hidden{% endif %}>·</span>
+        <span
+          data-next-refresh
+          data-next-refresh-seconds="{{ row.next_refresh_seconds if row.next_refresh_seconds is not none else '' }}"
+        >下次刷新：{{ row.next_refresh_label }}</span>
+        <span
+          class="target-subtitle-separator"
+          aria-hidden="true"
+          data-latest-error-separator
+          {% if not row.latest_failed_scan_run %}hidden{% endif %}
+        >·</span>
         <span
           data-latest-error-indicator
           data-latest-error-kind="{{ row.latest_error_indicator_kind }}"
@@ -31,19 +43,46 @@
   <div class="target-actions">
     <span class="inline-feedback action-status" data-action-status aria-live="polite">已更新</span>
     {% if row.scanning_supported %}
-      <form method="post" action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}" data-action-anchor="{{ row.anchor_id }}" data-monitoring-form>
+      <form
+        method="post"
+        action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}"
+        data-action-anchor="{{ row.anchor_id }}"
+        data-monitoring-form
+      >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="return_to" value="">
-        <button class="button button--toolbar" type="submit" data-monitoring-button>{{ row.monitoring_button_label }}</button>
+        <button
+          class="button button--toolbar"
+          type="submit"
+          data-monitoring-button
+        >{{ row.monitoring_button_label }}</button>
       </form>
     {% else %}
       <span class="muted-text">尚未接上掃描流程</span>
     {% endif %}
-    <button class="button button--toolbar" type="submit" form="config-{{ row.target.id }}" data-dirty-submit>儲存</button>
-    <button class="button button--toolbar" type="button" data-view-records-button data-target-id="{{ row.target.id }}">查看紀錄</button>
-    <button class="button button--toolbar" type="button" data-settings-button data-target-anchor="{{ row.anchor_id }}">設定</button>
+    <button
+      class="button button--toolbar"
+      type="submit"
+      form="config-{{ row.target.id }}"
+      data-dirty-submit
+    >儲存</button>
+    <button
+      class="button button--toolbar"
+      type="button"
+      data-view-records-button
+      data-target-id="{{ row.target.id }}"
+    >查看紀錄</button>
+    <button
+      class="button button--toolbar"
+      type="button"
+      data-settings-button
+      data-target-anchor="{{ row.anchor_id }}"
+    >設定</button>
     <details class="more-menu">
-      <summary class="button button--toolbar button--toolbar-icon more-menu-trigger" aria-label="更多操作">
+      <summary
+        class="button button--toolbar button--toolbar-icon more-menu-trigger"
+        aria-label="更多操作"
+      >
         <svg class="ui-icon ui-icon--dots" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <circle cx="5" cy="12" r="1.8"/>
           <circle cx="12" cy="12" r="1.8"/>
@@ -51,8 +90,16 @@
         </svg>
       </summary>
       <div class="more-menu-panel menu-panel">
-        <button class="more-menu-action menu-action" type="button" data-scan-diagnostics-button>掃描診斷</button>
-        <button class="more-menu-action menu-action" type="button" data-rename-target-button>更改名稱</button>
+        <button
+          class="more-menu-action menu-action"
+          type="button"
+          data-scan-diagnostics-button
+        >掃描診斷</button>
+        <button
+          class="more-menu-action menu-action"
+          type="button"
+          data-rename-target-button
+        >更改名稱</button>
         <form
           method="post"
           action="/targets/{{ row.target.id }}/notifications/clear"

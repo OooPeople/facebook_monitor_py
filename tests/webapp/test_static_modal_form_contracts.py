@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
 from tests.webapp.static_contract_helpers import input_tags as _input_tags
@@ -274,20 +275,40 @@ def test_button_variants_use_shared_button_modifier_classes() -> None:
     assert "min-height: 42px;" in styles
     assert "min-width: 68px;" in styles
     assert "min-width: 52px;" in styles
-    assert 'class="button button--toolbar button--toolbar-icon more-menu-trigger"' in template_text
-    assert (
-        'class="button button--toolbar" type="submit" '
-        "data-monitoring-button>{{ row.monitoring_button_label }}</button>"
-    ) in template_text
-    assert (
-        'class="button button--toolbar" type="submit" form="config-{{ row.target.id }}"'
-        in template_text
+    assert re.search(
+        r'<summary[^>]*class="button button--toolbar button--toolbar-icon '
+        r'more-menu-trigger"',
+        template_text,
     )
-    assert 'class="button button--toolbar" type="button" data-view-records-button' in template_text
-    assert 'class="button button--toolbar" type="button" data-settings-button' in template_text
+    assert re.search(
+        r'<button[^>]*class="button button--toolbar"[^>]*type="submit"'
+        r"[^>]*data-monitoring-button[^>]*>\s*\{\{ row.monitoring_button_label \}\}",
+        template_text,
+    )
+    assert re.search(
+        r'<button[^>]*class="button button--toolbar"[^>]*type="submit"'
+        r'[^>]*form="config-\{\{ row.target.id \}\}"',
+        template_text,
+    )
+    assert re.search(
+        r'<button[^>]*class="button button--toolbar"[^>]*type="button"'
+        r"[^>]*data-view-records-button",
+        template_text,
+    )
+    assert re.search(
+        r'<button[^>]*class="button button--toolbar"[^>]*type="button"'
+        r"[^>]*data-settings-button",
+        template_text,
+    )
     assert 'class="button theme-toggle"' in template_text
-    assert 'class="button button--icon sidebar-menu-trigger"' in template_text
-    assert 'class="button button--primary sidebar-sort-confirm"' in template_text
+    assert re.search(
+        r'<summary[^>]*class="button button--icon sidebar-menu-trigger"',
+        template_text,
+    )
+    assert re.search(
+        r'<button[^>]*class="button button--primary sidebar-sort-confirm"',
+        template_text,
+    )
     assert "button primary" not in template_text
     assert "icon-button" not in template_text
     assert 'class="danger"' not in template_text

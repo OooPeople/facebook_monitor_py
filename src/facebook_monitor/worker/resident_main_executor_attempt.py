@@ -166,7 +166,6 @@ class ResidentQueueAttemptState:
                 page_id=self.page_id,
                 page_acquired=self.acquired_page,
                 planner_dispatch_id=self.planner_dispatch_id,
-                runtime_owner_guard=self.commit_guard,
             ),
         )
 

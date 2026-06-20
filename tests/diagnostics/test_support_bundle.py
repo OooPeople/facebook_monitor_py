@@ -188,6 +188,38 @@ def test_support_bundle_readme_marks_redaction_as_best_effort(tmp_path: Path) ->
     assert "review the extracted files before sharing" in readme
 
 
+def test_support_bundle_final_filename_uses_unique_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一秒建立多份支援包時，正式 zip 檔名不得互相覆蓋。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    tokens = iter(("aaaabbbb", "ccccdddd"))
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle.secrets.token_hex",
+        lambda _size: next(tokens),
+    )
+
+    first = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+    second = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    assert first.filename.endswith("-aaaabbbb.zip")
+    assert second.filename.endswith("-ccccdddd.zip")
+    assert first.path != second.path
+    assert first.path.is_file()
+    assert second.path.is_file()
+
+
 def test_support_bundle_zip_uses_private_permissions_on_posix(tmp_path: Path) -> None:
     """POSIX 上支援包 artifact 不應預設 group/world-readable。"""
 

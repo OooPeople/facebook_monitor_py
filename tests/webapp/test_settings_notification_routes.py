@@ -140,10 +140,11 @@ def test_target_settings_modal_can_test_notifications_without_saving(
         index_response.text,
     )
     assert fixed_refresh is not None
-    assert (
-        f'name="fixed_refresh_sec" type="number" min="{MIN_REFRESH_SECONDS}" '
-        f'value="60" form="config-{target.id}"'
-    ) in index_response.text
+    assert re.search(
+        rf'name="fixed_refresh_sec"[^>]*type="number"[^>]*min="{MIN_REFRESH_SECONDS}"'
+        rf'[^>]*value="60"[^>]*form="config-{re.escape(target.id)}"',
+        index_response.text,
+    )
     assert f'name="max_items_per_scan" type="number" min="{MIN_TARGET_POSTS}"' in (
         index_response.text
     )

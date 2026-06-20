@@ -1,0 +1,11 @@
+<li class="sidebar-empty" data-sidebar-empty>
+  <span class="sidebar-avatar" aria-hidden="true">0</span>
+  <span class="sidebar-copy">
+    <span class="sidebar-name">
+      {% if group.is_system %}尚未建立 target{% else %}群組內沒有 target{% endif %}
+    </span>
+    <span class="sidebar-status">
+      {% if group.is_system %}新增後會顯示在這裡{% else %}可將 target 拖曳到這裡{% endif %}
+    </span>
+  </span>
+</li>

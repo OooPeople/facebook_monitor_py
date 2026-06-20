@@ -777,13 +777,15 @@ def test_sidebar_status_shows_target_mode_chip(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert 'data-sidebar-mode-label="留言"' in response.text
     assert 'data-sidebar-mode-class="comments"' in response.text
-    assert (
-        'class="sidebar-status-token target-mode-chip sidebar-mode-chip comments">留言</span>'
-        in response.text
+    assert re.search(
+        r'class="sidebar-status-token target-mode-chip sidebar-mode-chip comments">\s*'
+        r"留言\s*</span>",
+        response.text,
     )
     assert 'data-sidebar-mode-label="貼文"' in response.text
     assert 'data-sidebar-mode-class="posts"' in response.text
-    assert (
-        'class="sidebar-status-token target-mode-chip sidebar-mode-chip posts">貼文</span>'
-        in response.text
+    assert re.search(
+        r'class="sidebar-status-token target-mode-chip sidebar-mode-chip posts">\s*'
+        r"貼文\s*</span>",
+        response.text,
     )

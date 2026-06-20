@@ -35,7 +35,10 @@ def test_index_renders_target_identity_status_and_actions(tmp_path: Path) -> Non
     assert "最近掃描" in text
     assert "命中紀錄 0" in text
     assert f'data-hit-records-modal="{target_id}"' in text
-    assert f'data-clear-hit-records data-target-id="{target_id}"' in text
+    assert re.search(
+        rf"data-clear-hit-records\s+data-target-id=\"{re.escape(target_id)}\"",
+        text,
+    )
     assert "/static/dashboard/main.js" in text
     assert "查看紀錄" in text
     assert "設定" in text
@@ -174,10 +177,11 @@ def test_index_renders_content_unavailable_alert(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "連結已失效" in response.text
     assert "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。" in response.text
-    assert (
-        '<div class="runtime-error" data-runtime-error >'
-        "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。</div>"
-    ) in response.text
+    assert re.search(
+        r'<div[^>]*class="runtime-error"[^>]*data-runtime-error[^>]*>\s*'
+        r"連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。</div>",
+        response.text,
+    )
     assert (
         '<div class="runtime-error" data-runtime-error >'
         "content_unavailable: Facebook content is unavailable"
@@ -286,7 +290,11 @@ def test_index_renders_target_settings_summary_and_collapse_controls(
     assert "收一張票" in text
     assert "售一張票，贈品回收" in text
     assert "預設忽略片語" not in text
-    assert 'data-keyword-panel="ignore" hidden' in text
+    assert re.search(
+        r'<div[^>]*class="keyword-rule-panel"[^>]*data-keyword-panel="ignore"'
+        r"[^>]*hidden",
+        text,
+    )
     assert '</div>\n\n  <div class="target-footer-controls">' in text
     assert 'placeholder="例如：全收;回收"' in text
     assert ">收合</button>" not in text

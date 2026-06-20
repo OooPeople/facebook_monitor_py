@@ -176,6 +176,95 @@
       "path_glob": "src/facebook_monitor/webapp/templates/target_card/_config_form.html",
       "category": "dashboard_target_card_config_form",
       "reason": "Target card config form partial. Split field groups before adding another independent target configuration family."
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
+      "symbol": "TargetRow",
+      "category": "dashboard_target_row_presenter",
+      "reason": "TargetRow 是 template-facing view model，集中 target 狀態、refresh、diagnostics、sidebar 與設定呈現；新增另一個獨立 UI presentation family 前應先拆 focused presenter。",
+      "must_not_add": [
+        "新的獨立 dashboard presentation family",
+        "business write behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增 target status/sidebar/diagnostics/refresh presentation family 或 TargetRow 持續膨脹"
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/dashboard_models.py",
+      "symbol": "SidebarGroupSection",
+      "category": "dashboard_sidebar_group_presenter",
+      "reason": "SidebarGroupSection 聚合 group monitoring、template form proxy 與 sidebar display state；新增 group workflow 前應先拆 group template/status presenter。",
+      "must_not_add": [
+        "group write behavior",
+        "scheduler runtime behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增 group workflow、group diagnostics 或 group-level presentation family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/webapp/templates/_target_sidebar.html",
+      "category": "dashboard_sidebar_template_shell",
+      "reason": "_target_sidebar.html 應維持 sidebar include shell；新增 sidebar UI family 前需拆 partial 並保護現有 selector contract。",
+      "must_not_add": [
+        "new sidebar modal family without partial split",
+        "new JavaScript selector contract without documenting it"
+      ],
+      "split_trigger": "新增 sidebar UI family 或額外 group/target action area"
+    },
+    {
+      "path_glob": "src/facebook_monitor/updates/release_check.py",
+      "category": "release_metadata_gate",
+      "reason": "Release metadata validation gate；download/apply/trust lifecycle 應留在各自模組，不應塞回 release_check。",
+      "must_not_add": [
+        "artifact download implementation",
+        "update apply implementation",
+        "manifest key lifecycle or channel policy"
+      ],
+      "split_trigger": "新增獨立 release policy family 或整合 download/apply 行為"
+    },
+    {
+      "path_glob": "src/facebook_monitor/launcher.py",
+      "category": "runtime_launcher_glue",
+      "reason": "本機 runtime launcher glue 負責 CLI/startup/shutdown/tray/uvicorn coordination；新產品 use case 應進 application services 或 focused runtime modules。",
+      "must_not_add": [
+        "dashboard business logic",
+        "worker scan commit behavior",
+        "updater apply policy"
+      ],
+      "split_trigger": "新增 launcher mode、long-running runtime component 或 platform-specific lifecycle behavior"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_metadata_refresh.py",
+      "category": "resident_metadata_refresh",
+      "reason": "Resident metadata refresh job family；cover image refresh、scan commit 與 notification dispatch 不應放入此模組。",
+      "must_not_add": [
+        "cover image refresh behavior",
+        "scan commit behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增不同 browser/wait/resource-loading 行為的 metadata refresh family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_cover_image_refresh.py",
+      "category": "resident_cover_image_refresh",
+      "reason": "Resident cover image refresh job family；metadata refresh、scan commit 與 dashboard presentation 不應放入此模組。",
+      "must_not_add": [
+        "metadata refresh behavior",
+        "scan commit behavior",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增另一種 image refresh source 或 refresh policy family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_maintenance_errors.py",
+      "category": "resident_maintenance_error_handling",
+      "reason": "Resident maintenance 共用錯誤分類與 log 邊界；實際 maintenance job 行為應留在各 job module。",
+      "must_not_add": [
+        "new maintenance job implementation",
+        "browser page lifecycle behavior",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增錯誤 taxonomy family 或跨 job retry/recovery policy"
     }
   ]
 }

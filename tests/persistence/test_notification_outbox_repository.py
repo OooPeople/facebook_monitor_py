@@ -146,7 +146,7 @@ def test_notification_dedupe_blocks_duplicate_after_terminal_outbox_pruned(
             channel=NotificationChannel.NTFY,
         )
         outbox_repo = notification_outbox_repository(connection)
-        outbox = outbox_repo.enqueue(
+        enqueue_result = outbox_repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-a:ntfy",
                 dedupe_id=first.dedupe_id,
@@ -158,11 +158,15 @@ def test_notification_dedupe_blocks_duplicate_after_terminal_outbox_pruned(
                 message="message",
             )
         )
+        claimed = outbox_repo.claim_pending()[0]
+        outbox = claimed.entry
         assert outbox.id is not None
-        outbox_repo.mark_result(
+        assert outbox_repo.mark_result(
             entry_id=outbox.id,
             status=NotificationOutboxStatus.SENT,
             attempts=1,
+            processing_status=outbox.status,
+            claim_token=claimed.claim_token,
         )
         connection.execute("DELETE FROM notification_outbox WHERE id = ?", (outbox.id,))
         second = dedupe_repo.reserve_match(
@@ -174,7 +178,43 @@ def test_notification_dedupe_blocks_duplicate_after_terminal_outbox_pruned(
         )
 
     assert first.created
+    assert enqueue_result.created
     assert not second.created
+
+
+def test_notification_outbox_enqueue_reports_duplicate_created_flag(
+    tmp_path: Path,
+) -> None:
+    """enqueue result 需明確區分本次 INSERT 與 idempotency duplicate。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        repo = notification_outbox_repository(connection)
+        entry = NotificationOutboxEntry(
+            idempotency_key=f"{target.id}:same-item:ntfy",
+            target_id=target.id,
+            item_key="same-item",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+            title="title",
+            message="message",
+        )
+
+        first = repo.enqueue(entry)
+        duplicate = repo.enqueue(entry)
+        pending = repo.list_pending()
+
+    assert first.created
+    assert not duplicate.created
+    assert first.entry.id == duplicate.entry.id
+    assert len(pending) == 1
 
 
 def test_notification_dedupe_duplicate_match_preserves_failed_diagnostics(
@@ -209,7 +249,7 @@ def test_notification_dedupe_duplicate_match_preserves_failed_diagnostics(
             channel=NotificationChannel.NTFY,
         )
         outbox_repo = notification_outbox_repository(connection)
-        outbox = outbox_repo.enqueue(
+        outbox_repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:item-a:ntfy",
                 dedupe_id=first.dedupe_id,
@@ -221,11 +261,15 @@ def test_notification_dedupe_duplicate_match_preserves_failed_diagnostics(
                 message="message",
             )
         )
+        claimed = outbox_repo.claim_pending()[0]
+        outbox = claimed.entry
         assert outbox.id is not None
-        outbox_repo.mark_result(
+        assert outbox_repo.mark_result(
             entry_id=outbox.id,
             status=NotificationOutboxStatus.FAILED,
             attempts=1,
+            processing_status=outbox.status,
+            claim_token=claimed.claim_token,
             message="ntfy failed",
         )
         second = dedupe_repo.reserve_match(
@@ -249,6 +293,97 @@ def test_notification_dedupe_duplicate_match_preserves_failed_diagnostics(
     assert dedupe_row["status"] == "failed"
     assert dedupe_row["failure_reason"] == "ntfy failed"
     assert dedupe_row["failure_count"] == 0
+
+
+def test_notification_outbox_late_claim_cannot_overwrite_reclaimed_row(
+    tmp_path: Path,
+) -> None:
+    """stale recovery 後舊 claim 不得覆蓋新 claim 的 terminal result / dedupe。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="222518561920110",
+            canonical_url="https://www.facebook.com/groups/222518561920110",
+        )
+        TargetRepository(connection).save(target)
+        logical_result = LogicalItemRepository(connection).mark_seen_aliases(
+            target_id=target.id,
+            item=SeenItem(
+                scope_id=target.scope_id,
+                item_key="item-lease",
+                item_kind=ItemKind.POST,
+            ),
+            item_keys=("item-lease",),
+        )
+        dedupe = NotificationDedupeRepository(connection).reserve_match(
+            target_id=target.id,
+            logical_item_id=logical_result.logical_item_id,
+            item_key="item-lease",
+            item_kind=ItemKind.POST,
+            channel=NotificationChannel.NTFY,
+        )
+        repo = notification_outbox_repository(connection)
+        enqueue_result = repo.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:item-lease:ntfy",
+                dedupe_id=dedupe.dedupe_id,
+                target_id=target.id,
+                item_key="item-lease",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message="message",
+            )
+        )
+        assert enqueue_result.created
+        first_claim = repo.claim_pending()[0]
+        connection.execute(
+            """
+            UPDATE notification_outbox
+            SET updated_at = '2000-01-01T00:00:00+00:00'
+            WHERE id = ?
+            """,
+            (first_claim.entry.id,),
+        )
+        assert repo.recover_stale_processing(older_than_seconds=60) == 1
+        second_claim = repo.claim_pending()[0]
+
+        late_result = repo.mark_result(
+            entry_id=first_claim.entry.id or 0,
+            status=NotificationOutboxStatus.FAILED,
+            attempts=99,
+            processing_status=first_claim.entry.status,
+            claim_token=first_claim.claim_token,
+            message="late failure",
+        )
+        current_result = repo.mark_result(
+            entry_id=second_claim.entry.id or 0,
+            status=NotificationOutboxStatus.SENT,
+            attempts=1,
+            processing_status=second_claim.entry.status,
+            claim_token=second_claim.claim_token,
+        )
+        loaded = repo.get_by_idempotency_key(f"{target.id}:item-lease:ntfy")
+        dedupe_row = connection.execute(
+            """
+            SELECT status, failure_reason
+            FROM notification_dedupe
+            WHERE id = ?
+            """,
+            (dedupe.dedupe_id,),
+        ).fetchone()
+
+    assert late_result is False
+    assert current_result is True
+    assert loaded is not None
+    assert loaded.status == NotificationOutboxStatus.SENT
+    assert loaded.attempts == 1
+    assert loaded.last_error == ""
+    assert dedupe_row["status"] == "sent"
+    assert dedupe_row["failure_reason"] == ""
 
 
 def test_notification_outbox_clear_failed_only_deletes_failed_rows(
@@ -292,7 +427,7 @@ def test_notification_outbox_clear_failed_only_deletes_failed_rows(
                 message="replacement",
                 status=NotificationOutboxStatus.PENDING,
             )
-        )
+        ).entry
         loaded_by_status = {
             status: repo.get_by_idempotency_key(f"{target.id}:{status.value}:desktop")
             for status in NotificationOutboxStatus
@@ -348,13 +483,15 @@ def test_notification_outbox_claim_pending_is_single_owner_across_connections(
         claimed_b = notification_outbox_repository(connection_b).claim_pending()
 
         assert len(claimed_a) == 1
-        assert claimed_a[0].status == NotificationOutboxStatus.PROCESSING_PENDING
+        assert claimed_a[0].entry.status == NotificationOutboxStatus.PROCESSING_PENDING
         assert claimed_b == []
 
-        notification_outbox_repository(connection_a).mark_result(
-            entry_id=claimed_a[0].id or 0,
+        assert notification_outbox_repository(connection_a).mark_result(
+            entry_id=claimed_a[0].entry.id or 0,
             status=NotificationOutboxStatus.SENT,
-            attempts=claimed_a[0].attempts + 1,
+            attempts=claimed_a[0].entry.attempts + 1,
+            processing_status=claimed_a[0].entry.status,
+            claim_token=claimed_a[0].claim_token,
         )
 
     with SqliteConnection(db_path) as sqlite:
@@ -462,13 +599,21 @@ def test_notification_outbox_recovers_stale_processing_for_future_claim(
         )
         claimed = repo.claim_pending()
         assert len(claimed) == 1
+        token_before_recovery = connection.execute(
+            """
+            SELECT processing_token
+            FROM notification_outbox
+            WHERE id = ?
+            """,
+            (claimed[0].entry.id,),
+        ).fetchone()["processing_token"]
         connection.execute(
             """
             UPDATE notification_outbox
             SET updated_at = '2000-01-01T00:00:00+00:00'
             WHERE id = ?
             """,
-            (claimed[0].id,),
+            (claimed[0].entry.id,),
         )
 
     with SqliteConnection(db_path) as sqlite:
@@ -477,8 +622,18 @@ def test_notification_outbox_recovers_stale_processing_for_future_claim(
         repo = notification_outbox_repository(connection)
 
         recovered_count = repo.recover_stale_processing(older_than_seconds=60)
+        token_after_recovery = connection.execute(
+            """
+            SELECT processing_token
+            FROM notification_outbox
+            WHERE id = ?
+            """,
+            (claimed[0].entry.id,),
+        ).fetchone()["processing_token"]
         claimed_again = repo.claim_pending()
 
+    assert token_before_recovery
     assert recovered_count == 1
+    assert token_after_recovery == ""
     assert len(claimed_again) == 1
-    assert claimed_again[0].status == NotificationOutboxStatus.PROCESSING_PENDING
+    assert claimed_again[0].entry.status == NotificationOutboxStatus.PROCESSING_PENDING

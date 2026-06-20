@@ -1,14 +1,20 @@
 # 工具索引
 
-本文件是 scripts / CLI 工具索引。README 只保留正式日常入口；架構語義看 `docs/ARCHITECTURE.md`；打包、release artifact、manifest 與 frozen smoke 細節看 `packaging/README.md`。
+本文件是 scripts / CLI 工具索引。README 只保留正式日常入口；
+架構語義看 `docs/ARCHITECTURE.md`；打包、release artifact、
+manifest 與 frozen smoke 細節看 `packaging/README.md`。
 
 ## 入口原則
 
 - 正式日常入口只有 Web UI：`facebook-monitor`。
 - profile 登入 / 檢查是正式維運入口：`facebook-monitor-login`。
 - admin / debug / internal 工具不得描述成日常入口。
-- admin / debug / internal 工具預設也走正式 runtime path resolver；若要操作特定資料根目錄，使用同一組 `--data-dir` / `--profile-name` / `--db-path` / `--profile-dir`。
-- `--profile-dir` 只能指向 `<data-dir>/profiles/` 底下；外部測試 profile 必須使用 debug-only 的 `--unsafe-profile-dir`，且仍會拒絕常見 Chrome / Edge / Chromium 日常 profile。
+- admin / debug / internal 工具預設也走正式 runtime path resolver；
+  若要操作特定資料根目錄，使用同一組 `--data-dir` / `--profile-name` /
+  `--db-path` / `--profile-dir`。
+- `--profile-dir` 只能指向 `<data-dir>/profiles/` 底下；外部測試 profile
+  必須使用 debug-only 的 `--unsafe-profile-dir`，且仍會拒絕常見 Chrome /
+  Edge / Chromium 日常 profile。
 - 新功能預設先接 Web UI + resident main 主路徑；debug / fallback 工具只有在有實際維護價值時才跟進。
 - One-shot debug / fallback scheduler 可能只會將通知寫入 notification outbox；
   除非同一 process 已啟動 outbox dispatcher，否則不保證掃描後立即送出外部
@@ -24,23 +30,23 @@
 | Setup Login | `facebook-monitor-login` | Start | 開啟專用 automation profile，供登入與檢查 session | 是，維運入口 |
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
 | Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
-| Release Validation | `scripts/admin/release_validation.py` | Admin | release tag 前執行可重現本機驗證流程，含 frontend vendor manifest checksum 與 dependency audit | 否 |
+| Release Validation | `scripts/admin/release_validation.py` | Admin | 本機 release 驗證與 audit | 否 |
 | Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | Windows 平台 build pipeline | 否 |
 | macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | macOS Apple Silicon build pipeline | 否 |
 | Release Zip Builder | `scripts/admin/create_release_zip.py` | Admin packaging | 建立平台 release zip 與 `.sha256` | 否 |
-| Release Manifest Builder | `scripts/admin/create_release_manifest.py` | Admin packaging | 從 release zip 建立 signed updater manifest JSON，記錄平台、檔名、size 與 SHA256 | 否 |
-| Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用本機或 CI secret 內的 Ed25519 私鑰輸出 manifest detached signature | 否 |
+| Release Manifest Builder | `scripts/admin/create_release_manifest.py` | Admin packaging | 建立 signed updater manifest | 否 |
+| Release Manifest Signer | `scripts/admin/sign_release_manifest.py` | Admin packaging | 使用 Ed25519 私鑰輸出 detached signature | 否 |
 | Finalize Release Manifest | `scripts/admin/finalize_release_manifest.py` | Admin packaging | 建立唯一 signed manifest / `.sig` | 否 |
 | Release Artifact Validation | `scripts/admin/release_artifact_validation.py` | Admin | 驗證 release artifact 與私密資料邊界 | 否 |
-| Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 用 Lizard 產生 NLOC / CCN / token ranking，再加上 known-large / watchlist 摘要；只作人工審查輔助，不是 CI gate | 否 |
-| Database Invariant Check | `scripts/admin/check_database_invariants.py` | Admin diagnostics | 唯讀檢查正式 SQLite DB 內 enum、boolean、range 與 runtime ownership invariant | 否 |
+| Complexity Report | `scripts/admin/complexity_report.py` | Admin review | 產生 Lizard ranking 與 known-large / watchlist 摘要 | 否 |
+| Database Invariant Check | `scripts/admin/check_database_invariants.py` | Admin diagnostics | 唯讀檢查正式 SQLite DB invariant | 否 |
 | Windows Version Resource Builder | `scripts/admin/windows_version_resource.py` | Admin packaging | 產生 Windows version resource | 否 |
-| Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 用已打包 onedir build 建立 fixture update zip，驗證獨立 updater 可替換 app files、保留 data 並清除 handoff 檔案 | 否 |
+| Frozen Updater Smoke | `scripts/admin/smoke_frozen_updater.py` | Admin smoke | 驗證 frozen updater 替換 app files、保留 data 並清理 handoff | 否 |
 | macOS App Launcher Builder | `scripts/admin/create_macos_app_launcher.py` | Admin packaging | 建立 macOS `.app` native launcher | 否 |
 | Relogin Flow Smoke | `scripts/admin/smoke_relogin_flow.py` | Admin smoke | 使用隔離暫存資料驗證重新登入警告與 launcher login gate | 否 |
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
 | One-shot Scan | `scripts/debug/one_shot_scan.py` | Debug | 對已保存 target 執行一次 one-shot 掃描 | 否 |
-| Worker Probe | `scripts/debug/worker_probe.py` | Debug | DB-free headless extractor probe；只檢查 profile/session/page load/extractor，不跑正式 scan pipeline、不寫 DB、不送 notification | 否 |
+| Worker Probe | `scripts/debug/worker_probe.py` | Debug | DB-free headless extractor probe；不跑正式 scan pipeline | 否 |
 | Text Newline Probe | `scripts/debug/text_newline_probe.py` | Debug | 檢查可見 Facebook DOM 文字是否仍能取得換行資訊；不跑正式 scan pipeline | 否 |
 | One-shot Scheduler | `scripts/internal/one_shot_scheduler.py` | Internal | 直接啟動 one-shot debug/fallback scheduler loop，不作正式主路徑保證 | 否 |
 | Resident Main | `scripts/internal/resident_main.py` | Internal | 直接啟動正式 async resident main worker loop | 否 |
@@ -84,10 +90,10 @@ Release / packaging scripts 的細節放在 `packaging/README.md`。本表只作
 
 | 層級 | 何時使用 | 標準命令 / 來源 | 可回報用語 | 不可回報成 |
 |---|---|---|---|---|
-| 快速 / 聚焦檢查 | 一般開發、文件整理、窄範圍修正；高風險邊界需自行升級測試切片 | 受影響 pytest、單一路徑 ruff / mypy、static JS syntax、compileall、probe 或特定 smoke | 「快速 / 聚焦檢查通過」，並列出實際命令 | 上傳完整檢查、CI 通過 |
+| 快速 / 聚焦檢查 | 一般開發、文件整理、窄範圍修正 | 受影響 pytest、ruff / mypy、JS syntax、compileall 或 probe | 「快速 / 聚焦檢查通過」，並列出實際命令 | 上傳完整檢查、CI 通過 |
 | 本機上傳前完整檢查 | 上傳前或使用者要求完整/CI 對齊檢查 | `release_validation.py`；符合條件時才可加 `--skip-sync` | 「本機上傳前完整檢查通過」 | GitHub CI 通過 |
 | GitHub CI | GitHub Actions 對該 commit / PR 實際完成且綠燈 | `.github/workflows/ci.yml` | 「GitHub CI 通過」 | 只靠本機結果宣稱 CI 通過 |
-| Release validation | release 前本機可重現檢查，預設含 dependency audit | `scripts/admin/release_validation.py` | 「release validation 通過」；使用 skip flags 時需明列 | 可上傳 artifact 檢查 |
+| Release validation | release 前本機檢查，預設含 audit | `scripts/admin/release_validation.py` | 「通過」；skip flags 需明列 | 可上傳 artifact 檢查 |
 | 上傳前 release asset 檢查 | Release asset 上傳前 | manifest、artifact、frozen / 人工 smoke | 「上傳前 release asset 檢查通過」 | pre-finalize validation |
 
 | 略過旗標 / 狀態 | 允許用途 | 回報限制 |
@@ -148,7 +154,9 @@ Release tag 前建議執行：
 artifact 參數、manifest 驗證、platform zip 檢查與 frozen updater smoke 細節集中在
 `packaging/README.md#驗證`。
 
-版本與 Web asset cache key 的來源語義看 `docs/ARCHITECTURE.md#frozen-updater`；release validation 會印出目前 app / asset version，正式發佈時以升版作為瀏覽器 cache busting 來源。
+版本與 Web asset cache key 的來源語義看 `docs/ARCHITECTURE.md#frozen-updater`；
+release validation 會印出目前 app / asset version，正式發佈時以升版作為
+瀏覽器 cache busting 來源。
 
 ## 啟動診斷位置
 
@@ -189,7 +197,12 @@ $update_webapp_routes = @(
   "src\facebook_monitor\webapp\routes\settings_profile_routes.py"
 )
 .\scripts\uv.ps1 run mypy src\facebook_monitor\updates src\facebook_monitor\updater.py $update_webapp_routes
-.\scripts\uv.ps1 run ruff check src\facebook_monitor\updates src\facebook_monitor\updater.py $update_webapp_routes tests\updates tests\webapp\test_app.py
+.\scripts\uv.ps1 run ruff check `
+  src\facebook_monitor\updates `
+  src\facebook_monitor\updater.py `
+  $update_webapp_routes `
+  tests\updates `
+  tests\webapp\test_app.py
 Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 ```
 

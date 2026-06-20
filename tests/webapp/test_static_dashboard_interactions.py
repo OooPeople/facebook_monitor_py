@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
+from tests.webapp.static_contract_helpers import sidebar_template_family_text
 from tests.webapp.static_contract_helpers import target_card_template_family_text
 
 
@@ -14,9 +15,7 @@ def test_dashboard_partial_update_reloads_when_sidebar_shell_signature_changes()
     partial_updates_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
     ).read_text(encoding="utf-8")
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert "data-sidebar-layout-signature" in sidebar_template
     assert "data-sidebar-template-signature" in sidebar_template
@@ -30,9 +29,7 @@ def test_dashboard_partial_update_reloads_when_sidebar_shell_signature_changes()
 def test_sidebar_and_card_menus_share_panel_and_action_styles() -> None:
     """sidebar 漢堡選單與卡片更多選單共用卡片系的 panel/action 樣式。"""
 
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
     card_template = target_card_template_family_text()
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"

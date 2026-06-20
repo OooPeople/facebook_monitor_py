@@ -1295,14 +1295,14 @@ def test_stale_failed_retry_processing_does_not_become_pending_dispatch(
     with SqliteApplicationContext(db_path) as app:
         claimed = app.repositories.notification_outbox.claim_failed()
         assert len(claimed) == 1
-        assert claimed[0].status == NotificationOutboxStatus.PROCESSING_FAILED
+        assert claimed[0].entry.status == NotificationOutboxStatus.PROCESSING_FAILED
         app.repositories.notification_outbox.connection.execute(
             """
             UPDATE notification_outbox
             SET updated_at = '2000-01-01T00:00:00+00:00'
             WHERE id = ?
             """,
-            (claimed[0].id,),
+            (claimed[0].entry.id,),
         )
 
     with SqliteApplicationContext(db_path) as app:
@@ -1652,11 +1652,14 @@ def test_failed_outbox_retry_refreshes_current_target_endpoint(tmp_path: Path) -
                 message="message",
                 endpoint="old-topic",
             )
-        )
-        app.repositories.notification_outbox.mark_result(
+        ).entry
+        claimed = app.repositories.notification_outbox.claim_pending()[0]
+        assert app.repositories.notification_outbox.mark_result(
             entry_id=entry.id or 0,
             status=NotificationOutboxStatus.FAILED,
             attempts=1,
+            processing_status=claimed.entry.status,
+            claim_token=claimed.claim_token,
             message="first_down",
         )
         app.services.targets.update_target_config(

@@ -75,17 +75,10 @@ class ScanCommitOutcome:
     def committed_visible_scan_state(self) -> bool:
         """回傳本次 outcome 是否已寫入 visible scan result。"""
 
-        if self.side_effects.any:
-            return self.side_effects.wrote_scan_run and self.kind in {
-                ScanCommitOutcomeKind.SUCCESS_COMMITTED,
-                ScanCommitOutcomeKind.SKIP_COMMITTED,
-                ScanCommitOutcomeKind.FAILURE_COMMITTED,
-            }
-        if self.kind == ScanCommitOutcomeKind.FAILURE_COMMITTED:
-            return self.scan_run_id > 0
-        return self.kind in {
+        return self.side_effects.wrote_scan_run and self.kind in {
             ScanCommitOutcomeKind.SUCCESS_COMMITTED,
             ScanCommitOutcomeKind.SKIP_COMMITTED,
+            ScanCommitOutcomeKind.FAILURE_COMMITTED,
         }
 
     @property

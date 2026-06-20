@@ -1,6 +1,9 @@
 # 架構說明
 
-本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`。本機進度與交接筆記屬於 `docs/local/`，不追蹤到 GitHub。
+本文件只記錄穩定架構事實、正式主路徑與不可回退的產品語義。
+Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
+操作步驟看 `docs/USAGE.md`；工具命令看 `docs/tooling.md`。
+本機進度與交接筆記屬於 `docs/local/`，不追蹤到 GitHub。
 
 ## 核心原則
 
@@ -46,7 +49,9 @@
   或專用 profile 內找不到 Facebook `c_user` + `xs` cookie，
   會先開 Facebook 首頁登入視窗；登入完成後才啟動 Web UI。
 - launcher 不做每次啟動的網路 session check；session 失效、checkpoint 或 login page 由 worker 掃描 guard 標記為 `needs_login`，並透過 dashboard 警告提示使用者重啟。
-- `--profile-dir` 必須落在 `<data-dir>/profiles/` 底下；外部測試 profile 只能使用 debug-only `--unsafe-profile-dir`，且不得指向日常 Chrome / Edge / Chromium profile。
+- `--profile-dir` 必須落在 `<data-dir>/profiles/` 底下；外部測試 profile
+  只能使用 debug-only `--unsafe-profile-dir`，且不得指向日常 Chrome / Edge /
+  Chromium profile。
 - app-level single-instance lock 與 DB/profile resource locks 避免同一 runtime、DB 或 automation profile 被多個 process 同時使用。
 - Web UI 預設只綁 loopback；mutating routes 由 CSRF token 保護。同一個 runtime dir 會沿用本機 CSRF token，避免瀏覽器舊分頁在程式重啟後第一次送出表單時被誤擋。
 - runtime logs 與 startup diagnostics 只記啟動語義與環境資訊，不記 cookies、tokens 或 session dump。
@@ -55,12 +60,15 @@
 
 - `core/`：資料模型、預設值、compiled keyword rules、dedupe、refresh policy。
 - `application/`：use cases、target registry/config/runtime、monitoring commands、scan recording。
-- `TargetApplicationService` 是 composition façade，只能委派 focused use case / service、做小型 result mapping 或交易邊界組合；新產品語義應先落在專責 service，再視需要由 façade 暴露。
+- `TargetApplicationService` 是 composition façade，只能委派 focused use case /
+  service、做小型 result mapping 或交易邊界組合；新產品語義應先落在專責
+  service，再視需要由 façade 暴露。
 - `persistence/`：SQLite schema、migrations、repository、runtime data maintenance。
 - `facebook/`：Facebook route detection、permalink、DOM extraction、sort 與 scroll helper。
 - `worker/`：posts/comments scan pipeline、shared finalize、resident worker 與 fallback/debug workers。
 - `scheduler/`：target planner、runtime recovery、one-shot fallback scheduler。
-- `notifications/`：desktop / ntfy / Discord sender、safe diagnostics、channel dispatch、outbox enqueue / dispatch service 與 process-local dispatcher。
+- `notifications/`：desktop / ntfy / Discord sender、safe diagnostics、
+  channel dispatch、outbox enqueue / dispatch service 與 process-local dispatcher。
 - `webapp/`：FastAPI assembly、routes、form models、read model、presenters、templates、static modules。
 - `scripts/`：低頻 admin、debug、internal tools；不得新增新的 `phase_*` script，也不得把 debug tool 包裝成日常入口。
 
@@ -95,7 +103,9 @@
 - 唯一例外是 Facebook outage 已知會把封面污染成通用品牌圖；resident
   maintenance 可把這類既有污染 URL 排入同一條 image-only flow，且不得改動
   target 顯示名稱。
-- cover image refresh 狀態 owner 是 `target_cover_image_refresh_state`。該狀態不得混用 `targets.metadata_status`，避免 UI 把縮圖維護誤解成名稱 metadata refresh。失敗時保留舊 URL，result/error 可由 DB state 查詢。
+- cover image refresh 狀態 owner 是 `target_cover_image_refresh_state`。
+  該狀態不得混用 `targets.metadata_status`，避免 UI 把縮圖維護誤解成名稱
+  metadata refresh。失敗時保留舊 URL，result/error 可由 DB state 查詢。
 
 ## Scan Pipeline
 
@@ -110,15 +120,20 @@
 - typed outcome / coordinator 只包現有 guarded finalize/failure/idle helper 與
   process-local cleanup，不擁有 scanner、Playwright page、scheduler policy、
   notification sender 或 dashboard transport。
-- scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；若同步 metadata resolver 被跳過或失敗，先建立 target 並標記 metadata pending，再由 resident metadata refresh 補齊名稱。
+- scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；
+  若同步 metadata resolver 被跳過或失敗，先建立 target 並標記 metadata pending，
+  再由 resident metadata refresh 補齊名稱。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
-- shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、keyword classification、match history、notification dedupe/outbox、latest scan snapshot 與 scan run commit。
+- shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、
+  keyword classification、match history、notification dedupe/outbox、
+  latest scan snapshot 與 scan run commit。
 - 單輪 scan 會先編譯 target keyword matcher，再對每個 item 評估；include
   keyword groups 採組內 OR、組間 AND，不展開笛卡兒積。
 - 通知沿用 `matched_keyword` 顯示成立的 include rules，group 診斷保留在
   history、latest scan、diagnostics 與 UI highlight 資料中。
 - runtime status 只描述 executor 狀態；使用者停止語義由 `Target.paused` 與 `TargetDesiredState.STOPPED` 表示。
-- queue / running claim 的 DB conditional update 只接受 `TargetDesiredState.ACTIVE`；已停止 target 即使遇到舊 scheduler tick 或 scan request，也不得短暫寫成 queued。
+- queue / running claim 的 DB conditional update 只接受 `TargetDesiredState.ACTIVE`；
+  已停止 target 即使遇到舊 scheduler tick 或 scan request，也不得短暫寫成 queued。
 
 ## Notification 與 Secret
 
@@ -200,14 +215,20 @@
 - 若 tag 與 zip 檔名版本不一致，更新檢查會視為不可用，不 fallback 到其他版本
   zip。
 - 更新的 download / apply API 會取得 update operation lock，避免同一 data dir 內並發下載、套用或 updater CLI 路徑互相覆蓋。
-- Web UI 只負責下載、驗證 Ed25519 signed manifest、交叉檢查 release zip 的 SHA256 / size、發布完整 verified artifact set、寫出 `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
-- verified artifact set 以同版本更新目錄內的 `verified-download.json` 作為最後發布 marker；handoff / apply 前會重新驗證 zip、manifest、signature、SHA256 與 marker，因此 updater 不接受半套下載結果。
+- Web UI 只負責下載、驗證 Ed25519 signed manifest、交叉檢查 release zip
+  的 SHA256 / size、發布完整 verified artifact set、寫出
+  `<data-dir>/runtime/pending_update.json`，再啟動 temp updater 並要求主程式關閉。
+- verified artifact set 以同版本更新目錄內的 `verified-download.json`
+  作為最後發布 marker；handoff / apply 前會重新驗證 zip、manifest、
+  signature、SHA256 與 marker，因此 updater 不接受半套下載結果。
 - `facebook-monitor-updater.exe` / `facebook-monitor-updater` 是獨立 PyInstaller
   onedir entrypoint。
 - 從 Web UI 啟動時會複製 updater binary 與同層 `_internal/` 到唯一 temp 目錄，
   避免 updater 鎖住原 app base dir；舊 temp updater runtime copy 會依保留時間
   清理。
-- updater 在主程式釋放 app instance lock 後，會重驗 signed manifest 與 zip SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、備份目前 app files、替換 app files，並保留 `data/`。
+- updater 在主程式釋放 app instance lock 後，會重驗 signed manifest 與 zip
+  SHA256、解壓 staging、檢查 zip safety limit、驗證 staging app root、
+  備份目前 app files、替換 app files，並保留 `data/`。
 - macOS updater 解壓 staging 時會保留 zip 內 POSIX executable bit 與安全的
   tree-internal symlink，避免覆蓋後的 `facebook-monitor`、
   `facebook-monitor-updater`、bundled browser 或 PyInstaller runtime layout 失效；
@@ -222,7 +243,9 @@
 - cleanup 失敗只寫入 `updater.log cleanup_warning`，不反轉已成功的套用結果。
 - 套用成功且 `--restart` 啟用時，updater 會用 pending handoff 內的 data/db/profile/logs 路徑啟動新版 app。
 - updater 不接觸 cookies、tokens、browser profile 內容、DB schema migration rollback、notification outbox 或 Facebook scan pipeline。
-- release artifact validation 是發佈前 gate，負責確認版本、manifest / signature、platform layout 與私密 runtime data 邊界；詳細 checklist 放在 `packaging/README.md`。這是發佈前檢查，不是 runtime updater 的替代品。
+- release artifact validation 是發佈前 gate，負責確認版本、manifest /
+  signature、platform layout 與私密 runtime data 邊界；詳細 checklist
+  放在 `packaging/README.md`。這是發佈前檢查，不是 runtime updater 的替代品。
 - Ed25519 signed manifest 是目前免費 updater 信任鏈，驗證 release metadata 由
   受信任 key 簽出；SHA256 只作 zip 完整性與交叉檢查。
 - Windows Authenticode / macOS Developer ID signing 與 notarization 尚未導入，
@@ -276,16 +299,25 @@
   因此下一輪不是 baseline suppressed scan；若同一貼文或留言仍符合關鍵字，
   會被視為 new 並可再次通知。
 - 社團縮圖載入失敗時，UI 上報只排 image-only maintenance job，不直接開 Facebook，也不標記 target 掃描錯誤。
-- target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，不應改動此手動按鈕語義。
-- dashboard revision table 是 partial update 的可靠 truth source；Web UI 正常主路徑使用 `/api/dashboard-events` 長 SSE 接收 `dashboard_revision` event，再以 batch payload 更新 sidebar 與 target cards。
+- target 設定中的「重新抓取名稱與封面」是手動 metadata refresh；
+  使用者按下後允許用 Facebook 抓到的社團名稱覆蓋 target 顯示名稱。
+  若只要修復壞縮圖，應使用 UI 壞圖自動上報觸發的 image-only flow，
+  不應改動此手動按鈕語義。
+- dashboard revision table 是 partial update 的可靠 truth source；
+  Web UI 正常主路徑使用 `/api/dashboard-events` 長 SSE 接收
+  `dashboard_revision` event，再以 batch payload 更新 sidebar 與 target cards。
 - Web UI process 內只有單一 dashboard revision notifier watcher 以 read-only
   SQLite path 輪詢 revision；每個 SSE client 只訂閱 notifier，不各自長期讀 DB。
 - 成功的 unsafe Web route 只會 `wake()` notifier 加速下一輪 revision read，
   不直接製造 revision event；`/api/dashboard-revision` polling endpoint 保留作
   fallback、診斷與外部補償入口。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API payload 與 DB 欄位都使用 `recorded_at`，舊版 `notified_at` 欄位由 v38 migration 重新命名。
-- hit records route 只負責 HTTP wiring；若未來新增 search、export、detail 或 bulk 行為，產品語義需先下沉到 query/export/detail/bulk service，不直接累積在 route registration。
-- dashboard / target card / hit records read model 需要對 inactive 或 paused 的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；active fatal invariant 仍應回報阻擋或 degraded 狀態。
+- hit records route 只負責 HTTP wiring；若未來新增 search、export、detail
+  或 bulk 行為，產品語義需先下沉到 query/export/detail/bulk service，
+  不直接累積在 route registration。
+- dashboard / target card / hit records read model 需要對 inactive 或 paused
+  的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；
+  active fatal invariant 仍應回報阻擋或 degraded 狀態。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
 
@@ -293,7 +325,9 @@
 
 - Sidebar layout 只影響 Web UI 呈現與操作順序，不改變 `TargetRepository.list_all()` 或 scheduler 掃描順序。
 - Sidebar group、target placement 與 group template write 由 `SidebarLayoutService` 集中處理；route 不直接組合多段 repository write。
-- 排序保存必須用單一 layout command 同時更新 group order 與 target placements；缺失 placement 採 lazy fallback 顯示在未分組區，dashboard read model 不得為缺失 placement 寫入 DB。
+- 排序保存必須用單一 layout command 同時更新 group order 與 target placements；
+  缺失 placement 採 lazy fallback 顯示在未分組區，dashboard read model
+  不得為缺失 placement 寫入 DB。
 - Sidebar 排序保存不提供舊平面 target order API；正式 Web UI 以單一 layout command 保存 group order 與 target placements。
 - Group template 只是批次套用工具，不是 config fallback owner；正式 target config 仍只讀寫 `target_configs[target_id]`。
 - 新增 group 時會 snapshot 當下全域 keyword defaults 到 group template；通知設定使用系統預設，不自動繼承全域通知或任一 target，既有 group template 不跟著全域設定靜默覆蓋。
@@ -305,7 +339,9 @@
 
 - `auto_adjust_sort` 必須保留 preferred label、before/after label、attempted/changed/reason 與 diagnostics。
 - `auto_load_more` 不能退回單純 `window.scrollBy(...)`；posts/comments 都要保留 scroll target、fallback、snapshot/restore 與 diagnostics。
-- comments target 不是 posts 換 selector；必須保留 comment-specific extractor、canonicalization、cleanup、sort、nested scroll/load-more、dedupe、latest scan/history/notification persistence。
+- comments target 不是 posts 換 selector；必須保留 comment-specific extractor、
+  canonicalization、cleanup、sort、nested scroll/load-more、dedupe、
+  latest scan/history/notification persistence。
 - posts/comments 可共用純文字片段處理，但 selector、permalink、sort、load-more 與 target scope 不硬合併。
 - Python resident main worker 目前是 polling；不得宣稱 mutation relevance 已接上即時觸發。
 

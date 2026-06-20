@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import timedelta
 
@@ -17,6 +19,26 @@ from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
+
+
+@dataclass(frozen=True)
+class NotificationOutboxEnqueueResult:
+    """保存 outbox enqueue 後的 row 與本次是否真的新增。"""
+
+    entry: NotificationOutboxEntry
+    created: bool
+
+
+@dataclass(frozen=True)
+class ClaimedNotificationOutboxEntry:
+    """保存已取得 processing lease 的 outbox entry 與 claim token。"""
+
+    entry: NotificationOutboxEntry
+    claim_token: str
+
+
+class StaleNotificationOutboxClaim(RuntimeError):
+    """代表 outbox processing lease 已被回收或被其他 dispatcher 取代。"""
 
 
 class NotificationOutboxRepository:
@@ -36,10 +58,13 @@ class NotificationOutboxRepository:
         self.connection = connection
         self.secret_codec = secret_codec
 
-    def enqueue(self, entry: NotificationOutboxEntry) -> NotificationOutboxEntry:
-        """新增待送通知；idempotency key 已存在時回傳既有 row。"""
+    def enqueue(
+        self,
+        entry: NotificationOutboxEntry,
+    ) -> NotificationOutboxEnqueueResult:
+        """新增待送通知，並回傳本次是否實際建立 row。"""
 
-        self.connection.execute(
+        cursor = self.connection.execute(
             """
             INSERT OR IGNORE INTO notification_outbox (
                 idempotency_key, dedupe_id, target_id, item_key, item_kind, channel, status,
@@ -75,7 +100,10 @@ class NotificationOutboxRepository:
         loaded = self.get_by_idempotency_key(entry.idempotency_key)
         if loaded is None:
             raise RuntimeError("notification outbox enqueue failed")
-        return loaded
+        return NotificationOutboxEnqueueResult(
+            entry=loaded,
+            created=int(cursor.rowcount or 0) == 1,
+        )
 
     def get_by_idempotency_key(self, idempotency_key: str) -> NotificationOutboxEntry | None:
         """依 idempotency key 查詢 outbox event。"""
@@ -118,7 +146,7 @@ class NotificationOutboxRepository:
     def claim_pending(
         self,
         limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
-    ) -> list[NotificationOutboxEntry]:
+    ) -> list[ClaimedNotificationOutboxEntry]:
         """原子 claim pending rows，外部 I/O 只能處理 claim 成功的 events。"""
 
         return self._claim_status(
@@ -130,7 +158,7 @@ class NotificationOutboxRepository:
     def claim_failed(
         self,
         limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
-    ) -> list[NotificationOutboxEntry]:
+    ) -> list[ClaimedNotificationOutboxEntry]:
         """原子 claim failed rows，供明確 retry API 使用。"""
 
         return self._claim_status(
@@ -205,6 +233,7 @@ class NotificationOutboxRepository:
                 """
                 UPDATE notification_outbox
                 SET status = ?,
+                    processing_token = '',
                     last_error = ?,
                     updated_at = ?
                 WHERE status = ?
@@ -227,44 +256,60 @@ class NotificationOutboxRepository:
         *,
         entry_id: int,
         status: NotificationOutboxStatus,
-    ) -> None:
+        claim_token: str,
+    ) -> bool:
         """刷新 processing row heartbeat，避免長批次發送時被誤回收。"""
 
         if status not in {
             NotificationOutboxStatus.PROCESSING_PENDING,
             NotificationOutboxStatus.PROCESSING_FAILED,
         }:
-            return
-        self.connection.execute(
+            return False
+        cursor = self.connection.execute(
             """
             UPDATE notification_outbox
             SET updated_at = ?
             WHERE id = ?
               AND status = ?
+              AND processing_token = ?
             """,
             (
                 encode_datetime(utc_now()),
                 entry_id,
                 status.value,
+                claim_token,
             ),
         )
+        return int(cursor.rowcount or 0) == 1
 
-    def update_delivery_endpoint(self, *, entry_id: int, endpoint: str) -> None:
+    def update_delivery_endpoint(
+        self,
+        *,
+        entry_id: int,
+        endpoint: str,
+        status: NotificationOutboxStatus,
+        claim_token: str,
+    ) -> bool:
         """更新 dispatch 前使用的 endpoint，讓 retry 可套用目前 target 設定。"""
 
-        self.connection.execute(
+        cursor = self.connection.execute(
             """
             UPDATE notification_outbox
             SET endpoint = ?,
                 updated_at = ?
             WHERE id = ?
+              AND status = ?
+              AND processing_token = ?
             """,
             (
                 self.secret_codec.encrypt(endpoint),
                 encode_datetime(utc_now()),
                 entry_id,
+                status.value,
+                claim_token,
             ),
         )
+        return int(cursor.rowcount or 0) == 1
 
     def mark_result(
         self,
@@ -272,20 +317,25 @@ class NotificationOutboxRepository:
         entry_id: int,
         status: NotificationOutboxStatus,
         attempts: int,
+        processing_status: NotificationOutboxStatus,
+        claim_token: str,
         message: str = "",
         notification_event_id: int | None = None,
-    ) -> None:
-        """寫回 outbox 發送結果。"""
+    ) -> bool:
+        """寫回目前 claim owner 的 outbox 發送結果。"""
 
-        self.connection.execute(
+        cursor = self.connection.execute(
             """
             UPDATE notification_outbox
             SET status = ?,
                 attempts = ?,
                 last_error = ?,
                 notification_event_id = COALESCE(?, notification_event_id),
+                processing_token = '',
                 updated_at = ?
             WHERE id = ?
+              AND status = ?
+              AND processing_token = ?
             """,
             (
                 status.value,
@@ -294,8 +344,12 @@ class NotificationOutboxRepository:
                 notification_event_id,
                 encode_datetime(utc_now()),
                 entry_id,
+                processing_status.value,
+                claim_token,
             ),
         )
+        if int(cursor.rowcount or 0) != 1:
+            return False
         if status in {
             NotificationOutboxStatus.SENT,
             NotificationOutboxStatus.FAILED,
@@ -307,6 +361,7 @@ class NotificationOutboxRepository:
                 message=message,
                 notification_event_id=notification_event_id,
             )
+        return True
 
     def _mark_dedupe_result(
         self,
@@ -350,7 +405,7 @@ class NotificationOutboxRepository:
         *,
         processing_status: NotificationOutboxStatus,
         limit: int,
-    ) -> list[NotificationOutboxEntry]:
+    ) -> list[ClaimedNotificationOutboxEntry]:
         """以逐筆 conditional update claim rows，確保跨 connection 不會重複取得。"""
 
         if limit <= 0:
@@ -364,32 +419,36 @@ class NotificationOutboxRepository:
             """,
             (status.value, limit),
         ).fetchall()
-        claimed_ids: list[int] = []
+        claimed_tokens: dict[int, str] = {}
         claimed_at = encode_datetime(utc_now())
         for row in rows:
             entry_id = int(row["id"])
+            claim_token = secrets.token_urlsafe(16)
             cursor = self.connection.execute(
                 """
                 UPDATE notification_outbox
                 SET status = ?,
+                    processing_token = ?,
                     updated_at = ?
                 WHERE id = ?
                   AND status = ?
                 """,
                 (
                     processing_status.value,
+                    claim_token,
                     claimed_at,
                     entry_id,
                     status.value,
                 ),
             )
             if cursor.rowcount == 1:
-                claimed_ids.append(entry_id)
-        if not claimed_ids:
+                claimed_tokens[entry_id] = claim_token
+        if not claimed_tokens:
             if rows:
                 self.connection.commit()
             return []
         self.connection.commit()
+        claimed_ids = list(claimed_tokens)
         placeholders = ",".join("?" for _ in claimed_ids)
         claimed_rows = self.connection.execute(
             f"""
@@ -399,7 +458,13 @@ class NotificationOutboxRepository:
             """,
             tuple(claimed_ids),
         ).fetchall()
-        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in claimed_rows]
+        return [
+            ClaimedNotificationOutboxEntry(
+                entry=self._decrypt_entry(notification_outbox_from_row(row)),
+                claim_token=claimed_tokens[int(row["id"])],
+            )
+            for row in claimed_rows
+        ]
 
     def summarize_by_targets(
         self,
@@ -531,4 +596,3 @@ def _dedupe_status_for_outbox_status(
     if status == NotificationOutboxStatus.SKIPPED:
         return NotificationDedupeStatus.SKIPPED
     return NotificationDedupeStatus.FAILED
-

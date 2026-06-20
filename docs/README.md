@@ -11,7 +11,7 @@
 | `docs/README.md` | 公開文件職責邊界與更新規則 | 產品功能規格、逐次任務紀錄、最近驗證 |
 | `docs/USAGE.md` | 詳細安裝、啟動、target 操作、通知、資料路徑與疑難排解 | 穩定架構總論、目前進度、工具全索引 |
 | `docs/ARCHITECTURE.md` | 穩定架構事實、正式主路徑、模組邊界、不可回退產品語義、deferred 邊界 | 短期進度、最近驗證、逐次任務紀錄 |
-| `docs/WEB_UI_CONTRACT.md` | Web UI 呈現、互動一致性、sidebar layout 與 route / presenter 邊界 | target state、scheduler、worker、notification、dedupe 或 persistence 語義 |
+| `docs/WEB_UI_CONTRACT.md` | Web UI / sidebar / route presenter 邊界 | target state、scheduler、worker、notification、dedupe 或 persistence 語義 |
 | `docs/frontend-vendor.md` | Web UI vendored frontend files 的來源、版本、license、manifest checksum 主來源與更新流程 | Web UI 呈現契約、產品語義、npm 管線設計 |
 | `docs/ENGINEERING_REVIEW.md` | 預設工程審查清單、review 輸出格式與 handoff 要求 | 產品功能規格、短期進度、最近驗證 |
 | `docs/tooling.md` | scripts / CLI 工具角色、路徑、正式入口判定與常用命令 | 產品語義、release artifact 細節、功能進度 |
@@ -30,8 +30,12 @@
 - 目前進度、下一步、風險或最近驗證：若本機有 `docs/local/TASK_BREAKDOWN.md`，只更新該文件並保持摘要層級；不要新增公開追蹤的進度文件。
 - 本機 review 檔整理：先在檔案頂部維護最新狀態表或結論；下方原始 review 若保留，必須明確標成歷史參考，並讓 `TASK_BREAKDOWN.md` 反映真正下一步。
 - 正式主路徑、資料語義、模組邊界或 deferred 邊界：更新 `docs/ARCHITECTURE.md`，必要時只在 `AGENTS.md` 保留短 guardrail 或文件索引。
-- Web UI 呈現、互動一致性、sidebar layout 或 route / presenter 邊界：更新 `docs/WEB_UI_CONTRACT.md`；若會影響 target state、scheduler、notification、dedupe 或 persistence，主語義仍要更新 `docs/ARCHITECTURE.md`。
-- Web UI vendored frontend file 來源、版本、license 或 checksum：更新 `src/facebook_monitor/webapp/static/vendor/frontend-vendor.manifest.json` 與 `docs/frontend-vendor.md`。
+- Web UI 呈現、互動一致性、sidebar layout 或 route / presenter 邊界：
+  更新 `docs/WEB_UI_CONTRACT.md`；若會影響 target state、scheduler、
+  notification、dedupe 或 persistence，主語義仍要更新 `docs/ARCHITECTURE.md`。
+- Web UI vendored frontend file 來源、版本、license 或 checksum：
+  更新 `src/facebook_monitor/webapp/static/vendor/frontend-vendor.manifest.json`
+  與 `docs/frontend-vendor.md`。
 - 工程審查範圍、review 輸出格式或 handoff 要求：更新 `docs/ENGINEERING_REVIEW.md`，必要時只在 `AGENTS.md` 保留短索引。
 - 驗證分級、CI 對齊命令與回報用語：更新 `docs/tooling.md`，並只在 `AGENTS.md` 保留短 guardrail；本機最近驗證摘要若存在，必須沿用同一套分級名稱。
 - 文件職責邊界或文件索引：更新本文件，並只在 README / AGENTS 保留必要入口。

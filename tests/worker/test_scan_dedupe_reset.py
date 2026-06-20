@@ -177,10 +177,13 @@ def test_finalize_keeps_dedupe_after_terminal_outbox_retention(
         pending_outbox = app.repositories.notification_outbox.list_pending()
         assert len(pending_outbox) == 1
         assert pending_outbox[0].id is not None
-        app.repositories.notification_outbox.mark_result(
+        claimed = app.repositories.notification_outbox.claim_pending()[0]
+        assert app.repositories.notification_outbox.mark_result(
             entry_id=pending_outbox[0].id,
             status=NotificationOutboxStatus.SENT,
             attempts=1,
+            processing_status=claimed.entry.status,
+            claim_token=claimed.claim_token,
         )
         app.repositories.notification_outbox.connection.execute(
             """

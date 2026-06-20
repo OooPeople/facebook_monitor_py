@@ -407,7 +407,7 @@ def test_bounded_retention_prunes_terminal_state_but_keeps_recent_failed_outbox(
                 title="sent",
                 message="sent",
             )
-        )
+        ).entry
         failed_outbox = outbox_repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:failed-item:ntfy",
@@ -419,7 +419,7 @@ def test_bounded_retention_prunes_terminal_state_but_keeps_recent_failed_outbox(
                 title="failed",
                 message="failed",
             )
-        )
+        ).entry
         expired_failed_outbox = outbox_repo.enqueue(
             NotificationOutboxEntry(
                 idempotency_key=f"{target.id}:expired-failed-item:ntfy",
@@ -431,25 +431,35 @@ def test_bounded_retention_prunes_terminal_state_but_keeps_recent_failed_outbox(
                 title="expired failed",
                 message="expired failed",
             )
-        )
+        ).entry
         assert sent_outbox.id is not None
         assert failed_outbox.id is not None
         assert expired_failed_outbox.id is not None
-        outbox_repo.mark_result(
+        claims = {claim.entry.id: claim for claim in outbox_repo.claim_pending()}
+        sent_claim = claims[sent_outbox.id]
+        assert outbox_repo.mark_result(
             entry_id=sent_outbox.id,
             status=NotificationOutboxStatus.SENT,
             attempts=1,
+            processing_status=sent_claim.entry.status,
+            claim_token=sent_claim.claim_token,
         )
-        outbox_repo.mark_result(
+        failed_claim = claims[failed_outbox.id]
+        assert outbox_repo.mark_result(
             entry_id=failed_outbox.id,
             status=NotificationOutboxStatus.FAILED,
             attempts=1,
+            processing_status=failed_claim.entry.status,
+            claim_token=failed_claim.claim_token,
             message="failed",
         )
-        outbox_repo.mark_result(
+        expired_failed_claim = claims[expired_failed_outbox.id]
+        assert outbox_repo.mark_result(
             entry_id=expired_failed_outbox.id,
             status=NotificationOutboxStatus.FAILED,
             attempts=1,
+            processing_status=expired_failed_claim.entry.status,
+            claim_token=expired_failed_claim.claim_token,
             message="expired failed",
         )
         connection.execute(

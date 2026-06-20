@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
+from tests.webapp.static_contract_helpers import sidebar_template_family_text
 
 
 def test_sidebar_sort_mode_does_not_reserve_drag_column_when_inactive() -> None:
@@ -18,16 +19,16 @@ def test_sidebar_sort_mode_does_not_reserve_drag_column_when_inactive() -> None:
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert ".sidebar-list-item {\n  align-items: center;" in sidebar_css
     assert "grid-template-columns: minmax(0, 1fr);\n" in sidebar_css
     assert ".target-sidebar.sorting .sidebar-list-item" in sidebar_css
     assert "grid-template-columns: minmax(0, 1fr) 30px;" not in sidebar_css
     assert "position: relative;" in _css_rule_body(sidebar_css, ".sidebar-list-item")
-    assert "data-sidebar-confirm-sort hidden>確認</button>\n      <details" in sidebar_template
+    assert "data-sidebar-confirm-sort" in sidebar_template
+    assert ">確認</button>" in sidebar_template
+    assert "data-sidebar-menu" in sidebar_template
 
 
 def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -> None:
@@ -45,9 +46,7 @@ def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
     sortable_license = Path(
         "src/facebook_monitor/webapp/static/vendor/sortablejs/LICENSE"
     ).read_text(encoding="utf-8")
@@ -103,9 +102,7 @@ def test_sidebar_sort_handle_is_plain_three_line_grip_and_keeps_item_height() ->
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert "sidebar-action-icon--drag" in sidebar_template
     assert '<path d="M5 7h14"/>' in sidebar_template
@@ -177,9 +174,7 @@ def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored()
     sidebar_groups_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/sidebar_groups_ui.js"
     ).read_text(encoding="utf-8")
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert "data-sidebar-group-actions-toggle" in sidebar_template
     assert "data-sidebar-group-monitoring" in sidebar_template
@@ -360,9 +355,7 @@ def test_sidebar_group_operation_icons_are_slightly_larger() -> None:
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert "sidebar-action-icon--chevron" in sidebar_template
     assert "sidebar-action-icon--dots" in sidebar_template
@@ -393,9 +386,7 @@ def test_sidebar_status_render_keeps_mode_chip_between_status_and_detail() -> No
     partial_updates_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
     ).read_text(encoding="utf-8")
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
@@ -427,4 +418,3 @@ def test_sidebar_template_save_reloads_dashboard_shell() -> None:
     assert "/template" in save_block
     assert 'showToast?.("群組模板已儲存", "success");' in save_block
     assert "reloadDashboardPreservingScroll();" in save_block
-

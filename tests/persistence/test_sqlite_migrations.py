@@ -285,6 +285,62 @@ def test_initialize_schema_migrates_v37_match_history_recorded_at(
     assert row["recorded_at"] == "2026-05-01T00:00:00+00:00"
 
 
+def test_initialize_schema_migrates_v38_notification_outbox_processing_token(
+    tmp_path: Path,
+) -> None:
+    """v39 會替 notification_outbox 補 processing claim token 欄位。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata (key, value) VALUES ('version', '38');
+            CREATE TABLE notification_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                dedupe_id INTEGER,
+                target_id TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                item_kind TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '',
+                permalink TEXT NOT NULL,
+                event_kind TEXT NOT NULL DEFAULT 'match',
+                source_scan_run_id INTEGER,
+                failure_reason TEXT NOT NULL DEFAULT '',
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL,
+                last_error TEXT NOT NULL,
+                notification_event_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        has_processing_token = table_has_column(
+            connection,
+            "notification_outbox",
+            "processing_token",
+        )
+
+    assert version == str(SCHEMA_VERSION)
+    assert has_processing_token
+
+
 def test_fresh_schema_does_not_create_group_configs_formal_table(
     tmp_path: Path,
 ) -> None:

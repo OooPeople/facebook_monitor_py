@@ -219,7 +219,11 @@ def _record_skipped_scan(
     metadata: dict[str, Any],
     commit_guard: ScanCommitGuard | None,
 ) -> ScanFinalizeResult:
-    """記錄保護性 skipped scan；達門檻時升級為 worker failure。"""
+    """記錄保護性 skipped scan；達門檻時升級為 worker failure。
+
+    scan_run / latest clear 與 guarded skip decision 必須留在同一個
+    transaction；guard rejection 或後段例外不得留下 partial visible state。
+    """
 
     begin_scan_commit_transaction(app)
     ensure_target_allows_scan_commit(app=app, target=target, commit_guard=commit_guard)

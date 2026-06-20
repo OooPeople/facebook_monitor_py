@@ -15,6 +15,9 @@ from facebook_monitor.notifications.channel_plan import get_channel_endpoint
 from facebook_monitor.notifications.channel_plan import is_channel_enabled_by_config
 from facebook_monitor.notifications.discord_format import normalize_discord_single_line
 from facebook_monitor.notifications.payload import normalize_notification_single_line
+from facebook_monitor.persistence.repositories.notification_outbox import (
+    StaleNotificationOutboxClaim,
+)
 
 
 def refresh_outbox_entry_delivery_endpoint(
@@ -22,6 +25,7 @@ def refresh_outbox_entry_delivery_endpoint(
     app: ApplicationContext,
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
+    claim_token: str,
 ) -> NotificationOutboxEntry:
     """dispatch 前套用目前 target config 的 endpoint，避免 retry 打舊設定。"""
 
@@ -38,10 +42,15 @@ def refresh_outbox_entry_delivery_endpoint(
     )
     if endpoint == entry.endpoint:
         return entry
-    app.repositories.notification_outbox.update_delivery_endpoint(
+    if not app.repositories.notification_outbox.update_delivery_endpoint(
         entry_id=entry.id,
         endpoint=endpoint,
-    )
+        status=entry.status,
+        claim_token=claim_token,
+    ):
+        raise StaleNotificationOutboxClaim(
+            f"notification outbox claim is stale: entry_id={entry.id}"
+        )
     app.repositories.notification_outbox.connection.commit()
     return replace(entry, endpoint=endpoint)
 

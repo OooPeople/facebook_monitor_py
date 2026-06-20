@@ -12,7 +12,6 @@ from typing import Protocol
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
-from facebook_monitor.worker.scan_finalize import ScanCommitGuard
 
 
 class ResidentAttemptCleanupHost(Protocol):
@@ -36,7 +35,6 @@ class ResidentAttemptResources:
     page_id: str = ""
     page_acquired: bool = False
     planner_dispatch_id: str = ""
-    runtime_owner_guard: ScanCommitGuard | None = None
 
 
 @dataclass(frozen=True)

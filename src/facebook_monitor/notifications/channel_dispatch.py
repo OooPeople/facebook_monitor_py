@@ -25,9 +25,9 @@ from facebook_monitor.notifications.senders import NtfySender
 
 
 __all__ = [
-    "dispatch_notification_outbox_entry",
-    "record_failed_notification_event_for_outbox_error",
+    "NotificationDispatchResult",
     "record_notification_event",
+    "send_notification_outbox_entry",
 ]
 
 
@@ -40,9 +40,18 @@ class NotificationSenders:
     discord: DiscordSender
 
 
+@dataclass(frozen=True)
+class NotificationDispatchResult:
+    """保存 sender 執行後尚未寫入 DB 的通知結果。"""
+
+    event_status: NotificationStatus
+    outbox_status: NotificationOutboxStatus
+    message: str
+
+
 NotificationChannelHandler = Callable[
     [ApplicationContext, TargetDescriptor, NotificationOutboxEntry, NotificationSenders],
-    tuple[int, NotificationOutboxStatus, str],
+    NotificationDispatchResult,
 ]
 
 
@@ -55,48 +64,29 @@ def _result_to_status(ok: bool) -> tuple[NotificationStatus, NotificationOutboxS
     )
 
 
-def _record_send_result(
+def _sender_result_to_dispatch_result(
     *,
-    app: ApplicationContext,
-    target: TargetDescriptor,
-    entry: NotificationOutboxEntry,
     ok: bool,
     message: str,
-) -> tuple[int, NotificationOutboxStatus, str]:
-    """寫入 sender result 並回傳 outbox status。"""
+) -> NotificationDispatchResult:
+    """將 sender result 轉成尚未寫 DB 的 dispatch result。"""
 
     event_status, outbox_status = _result_to_status(ok)
-    event_id = record_notification_event(
-        app=app,
-        target=target,
-        item_key=entry.item_key,
-        channel=entry.channel,
-        status=event_status,
+    return NotificationDispatchResult(
+        event_status=event_status,
+        outbox_status=outbox_status,
         message=message,
-        entry=entry,
     )
-    return event_id, outbox_status, message
 
 
-def _record_skipped_channel(
-    *,
-    app: ApplicationContext,
-    target: TargetDescriptor,
-    entry: NotificationOutboxEntry,
-    message: str,
-) -> tuple[int, NotificationOutboxStatus, str]:
-    """寫入缺少 endpoint 等 skipped channel result。"""
+def _skipped_channel_dispatch_result(message: str) -> NotificationDispatchResult:
+    """回傳缺少 endpoint 等 skipped channel result。"""
 
-    event_id = record_notification_event(
-        app=app,
-        target=target,
-        item_key=entry.item_key,
-        channel=entry.channel,
-        status=NotificationStatus.SKIPPED,
+    return NotificationDispatchResult(
+        event_status=NotificationStatus.SKIPPED,
+        outbox_status=NotificationOutboxStatus.SKIPPED,
         message=message,
-        entry=entry,
     )
-    return event_id, NotificationOutboxStatus.SKIPPED, message
 
 
 def _dispatch_desktop_channel(
@@ -104,12 +94,10 @@ def _dispatch_desktop_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus, str]:
+) -> NotificationDispatchResult:
+    del app, target
     result = senders.desktop(entry.title, entry.message)
-    return _record_send_result(
-        app=app,
-        target=target,
-        entry=entry,
+    return _sender_result_to_dispatch_result(
         ok=result.ok,
         message=result.message,
     )
@@ -120,12 +108,10 @@ def _dispatch_ntfy_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus, str]:
+) -> NotificationDispatchResult:
+    del app, target
     if not entry.endpoint.strip():
-        return _record_skipped_channel(
-            app=app,
-            target=target,
-            entry=entry,
+        return _skipped_channel_dispatch_result(
             message=notification_channels.get_channel_definition(
                 entry.channel
             ).skipped_message,
@@ -135,10 +121,7 @@ def _dispatch_ntfy_channel(
         entry.title,
         entry.message,
     )
-    return _record_send_result(
-        app=app,
-        target=target,
-        entry=entry,
+    return _sender_result_to_dispatch_result(
         ok=result.ok,
         message=result.message,
     )
@@ -149,12 +132,10 @@ def _dispatch_discord_channel(
     target: TargetDescriptor,
     entry: NotificationOutboxEntry,
     senders: NotificationSenders,
-) -> tuple[int, NotificationOutboxStatus, str]:
+) -> NotificationDispatchResult:
+    del app, target
     if not entry.endpoint.strip():
-        return _record_skipped_channel(
-            app=app,
-            target=target,
-            entry=entry,
+        return _skipped_channel_dispatch_result(
             message=notification_channels.get_channel_definition(
                 entry.channel
             ).skipped_message,
@@ -164,10 +145,7 @@ def _dispatch_discord_channel(
         entry.title,
         entry.message,
     )
-    return _record_send_result(
-        app=app,
-        target=target,
-        entry=entry,
+    return _sender_result_to_dispatch_result(
         ok=result.ok,
         message=result.message,
     )
@@ -180,7 +158,7 @@ NOTIFICATION_CHANNEL_HANDLERS: dict[NotificationChannel, NotificationChannelHand
 }
 
 
-def dispatch_notification_outbox_entry(
+def send_notification_outbox_entry(
     *,
     app: ApplicationContext,
     target: TargetDescriptor,
@@ -188,8 +166,8 @@ def dispatch_notification_outbox_entry(
     ntfy_sender: NtfySender,
     desktop_sender: DesktopSender,
     discord_sender: DiscordSender,
-) -> tuple[int, NotificationOutboxStatus, str]:
-    """發送單筆 outbox event，回傳 event id、outbox 狀態與 result message。"""
+) -> NotificationDispatchResult:
+    """發送單筆 outbox event，尚不寫入 notification event。"""
 
     notification_channels.get_channel_definition(entry.channel)
     handler = NOTIFICATION_CHANNEL_HANDLERS.get(entry.channel)
@@ -241,24 +219,4 @@ def record_notification_event(
             failure_reason=entry.failure_reason,
             failure_count=entry.failure_count,
         )
-    )
-
-
-def record_failed_notification_event_for_outbox_error(
-    *,
-    app: ApplicationContext,
-    target: TargetDescriptor,
-    entry: NotificationOutboxEntry,
-    message: str,
-) -> int:
-    """外部 sender raise 時仍寫入可觀測 failed notification event。"""
-
-    return record_notification_event(
-        app=app,
-        target=target,
-        item_key=entry.item_key,
-        channel=entry.channel,
-        status=NotificationStatus.FAILED,
-        message=message,
-        entry=entry,
     )

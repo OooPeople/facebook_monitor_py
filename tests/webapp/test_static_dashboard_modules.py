@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from facebook_monitor.webapp.assets import DASHBOARD_MODULE_FILENAMES
 from facebook_monitor.webapp.assets import build_dashboard_module_imports
 from tests.webapp.static_contract_helpers import css_rule_body as _css_rule_body
+from tests.webapp.static_contract_helpers import sidebar_template_family_text
 from tests.webapp.static_contract_helpers import target_card_template_family_text
 
 
@@ -323,9 +325,7 @@ def test_sidebar_menu_panel_floats_outside_sidebar_scroll_layer() -> None:
     sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
         encoding="utf-8"
     )
-    sidebar_template = Path("src/facebook_monitor/webapp/templates/_target_sidebar.html").read_text(
-        encoding="utf-8"
-    )
+    sidebar_template = sidebar_template_family_text()
 
     assert "document.body.appendChild(panel);" in sidebar_menu_js
     assert "data-sidebar-menu-floating" in sidebar_menu_js
@@ -460,10 +460,18 @@ def test_modal_close_controls_use_one_visible_dismiss_pattern() -> None:
     )
 
     assert target_card.count("data-close-scan-diagnostics") == 1
-    assert 'class="button--icon" type="button" data-close-scan-diagnostics' in target_card
+    assert re.search(
+        r'<button[^>]*class="button--icon"[^>]*type="button"'
+        r"[^>]*data-close-scan-diagnostics",
+        target_card,
+    )
 
     assert hit_records.count("data-close-hit-records") == 1
-    assert 'class="button--icon" type="button" data-close-hit-records' in hit_records
+    assert re.search(
+        r'<button[^>]*class="button--icon"[^>]*type="button"'
+        r"[^>]*data-close-hit-records",
+        hit_records,
+    )
     assert '<button type="button" data-close-hit-records>關閉</button>' not in hit_records
 
     assert "showHeaderClose = false" in dialogs_js

@@ -1,6 +1,8 @@
 # Packaging
 
-本文件只回答「怎麼打包、產物在哪、發佈前怎麼驗」。使用者操作看 `README.md` / `docs/USAGE.md`；工具角色看 `docs/tooling.md`；frozen updater 產品語義看 `docs/ARCHITECTURE.md#frozen-updater`。
+本文件只回答「怎麼打包、產物在哪、發佈前怎麼驗」。使用者操作看
+`README.md` / `docs/USAGE.md`；工具角色看 `docs/tooling.md`；
+frozen updater 產品語義看 `docs/ARCHITECTURE.md#frozen-updater`。
 
 版本來源只有 `pyproject.toml` 的 `[project].version`。升版時先改 `pyproject.toml`，不要手動改 zip 檔名。
 
@@ -124,7 +126,9 @@ Windows + macOS 同時發佈：
 4. 在同一個 `dist/` 執行 `finalize_release_manifest.py --force`。
 5. 上傳兩個平台 zip / `.sha256`，以及共用的 manifest / `.sig`。
 
-GitHub tag、`pyproject.toml` version、release zip 檔名與 manifest 版本必須對齊。正式 tag 使用 `v{version}`；rc 測試 build 要標成 GitHub pre-release，不要混進 stable release asset。
+GitHub tag、`pyproject.toml` version、release zip 檔名與 manifest 版本必須對齊。
+正式 tag 使用 `v{version}`；rc 測試 build 要標成 GitHub pre-release，
+不要混進 stable release asset。
 
 ## 產物命名
 

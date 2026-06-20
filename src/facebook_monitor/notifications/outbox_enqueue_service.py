@@ -181,26 +181,26 @@ def enqueue_match_notifications(
             message_for_channel = discord_message
         else:
             message_for_channel = compact_message if plan.use_compact_message else message
-        entries.append(
-            app.repositories.notification_outbox.enqueue(
-                NotificationOutboxEntry(
-                    idempotency_key=build_notification_idempotency_key(
-                        target_id=target.id,
-                        item_key=item_key,
-                        channel=plan.channel,
-                    ),
-                    dedupe_id=dedupe_id,
+        result = app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=build_notification_idempotency_key(
                     target_id=target.id,
                     item_key=item_key,
-                    item_kind=item_kind,
                     channel=plan.channel,
-                    title=title_for_channel,
-                    message=message_for_channel,
-                    endpoint=plan.endpoint,
-                    permalink=permalink,
-                )
+                ),
+                dedupe_id=dedupe_id,
+                target_id=target.id,
+                item_key=item_key,
+                item_kind=item_kind,
+                channel=plan.channel,
+                title=title_for_channel,
+                message=message_for_channel,
+                endpoint=plan.endpoint,
+                permalink=permalink,
             )
         )
+        if result.created:
+            entries.append(result.entry)
     return tuple(entries)
 
 
@@ -253,34 +253,34 @@ def enqueue_runtime_failure_notifications(
         )
         if not reservation.created:
             continue
-        entries.append(
-            app.repositories.notification_outbox.enqueue(
-                NotificationOutboxEntry(
-                    idempotency_key=build_notification_idempotency_key(
-                        target_id=target.id,
-                        item_key=item_key,
-                        channel=plan.channel,
-                    ),
-                    dedupe_id=reservation.dedupe_id,
+        result = app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=build_notification_idempotency_key(
                     target_id=target.id,
                     item_key=item_key,
-                    item_kind=item_kind,
                     channel=plan.channel,
-                    title=title,
-                    message=(
-                        build_runtime_failure_compact_notification_message(message)
-                        if plan.use_compact_message
-                        else message
-                    ),
-                    endpoint=plan.endpoint,
-                    permalink=target.canonical_url,
-                    event_kind=NotificationEventKind.RUNTIME_FAILURE,
-                    source_scan_run_id=scan_run_id,
-                    failure_reason=normalized_reason,
-                    failure_count=max(int(failure_count), 1),
-                )
+                ),
+                dedupe_id=reservation.dedupe_id,
+                target_id=target.id,
+                item_key=item_key,
+                item_kind=item_kind,
+                channel=plan.channel,
+                title=title,
+                message=(
+                    build_runtime_failure_compact_notification_message(message)
+                    if plan.use_compact_message
+                    else message
+                ),
+                endpoint=plan.endpoint,
+                permalink=target.canonical_url,
+                event_kind=NotificationEventKind.RUNTIME_FAILURE,
+                source_scan_run_id=scan_run_id,
+                failure_reason=normalized_reason,
+                failure_count=max(int(failure_count), 1),
             )
         )
+        if result.created:
+            entries.append(result.entry)
     return tuple(entries)
 
 

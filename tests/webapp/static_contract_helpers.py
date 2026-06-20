@@ -33,3 +33,17 @@ def target_card_template_family_text() -> str:
         for path in sorted(templates_dir.joinpath("target_card").glob("*.html"))
     )
     return "\n".join(parts)
+
+
+def sidebar_template_family_text() -> str:
+    """回傳 sidebar shell 與 partial family 文字，供 DOM contract 測試使用。"""
+
+    templates_dir = Path("src/facebook_monitor/webapp/templates")
+    parts = [
+        templates_dir.joinpath("_target_sidebar.html").read_text(encoding="utf-8"),
+    ]
+    parts.extend(
+        path.read_text(encoding="utf-8")
+        for path in sorted(templates_dir.joinpath("sidebar").glob("*.html"))
+    )
+    return "\n".join(parts)

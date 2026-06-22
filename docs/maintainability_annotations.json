@@ -160,6 +160,32 @@
       "split_trigger": "新增 commit decision family 或另一條 visible write path"
     },
     {
+      "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
+      "symbol": "prepare_guarded_skipped_scan_commit",
+      "symbol_kind": "function",
+      "category": "scan_protective_skip_commit_planning",
+      "reason": "protective skip guarded commit planning；classify permission 並建立 skip decision/metadata，先於 visible writes。",
+      "must_not_add": [
+        "scan_run writes",
+        "latest_scan writes",
+        "browser collection behavior"
+      ],
+      "split_trigger": "新增另一個 protective skip planning policy family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
+      "symbol": "record_prepared_guarded_skipped_scan",
+      "symbol_kind": "function",
+      "category": "scan_protective_skip_commit_transaction",
+      "reason": "protective skip guarded runtime transition 必須先於 scan_run/latest visible writes；影響 skipped scan_run、latest clear 與 runtime skip decision。",
+      "must_not_add": [
+        "browser collection behavior",
+        "notification sender implementation",
+        "dashboard presentation behavior"
+      ],
+      "split_trigger": "新增 protective skip policy family、另一條 visible skip write path，或 skip metadata/decision 行為大幅擴張"
+    },
+    {
       "path_glob": "src/facebook_monitor/worker/scan_failure_finalize.py",
       "category": "scan_failure_commit_transaction",
       "reason": "failure guarded finalize path；影響 failure scan run、guard rejection、runtime failure decision。",

@@ -21,6 +21,7 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.keyword_groups import keyword_group_slots
@@ -37,7 +38,9 @@ from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
 )
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
+from facebook_monitor.worker import scan_finalize as scan_finalize_module
 from facebook_monitor.worker import scan_failure_finalize as scan_failure_finalize_module
+from facebook_monitor.worker.scan_finalize import ScanMatchResult
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
 from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
@@ -77,6 +80,29 @@ def test_normalize_extracted_scan_items_preserves_display_text() -> None:
     assert len(items) == 1
     assert items[0].text == "第一行票券 第二行座位"
     assert items[0].display_text == "第一行票券\n第二行座位"
+
+
+def test_match_notification_payload_requires_logical_item_id() -> None:
+    """通知 payload 必須先有 logical id，避免建立無 dedupe 的 match 通知。"""
+
+    result = ScanMatchResult(
+        item=NormalizedScanItem(
+            item_kind=ItemKind.POST,
+            item_key="post:missing-logical",
+            alias_keys=("post:missing-logical",),
+            group_id="123",
+            text="票券",
+        ),
+        is_new=True,
+        is_matched=True,
+        include_rule="票券",
+        exclude_rule="",
+        eligible_for_notify=True,
+        matched_keyword="票券",
+    )
+
+    with pytest.raises(RuntimeError, match="requires logical_item_id"):
+        scan_finalize_module._build_match_notification_payload(result)  # noqa: SLF001
 
 
 def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) -> None:
@@ -416,6 +442,75 @@ def test_finalize_scan_items_writes_logical_and_legacy_seen_aliases(
     assert logical_item["item_kind"] == ItemKind.POST.value
     assert logical_item["parent_post_id"] == ""
     assert logical_item["comment_id"] == ""
+
+
+def test_finalize_scan_items_legacy_seen_suppresses_new_but_keeps_logical_id(
+    tmp_path: Path,
+) -> None:
+    """legacy horizon 內已看過時仍寫 logical identity，但本輪不視為 new。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="123",
+                canonical_url="https://www.facebook.com/groups/123",
+                group_name="測試社團",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="phase0test",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        app.repositories.seen_items.mark_seen_aliases(
+            SeenItem(
+                scope_id=target.scope_id,
+                item_key="post:legacy-only",
+                item_kind=ItemKind.POST,
+            ),
+            ("post:legacy-only",),
+        )
+
+        result = finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:legacy-only",
+                    alias_keys=("post:legacy-only",),
+                    group_id="123",
+                    text="這是一篇票券貼文",
+                    raw_target_kind="posts",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+        )
+        logical_alias = app.repositories.logical_items.connection.execute(
+            """
+            SELECT logical_item_id
+            FROM logical_item_aliases
+            WHERE target_id = ? AND scope_id = ? AND alias_key = ?
+            """,
+            (target.id, target.scope_id, "post:legacy-only"),
+        ).fetchone()
+
+    assert result.new_count == 0
+    assert result.matched_count == 1
+    assert result.match_results[0].is_new is False
+    assert result.match_results[0].is_matched is True
+    assert result.match_results[0].eligible_for_notify is False
+    assert result.match_results[0].logical_item_id is not None
+    assert logical_alias is not None
+    assert logical_alias["logical_item_id"] == result.match_results[0].logical_item_id
+    assert result.history_entries == ()
+    assert result.notification_payloads == ()
+    assert result.match_notification_outbox_count == 0
 
 
 def test_finalize_scan_items_preserves_comments_identity_contract(

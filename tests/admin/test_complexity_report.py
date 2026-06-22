@@ -804,9 +804,14 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
         for annotation in watchlist
         if annotation.symbol_kind == "class"
     }
+    function_symbols = {
+        annotation.symbol
+        for annotation in watchlist
+        if annotation.symbol_kind == "function"
+    }
 
     assert len(known_large) == 8
-    assert len(watchlist) == 23
+    assert len(watchlist) == 25
     assert "scripts/admin/complexity_report*.py" in watchlist_paths
     assert "src/facebook_monitor/facebook/feed_extractor.py" not in {
         annotation.path_glob for annotation in known_large
@@ -822,6 +827,10 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     assert "src/facebook_monitor/worker/resident_cover_image_*.py" in watchlist_paths
     assert "src/facebook_monitor/worker/resident_maintenance_*.py" in watchlist_paths
     assert {"TargetRow", "SidebarGroupSection"} <= class_symbols
+    assert {
+        "prepare_guarded_skipped_scan_commit",
+        "record_prepared_guarded_skipped_scan",
+    } <= function_symbols
     assert "src/facebook_monitor/webapp/templates/_target_card.html" not in all_paths
     assert "src/facebook_monitor/webapp/templates/_target_sidebar.html" not in all_paths
     assert "src/facebook_monitor/webapp/static/dashboard/sidebar_layout.js" not in all_paths
@@ -843,3 +852,24 @@ def test_default_dashboard_model_class_annotations_match_report() -> None:
 
     assert report.annotation_warnings == ()
     assert {"TargetRow", "SidebarGroupSection"} <= names
+
+
+def test_default_scan_finalize_function_annotations_match_report() -> None:
+    """正式 scan finalize watchlist function annotations 應實際命中 report rows。"""
+
+    result = load_annotations_with_warnings(Path("docs/maintainability_annotations.json"))
+    report = collect_report(
+        [Path("src/facebook_monitor/worker/scan_finalize.py")],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=result.annotations,
+        annotation_warnings=result.warnings,
+    )
+    rows = watchlist_functions(report.functions, report.annotations, top=20)
+    names = {metric.name for metric, _ in rows}
+
+    assert report.annotation_warnings == ()
+    assert {
+        "prepare_guarded_skipped_scan_commit",
+        "record_prepared_guarded_skipped_scan",
+    } <= names

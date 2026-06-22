@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+import facebook_monitor.facebook.feed_extractor as feed_extractor
+from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.feed_extraction_rounds import build_extract_round_stats
 from facebook_monitor.facebook.feed_extractor import normalize_feed_extraction_payload
@@ -13,6 +19,46 @@ from facebook_monitor.facebook.permalink import extract_comment_permalink_detail
 from facebook_monitor.facebook.permalink import extract_canonical_permalink_from_href
 from facebook_monitor.facebook.permalink import is_comment_permalink_href
 from facebook_monitor.core.permalink_identity import normalize_permalink
+
+
+class _FakeFeedPage:
+    """記錄同步 feed collection loop 的 wait 呼叫。"""
+
+    def __init__(self) -> None:
+        self.waits: list[int] = []
+
+    def wait_for_timeout(self, milliseconds: int) -> None:
+        """記錄等待時間。"""
+
+        self.waits.append(milliseconds)
+
+
+class _AsyncFakeFeedPage:
+    """記錄 async feed collection loop 的 wait 呼叫。"""
+
+    def __init__(self) -> None:
+        self.waits: list[int] = []
+
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        """記錄等待時間。"""
+
+        self.waits.append(milliseconds)
+
+
+def _feed_item(index: int) -> ExtractedItem:
+    """建立有穩定 permalink alias 的 feed 測試 item。"""
+
+    text = f"這是第 {index} 則完全不同的貼文內容，用來避免測試 dedupe 混淆"
+    return ExtractedItem(
+        text=text,
+        text_length=len(text),
+        permalink=(
+            "https://www.facebook.com/groups/222518561920110/posts/"
+            f"{2187454285426500 + index}"
+        ),
+        link_count=0,
+        author=f"作者 {index}",
+    )
 
 
 def test_extract_canonical_permalink_from_group_posts_href() -> None:
@@ -339,6 +385,202 @@ def test_build_extract_round_stats_preserves_scroll_and_filter_diagnostics() -> 
     assert stats.filtered_empty_text_count == 1
     assert stats.filtered_feed_sort_control_count == 2
     assert stats.posts_with_post_id_count == 1
+
+
+def test_collect_items_with_diagnostics_preserves_cross_window_debug_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正式 feed loop 會把跨視窗 collection order 寫進 item diagnostics。"""
+
+    page = _FakeFeedPage()
+    events: list[str] = []
+    scrolls: list[str] = []
+    round_payloads = [
+        ([_feed_item(1)], {"candidateCount": 1, "parsedCount": 1}),
+        ([_feed_item(2)], {"candidateCount": 1, "parsedCount": 1}),
+    ]
+
+    def extract_round(
+        _page: object,
+        candidate_limit: int,
+    ) -> tuple[list[ExtractedItem], dict[str, Any]]:
+        assert candidate_limit >= 12
+        return round_payloads.pop(0)
+
+    monkeypatch.setattr(feed_extractor, "extract_post_like_items_with_meta", extract_round)
+    monkeypatch.setattr(
+        feed_extractor,
+        "capture_load_more_scroll_snapshot",
+        lambda _page: events.append("capture"),
+    )
+    monkeypatch.setattr(
+        feed_extractor,
+        "restore_load_more_scroll_snapshot",
+        lambda _page: events.append("restore"),
+    )
+    monkeypatch.setattr(
+        feed_extractor,
+        "get_scroll_metrics",
+        lambda _page: {"scrollY": 10, "scrollHeight": 100},
+    )
+
+    def scroll(_page: object) -> dict[str, Any]:
+        scrolls.append("scroll")
+        return {"moved": True, "loadMoreMode": "scroll"}
+
+    monkeypatch.setattr(feed_extractor, "scroll_load_more", scroll)
+
+    items, round_stats, meta = feed_extractor.collect_items_with_diagnostics(
+        page,
+        max_items=2,
+        scroll_rounds=2,
+        scroll_wait_ms=75,
+    )
+
+    assert events == ["capture", "restore"]
+    assert scrolls == ["scroll"]
+    assert page.waits == [75]
+    assert [item.permalink for item in items] == [
+        "https://www.facebook.com/groups/222518561920110/posts/2187454285426501",
+        "https://www.facebook.com/groups/222518561920110/posts/2187454285426502",
+    ]
+    assert items[0].debug_metadata == {
+        "firstSeenRound": 0,
+        "roundItemIndex": 0,
+        "collectionIndex": 0,
+    }
+    assert items[1].debug_metadata == {
+        "firstSeenRound": 1,
+        "roundItemIndex": 0,
+        "collectionIndex": 1,
+    }
+    assert [stat.added_count for stat in round_stats] == [1, 1]
+    assert [stat.scroll_moved for stat in round_stats] == [True, None]
+    assert meta.accumulated_count == 2
+    assert meta.attempts == 1
+
+
+def test_collect_items_with_diagnostics_seen_stop_suppresses_scroll_and_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """seen-stop trigger 後會保留觸發 item，但不再 scroll / wait。"""
+
+    page = _FakeFeedPage()
+    events: list[str] = []
+    scrolls: list[str] = []
+
+    monkeypatch.setattr(
+        feed_extractor,
+        "extract_post_like_items_with_meta",
+        lambda _page, _candidate_limit: (
+            [_feed_item(index) for index in range(4)],
+            {"candidateCount": 4, "parsedCount": 4},
+        ),
+    )
+    monkeypatch.setattr(
+        feed_extractor,
+        "capture_load_more_scroll_snapshot",
+        lambda _page: events.append("capture"),
+    )
+    monkeypatch.setattr(
+        feed_extractor,
+        "restore_load_more_scroll_snapshot",
+        lambda _page: events.append("restore"),
+    )
+    monkeypatch.setattr(feed_extractor, "get_scroll_metrics", lambda _page: {})
+
+    def scroll(_page: object) -> dict[str, Any]:
+        scrolls.append("scroll")
+        return {"moved": True}
+
+    monkeypatch.setattr(feed_extractor, "scroll_load_more", scroll)
+
+    items, round_stats, meta = feed_extractor.collect_items_with_diagnostics(
+        page,
+        max_items=10,
+        scroll_rounds=2,
+        scroll_wait_ms=75,
+        seen_item_predicate=lambda _aliases: True,
+    )
+
+    assert events == ["capture", "restore"]
+    assert scrolls == []
+    assert page.waits == []
+    assert len(items) == 4
+    assert round_stats[0].added_count == 4
+    assert round_stats[0].scroll_moved is None
+    assert meta.stop_reason == "seen_stop_consecutive_seen"
+    assert meta.seen_stop_triggered is True
+    assert meta.seen_stop_seen_count == 4
+    assert meta.seen_stop_new_count == 0
+
+
+def test_collect_items_with_diagnostics_async_seen_stop_matches_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """async feed loop 保留 seen-stop no-scroll/no-wait 語義。"""
+
+    async def run_test() -> None:
+        page = _AsyncFakeFeedPage()
+        events: list[str] = []
+        scrolls: list[str] = []
+
+        async def extract_round(
+            _page: object,
+            _candidate_limit: int,
+        ) -> tuple[list[ExtractedItem], dict[str, Any]]:
+            return (
+                [_feed_item(index) for index in range(4)],
+                {"candidateCount": 4, "parsedCount": 4},
+            )
+
+        async def capture_snapshot(_page: object) -> None:
+            events.append("capture")
+
+        async def restore_snapshot(_page: object) -> None:
+            events.append("restore")
+
+        async def scroll(_page: object) -> dict[str, Any]:
+            scrolls.append("scroll")
+            return {"moved": True}
+
+        async def metrics(_page: object) -> dict[str, Any]:
+            return {}
+
+        monkeypatch.setattr(
+            feed_extractor,
+            "extract_post_like_items_with_meta_async",
+            extract_round,
+        )
+        monkeypatch.setattr(
+            feed_extractor,
+            "capture_load_more_scroll_snapshot_async",
+            capture_snapshot,
+        )
+        monkeypatch.setattr(
+            feed_extractor,
+            "restore_load_more_scroll_snapshot_async",
+            restore_snapshot,
+        )
+        monkeypatch.setattr(feed_extractor, "get_scroll_metrics_async", metrics)
+        monkeypatch.setattr(feed_extractor, "scroll_load_more_async", scroll)
+
+        items, round_stats, meta = await feed_extractor.collect_items_with_diagnostics_async(
+            page,
+            max_items=10,
+            scroll_rounds=2,
+            scroll_wait_ms=75,
+            seen_item_predicate=lambda _aliases: True,
+        )
+
+        assert events == ["capture", "restore"]
+        assert scrolls == []
+        assert page.waits == []
+        assert len(items) == 4
+        assert round_stats[0].added_count == 4
+        assert meta.stop_reason == "seen_stop_consecutive_seen"
+
+    asyncio.run(run_test())
 
 
 def test_feed_dom_script_filters_empty_permalink_only_candidates() -> None:

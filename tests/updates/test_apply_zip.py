@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from facebook_monitor.updates.apply import apply_pending_update
 from facebook_monitor.updates.apply_zip import safe_extract_zip
+from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
 from tests.helpers.macos_bundle import assert_posix_executable_when_supported
 from tests.helpers.macos_bundle import assert_zip_member_executable
 from tests.helpers.macos_bundle import write_path_to_zip_with_mode
@@ -221,3 +222,75 @@ def test_safe_extract_zip_rejects_oversized_archive(tmp_path: Path) -> None:
         assert str(exc) == "zip_uncompressed_too_large"
     else:
         raise AssertionError("expected oversized zip to fail")
+
+
+def test_safe_extract_zip_rejects_too_many_entries(tmp_path: Path) -> None:
+    """runtime zip preflight 對 entry 數量維持 fail-fast 錯誤碼。"""
+
+    zip_path = tmp_path / "many.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("a.txt", "a")
+        archive.writestr("b.txt", "b")
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging", max_entries=1)
+    except ValueError as exc:
+        assert str(exc) == "zip_too_many_entries"
+    else:
+        raise AssertionError("expected zip with too many entries to fail")
+
+
+def test_safe_extract_zip_rejects_oversized_member(tmp_path: Path) -> None:
+    """runtime zip preflight 對單一 member 大小維持 fail-fast 錯誤碼。"""
+
+    zip_path = tmp_path / "large-member.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("large.bin", "12345")
+
+    try:
+        safe_extract_zip(
+            zip_path,
+            tmp_path / "staging",
+            max_single_file_bytes=4,
+        )
+    except ValueError as exc:
+        assert str(exc) == "zip_member_too_large"
+    else:
+        raise AssertionError("expected oversized zip member to fail")
+
+
+def test_safe_extract_zip_rejects_oversized_symlink_target(tmp_path: Path) -> None:
+    """runtime zip preflight 讀取 symlink target 前先套用大小限制。"""
+
+    zip_path = tmp_path / "large-link.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(
+            archive,
+            "facebook-monitor/link",
+            "a" * (MAX_ZIP_SYMLINK_TARGET_BYTES + 1),
+        )
+
+    try:
+        safe_extract_zip(zip_path, tmp_path / "staging")
+    except ValueError as exc:
+        assert str(exc) == "zip_symlink_target_too_large"
+    else:
+        raise AssertionError("expected oversized symlink target to fail")
+
+
+def test_safe_extract_zip_does_not_count_symlink_target_as_payload(
+    tmp_path: Path,
+) -> None:
+    """runtime 維持只以一般檔案 payload 計算解壓後大小。"""
+
+    if os.name == "nt":
+        return
+    zip_path = tmp_path / "symlink-only.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/link", "target.txt")
+
+    safe_extract_zip(zip_path, tmp_path / "staging", max_uncompressed_bytes=0)
+
+    link = tmp_path / "staging" / "facebook-monitor" / "link"
+    assert link.is_symlink()
+    assert link.readlink() == Path("target.txt")

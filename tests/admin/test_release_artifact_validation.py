@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 import zipfile
@@ -245,6 +246,41 @@ def test_validate_release_artifacts_rejects_windows_zip_with_private_data(
     assert any("runtime/private data" in message for message in result.messages)
 
 
+def test_validate_release_artifacts_rejects_windows_zip_symlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Windows release zip 不可包含 runtime apply 無法支援的 symlink member。"""
+
+    dist_dir = tmp_path / "dist"
+    version_info = tmp_path / "windows_version_info.txt"
+    version_info.write_text(
+        "filevers=(0, 1, 0, 0)\n"
+        "prodvers=(0, 1, 0, 0)\n"
+        "StringStruct('ProductVersion', '0.1.0')\n"
+        "StringStruct('FileVersion', '0.1.0.0')\n",
+        encoding="utf-8",
+    )
+    zip_path = dist_dir / "facebook-monitor-0.1.0-windows-portable.zip"
+    dist_dir.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for name in validation.WINDOWS_REQUIRED_ZIP_ENTRIES:
+            archive.writestr(name, "x")
+        writestr_symlink(archive, "facebook-monitor/link", "facebook-monitor.exe")
+    _write_sha256_sidecar(zip_path)
+    monkeypatch.setattr(
+        validation,
+        "_read_windows_version_info",
+        lambda path: ("0.1.0.0", "0.1.0"),
+    )
+    _set_windows_version_resources(monkeypatch, version_info)
+
+    result = validation.validate_release_artifacts(version="0.1.0", dist_dir=dist_dir)
+
+    assert not result.ok
+    assert any("zip symlink unsupported" in message for message in result.messages)
+
+
 def test_validate_release_artifacts_checks_exe_metadata_inside_zip(
     tmp_path: Path,
     monkeypatch,
@@ -435,6 +471,152 @@ def test_validate_release_artifacts_rejects_duplicate_zip_entries(
 
     assert not result.ok
     assert any("zip duplicate entry" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_zip_with_too_many_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """release gate 需套用 zip member 數量上限，避免 artifact 檢查被灌爆。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    monkeypatch.setattr(
+        validation,
+        "RELEASE_ZIP_INSPECTION_POLICY",
+        replace(validation.RELEASE_ZIP_INSPECTION_POLICY, max_entries=2),
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/a.txt", "a")
+        archive.writestr("facebook-monitor/b.txt", "b")
+        archive.writestr("facebook-monitor/c.txt", "c")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert "zip too many entries" in result.messages
+
+
+def test_validate_release_artifacts_continues_after_entry_count_violation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """release gate 超過 entry limit 後仍需累積其他 artifact 診斷。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    monkeypatch.setattr(
+        validation,
+        "RELEASE_ZIP_INSPECTION_POLICY",
+        replace(validation.RELEASE_ZIP_INSPECTION_POLICY, max_entries=1),
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/a.txt", "a")
+        archive.writestr("../escape.txt", "bad")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert "zip too many entries" in result.messages
+    assert any("zip member path unsafe" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_oversized_zip_member(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """release gate 需套用單一 zip member 大小上限。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    monkeypatch.setattr(
+        validation,
+        "RELEASE_ZIP_INSPECTION_POLICY",
+        replace(validation.RELEASE_ZIP_INSPECTION_POLICY, max_single_file_bytes=2),
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/large.txt", "abc")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip member too large" in message for message in result.messages)
+
+
+def test_validate_release_artifacts_rejects_total_uncompressed_size_limit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """release gate 需套用 zip 總解壓大小上限。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    monkeypatch.setattr(
+        validation,
+        "RELEASE_ZIP_INSPECTION_POLICY",
+        replace(validation.RELEASE_ZIP_INSPECTION_POLICY, max_uncompressed_bytes=5),
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("facebook-monitor/a.txt", "abcd")
+        archive.writestr("facebook-monitor/b.txt", "efgh")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert "zip uncompressed size too large" in result.messages
+
+
+def test_validate_release_artifacts_counts_symlink_targets_in_total_size(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """release gate 的總解壓大小包含 symlink target bytes。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    monkeypatch.setattr(
+        validation,
+        "RELEASE_ZIP_INSPECTION_POLICY",
+        replace(validation.RELEASE_ZIP_INSPECTION_POLICY, max_uncompressed_bytes=5),
+    )
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_symlink(archive, "facebook-monitor/a-link", "abc")
+        writestr_symlink(archive, "facebook-monitor/b-link", "def")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert "zip uncompressed size too large" in result.messages
 
 
 def test_validate_release_artifacts_rejects_expected_tag_mismatch(
@@ -795,6 +977,47 @@ def test_validate_release_artifacts_accepts_macos_symlink_to_sibling_in_root(
     )
 
     assert result.ok, result.messages
+
+
+def test_validate_release_artifacts_rejects_macos_symlink_outside_app_root(
+    tmp_path: Path,
+) -> None:
+    """macOS artifact symlink target 必須留在 app root 內。"""
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    zip_path = dist_dir / "facebook-monitor-0.1.0-macos-arm64-onedir.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor",
+            MACHO_ARM64_BYTES + b"app",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/facebook-monitor-updater",
+            MACHO_ARM64_BYTES + b"updater",
+            0o755,
+        )
+        writestr_with_mode(
+            archive,
+            "facebook-monitor/browser/Chromium.app/Contents/MacOS/Chromium",
+            MACHO_ARM64_BYTES + b"chromium",
+            0o755,
+        )
+        _write_macos_app_bundle(archive)
+        writestr_symlink(archive, "facebook-monitor/outside-link", "../outside")
+    _write_sha256_sidecar(zip_path)
+
+    result = validation.validate_release_artifacts(
+        version="0.1.0",
+        dist_dir=dist_dir,
+        platform_name="macos-arm64",
+    )
+
+    assert not result.ok
+    assert any("zip symlink target outside app root" in message for message in result.messages)
 
 
 def test_validate_release_artifacts_accepts_macos_chrome_for_testing_zip(
@@ -1240,7 +1463,8 @@ def test_validate_release_artifacts_rejects_oversized_symlink_target(
         writestr_symlink(
             archive,
             "facebook-monitor/huge-link",
-            "a" * (validation.MAX_ZIP_SYMLINK_TARGET_BYTES + 1),
+            "a"
+            * (validation.RELEASE_ZIP_INSPECTION_POLICY.max_symlink_target_bytes + 1),
         )
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     zip_path.with_name(zip_path.name + ".sha256").write_text(
@@ -1539,3 +1763,13 @@ def _write_macos_app_bundle(
     )
     if include_readme:
         archive.writestr(validation.MACOS_FIRST_RUN_README_ENTRY, "first run\n")
+
+
+def _write_sha256_sidecar(zip_path: Path) -> None:
+    """寫入測試 zip 對應的 SHA256 sidecar。"""
+
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    zip_path.with_name(zip_path.name + ".sha256").write_text(
+        f"{digest}  {zip_path.name}",
+        encoding="ascii",
+    )

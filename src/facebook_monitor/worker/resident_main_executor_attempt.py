@@ -10,9 +10,6 @@ import sqlite3
 from typing import Protocol
 from typing import TypeVar
 
-from playwright.async_api import Error as AsyncPlaywrightError
-from playwright.async_api import TimeoutError as AsyncPlaywrightTimeoutError
-
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
@@ -24,7 +21,6 @@ from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
 from facebook_monitor.scheduler.runtime_recovery import build_recovery_owner_key
-from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.attempt_cleanup import ResidentAttemptCleanupPlan
 from facebook_monitor.worker.attempt_cleanup import ResidentAttemptResources
@@ -50,21 +46,18 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle_if_not_running
 from facebook_monitor.worker.resident_failure_decisions import (
+    decide_resident_attempt_exception,
+)
+from facebook_monitor.worker.resident_failure_decisions import (
     decide_resident_failure_attempt,
 )
+from facebook_monitor.worker.resident_failure_decisions import (
+    ResidentAttemptExceptionDecision,
+)
+from facebook_monitor.worker.resident_failure_decisions import (
+    ResidentAttemptExceptionDecisionKind,
+)
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureAttemptDecision
-from facebook_monitor.worker.resident_failure_decisions import (
-    failure_record_decision_for_playwright_exception,
-)
-from facebook_monitor.worker.resident_failure_decisions import (
-    failure_record_decision_for_runtime_restart_cancellation,
-)
-from facebook_monitor.worker.resident_failure_decisions import (
-    failure_record_decision_for_unknown_exception,
-)
-from facebook_monitor.worker.resident_failure_decisions import (
-    failure_record_decision_for_worker_failure,
-)
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureRecordDecision
 from facebook_monitor.worker.scan_commit_coordinator import commit_failure_request_for_db_async
 from facebook_monitor.worker.scan_commit_coordinator import commit_guarded_protective_skip
@@ -168,6 +161,14 @@ class ResidentQueueAttemptState:
                 planner_dispatch_id=self.planner_dispatch_id,
             ),
         )
+
+
+@dataclass(frozen=True)
+class ResidentAttemptExceptionCompletion:
+    """保存 exception branch 完成後的 transition 與傳播決策。"""
+
+    transition: ResidentAttemptTerminalTransition | None
+    reraise: bool = False
 
 
 async def _load_and_admit_target_attempt(
@@ -395,79 +396,41 @@ async def run_queue_item(
             page,
             state,
         )
-        scan_result, cleanup_plan = _finish_scan_commit_outcome(
+        transition = _finish_scan_commit_outcome(
             worker_id=worker_id,
             state=state,
             commit_outcome=commit_outcome,
         )
-        return scan_result
-    except WorkerFailure as exc:
-        transition = await _record_failure_and_finish(
+        cleanup_plan = transition.cleanup_plan
+        return transition.outcome.to_scan_result()
+    except asyncio.CancelledError as exc:
+        completion = await _finish_attempt_exception(
             pool=pool,
             worker_id=worker_id,
             state=state,
-            failure_record_decision=failure_record_decision_for_worker_failure(exc),
+            exc=exc,
         )
-        cleanup_plan = transition.cleanup_plan
-        return transition.outcome.to_scan_result()
-    except asyncio.CancelledError:
-        if pool.runtime_restart_requested():
-            transition = await _record_failure_and_finish(
-                pool=pool,
-                worker_id=worker_id,
-                state=state,
-                failure_record_decision=(
-                    failure_record_decision_for_runtime_restart_cancellation()
-                ),
-            )
-            cleanup_plan = transition.cleanup_plan
-            return transition.outcome.to_scan_result()
-        if state.commit_guard is None:
-            transition = _finish_pre_admission_failure(
-                pool=pool,
-                worker_id=worker_id,
-                state=state,
-                reason="scheduler_cancel_before_running",
-                exception_class="CancelledError",
-                kind=ResidentAttemptOutcomeKind.CANCELLED,
-            )
-            cleanup_plan = transition.cleanup_plan
+        if completion.transition is not None:
+            cleanup_plan = completion.transition.cleanup_plan
+        if completion.reraise:
             raise
-        transition = await _record_scheduler_stopping_cancellation(
-            pool=pool,
-            state=state,
-        )
-        cleanup_plan = transition.cleanup_plan
-        raise
-    except sqlite3.OperationalError as exc:
-        if not is_sqlite_lock_error(exc):
-            raise
-        transition = await _retry_after_sqlite_lock_and_skip(
-            pool=pool,
-            worker_id=worker_id,
-            state=state,
-            exception_class=exc.__class__.__name__,
-        )
-        cleanup_plan = transition.cleanup_plan
-        return transition.outcome.to_scan_result()
-    except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
-        transition = await _record_failure_and_finish(
-            pool=pool,
-            worker_id=worker_id,
-            state=state,
-            failure_record_decision=failure_record_decision_for_playwright_exception(exc),
-        )
-        cleanup_plan = transition.cleanup_plan
-        return transition.outcome.to_scan_result()
+        if completion.transition is None:
+            raise RuntimeError("resident attempt cancellation finished without transition")
+        return completion.transition.outcome.to_scan_result()
     except Exception as exc:
-        transition = await _record_failure_and_finish(
+        completion = await _finish_attempt_exception(
             pool=pool,
             worker_id=worker_id,
             state=state,
-            failure_record_decision=failure_record_decision_for_unknown_exception(exc),
+            exc=exc,
         )
-        cleanup_plan = transition.cleanup_plan
-        return transition.outcome.to_scan_result()
+        if completion.transition is not None:
+            cleanup_plan = completion.transition.cleanup_plan
+        if completion.reraise:
+            raise
+        if completion.transition is None:
+            raise RuntimeError("resident attempt exception finished without transition")
+        return completion.transition.outcome.to_scan_result()
     finally:
         await run_resident_attempt_cleanup(
             pool,
@@ -480,7 +443,7 @@ def _finish_scan_commit_outcome(
     worker_id: str,
     state: ResidentQueueAttemptState,
     commit_outcome: ScanCommitOutcome,
-) -> tuple[AsyncTargetScanResult, ResidentAttemptCleanupPlan]:
+) -> ResidentAttemptTerminalTransition:
     """將 scan commit outcome 映射成既有 executor result。"""
 
     transition = transition_from_scan_commit_outcome(
@@ -497,19 +460,17 @@ def _finish_scan_commit_outcome(
             state.page_id,
             transition.outcome.reason or "scan_commit_guard_mismatch",
         )
-        return transition.outcome.to_scan_result(), state.cleanup_plan()
-    return (
-        _successful_attempt_result(worker_id=worker_id, state=state),
-        state.cleanup_plan(),
-    )
+        return _with_state_cleanup(state, transition)
+    _log_successful_attempt(worker_id=worker_id, state=state)
+    return _with_state_cleanup(state, transition)
 
 
-def _successful_attempt_result(
+def _log_successful_attempt(
     *,
     worker_id: str,
     state: ResidentQueueAttemptState,
-) -> AsyncTargetScanResult:
-    """記錄成功完成並建立 executor result。"""
+) -> None:
+    """記錄成功完成。"""
 
     logger.info(
         "resident_target_finished target_id=%s worker_id=%s page_id=%s "
@@ -521,11 +482,79 @@ def _successful_attempt_result(
         state.opened,
         not state.opened,
     )
-    return ResidentAttemptOutcome.succeeded(
-        target_id=state.target_id,
-        opened_page=state.opened,
-        reused_page=not state.opened,
-    ).to_scan_result()
+
+
+async def _finish_attempt_exception(
+    *,
+    pool: ResidentExecutorAttemptHost,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    exc: BaseException,
+) -> ResidentAttemptExceptionCompletion:
+    """依純 exception taxonomy 執行必要 side effects，回傳 terminal transition。"""
+
+    decision = decide_resident_attempt_exception(
+        exc,
+        has_commit_guard=state.commit_guard is not None,
+        runtime_restart_requested=pool.runtime_restart_requested(),
+    )
+    transition = await _finish_attempt_exception_decision(
+        pool=pool,
+        worker_id=worker_id,
+        state=state,
+        decision=decision,
+    )
+    return ResidentAttemptExceptionCompletion(
+        transition=transition,
+        reraise=decision.reraise,
+    )
+
+
+async def _finish_attempt_exception_decision(
+    *,
+    pool: ResidentExecutorAttemptHost,
+    worker_id: str,
+    state: ResidentQueueAttemptState,
+    decision: ResidentAttemptExceptionDecision,
+) -> ResidentAttemptTerminalTransition | None:
+    """執行已分類 exception branch 對應的 terminal side effect。"""
+
+    if decision.kind == ResidentAttemptExceptionDecisionKind.RECORD_FAILURE:
+        if decision.failure_record_decision is None:
+            raise RuntimeError("record_failure exception decision missing failure record")
+        return await _record_failure_and_finish(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
+            failure_record_decision=decision.failure_record_decision,
+        )
+    if decision.kind == ResidentAttemptExceptionDecisionKind.PRE_ADMISSION_FAILURE:
+        return _finish_pre_admission_failure(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
+            reason=decision.reason,
+            exception_class=decision.exception_class,
+            kind=decision.outcome_kind,
+        )
+    if (
+        decision.kind
+        == ResidentAttemptExceptionDecisionKind.SCHEDULER_STOPPING_CANCELLATION
+    ):
+        return await _record_scheduler_stopping_cancellation(
+            pool=pool,
+            state=state,
+        )
+    if decision.kind == ResidentAttemptExceptionDecisionKind.SQLITE_LOCK_RETRY:
+        return await _retry_after_sqlite_lock_and_skip(
+            pool=pool,
+            worker_id=worker_id,
+            state=state,
+            exception_class=decision.exception_class,
+        )
+    if decision.kind == ResidentAttemptExceptionDecisionKind.PROPAGATE:
+        return None
+    raise AssertionError(f"unhandled resident attempt exception decision {decision.kind}")
 
 
 async def _record_failure_and_finish(

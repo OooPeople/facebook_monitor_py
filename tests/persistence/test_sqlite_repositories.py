@@ -323,3 +323,80 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
         assert loaded_outbox is not None
         assert loaded_outbox.status == NotificationOutboxStatus.SENT
         assert loaded_outbox.notification_event_id == event_id
+
+
+def test_target_runtime_state_full_row_bindings_preserve_contract(
+    tmp_path: Path,
+) -> None:
+    """runtime state full-row save/update 應保留欄位與較新的 scan request。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        target = TargetDescriptor.for_group_posts(
+            group_id="runtime-bindings",
+            canonical_url="https://www.facebook.com/groups/runtime-bindings",
+        )
+        TargetRepository(connection).save(target)
+        repo = TargetRuntimeStateRepository(connection)
+
+        started_at = utc_now()
+        running_state = TargetRuntimeState(
+            target_id=target.id,
+            desired_state=TargetDesiredState.ACTIVE,
+            runtime_status=TargetRuntimeStatus.RUNNING,
+            scan_requested_at=started_at - timedelta(seconds=30),
+            last_enqueued_at=started_at - timedelta(seconds=20),
+            last_started_at=started_at,
+            last_finished_at=started_at - timedelta(seconds=10),
+            last_heartbeat_at=started_at,
+            last_error="previous error",
+            last_skip_reason="previous skip",
+            enqueue_reason="manual_request",
+            active_worker_id="worker-a",
+            active_page_id="page-a",
+            last_page_reloaded_at=started_at,
+            scan_guard_count=2,
+            display_next_due_at=started_at + timedelta(seconds=60),
+            consecutive_failure_reason="page_load_timeout",
+            consecutive_failure_count=1,
+            consecutive_scan_skip_reason="sort_adjust_unconfirmed",
+            consecutive_scan_skip_count=2,
+            updated_at=started_at,
+        )
+        repo.save(running_state)
+        loaded_running = repo.get(target.id)
+
+        newer_request_at = started_at + timedelta(seconds=5)
+        repo.set_scan_requested_at(
+            target.id,
+            requested_at=newer_request_at,
+            updated_at=newer_request_at,
+        )
+        finished_state = replace(
+            running_state,
+            runtime_status=TargetRuntimeStatus.IDLE,
+            scan_requested_at=None,
+            last_finished_at=started_at + timedelta(seconds=30),
+            last_error="",
+            last_skip_reason="",
+            enqueue_reason="",
+            active_worker_id="",
+            active_page_id="",
+            consecutive_failure_reason="",
+            consecutive_failure_count=0,
+            consecutive_scan_skip_reason="",
+            consecutive_scan_skip_count=0,
+            updated_at=started_at + timedelta(seconds=30),
+        )
+        committed = repo.save_if_running_owner(
+            finished_state,
+            worker_id="worker-a",
+            started_at=started_at,
+            page_id="page-a",
+        )
+
+    assert loaded_running == running_state
+    assert committed is not None
+    assert committed == replace(finished_state, scan_requested_at=newer_request_at)

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
+import sqlite3
+from types import SimpleNamespace
+from typing import Any
 from typing import cast
 
 import pytest
@@ -26,6 +30,13 @@ from facebook_monitor.worker.attempt_transitions import transition_from_attempt_
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.resident_failure_decisions import (
+    decide_resident_attempt_exception,
+)
+from facebook_monitor.worker.resident_failure_decisions import ResidentAttemptExceptionDecision
+from facebook_monitor.worker.resident_failure_decisions import (
+    ResidentAttemptExceptionDecisionKind,
+)
 from facebook_monitor.worker.resident_failure_decisions import decide_resident_failure_attempt
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureAttemptDecision
 from facebook_monitor.worker.resident_failure_decisions import ResidentFailureRecordDecision
@@ -48,10 +59,54 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitSideEffects
+from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import RecordingSchedulePlanner
+
+
+class _ExceptionDecisionHost:
+    """測試 exception decision adapter 所需的最小 executor host。"""
+
+    def __init__(self, db_path: Path) -> None:
+        self.options = SimpleNamespace(db_path=db_path)
+        self.page_pool = _RecordingExceptionDecisionPagePool()
+        self.sqlite_lock_retries: list[tuple[str, object]] = []
+        self.runtime_restart_requests = 0
+
+    async def _retry_target_after_sqlite_lock(
+        self,
+        *,
+        target_id: str,
+        commit_guard: object,
+    ) -> None:
+        """記錄 SQLite lock retry side effect。"""
+
+        self.sqlite_lock_retries.append((target_id, commit_guard))
+
+    def request_runtime_restart(self) -> None:
+        """記錄 runtime restart side effect。"""
+
+        self.runtime_restart_requests += 1
+
+
+class _RecordingExceptionDecisionPagePool:
+    """記錄 adapter 測試中的 page discard side effect。"""
+
+    def __init__(self) -> None:
+        self.discarded_page_ids: list[tuple[str, str]] = []
+        self.discarded_targets: list[str] = []
+
+    async def discard_if_page_id(self, target_id: str, page_id: str) -> None:
+        """記錄 guarded discard。"""
+
+        self.discarded_page_ids.append((target_id, page_id))
+
+    async def discard(self, target_id: str) -> None:
+        """記錄無 page id 的 discard。"""
+
+        self.discarded_targets.append(target_id)
 
 
 def test_resident_attempt_outcome_adapter_preserves_public_result_shape() -> None:
@@ -540,6 +595,354 @@ def test_failure_record_decision_classifies_exception_branches() -> None:
     assert playwright.source == "playwright"
     assert unknown.reason == UNKNOWN_REASON
     assert unknown.source == "unknown_exception"
+
+
+def test_resident_attempt_exception_decision_classifies_terminal_paths() -> None:
+    """resident attempt exception taxonomy 應可不靠 executor side effects 測試。"""
+
+    worker = decide_resident_attempt_exception(
+        WorkerFailure("worker_reason", "worker failed"),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+    runtime_restart_cancel = decide_resident_attempt_exception(
+        asyncio.CancelledError(),
+        has_commit_guard=True,
+        runtime_restart_requested=True,
+    )
+    scheduler_stopping_cancel = decide_resident_attempt_exception(
+        asyncio.CancelledError(),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+    pre_admission_cancel = decide_resident_attempt_exception(
+        asyncio.CancelledError(),
+        has_commit_guard=False,
+        runtime_restart_requested=False,
+    )
+    sqlite_lock = decide_resident_attempt_exception(
+        sqlite3.OperationalError("database is locked"),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+    sqlite_non_lock = decide_resident_attempt_exception(
+        sqlite3.OperationalError("syntax error"),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+    playwright = decide_resident_attempt_exception(
+        AsyncPlaywrightError("Timeout 30000ms exceeded"),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+    unknown = decide_resident_attempt_exception(
+        RuntimeError("boom"),
+        has_commit_guard=True,
+        runtime_restart_requested=False,
+    )
+
+    assert worker.kind == ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
+    assert worker.failure_record_decision is not None
+    assert worker.failure_record_decision.reason == "worker_reason"
+    assert runtime_restart_cancel.kind == (
+        ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
+    )
+    assert runtime_restart_cancel.failure_record_decision is not None
+    assert runtime_restart_cancel.failure_record_decision.reason == (
+        SCHEDULER_RUNTIME_REASON
+    )
+    assert runtime_restart_cancel.reraise is False
+    assert scheduler_stopping_cancel.kind == (
+        ResidentAttemptExceptionDecisionKind.SCHEDULER_STOPPING_CANCELLATION
+    )
+    assert scheduler_stopping_cancel.reraise is True
+    assert pre_admission_cancel.kind == (
+        ResidentAttemptExceptionDecisionKind.PRE_ADMISSION_FAILURE
+    )
+    assert pre_admission_cancel.reason == "scheduler_cancel_before_running"
+    assert pre_admission_cancel.outcome_kind == ResidentAttemptOutcomeKind.CANCELLED
+    assert pre_admission_cancel.reraise is True
+    assert sqlite_lock.kind == ResidentAttemptExceptionDecisionKind.SQLITE_LOCK_RETRY
+    assert sqlite_lock.reason == "database_locked"
+    assert sqlite_non_lock.kind == ResidentAttemptExceptionDecisionKind.PROPAGATE
+    assert sqlite_non_lock.reraise is True
+    assert playwright.kind == ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
+    assert playwright.failure_record_decision is not None
+    assert playwright.failure_record_decision.source == "playwright"
+    assert unknown.kind == ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
+    assert unknown.failure_record_decision is not None
+    assert unknown.failure_record_decision.source == "unknown_exception"
+
+
+def test_resident_attempt_exception_decision_rejects_incomplete_record_failure() -> None:
+    """exception decision boundary 不允許直接建立缺 failure record 的分支。"""
+
+    record = ResidentFailureRecordDecision(
+        reason="unknown",
+        message="boom",
+        source="unknown_exception",
+        exception_class="RuntimeError",
+        owner_changed_reason="unknown_owner_changed",
+    )
+    with pytest.raises(ValueError, match="requires failure record"):
+        ResidentAttemptExceptionDecision(
+            kind=ResidentAttemptExceptionDecisionKind.RECORD_FAILURE,
+            failure_record_decision=None,
+            reason="",
+            exception_class="RuntimeError",
+            outcome_kind=ResidentAttemptOutcomeKind.TARGET_INACTIVE,
+            reraise=False,
+        )
+    with pytest.raises(ValueError, match="must not re-raise"):
+        ResidentAttemptExceptionDecision(
+            kind=ResidentAttemptExceptionDecisionKind.RECORD_FAILURE,
+            failure_record_decision=record,
+            reason="",
+            exception_class="RuntimeError",
+            outcome_kind=ResidentAttemptOutcomeKind.TARGET_INACTIVE,
+            reraise=True,
+        )
+    with pytest.raises(ValueError, match="exception class mismatch"):
+        ResidentAttemptExceptionDecision(
+            kind=ResidentAttemptExceptionDecisionKind.RECORD_FAILURE,
+            failure_record_decision=record,
+            reason="",
+            exception_class="WorkerFailure",
+            outcome_kind=ResidentAttemptOutcomeKind.TARGET_INACTIVE,
+            reraise=False,
+        )
+
+
+def test_finish_attempt_exception_decision_record_failure_pre_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record-failure adapter 在 claim running 前應走 pre-admission cleanup path。"""
+
+    marked_idle: list[tuple[Path, str]] = []
+
+    def fake_mark_idle(db_path: Path, target_id: str) -> None:
+        marked_idle.append((db_path, target_id))
+
+    monkeypatch.setattr(
+        attempt_module,
+        "mark_resident_target_idle_if_not_running",
+        fake_mark_idle,
+    )
+    host = _ExceptionDecisionHost(tmp_path / "app.db")
+    state = attempt_module.ResidentQueueAttemptState(
+        target_id="target-1",
+        page_id="page-a",
+        opened=True,
+        acquired_page=True,
+        owner_key="owner-a",
+        active_attempt_key="attempt-a",
+        planner_dispatch_id="dispatch-a",
+    )
+    decision = ResidentAttemptExceptionDecision.record_failure(
+        ResidentFailureRecordDecision(
+            reason="worker_reason",
+            message="worker failed",
+            source="worker_failure",
+            exception_class="WorkerFailure",
+            owner_changed_reason="worker_failure_owner_changed",
+        )
+    )
+
+    transition = asyncio.run(
+        attempt_module._finish_attempt_exception_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, host),
+            worker_id="worker-a",
+            state=state,
+            decision=decision,
+        )
+    )
+
+    assert transition is not None
+    assert transition.outcome.kind == ResidentAttemptOutcomeKind.TARGET_INACTIVE
+    assert transition.outcome.reason == "worker_reason"
+    assert transition.cleanup_plan is not None
+    assert transition.cleanup_plan.owner_key == "owner-a"
+    assert transition.cleanup_plan.page_id == "page-a"
+    assert marked_idle == [(tmp_path / "app.db", "target-1")]
+
+
+def test_finish_attempt_exception_decision_record_failure_guarded_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guarded record-failure adapter 應接上 commit、discard、restart 與 cleanup。"""
+
+    requests: list[Any] = []
+    scan_decision = ScanFailureDecision(
+        reason="unknown",
+        retryable=True,
+        target_action="idle",
+        runtime_action="will_retry",
+        discard_page=True,
+        counts_toward_streak=True,
+        retry_streak=1,
+        retry_limit=3,
+        auto_restart=True,
+        recovery_action=SCHEDULER_RUNTIME_RESTART_ACTION,
+    )
+
+    async def fake_commit_failure_request(request: Any) -> ScanCommitOutcome:
+        requests.append(request)
+        return ScanCommitOutcome(
+            kind=ScanCommitOutcomeKind.FAILURE_COMMITTED,
+            target_id=request.target_id,
+            reason=scan_decision.reason,
+            failure_decision=scan_decision,
+        )
+
+    monkeypatch.setattr(
+        attempt_module,
+        "commit_failure_request_for_db_async",
+        fake_commit_failure_request,
+    )
+    host = _ExceptionDecisionHost(tmp_path / "app.db")
+    guard = ScanCommitGuard(worker_id="worker-a", started_at=utc_now(), page_id="page-a")
+    state = attempt_module.ResidentQueueAttemptState(
+        target_id="target-1",
+        page_id="page-a",
+        opened=True,
+        acquired_page=True,
+        owner_key="owner-a",
+        active_attempt_key="attempt-a",
+        planner_dispatch_id="dispatch-a",
+        commit_guard=guard,
+    )
+    record = ResidentFailureRecordDecision(
+        reason="unknown",
+        message="guarded boom",
+        source="unknown_exception",
+        exception_class="RuntimeError",
+        owner_changed_reason="unknown_owner_changed",
+    )
+
+    transition = asyncio.run(
+        attempt_module._finish_attempt_exception_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, host),
+            worker_id="worker-a",
+            state=state,
+            decision=ResidentAttemptExceptionDecision.record_failure(record),
+        )
+    )
+
+    assert transition is not None
+    assert transition.outcome.kind == ResidentAttemptOutcomeKind.RUNTIME_RESTART_REQUESTED
+    assert transition.outcome.reason == "unknown"
+    assert transition.cleanup_plan is not None
+    assert transition.cleanup_plan.owner_key == "owner-a"
+    assert transition.cleanup_plan.page_id == "page-a"
+    assert len(requests) == 1
+    assert requests[0].commit_guard == guard
+    assert requests[0].exception_class == "RuntimeError"
+    assert host.page_pool.discarded_page_ids == [("target-1", "page-a")]
+    assert host.runtime_restart_requests == 1
+
+
+def test_finish_attempt_exception_decision_sqlite_lock_retry_uses_side_effect_adapter(
+    tmp_path: Path,
+) -> None:
+    """SQLite lock decision 應排回 target 並保留 cleanup resource tokens。"""
+
+    host = _ExceptionDecisionHost(tmp_path / "app.db")
+    guard = ScanCommitGuard(worker_id="worker-a", started_at=utc_now(), page_id="page-a")
+    state = attempt_module.ResidentQueueAttemptState(
+        target_id="target-1",
+        page_id="page-a",
+        opened=False,
+        acquired_page=True,
+        owner_key="owner-a",
+        active_attempt_key="attempt-a",
+        commit_guard=guard,
+    )
+
+    transition = asyncio.run(
+        attempt_module._finish_attempt_exception_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, host),
+            worker_id="worker-a",
+            state=state,
+            decision=ResidentAttemptExceptionDecision.sqlite_lock_retry(
+                "OperationalError"
+            ),
+        )
+    )
+
+    assert transition is not None
+    assert transition.outcome.kind == ResidentAttemptOutcomeKind.SQLITE_LOCK_RETRY
+    assert transition.outcome.reason == "database_locked"
+    assert transition.cleanup_plan is not None
+    assert transition.cleanup_plan.page_id == "page-a"
+    assert host.sqlite_lock_retries == [("target-1", guard)]
+
+
+def test_finish_attempt_exception_decision_scheduler_cancel_commits_guarded_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """scheduler stopping branch 應接到 guarded failure commit 並回傳 cleanup plan。"""
+
+    requests: list[Any] = []
+
+    async def fake_commit_failure_request(request: Any) -> ScanCommitOutcome:
+        requests.append(request)
+        return ScanCommitOutcome(
+            kind=ScanCommitOutcomeKind.SKIP_COMMITTED,
+            target_id=request.target_id,
+            reason=request.reason,
+        )
+
+    monkeypatch.setattr(
+        attempt_module,
+        "commit_failure_request_for_db_async",
+        fake_commit_failure_request,
+    )
+    host = _ExceptionDecisionHost(tmp_path / "app.db")
+    guard = ScanCommitGuard(worker_id="worker-a", started_at=utc_now(), page_id="page-a")
+    state = attempt_module.ResidentQueueAttemptState(
+        target_id="target-1",
+        page_id="page-a",
+        acquired_page=True,
+        owner_key="owner-a",
+        active_attempt_key="attempt-a",
+        commit_guard=guard,
+    )
+
+    transition = asyncio.run(
+        attempt_module._finish_attempt_exception_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, host),
+            worker_id="worker-a",
+            state=state,
+            decision=ResidentAttemptExceptionDecision.scheduler_stopping_cancellation(),
+        )
+    )
+
+    assert transition is not None
+    assert transition.outcome.kind == ResidentAttemptOutcomeKind.SKIPPED
+    assert transition.outcome.reason == "scheduler_stopping"
+    assert transition.cleanup_plan is not None
+    assert transition.cleanup_plan.owner_key == "owner-a"
+    assert len(requests) == 1
+    assert requests[0].reason == "scheduler_stopping"
+    assert requests[0].commit_guard == guard
+
+
+def test_finish_attempt_exception_decision_propagate_has_no_transition() -> None:
+    """PROPAGATE branch 不應製造 cleanup transition 或吞例外。"""
+
+    transition = asyncio.run(
+        attempt_module._finish_attempt_exception_decision(  # noqa: SLF001
+            pool=cast(attempt_module.ResidentExecutorAttemptHost, object()),
+            worker_id="worker-a",
+            state=attempt_module.ResidentQueueAttemptState(target_id="target-1"),
+            decision=ResidentAttemptExceptionDecision.propagate(),
+        )
+    )
+
+    assert transition is None
 
 
 def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:

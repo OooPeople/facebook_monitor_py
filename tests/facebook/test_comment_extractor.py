@@ -13,11 +13,13 @@ import pytest
 import facebook_monitor.facebook.comment_extractor as comment_extractor
 from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
+from facebook_monitor.facebook.comment_extraction_models import CommentDomSettleResult
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more_guard_held
 from facebook_monitor.facebook.comment_extractor import (
     collect_comment_items_with_load_more_guard_held_async,
 )
 from facebook_monitor.facebook.comment_extractor import extract_visible_comment_items
+from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.text_snippet_dom import TEXT_SNIPPET_OVERLAP_HELPERS_SCRIPT
 
 
@@ -34,6 +36,23 @@ class FakeCommentPage:
         assert "comments_visible_window" in script
         self.evaluate_payloads.append(payload)
         return self.payload
+
+
+def _comment_item(index: int) -> ExtractedItem:
+    """建立有穩定 comment identity 的測試留言 item。"""
+
+    return ExtractedItem(
+        text=f"留言 {index}",
+        text_length=4,
+        permalink=(
+            "https://www.facebook.com/groups/1/posts/10/"
+            f"?comment_id={1000 + index}"
+        ),
+        link_count=0,
+        item_kind="comment",
+        parent_post_id="10",
+        comment_id=str(1000 + index),
+    )
 
 
 def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
@@ -390,6 +409,181 @@ def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
     asyncio.run(run_test())
 
     assert released == [True]
+
+
+def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """comments guard-held loop 成功時保留 stalled-scroll stop reason 與 cleanup。"""
+
+    events: list[str] = []
+    scrolls: list[str] = []
+
+    monkeypatch.setattr(
+        comment_extractor,
+        "capture_comment_scroll_snapshot",
+        lambda _page: events.append("capture"),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "restore_comment_scroll_snapshot",
+        lambda _page: events.append("restore"),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "end_comment_load_more_guard",
+        lambda _page: events.append("end_guard"),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "wait_for_comment_dom_settle",
+        lambda _page, *, max_items: CommentDomSettleResult(
+            attempted=True,
+            stable=True,
+            observations=2,
+            wait_ms=700,
+            candidate_count=1,
+        ),
+    )
+    monkeypatch.setattr(
+        comment_extractor,
+        "extract_visible_comment_items",
+        lambda _page, *, group_id, parent_post_id, max_items: (
+            [_comment_item(1)],
+            CommentCollectionMeta(
+                target_count=max_items,
+                candidate_count=1,
+                parsed_count=1,
+                accumulated_count=1,
+            ),
+        ),
+    )
+
+    def scroll(_page: object) -> dict[str, Any]:
+        scrolls.append("scroll")
+        return {"moved": False, "loadMoreMode": "comment_nested_scroll"}
+
+    monkeypatch.setattr(comment_extractor, "scroll_comment_load_more", scroll)
+
+    items, round_stats, meta = collect_comment_items_with_load_more_guard_held(
+        page=object(),
+        group_id="group",
+        parent_post_id="post",
+        max_items=5,
+        scroll_rounds=2,
+        scroll_wait_ms=50,
+        auto_load_more=True,
+    )
+
+    assert events == ["capture", "restore", "end_guard"]
+    assert scrolls == ["scroll"]
+    assert [item.comment_id for item in items] == ["1001"]
+    assert round_stats[0].scroll_moved is False
+    assert round_stats[0].added_count == 1
+    assert round_stats[0].dom_settle_attempted is True
+    assert meta.stop_reason == "comment_scroll_stalled"
+    assert meta.attempted is True
+    assert meta.attempts == 1
+    assert meta.dom_settle_stable is True
+
+
+def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """async comments guard-held loop 保留 stalled-scroll 與 cleanup 語義。"""
+
+    async def run_test() -> None:
+        events: list[str] = []
+        scrolls: list[str] = []
+
+        async def capture_snapshot(_page: object) -> None:
+            events.append("capture")
+
+        async def restore_snapshot(_page: object) -> None:
+            events.append("restore")
+
+        async def end_guard(_page: object) -> None:
+            events.append("end_guard")
+
+        async def wait_for_settle(
+            _page: object,
+            *,
+            max_items: int,
+        ) -> CommentDomSettleResult:
+            return CommentDomSettleResult(
+                attempted=True,
+                stable=True,
+                observations=2,
+                wait_ms=700,
+                candidate_count=1,
+            )
+
+        async def extract_items(
+            _page: object,
+            *,
+            group_id: str,
+            parent_post_id: str,
+            max_items: int,
+        ) -> tuple[list[ExtractedItem], CommentCollectionMeta]:
+            return (
+                [_comment_item(1)],
+                CommentCollectionMeta(
+                    target_count=max_items,
+                    candidate_count=1,
+                    parsed_count=1,
+                    accumulated_count=1,
+                ),
+            )
+
+        async def scroll(_page: object) -> dict[str, Any]:
+            scrolls.append("scroll")
+            return {"moved": False, "loadMoreMode": "comment_nested_scroll"}
+
+        monkeypatch.setattr(
+            comment_extractor,
+            "capture_comment_scroll_snapshot_async",
+            capture_snapshot,
+        )
+        monkeypatch.setattr(
+            comment_extractor,
+            "restore_comment_scroll_snapshot_async",
+            restore_snapshot,
+        )
+        monkeypatch.setattr(
+            comment_extractor,
+            "end_comment_load_more_guard_async",
+            end_guard,
+        )
+        monkeypatch.setattr(
+            comment_extractor,
+            "wait_for_comment_dom_settle_async",
+            wait_for_settle,
+        )
+        monkeypatch.setattr(
+            comment_extractor,
+            "extract_visible_comment_items_async",
+            extract_items,
+        )
+        monkeypatch.setattr(comment_extractor, "scroll_comment_load_more_async", scroll)
+
+        items, round_stats, meta = await collect_comment_items_with_load_more_guard_held_async(
+            page=object(),
+            group_id="group",
+            parent_post_id="post",
+            max_items=5,
+            scroll_rounds=2,
+            scroll_wait_ms=50,
+            auto_load_more=True,
+        )
+
+        assert events == ["capture", "restore", "end_guard"]
+        assert scrolls == ["scroll"]
+        assert [item.comment_id for item in items] == ["1001"]
+        assert round_stats[0].scroll_moved is False
+        assert meta.stop_reason == "comment_scroll_stalled"
+        assert meta.dom_settle_stable is True
+
+    asyncio.run(run_test())
 
 
 def _run_text_snippet_helper(values: list[str]) -> dict[str, Any]:

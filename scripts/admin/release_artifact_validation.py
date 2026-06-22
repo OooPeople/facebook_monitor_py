@@ -12,6 +12,7 @@ import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -41,18 +42,13 @@ from facebook_monitor.updates.platforms import macos_optional_executable_staging
 from facebook_monitor.updates.checksum import calculate_sha256
 from facebook_monitor.updates.checksum import render_sha256_sidecar
 from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
-from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import is_macho_arm64
-from facebook_monitor.updates.validation import normalized_zip_member_key
 from facebook_monitor.updates.validation import plist_value_is_true
 from facebook_monitor.updates.validation import resolve_zip_symlink_target
-from facebook_monitor.updates.validation import validate_zip_member_path
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
-from facebook_monitor.updates.validation import zip_member_is_symlink
-from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
-from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
-from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
-from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
+from facebook_monitor.updates.zip_inspection import ZipInspectedMember
+from facebook_monitor.updates.zip_inspection import ZipMemberInspectionPolicy
+from facebook_monitor.updates.zip_inspection import inspect_zip_members
 from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 from facebook_monitor.version import APP_VERSION
 from scripts.admin.windows_version_resource import windows_file_version
@@ -98,6 +94,10 @@ MACOS_BROWSER_ENTRY_SUFFIXES = macos_optional_executable_staging_paths(
 )
 MACOS_BROWSER_ENTRIES = tuple(
     f"{MACOS_ZIP_ROOT}/{suffix}" for suffix in MACOS_BROWSER_ENTRY_SUFFIXES
+)
+RELEASE_ZIP_INSPECTION_POLICY = ZipMemberInspectionPolicy(
+    count_symlink_targets_in_total=True,
+    continue_after_entry_count_violation=True,
 )
 
 
@@ -309,7 +309,12 @@ def _validate_windows_zip_contents(zip_path: Path, messages: list[str]) -> None:
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
-            names = _validated_zip_names(archive, messages)
+            inspection = inspect_zip_members(
+                archive,
+                policy=_windows_release_zip_inspection_policy(),
+            )
+            messages.extend(violation.message for violation in inspection.violations)
+            names = set(inspection.names)
     except zipfile.BadZipFile:
         messages.append(f"bad zip file: {zip_path}")
         return
@@ -330,9 +335,18 @@ def _validate_macos_zip_contents(
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
-            names = _validated_zip_names(archive, messages)
-            infos = {info.filename.replace("\\", "/"): info for info in archive.infolist()}
+            inspection = inspect_zip_members(
+                archive,
+                policy=RELEASE_ZIP_INSPECTION_POLICY,
+            )
+            messages.extend(violation.message for violation in inspection.violations)
+            names = set(inspection.names)
+            infos = {member.name: member.info for member in inspection.members}
             _validate_macos_app_bundle_metadata(archive, names, version, messages)
+            _validate_macos_symlink_targets_stay_in_app_root(
+                inspection.members,
+                messages,
+            )
             missing = sorted(MACOS_REQUIRED_ZIP_ENTRIES - names)
             for name in missing:
                 messages.append(f"zip missing required entry: {name}")
@@ -393,6 +407,21 @@ def _validate_macos_app_bundle_metadata(
         messages.append("macOS app bundle version does not match app version")
 
 
+def _validate_macos_symlink_targets_stay_in_app_root(
+    members: tuple[ZipInspectedMember, ...],
+    messages: list[str],
+) -> None:
+    """確認 macOS artifact symlink 不會在 apply 階段逃出 app root。"""
+
+    app_root = PurePosixPath(MACOS_ZIP_ROOT)
+    for member in members:
+        if not member.is_symlink or member.symlink_target is None:
+            continue
+        target = resolve_zip_symlink_target(member.path, member.symlink_target)
+        if target is not None and not target.is_relative_to(app_root):
+            messages.append(f"zip symlink target outside app root: {member.name}")
+
+
 def _zip_member_is_macho_arm64(archive: zipfile.ZipFile, name: str) -> bool:
     """讀取 zip member 前段並確認是 arm64 Mach-O。"""
 
@@ -423,7 +452,12 @@ def _validate_zipped_windows_exes(
 
     try:
         with zipfile.ZipFile(zip_path) as archive:
-            names = _validated_zip_names(archive, messages)
+            inspection = inspect_zip_members(
+                archive,
+                policy=_windows_release_zip_inspection_policy(),
+            )
+            messages.extend(violation.message for violation in inspection.violations)
+            names = set(inspection.names)
             missing = [entry for entry in WINDOWS_ZIP_EXE_ENTRIES if entry not in names]
             if missing:
                 return
@@ -449,87 +483,10 @@ def _validate_zipped_windows_exes(
         messages.append(f"cannot validate zipped EXEs for {zip_path}: {exc}")
 
 
-def _validated_zip_names(
-    archive: zipfile.ZipFile,
-    messages: list[str],
-) -> set[str]:
-    """檢查 zip member 安全性並回傳 normalized names。"""
+def _windows_release_zip_inspection_policy() -> ZipMemberInspectionPolicy:
+    """Windows artifact 不支援 symlink，release gate 需與 runtime 對齊。"""
 
-    members = archive.infolist()
-    names: set[str] = set()
-    normalized_path_keys: set[str] = set()
-    paths: set[PurePosixPath] = set()
-    symlink_paths: set[PurePosixPath] = set()
-    total_uncompressed = 0
-    if len(members) > MAX_ZIP_ENTRIES:
-        messages.append("zip too many entries")
-    for member in members:
-        try:
-            path = validate_zip_member_path(member.filename)
-        except ValueError:
-            messages.append(f"zip member path unsafe: {member.filename}")
-            continue
-        normalized = path.as_posix()
-        if normalized in names:
-            messages.append(f"zip duplicate entry: {normalized}")
-            continue
-        path_key = normalized_zip_member_key(path)
-        if path_key in normalized_path_keys:
-            messages.append(f"zip duplicate entry: {normalized}")
-            continue
-        names.add(normalized)
-        normalized_path_keys.add(path_key)
-        paths.add(path)
-        if zip_member_is_symlink(member):
-            symlink_paths.add(path)
-            if member.file_size > MAX_ZIP_SYMLINK_TARGET_BYTES:
-                messages.append(f"zip symlink target too large: {normalized}")
-                continue
-            total_uncompressed += member.file_size
-            if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
-                messages.append("zip uncompressed size too large")
-                break
-            _validate_zip_symlink_member(archive, member, path, messages)
-            continue
-        if member.is_dir():
-            continue
-        if member.file_size > MAX_ZIP_SINGLE_FILE_BYTES:
-            messages.append(f"zip member too large: {normalized}")
-        total_uncompressed += member.file_size
-        if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
-            messages.append("zip uncompressed size too large")
-            break
-    for path in paths:
-        if any(parent in symlink_paths for parent in path.parents):
-            messages.append(f"zip member path unsafe: {path.as_posix()}")
-    return names
-
-
-def _validate_zip_symlink_member(
-    archive: zipfile.ZipFile,
-    member: zipfile.ZipInfo,
-    path: PurePosixPath,
-    messages: list[str],
-) -> None:
-    """檢查 zip symlink 目標不會逃出 artifact root 或指向私人資料。"""
-
-    try:
-        raw_target = archive.read(member)
-    except (OSError, KeyError, zipfile.BadZipFile):
-        messages.append(f"zip symlink target unreadable: {member.filename}")
-        return
-    try:
-        target_text = decode_zip_symlink_target(raw_target)
-    except ValueError:
-        messages.append(f"zip symlink target invalid: {member.filename}")
-        return
-    resolved = resolve_zip_symlink_target(path, target_text)
-    if resolved is None:
-        messages.append(f"zip symlink target unsafe: {member.filename}")
-        return
-    lower_parts = {part.casefold() for part in resolved.parts}
-    if SENSITIVE_RELEASE_PATH_PARTS & lower_parts:
-        messages.append(f"zip symlink target unsafe: {member.filename}")
+    return replace(RELEASE_ZIP_INSPECTION_POLICY, allow_symlinks=False)
 
 
 def _validate_sha256(zip_path: Path, sha_path: Path, messages: list[str]) -> None:

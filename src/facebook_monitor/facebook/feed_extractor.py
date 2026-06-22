@@ -10,9 +10,11 @@ from collections.abc import Callable
 from typing import Any
 
 from facebook_monitor.core.dedupe import aliases_overlap
-from facebook_monitor.facebook.collection_policy import (
-    CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT,
-)
+from facebook_monitor.facebook.collection_runner import CollectedItems
+from facebook_monitor.facebook.collection_runner import CollectionRoundContext
+from facebook_monitor.facebook.collection_runner import CollectionRoundObservation
+from facebook_monitor.facebook.collection_runner import run_collection_loop
+from facebook_monitor.facebook.collection_runner import run_collection_loop_async
 from facebook_monitor.facebook.collection_policy import get_candidate_collection_limit
 from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.feed_extraction_collection_meta import build_collection_meta
@@ -120,76 +122,90 @@ def collect_items_with_diagnostics(
 ) -> tuple[list[ExtractedItem], list[ExtractRoundStats], ExtractCollectionMeta]:
     """多輪捲動 feed，並回傳每輪匿名診斷統計。"""
 
-    collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
-    round_stats: list[ExtractRoundStats] = []
     rounds = max(scroll_rounds, 0)
     wait_ms = max(scroll_wait_ms, 0)
     candidate_limit = get_candidate_collection_limit(max_items)
-
-    snapshot_captured = False
-    stagnant_windows = 0
     seen_stop_state = FeedSeenStopState(enabled=seen_item_predicate is not None)
-    if rounds > 0:
-        capture_load_more_scroll_snapshot(page)
-        snapshot_captured = True
 
-    try:
-        for round_index in range(rounds + 1):
-            round_items, round_meta = extract_post_like_items_with_meta(
-                page,
-                candidate_limit,
-            )
-            added_count = collect_unique_feed_items(
-                collected=collected,
-                round_items=round_items,
-                round_index=round_index,
-                seen_stop_state=seen_stop_state,
-                seen_item_predicate=seen_item_predicate,
-            )
-            if added_count == 0:
-                stagnant_windows += 1
-            else:
-                stagnant_windows = 0
-            scroll_metrics = get_scroll_metrics(page)
-            scroll_action: dict[str, Any] = {}
-            should_scroll = (
-                round_index < rounds
-                and len(collected) < max_items
-                and not seen_stop_state.triggered
-            )
-            if should_scroll:
-                scroll_action = scroll_load_more(page)
-            round_stats.append(
-                build_extract_round_stats(
-                    round_index=round_index,
-                    round_items=round_items,
-                    round_meta=round_meta,
-                    unique_item_count=len(collected),
-                    scroll_metrics=scroll_metrics,
-                    scroll_action=scroll_action,
-                    scroll_rounds=rounds,
-                    added_count=added_count,
-                    stagnant_windows=stagnant_windows,
-                )
-            )
-            if round_index >= rounds or len(collected) >= max_items:
-                break
-            if seen_stop_state.triggered:
-                break
-            if scroll_action and not bool(scroll_action.get("moved")):
-                break
-            if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
-                break
-            page.wait_for_timeout(wait_ms)
-    finally:
-        if snapshot_captured:
-            restore_load_more_scroll_snapshot(page)
+    def collect_round(
+        _round_index: int,
+    ) -> CollectionRoundObservation[dict[str, Any], None]:
+        round_items, round_meta = extract_post_like_items_with_meta(
+            page,
+            candidate_limit,
+        )
+        return CollectionRoundObservation(items=round_items, meta=round_meta)
 
-    items = [item for _, item in collected[:max_items]]
-    return items, round_stats, build_collection_meta(
+    def merge_round_items(
+        collected: CollectedItems,
+        round_items: list[ExtractedItem],
+        round_index: int,
+    ) -> int:
+        return collect_unique_feed_items(
+            collected=collected,
+            round_items=round_items,
+            round_index=round_index,
+            seen_stop_state=seen_stop_state,
+            seen_item_predicate=seen_item_predicate,
+        )
+
+    def build_stats(
+        context: CollectionRoundContext[dict[str, Any], None],
+    ) -> ExtractRoundStats:
+        return build_extract_round_stats(
+            round_index=context.round_index,
+            round_items=context.items,
+            round_meta=context.meta,
+            unique_item_count=context.accumulated_count,
+            scroll_metrics=context.scroll_metrics,
+            scroll_action=context.scroll_action,
+            scroll_rounds=rounds,
+            added_count=context.added_count,
+            stagnant_windows=context.stagnant_windows,
+        )
+
+    def should_scroll(
+        context: CollectionRoundContext[dict[str, Any], None],
+    ) -> bool:
+        return (
+            context.round_index < rounds
+            and context.accumulated_count < max_items
+            and not seen_stop_state.triggered
+        )
+
+    def should_stop(
+        _context: CollectionRoundContext[dict[str, Any], None],
+    ) -> bool:
+        return seen_stop_state.triggered
+
+    def wait(milliseconds: int) -> None:
+        page.wait_for_timeout(milliseconds)
+
+    result = run_collection_loop(
+        rounds=rounds,
+        wait_ms=wait_ms,
+        target_count=max_items,
+        collect_round=collect_round,
+        merge_items=merge_round_items,
+        build_round_stats=build_stats,
+        should_scroll=should_scroll,
+        should_stop=should_stop,
+        wait=wait,
+        scroll=lambda: scroll_load_more(page),
+        get_scroll_metrics=lambda: get_scroll_metrics(page),
+        capture_snapshot=(
+            (lambda: capture_load_more_scroll_snapshot(page)) if rounds > 0 else None
+        ),
+        restore_snapshot=(
+            (lambda: restore_load_more_scroll_snapshot(page)) if rounds > 0 else None
+        ),
+    )
+
+    items = [item for _, item in result.collected[:max_items]]
+    return items, result.round_stats, build_collection_meta(
         target_count=max_items,
         scroll_rounds=rounds,
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         accumulated_count=len(items),
         seen_stop_state=seen_stop_state,
     )
@@ -204,76 +220,94 @@ async def collect_items_with_diagnostics_async(
 ) -> tuple[list[ExtractedItem], list[ExtractRoundStats], ExtractCollectionMeta]:
     """resident main worker 多輪捲動 feed，並回傳匿名診斷統計。"""
 
-    collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
-    round_stats: list[ExtractRoundStats] = []
     rounds = max(scroll_rounds, 0)
     wait_ms = max(scroll_wait_ms, 0)
     candidate_limit = get_candidate_collection_limit(max_items)
-
-    snapshot_captured = False
-    stagnant_windows = 0
     seen_stop_state = FeedSeenStopState(enabled=seen_item_predicate is not None)
-    if rounds > 0:
-        await capture_load_more_scroll_snapshot_async(page)
-        snapshot_captured = True
 
-    try:
-        for round_index in range(rounds + 1):
-            round_items, round_meta = await extract_post_like_items_with_meta_async(
-                page,
-                candidate_limit,
-            )
-            added_count = collect_unique_feed_items(
-                collected=collected,
-                round_items=round_items,
-                round_index=round_index,
-                seen_stop_state=seen_stop_state,
-                seen_item_predicate=seen_item_predicate,
-            )
-            if added_count == 0:
-                stagnant_windows += 1
-            else:
-                stagnant_windows = 0
-            scroll_metrics = await get_scroll_metrics_async(page)
-            scroll_action: dict[str, Any] = {}
-            should_scroll = (
-                round_index < rounds
-                and len(collected) < max_items
-                and not seen_stop_state.triggered
-            )
-            if should_scroll:
-                scroll_action = await scroll_load_more_async(page)
-            round_stats.append(
-                build_extract_round_stats(
-                    round_index=round_index,
-                    round_items=round_items,
-                    round_meta=round_meta,
-                    unique_item_count=len(collected),
-                    scroll_metrics=scroll_metrics,
-                    scroll_action=scroll_action,
-                    scroll_rounds=rounds,
-                    added_count=added_count,
-                    stagnant_windows=stagnant_windows,
-                )
-            )
-            if round_index >= rounds or len(collected) >= max_items:
-                break
-            if seen_stop_state.triggered:
-                break
-            if scroll_action and not bool(scroll_action.get("moved")):
-                break
-            if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
-                break
-            await page.wait_for_timeout(wait_ms)
-    finally:
-        if snapshot_captured:
-            await restore_load_more_scroll_snapshot_async(page)
+    async def collect_round(
+        _round_index: int,
+    ) -> CollectionRoundObservation[dict[str, Any], None]:
+        round_items, round_meta = await extract_post_like_items_with_meta_async(
+            page,
+            candidate_limit,
+        )
+        return CollectionRoundObservation(items=round_items, meta=round_meta)
 
-    items = [item for _, item in collected[:max_items]]
-    return items, round_stats, build_collection_meta(
+    def merge_round_items(
+        collected: CollectedItems,
+        round_items: list[ExtractedItem],
+        round_index: int,
+    ) -> int:
+        return collect_unique_feed_items(
+            collected=collected,
+            round_items=round_items,
+            round_index=round_index,
+            seen_stop_state=seen_stop_state,
+            seen_item_predicate=seen_item_predicate,
+        )
+
+    def build_stats(
+        context: CollectionRoundContext[dict[str, Any], None],
+    ) -> ExtractRoundStats:
+        return build_extract_round_stats(
+            round_index=context.round_index,
+            round_items=context.items,
+            round_meta=context.meta,
+            unique_item_count=context.accumulated_count,
+            scroll_metrics=context.scroll_metrics,
+            scroll_action=context.scroll_action,
+            scroll_rounds=rounds,
+            added_count=context.added_count,
+            stagnant_windows=context.stagnant_windows,
+        )
+
+    def should_scroll(
+        context: CollectionRoundContext[dict[str, Any], None],
+    ) -> bool:
+        return (
+            context.round_index < rounds
+            and context.accumulated_count < max_items
+            and not seen_stop_state.triggered
+        )
+
+    def should_stop(
+        _context: CollectionRoundContext[dict[str, Any], None],
+    ) -> bool:
+        return seen_stop_state.triggered
+
+    async def wait(milliseconds: int) -> None:
+        await page.wait_for_timeout(milliseconds)
+
+    result = await run_collection_loop_async(
+        rounds=rounds,
+        wait_ms=wait_ms,
+        target_count=max_items,
+        collect_round=collect_round,
+        merge_items=merge_round_items,
+        build_round_stats=build_stats,
+        should_scroll=should_scroll,
+        should_stop=should_stop,
+        wait=wait,
+        scroll=lambda: scroll_load_more_async(page),
+        get_scroll_metrics=lambda: get_scroll_metrics_async(page),
+        capture_snapshot=(
+            (lambda: capture_load_more_scroll_snapshot_async(page))
+            if rounds > 0
+            else None
+        ),
+        restore_snapshot=(
+            (lambda: restore_load_more_scroll_snapshot_async(page))
+            if rounds > 0
+            else None
+        ),
+    )
+
+    items = [item for _, item in result.collected[:max_items]]
+    return items, result.round_stats, build_collection_meta(
         target_count=max_items,
         scroll_rounds=rounds,
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         accumulated_count=len(items),
         seen_stop_state=seen_stop_state,
     )

@@ -12,6 +12,93 @@ from facebook_monitor.persistence.row_mappers import runtime_state_from_row
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 
 
+_RUNTIME_STATE_COLUMNS = (
+    "target_id",
+    "desired_state",
+    "runtime_status",
+    "scan_requested_at",
+    "last_enqueued_at",
+    "last_started_at",
+    "last_finished_at",
+    "last_heartbeat_at",
+    "last_error",
+    "last_skip_reason",
+    "enqueue_reason",
+    "active_worker_id",
+    "active_page_id",
+    "last_page_reloaded_at",
+    "scan_guard_count",
+    "display_next_due_at",
+    "consecutive_failure_reason",
+    "consecutive_failure_count",
+    "consecutive_scan_skip_reason",
+    "consecutive_scan_skip_count",
+    "updated_at",
+)
+_RUNTIME_STATE_UPDATE_COLUMNS = tuple(
+    column for column in _RUNTIME_STATE_COLUMNS if column != "target_id"
+)
+_RUNTIME_STATE_INSERT_COLUMNS_SQL = ", ".join(_RUNTIME_STATE_COLUMNS)
+_RUNTIME_STATE_INSERT_VALUES_SQL = ", ".join(
+    f":{column}" for column in _RUNTIME_STATE_COLUMNS
+)
+_RUNTIME_STATE_UPSERT_ASSIGNMENTS_SQL = ",\n                ".join(
+    f"{column}=excluded.{column}" for column in _RUNTIME_STATE_UPDATE_COLUMNS
+)
+_PRESERVED_SCAN_REQUEST_SQL = """CASE
+                    WHEN :desired_state = :active_desired_state
+                     AND scan_requested_at != ''
+                     AND scan_requested_at > :preserve_scan_request_after
+                    THEN scan_requested_at
+                    ELSE :scan_requested_at
+                END"""
+
+
+def _runtime_state_update_assignments(*, scan_requested_at_sql: str) -> str:
+    """建立 full-row UPDATE 欄位清單，避免欄位順序在多處漂移。"""
+
+    return ",\n                ".join(
+        f"{column} = {scan_requested_at_sql if column == 'scan_requested_at' else f':{column}'}"
+        for column in _RUNTIME_STATE_UPDATE_COLUMNS
+    )
+
+
+_RUNTIME_STATE_UPDATE_ASSIGNMENTS_SQL = _runtime_state_update_assignments(
+    scan_requested_at_sql=":scan_requested_at"
+)
+_RUNTIME_STATE_PRESERVED_SCAN_REQUEST_UPDATE_ASSIGNMENTS_SQL = (
+    _runtime_state_update_assignments(scan_requested_at_sql=_PRESERVED_SCAN_REQUEST_SQL)
+)
+
+
+def _runtime_state_bindings(state: TargetRuntimeState) -> dict[str, object]:
+    """將 runtime state 編碼成 SQLite named bindings。"""
+
+    return {
+        "target_id": state.target_id,
+        "desired_state": state.desired_state.value,
+        "runtime_status": state.runtime_status.value,
+        "scan_requested_at": encode_datetime(state.scan_requested_at),
+        "last_enqueued_at": encode_datetime(state.last_enqueued_at),
+        "last_started_at": encode_datetime(state.last_started_at),
+        "last_finished_at": encode_datetime(state.last_finished_at),
+        "last_heartbeat_at": encode_datetime(state.last_heartbeat_at),
+        "last_error": state.last_error,
+        "last_skip_reason": state.last_skip_reason,
+        "enqueue_reason": state.enqueue_reason,
+        "active_worker_id": state.active_worker_id,
+        "active_page_id": state.active_page_id,
+        "last_page_reloaded_at": encode_datetime(state.last_page_reloaded_at),
+        "scan_guard_count": state.scan_guard_count,
+        "display_next_due_at": encode_datetime(state.display_next_due_at),
+        "consecutive_failure_reason": state.consecutive_failure_reason,
+        "consecutive_failure_count": state.consecutive_failure_count,
+        "consecutive_scan_skip_reason": state.consecutive_scan_skip_reason,
+        "consecutive_scan_skip_count": state.consecutive_scan_skip_count,
+        "updated_at": encode_datetime(state.updated_at),
+    }
+
+
 class TargetRuntimeStateRepository:
     """保存與查詢 target scheduler runtime state。"""
 
@@ -22,61 +109,15 @@ class TargetRuntimeStateRepository:
         """新增或更新單一 target runtime state。"""
 
         self.connection.execute(
-            """
+            f"""
             INSERT INTO target_runtime_state (
-                target_id, desired_state, runtime_status, scan_requested_at, last_enqueued_at,
-                last_started_at, last_finished_at, last_heartbeat_at, last_error,
-                last_skip_reason, enqueue_reason, active_worker_id, active_page_id,
-                last_page_reloaded_at, scan_guard_count, display_next_due_at,
-                consecutive_failure_reason, consecutive_failure_count,
-                consecutive_scan_skip_reason, consecutive_scan_skip_count, updated_at
+                {_RUNTIME_STATE_INSERT_COLUMNS_SQL}
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({_RUNTIME_STATE_INSERT_VALUES_SQL})
             ON CONFLICT(target_id) DO UPDATE SET
-                desired_state=excluded.desired_state,
-                runtime_status=excluded.runtime_status,
-                scan_requested_at=excluded.scan_requested_at,
-                last_enqueued_at=excluded.last_enqueued_at,
-                last_started_at=excluded.last_started_at,
-                last_finished_at=excluded.last_finished_at,
-                last_heartbeat_at=excluded.last_heartbeat_at,
-                last_error=excluded.last_error,
-                last_skip_reason=excluded.last_skip_reason,
-                enqueue_reason=excluded.enqueue_reason,
-                active_worker_id=excluded.active_worker_id,
-                active_page_id=excluded.active_page_id,
-                last_page_reloaded_at=excluded.last_page_reloaded_at,
-                scan_guard_count=excluded.scan_guard_count,
-                display_next_due_at=excluded.display_next_due_at,
-                consecutive_failure_reason=excluded.consecutive_failure_reason,
-                consecutive_failure_count=excluded.consecutive_failure_count,
-                consecutive_scan_skip_reason=excluded.consecutive_scan_skip_reason,
-                consecutive_scan_skip_count=excluded.consecutive_scan_skip_count,
-                updated_at=excluded.updated_at
+                {_RUNTIME_STATE_UPSERT_ASSIGNMENTS_SQL}
             """,
-            (
-                state.target_id,
-                state.desired_state.value,
-                state.runtime_status.value,
-                encode_datetime(state.scan_requested_at),
-                encode_datetime(state.last_enqueued_at),
-                encode_datetime(state.last_started_at),
-                encode_datetime(state.last_finished_at),
-                encode_datetime(state.last_heartbeat_at),
-                state.last_error,
-                state.last_skip_reason,
-                state.enqueue_reason,
-                state.active_worker_id,
-                state.active_page_id,
-                encode_datetime(state.last_page_reloaded_at),
-                state.scan_guard_count,
-                encode_datetime(state.display_next_due_at),
-                state.consecutive_failure_reason,
-                state.consecutive_failure_count,
-                state.consecutive_scan_skip_reason,
-                state.consecutive_scan_skip_count,
-                encode_datetime(state.updated_at),
-            ),
+            _runtime_state_bindings(state),
         )
 
     def try_mark_running(
@@ -306,73 +347,29 @@ class TargetRuntimeStateRepository:
         """只在目前 running owner 仍相同時更新 runtime state。"""
 
         started_at_text = encode_datetime(started_at)
+        bindings = _runtime_state_bindings(state)
+        bindings.update(
+            {
+                "active_desired_state": TargetDesiredState.ACTIVE.value,
+                "preserve_scan_request_after": started_at_text,
+                "expected_runtime_status": TargetRuntimeStatus.RUNNING.value,
+                "expected_worker_id": worker_id,
+                "expected_started_at": started_at_text,
+                "expected_page_id": page_id,
+            }
+        )
         cursor = self.connection.execute(
-            """
+            f"""
             UPDATE target_runtime_state
             SET
-                desired_state = ?,
-                runtime_status = ?,
-                scan_requested_at = CASE
-                    WHEN ? = ?
-                     AND scan_requested_at != ''
-                     AND scan_requested_at > ?
-                    THEN scan_requested_at
-                    ELSE ?
-                END,
-                last_enqueued_at = ?,
-                last_started_at = ?,
-                last_finished_at = ?,
-                last_heartbeat_at = ?,
-                last_error = ?,
-                last_skip_reason = ?,
-                enqueue_reason = ?,
-                active_worker_id = ?,
-                active_page_id = ?,
-                last_page_reloaded_at = ?,
-                scan_guard_count = ?,
-                display_next_due_at = ?,
-                consecutive_failure_reason = ?,
-                consecutive_failure_count = ?,
-                consecutive_scan_skip_reason = ?,
-                consecutive_scan_skip_count = ?,
-                updated_at = ?
-            WHERE target_id = ?
-              AND runtime_status = ?
-              AND active_worker_id = ?
-              AND last_started_at = ?
-              AND (? = '' OR active_page_id = ?)
+                {_RUNTIME_STATE_PRESERVED_SCAN_REQUEST_UPDATE_ASSIGNMENTS_SQL}
+            WHERE target_id = :target_id
+              AND runtime_status = :expected_runtime_status
+              AND active_worker_id = :expected_worker_id
+              AND last_started_at = :expected_started_at
+              AND (:expected_page_id = '' OR active_page_id = :expected_page_id)
             """,
-            (
-                state.desired_state.value,
-                state.runtime_status.value,
-                state.desired_state.value,
-                TargetDesiredState.ACTIVE.value,
-                started_at_text,
-                encode_datetime(state.scan_requested_at),
-                encode_datetime(state.last_enqueued_at),
-                encode_datetime(state.last_started_at),
-                encode_datetime(state.last_finished_at),
-                encode_datetime(state.last_heartbeat_at),
-                state.last_error,
-                state.last_skip_reason,
-                state.enqueue_reason,
-                state.active_worker_id,
-                state.active_page_id,
-                encode_datetime(state.last_page_reloaded_at),
-                state.scan_guard_count,
-                encode_datetime(state.display_next_due_at),
-                state.consecutive_failure_reason,
-                state.consecutive_failure_count,
-                state.consecutive_scan_skip_reason,
-                state.consecutive_scan_skip_count,
-                encode_datetime(state.updated_at),
-                state.target_id,
-                TargetRuntimeStatus.RUNNING.value,
-                worker_id,
-                started_at_text,
-                page_id,
-                page_id,
-            ),
+            bindings,
         )
         if cursor.rowcount != 1:
             return None
@@ -381,57 +378,17 @@ class TargetRuntimeStateRepository:
     def save_if_not_running(self, state: TargetRuntimeState) -> TargetRuntimeState | None:
         """只在目前 row 不是 running owner 時保存 state。"""
 
+        bindings = _runtime_state_bindings(state)
+        bindings["running_status"] = TargetRuntimeStatus.RUNNING.value
         cursor = self.connection.execute(
-            """
+            f"""
             UPDATE target_runtime_state
             SET
-                desired_state = ?,
-                runtime_status = ?,
-                scan_requested_at = ?,
-                last_enqueued_at = ?,
-                last_started_at = ?,
-                last_finished_at = ?,
-                last_heartbeat_at = ?,
-                last_error = ?,
-                last_skip_reason = ?,
-                enqueue_reason = ?,
-                active_worker_id = ?,
-                active_page_id = ?,
-                last_page_reloaded_at = ?,
-                scan_guard_count = ?,
-                display_next_due_at = ?,
-                consecutive_failure_reason = ?,
-                consecutive_failure_count = ?,
-                consecutive_scan_skip_reason = ?,
-                consecutive_scan_skip_count = ?,
-                updated_at = ?
-            WHERE target_id = ?
-              AND runtime_status != ?
+                {_RUNTIME_STATE_UPDATE_ASSIGNMENTS_SQL}
+            WHERE target_id = :target_id
+              AND runtime_status != :running_status
             """,
-            (
-                state.desired_state.value,
-                state.runtime_status.value,
-                encode_datetime(state.scan_requested_at),
-                encode_datetime(state.last_enqueued_at),
-                encode_datetime(state.last_started_at),
-                encode_datetime(state.last_finished_at),
-                encode_datetime(state.last_heartbeat_at),
-                state.last_error,
-                state.last_skip_reason,
-                state.enqueue_reason,
-                state.active_worker_id,
-                state.active_page_id,
-                encode_datetime(state.last_page_reloaded_at),
-                state.scan_guard_count,
-                encode_datetime(state.display_next_due_at),
-                state.consecutive_failure_reason,
-                state.consecutive_failure_count,
-                state.consecutive_scan_skip_reason,
-                state.consecutive_scan_skip_count,
-                encode_datetime(state.updated_at),
-                state.target_id,
-                TargetRuntimeStatus.RUNNING.value,
-            ),
+            bindings,
         )
         if cursor.rowcount != 1:
             return None
@@ -537,81 +494,36 @@ class TargetRuntimeStateRepository:
     ) -> TargetRuntimeState | None:
         """只在 row 仍是同一個 stale running owner 時保存 recovery state。"""
 
+        bindings = _runtime_state_bindings(state)
+        bindings.update(
+            {
+                "active_desired_state": TargetDesiredState.ACTIVE.value,
+                "preserve_scan_request_after": encode_datetime(started_at),
+                "expected_runtime_status": TargetRuntimeStatus.RUNNING.value,
+                "expected_desired_state": state.desired_state.value,
+                "expected_worker_id": worker_id,
+                "expected_started_at": encode_datetime(started_at),
+                "expected_page_id": page_id,
+                "stale_before": encode_datetime(stale_before),
+            }
+        )
         cursor = self.connection.execute(
-            """
+            f"""
             UPDATE target_runtime_state
             SET
-                desired_state = ?,
-                runtime_status = ?,
-                scan_requested_at = CASE
-                    WHEN ? = ?
-                     AND scan_requested_at != ''
-                     AND scan_requested_at > ?
-                    THEN scan_requested_at
-                    ELSE ?
-                END,
-                last_enqueued_at = ?,
-                last_started_at = ?,
-                last_finished_at = ?,
-                last_heartbeat_at = ?,
-                last_error = ?,
-                last_skip_reason = ?,
-                enqueue_reason = ?,
-                active_worker_id = ?,
-                active_page_id = ?,
-                last_page_reloaded_at = ?,
-                scan_guard_count = ?,
-                display_next_due_at = ?,
-                consecutive_failure_reason = ?,
-                consecutive_failure_count = ?,
-                consecutive_scan_skip_reason = ?,
-                consecutive_scan_skip_count = ?,
-                updated_at = ?
-            WHERE target_id = ?
-              AND runtime_status = ?
-              AND desired_state = ?
-              AND active_worker_id = ?
-              AND last_started_at = ?
-              AND (? = '' OR active_page_id = ?)
+                {_RUNTIME_STATE_PRESERVED_SCAN_REQUEST_UPDATE_ASSIGNMENTS_SQL}
+            WHERE target_id = :target_id
+              AND runtime_status = :expected_runtime_status
+              AND desired_state = :expected_desired_state
+              AND active_worker_id = :expected_worker_id
+              AND last_started_at = :expected_started_at
+              AND (:expected_page_id = '' OR active_page_id = :expected_page_id)
               AND (
-                (last_heartbeat_at != '' AND last_heartbeat_at <= ?)
-                OR (last_heartbeat_at = '' AND updated_at <= ?)
+                (last_heartbeat_at != '' AND last_heartbeat_at <= :stale_before)
+                OR (last_heartbeat_at = '' AND updated_at <= :stale_before)
               )
             """,
-            (
-                state.desired_state.value,
-                state.runtime_status.value,
-                state.desired_state.value,
-                TargetDesiredState.ACTIVE.value,
-                encode_datetime(started_at),
-                encode_datetime(state.scan_requested_at),
-                encode_datetime(state.last_enqueued_at),
-                encode_datetime(state.last_started_at),
-                encode_datetime(state.last_finished_at),
-                encode_datetime(state.last_heartbeat_at),
-                state.last_error,
-                state.last_skip_reason,
-                state.enqueue_reason,
-                state.active_worker_id,
-                state.active_page_id,
-                encode_datetime(state.last_page_reloaded_at),
-                state.scan_guard_count,
-                encode_datetime(state.display_next_due_at),
-                state.consecutive_failure_reason,
-                state.consecutive_failure_count,
-                state.consecutive_scan_skip_reason,
-                state.consecutive_scan_skip_count,
-                encode_datetime(state.updated_at),
-                state.target_id,
-                TargetRuntimeStatus.RUNNING.value,
-                state.desired_state.value,
-                worker_id,
-                encode_datetime(started_at),
-                page_id,
-                page_id,
-                encode_datetime(stale_before),
-                encode_datetime(stale_before),
-            ),
+            bindings,
         )
         if cursor.rowcount != 1:
             return None

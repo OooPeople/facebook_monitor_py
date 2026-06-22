@@ -10,17 +10,15 @@ import zipfile
 
 from facebook_monitor.updates.platforms import UpdaterLayoutPolicy
 from facebook_monitor.updates.platforms import macos_app_executable_staging_paths
-from facebook_monitor.updates.validation import SENSITIVE_RELEASE_PATH_PARTS
 from facebook_monitor.updates.validation import decode_zip_symlink_target
 from facebook_monitor.updates.validation import has_unsafe_existing_path_component
-from facebook_monitor.updates.validation import normalized_zip_member_key
-from facebook_monitor.updates.validation import resolve_zip_symlink_target
 from facebook_monitor.updates.validation import validate_zip_member_path
 from facebook_monitor.updates.validation import zip_member_has_executable_bit
 from facebook_monitor.updates.validation import zip_member_is_symlink
+from facebook_monitor.updates.zip_inspection import ZipMemberInspectionPolicy
+from facebook_monitor.updates.zip_inspection import inspect_zip_members
 from facebook_monitor.updates.zip_policy import MAX_ZIP_ENTRIES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_SINGLE_FILE_BYTES
-from facebook_monitor.updates.zip_policy import MAX_ZIP_SYMLINK_TARGET_BYTES
 from facebook_monitor.updates.zip_policy import MAX_ZIP_UNCOMPRESSED_BYTES
 
 
@@ -38,41 +36,18 @@ def safe_extract_zip(
         raise ValueError("zip_destination_unsafe")
     destination = destination.resolve()
     with zipfile.ZipFile(zip_path) as archive:
-        members = archive.infolist()
-        if len(members) > max_entries:
-            raise ValueError("zip_too_many_entries")
-        total_uncompressed = 0
-        member_paths: dict[zipfile.ZipInfo, PurePosixPath] = {}
-        normalized_paths: set[str] = set()
-        symlink_member_paths: set[PurePosixPath] = set()
-        for member in members:
-            member_path = _zip_member_relative_path(member)
-            member_key = normalized_zip_member_key(member_path)
-            if member_key in normalized_paths:
-                raise ValueError("zip_duplicate_member_path")
-            normalized_paths.add(member_key)
-            member_paths[member] = member_path
-            if zip_member_is_symlink(member):
-                symlink_member_paths.add(member_path)
-                if member.file_size > MAX_ZIP_SYMLINK_TARGET_BYTES:
-                    raise ValueError("zip_symlink_target_too_large")
-                _validate_zip_symlink_target(
-                    member_path,
-                    archive.read(member),
-                )
-                continue
-            if member.is_dir():
-                continue
-            if member.file_size > max_single_file_bytes:
-                raise ValueError("zip_member_too_large")
-            total_uncompressed += member.file_size
-            if total_uncompressed > max_uncompressed_bytes:
-                raise ValueError("zip_uncompressed_too_large")
-        for member_path in member_paths.values():
-            if any(parent in symlink_member_paths for parent in member_path.parents):
-                raise ValueError("zip_member_path_unsafe")
-        for member in members:
-            _extract_zip_member(archive, member, destination, member_paths[member])
+        inspection = inspect_zip_members(
+            archive,
+            policy=ZipMemberInspectionPolicy(
+                max_entries=max_entries,
+                max_single_file_bytes=max_single_file_bytes,
+                max_uncompressed_bytes=max_uncompressed_bytes,
+            ),
+        )
+        if inspection.violations:
+            raise ValueError(inspection.violations[0].code)
+        for member in inspection.members:
+            _extract_zip_member(archive, member.info, destination, member.path)
 
 
 def validate_macos_zip_executable_bits(
@@ -223,21 +198,6 @@ def _zip_member_target(destination: Path, member_path: PurePosixPath) -> Path:
     if not target.resolve(strict=False).is_relative_to(destination):
         raise ValueError("zip_member_path_unsafe")
     return target
-
-
-def _validate_zip_symlink_target(
-    member_path: PurePosixPath,
-    target_data: bytes,
-) -> None:
-    """確認 zip symlink target 不會逃出 staging root。"""
-
-    target_text = decode_zip_symlink_target(target_data)
-    resolved = resolve_zip_symlink_target(member_path, target_text)
-    if resolved is None:
-        raise ValueError("zip_symlink_target_unsafe")
-    lower_parts = {part.casefold() for part in resolved.parts}
-    if SENSITIVE_RELEASE_PATH_PARTS & lower_parts:
-        raise ValueError("zip_symlink_target_unsafe")
 
 
 def _decode_zip_symlink_target(target_data: bytes) -> str:

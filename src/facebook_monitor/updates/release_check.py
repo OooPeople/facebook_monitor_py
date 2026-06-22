@@ -74,6 +74,75 @@ class ReleaseAssetBundle:
     manifest_signature_asset: ReleaseAsset | None
 
 
+@dataclass(frozen=True)
+class ReleaseIdentity:
+    """保存 release payload 中會影響版本與顯示的基本 identity。"""
+
+    latest_version: str
+    release_url: str
+
+
+@dataclass(frozen=True)
+class ReleaseEligibilityResult:
+    """封裝 release metadata gate 的最終判斷，再集中轉成 UI result。"""
+
+    status: str
+    latest_version: str
+    release_url: str
+    summary: str
+    detail: str
+    failure_reason: str
+    update_available: bool = False
+    assets: ReleaseAssetBundle | None = None
+
+    def to_update_check_result(
+        self,
+        *,
+        current_version: str,
+        channel: str,
+        repository: str,
+    ) -> UpdateCheckResult:
+        """轉成既有設定頁更新檢查結果。"""
+
+        return _checked_release_result(
+            status=self.status,
+            channel=channel,
+            repository=repository,
+            current_version=current_version,
+            latest_version=self.latest_version,
+            summary=self.summary,
+            detail=self.detail,
+            release_url=self.release_url,
+            failure_reason=self.failure_reason,
+            update_available=self.update_available,
+            assets=self.assets,
+        )
+
+
+@dataclass(frozen=True)
+class ReleaseVersionDecision:
+    """表示 release tag / version ordering 是否允許進入 asset gate。"""
+
+    identity: ReleaseIdentity
+    terminal_result: ReleaseEligibilityResult | None = None
+
+
+@dataclass(frozen=True)
+class ReleaseAssetDecision:
+    """表示目前平台的 portable zip 與 SHA256 sidecar 是否完整。"""
+
+    asset_bundle: ReleaseAssetBundle | None = None
+    terminal_result: ReleaseEligibilityResult | None = None
+
+
+@dataclass(frozen=True)
+class ReleaseManifestDecision:
+    """表示 release 是否含完整 signed manifest metadata。"""
+
+    asset_bundle: ReleaseAssetBundle
+    terminal_result: ReleaseEligibilityResult | None = None
+
+
 def build_idle_update_check(
     *,
     current_version: str,
@@ -174,94 +243,106 @@ def evaluate_release(
 ) -> UpdateCheckResult:
     """依單筆 GitHub release payload 判斷是否有可用 release asset。"""
 
-    latest_version, release_url = _release_identity_from_payload(release)
-    version_gate = _version_gate_result(
+    identity = _release_identity_from_payload(release)
+    version_decision = _release_version_decision(
         current_version=current_version,
-        latest_version=latest_version,
-        release_url=release_url,
-        channel=channel,
-        repository=repository,
+        identity=identity,
     )
-    if version_gate is not None:
-        return version_gate
+    if version_decision.terminal_result is not None:
+        return version_decision.terminal_result.to_update_check_result(
+            current_version=current_version,
+            channel=channel,
+            repository=repository,
+        )
 
-    resolved_platform, resolved_policy = _resolve_release_artifact_policy(
+    asset_decision = _release_asset_decision(
+        assets=parse_release_assets(release.get("assets", [])),
+        identity=identity,
         artifact_policy=artifact_policy,
         runtime_platform=runtime_platform,
     )
-    if resolved_policy is None:
-        return _unsupported_platform_result(
+    if asset_decision.terminal_result is not None:
+        return asset_decision.terminal_result.to_update_check_result(
             current_version=current_version,
-            latest_version=latest_version,
-            release_url=release_url,
             channel=channel,
             repository=repository,
-            runtime_platform=resolved_platform,
         )
 
-    assets = parse_release_assets(release.get("assets", []))
-    return _artifact_gate_result(
-        assets=assets,
-        latest_version=latest_version,
-        release_url=release_url,
+    asset_bundle = asset_decision.asset_bundle
+    assert asset_bundle is not None
+    manifest_decision = _release_manifest_decision(
+        identity=identity,
+        asset_bundle=asset_bundle,
+    )
+    if manifest_decision.terminal_result is not None:
+        return manifest_decision.terminal_result.to_update_check_result(
+            current_version=current_version,
+            channel=channel,
+            repository=repository,
+        )
+
+    return _available_release_eligibility(
+        identity=identity,
+        asset_bundle=manifest_decision.asset_bundle,
+    ).to_update_check_result(
+        current_version=current_version,
         channel=channel,
         repository=repository,
-        current_version=current_version,
-        policy=resolved_policy,
     )
 
 
-def _release_identity_from_payload(release: dict[str, Any]) -> tuple[str, str]:
+def _release_identity_from_payload(release: dict[str, Any]) -> ReleaseIdentity:
     """從 GitHub release payload 取出 normalized version 與 release URL。"""
 
     tag_name = str(release.get("tag_name", "")).strip()
-    return normalize_version_text(tag_name), str(release.get("html_url", "")).strip()
+    return ReleaseIdentity(
+        latest_version=normalize_version_text(tag_name),
+        release_url=str(release.get("html_url", "")).strip(),
+    )
 
 
-def _version_gate_result(
+def _release_version_decision(
     *,
     current_version: str,
-    latest_version: str,
-    release_url: str,
-    channel: str,
-    repository: str,
-) -> UpdateCheckResult | None:
-    """處理 release tag / version ordering；新版才回傳 None 繼續 asset gate。"""
+    identity: ReleaseIdentity,
+) -> ReleaseVersionDecision:
+    """處理 release tag / version ordering；新版才繼續 asset gate。"""
 
-    if not latest_version:
-        return _failure_result(
-            current_version=current_version,
-            channel=channel,
-            repository=repository,
-            reason="missing_tag_name",
+    if not identity.latest_version:
+        return ReleaseVersionDecision(
+            identity=identity,
+            terminal_result=_unavailable_release_eligibility(
+                reason="missing_tag_name",
+                identity=identity,
+                release_url="",
+            ),
         )
     try:
         parsed_current = _parse_version(current_version)
-        parsed_latest = _parse_version(latest_version)
+        parsed_latest = _parse_version(identity.latest_version)
     except ValueError as exc:
-        return _failure_result(
-            current_version=current_version,
-            channel=channel,
-            repository=repository,
-            reason=str(exc),
-            latest_version=latest_version,
-            release_url=release_url,
+        return ReleaseVersionDecision(
+            identity=identity,
+            terminal_result=_unavailable_release_eligibility(
+                reason=str(exc),
+                identity=identity,
+            ),
         )
 
     if parsed_latest.sort_key() > parsed_current.sort_key():
-        return None
-    return _checked_release_result(
-        status="current",
-        channel=channel,
-        repository=repository,
-        current_version=current_version,
-        latest_version=current_version,
-        summary="目前已是最新版本",
-        detail="" if latest_version == current_version else (
-            f"GitHub 最新 release 是 {latest_version}，不高於目前版本。"
+        return ReleaseVersionDecision(identity=identity)
+    return ReleaseVersionDecision(
+        identity=identity,
+        terminal_result=ReleaseEligibilityResult(
+            status="current",
+            latest_version=current_version,
+            release_url=identity.release_url,
+            summary="目前已是最新版本",
+            detail="" if identity.latest_version == current_version else (
+                f"GitHub 最新 release 是 {identity.latest_version}，不高於目前版本。"
+            ),
+            failure_reason="",
         ),
-        release_url=release_url,
-        failure_reason="",
     )
 
 
@@ -276,118 +357,153 @@ def _resolve_release_artifact_policy(
     return resolved_platform, artifact_policy or resolved_platform.artifact_policy
 
 
-def _unsupported_platform_result(
+def _unsupported_platform_eligibility(
     *,
-    current_version: str,
-    latest_version: str,
-    release_url: str,
-    channel: str,
-    repository: str,
+    identity: ReleaseIdentity,
     runtime_platform: UpdateRuntimePlatform,
-) -> UpdateCheckResult:
-    """建立 unsupported platform 的 checked result。"""
+) -> ReleaseEligibilityResult:
+    """建立 unsupported platform 的 release eligibility 結果。"""
 
-    return _checked_release_result(
+    return ReleaseEligibilityResult(
         status="platform_unsupported",
-        channel=channel,
-        repository=repository,
-        current_version=current_version,
-        latest_version=latest_version,
-        summary=f"找到新版 {latest_version}，但目前平台沒有對應更新檔",
+        latest_version=identity.latest_version,
+        release_url=identity.release_url,
+        summary=f"找到新版 {identity.latest_version}，但目前平台沒有對應更新檔",
         detail=runtime_platform.unsupported_reason
         or "目前平台沒有對應的更新檔，只支援檢查版本資訊。",
-        release_url=release_url,
         failure_reason="platform_unsupported",
     )
 
 
-def _artifact_gate_result(
+def _release_asset_decision(
     *,
     assets: tuple[ReleaseAsset, ...],
-    latest_version: str,
-    release_url: str,
-    channel: str,
-    repository: str,
-    current_version: str,
-    policy: UpdateArtifactPolicy,
-) -> UpdateCheckResult:
-    """套用 release artifact gate，四件齊全時才回報可更新。"""
+    identity: ReleaseIdentity,
+    artifact_policy: UpdateArtifactPolicy | None,
+    runtime_platform: UpdateRuntimePlatform | None,
+) -> ReleaseAssetDecision:
+    """套用 platform / zip / SHA256 gate，通過才進入 manifest gate。"""
+
+    resolved_platform, resolved_policy = _resolve_release_artifact_policy(
+        artifact_policy=artifact_policy,
+        runtime_platform=runtime_platform,
+    )
+    if resolved_policy is None:
+        return ReleaseAssetDecision(
+            terminal_result=_unsupported_platform_eligibility(
+                identity=identity,
+                runtime_platform=resolved_platform,
+            )
+        )
 
     asset_bundle = _release_asset_bundle(
         assets,
-        latest_version=latest_version,
-        policy=policy,
+        latest_version=identity.latest_version,
+        policy=resolved_policy,
     )
     if asset_bundle.portable_asset is None:
         if has_version_mismatched_portable_asset(
             assets,
-            latest_version=latest_version,
-            policy=policy,
+            latest_version=identity.latest_version,
+            policy=resolved_policy,
         ):
-            return _checked_release_result(
-                status="asset_version_mismatch",
-                channel=channel,
-                repository=repository,
-                current_version=current_version,
-                latest_version=latest_version,
-                summary=f"找到新版，但 {policy.display_label} zip 版本不符",
-                detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
-                release_url=release_url,
-                failure_reason="asset_version_mismatch",
+            return ReleaseAssetDecision(
+                terminal_result=ReleaseEligibilityResult(
+                    status="asset_version_mismatch",
+                    latest_version=identity.latest_version,
+                    release_url=identity.release_url,
+                    summary=f"找到新版，但 {resolved_policy.display_label} zip 版本不符",
+                    detail="Release asset 檔名版本必須與 GitHub tag version 完全一致。",
+                    failure_reason="asset_version_mismatch",
+                )
             )
-        return _checked_release_result(
-            status="asset_missing",
-            channel=channel,
-            repository=repository,
-            current_version=current_version,
-            latest_version=latest_version,
-            summary=f"找到新版，但沒有 {policy.display_label} zip",
-            detail=f"Release asset 未包含預期的 {policy.display_label} zip。",
-            release_url=release_url,
-            failure_reason="asset_missing",
+        return ReleaseAssetDecision(
+            terminal_result=ReleaseEligibilityResult(
+                status="asset_missing",
+                latest_version=identity.latest_version,
+                release_url=identity.release_url,
+                summary=f"找到新版，但沒有 {resolved_policy.display_label} zip",
+                detail=f"Release asset 未包含預期的 {resolved_policy.display_label} zip。",
+                failure_reason="asset_missing",
+            )
         )
     if asset_bundle.sha256_asset is None:
-        return _checked_release_result(
-            status="sha256_asset_missing",
-            channel=channel,
-            repository=repository,
-            current_version=current_version,
-            latest_version=latest_version,
-            summary=f"找到新版 {latest_version}，但缺少 SHA256 sidecar",
-            detail="Release 必須包含與更新 zip 同名的 .sha256 檔，才能自動下載或套用更新。",
-            release_url=release_url,
-            failure_reason="sha256_asset_missing",
-            assets=asset_bundle,
+        return ReleaseAssetDecision(
+            asset_bundle=asset_bundle,
+            terminal_result=ReleaseEligibilityResult(
+                status="sha256_asset_missing",
+                latest_version=identity.latest_version,
+                release_url=identity.release_url,
+                summary=f"找到新版 {identity.latest_version}，但缺少 SHA256 sidecar",
+                detail="Release 必須包含與更新 zip 同名的 .sha256 檔，才能自動下載或套用更新。",
+                failure_reason="sha256_asset_missing",
+                assets=asset_bundle,
+            ),
         )
+    return ReleaseAssetDecision(asset_bundle=asset_bundle)
+
+
+def _release_manifest_decision(
+    *,
+    identity: ReleaseIdentity,
+    asset_bundle: ReleaseAssetBundle,
+) -> ReleaseManifestDecision:
+    """套用 signed manifest metadata gate。"""
+
     manifest_failure_reason = _manifest_failure_reason(
         manifest_asset=asset_bundle.manifest_asset,
         manifest_signature_asset=asset_bundle.manifest_signature_asset,
     )
     if manifest_failure_reason:
-        return _checked_release_result(
-            status=manifest_failure_reason,
-            channel=channel,
-            repository=repository,
-            current_version=current_version,
-            latest_version=latest_version,
-            summary=f"找到新版 {latest_version}，但缺少 signed manifest",
-            detail="Release 必須同時包含 signed manifest 與 detached signature 才能自動下載或套用更新。",
-            release_url=release_url,
-            failure_reason=manifest_failure_reason,
-            assets=asset_bundle,
+        return ReleaseManifestDecision(
+            asset_bundle=asset_bundle,
+            terminal_result=ReleaseEligibilityResult(
+                status=manifest_failure_reason,
+                latest_version=identity.latest_version,
+                release_url=identity.release_url,
+                summary=f"找到新版 {identity.latest_version}，但缺少 signed manifest",
+                detail="Release 必須同時包含 signed manifest 與 detached signature 才能自動下載或套用更新。",
+                failure_reason=manifest_failure_reason,
+                assets=asset_bundle,
+            ),
         )
-    return _checked_release_result(
+    return ReleaseManifestDecision(asset_bundle=asset_bundle)
+
+
+def _available_release_eligibility(
+    *,
+    identity: ReleaseIdentity,
+    asset_bundle: ReleaseAssetBundle,
+) -> ReleaseEligibilityResult:
+    """建立通過全部 metadata gate 的可更新結果。"""
+
+    return ReleaseEligibilityResult(
         status="available",
-        channel=channel,
-        repository=repository,
-        current_version=current_version,
-        latest_version=latest_version,
+        latest_version=identity.latest_version,
+        release_url=identity.release_url,
         update_available=True,
-        summary=f"有新版 {latest_version}",
+        summary=f"有新版 {identity.latest_version}",
         detail="下載與套用能力會依目前 runtime 支援與 signed manifest 狀態決定。",
-        release_url=release_url,
         failure_reason="",
         assets=asset_bundle,
+    )
+
+
+def _unavailable_release_eligibility(
+    *,
+    reason: str,
+    identity: ReleaseIdentity,
+    release_url: str | None = None,
+) -> ReleaseEligibilityResult:
+    """建立 release metadata payload 無法完成判斷的結果。"""
+
+    return ReleaseEligibilityResult(
+        status="unavailable",
+        latest_version=identity.latest_version,
+        release_url=identity.release_url if release_url is None else release_url,
+        summary="無法檢查更新",
+        detail=reason,
+        failure_reason=reason,
     )
 
 

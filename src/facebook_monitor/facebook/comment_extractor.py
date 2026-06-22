@@ -10,6 +10,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from facebook_monitor.core.dedupe import aliases_overlap
+from facebook_monitor.facebook.collection_runner import CollectedItems
+from facebook_monitor.facebook.collection_runner import CollectionRoundContext
+from facebook_monitor.facebook.collection_runner import CollectionRoundObservation
+from facebook_monitor.facebook.collection_runner import run_collection_loop
+from facebook_monitor.facebook.collection_runner import run_collection_loop_async
 from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.comment_extraction_collection_meta import (
     build_comment_collection_meta,
@@ -484,68 +489,81 @@ def collect_comment_items_with_load_more_guard_held(
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
     """在已取得 guard 時執行 comments nested scroll 收集。"""
 
-    collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
-    round_stats: list[CommentExtractRoundStats] = []
-    stagnant_windows = 0
-    snapshot_captured = False
-    try:
-        capture_comment_scroll_snapshot(page)
-        snapshot_captured = True
-        for round_index in range(max(scroll_rounds, 0) + 1):
-            settle = wait_for_comment_dom_settle(page, max_items=max_items)
-            items, meta = extract_visible_comment_items(
-                page,
-                group_id=group_id,
-                parent_post_id=parent_post_id,
-                max_items=max_items,
-            )
-            added_count = merge_comment_items(
-                collected=collected,
-                items=items,
-                max_items=max_items,
-            )
-            stagnant_windows = stagnant_windows + 1 if added_count == 0 else 0
-            scroll_action: dict[str, Any] = {}
-            should_scroll = round_index < max(scroll_rounds, 0) and len(collected) < max_items
-            if should_scroll:
-                scroll_action = scroll_comment_load_more(page)
-            round_stats.append(
-                build_comment_round_stats(
-                    round_index=round_index,
-                    items=items,
-                    meta=meta,
-                    accumulated_count=len(collected),
-                    scroll_action=scroll_action,
-                    added_count=added_count,
-                    stagnant_windows=stagnant_windows,
-                    dom_settle=settle,
-                )
-            )
-            if round_index >= max(scroll_rounds, 0) or len(collected) >= max_items:
-                break
-            if scroll_action and not bool(scroll_action.get("moved")):
-                break
-            if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
-                break
-            page.wait_for_timeout(max(scroll_wait_ms, 0))
-    finally:
-        try:
-            if snapshot_captured:
-                restore_comment_scroll_snapshot(page)
-        finally:
-            end_comment_load_more_guard(page)
+    rounds = max(scroll_rounds, 0)
+    wait_ms = max(scroll_wait_ms, 0)
 
-    items = [item for _aliases, item in collected[:max(max_items, 1)]]
+    def collect_round(
+        _round_index: int,
+    ) -> CollectionRoundObservation[CommentCollectionMeta, CommentDomSettleResult]:
+        settle = wait_for_comment_dom_settle(page, max_items=max_items)
+        items, meta = extract_visible_comment_items(
+            page,
+            group_id=group_id,
+            parent_post_id=parent_post_id,
+            max_items=max_items,
+        )
+        return CollectionRoundObservation(items=items, meta=meta, extra=settle)
+
+    def merge_round_items(
+        collected: CollectedItems,
+        items: list[ExtractedItem],
+        _round_index: int,
+    ) -> int:
+        return merge_comment_items(
+            collected=collected,
+            items=items,
+            max_items=max_items,
+        )
+
+    def build_stats(
+        context: CollectionRoundContext[CommentCollectionMeta, CommentDomSettleResult],
+    ) -> CommentExtractRoundStats:
+        return build_comment_round_stats(
+            round_index=context.round_index,
+            items=context.items,
+            meta=context.meta,
+            accumulated_count=context.accumulated_count,
+            scroll_action=context.scroll_action,
+            added_count=context.added_count,
+            stagnant_windows=context.stagnant_windows,
+            dom_settle=context.extra,
+        )
+
+    def should_scroll(
+        context: CollectionRoundContext[CommentCollectionMeta, CommentDomSettleResult],
+    ) -> bool:
+        return context.round_index < rounds and context.accumulated_count < max_items
+
+    def wait(milliseconds: int) -> None:
+        page.wait_for_timeout(milliseconds)
+
+    result = run_collection_loop(
+        rounds=rounds,
+        wait_ms=wait_ms,
+        target_count=max_items,
+        collect_round=collect_round,
+        merge_items=merge_round_items,
+        build_round_stats=build_stats,
+        should_scroll=should_scroll,
+        should_stop=lambda _context: False,
+        wait=wait,
+        scroll=lambda: scroll_comment_load_more(page),
+        capture_snapshot=lambda: capture_comment_scroll_snapshot(page),
+        restore_snapshot=lambda: restore_comment_scroll_snapshot(page),
+        end_guard=lambda: end_comment_load_more_guard(page),
+    )
+
+    items = [item for _aliases, item in result.collected[: max(max_items, 1)]]
     stop_reason = infer_comment_stop_reason(
         accumulated_count=len(items),
         target_count=max(max_items, 1),
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         scroll_rounds=scroll_rounds,
         auto_load_more=auto_load_more,
     )
-    return items, round_stats, build_comment_collection_meta(
+    return items, result.round_stats, build_comment_collection_meta(
         target_count=max_items,
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         accumulated_count=len(items),
         stop_reason=stop_reason,
         auto_load_more=auto_load_more,
@@ -563,68 +581,81 @@ async def collect_comment_items_with_load_more_guard_held_async(
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
     """async 版本：在已取得 guard 時執行 comments nested scroll 收集。"""
 
-    collected: list[tuple[tuple[str, ...], ExtractedItem]] = []
-    round_stats: list[CommentExtractRoundStats] = []
-    stagnant_windows = 0
-    snapshot_captured = False
-    try:
-        await capture_comment_scroll_snapshot_async(page)
-        snapshot_captured = True
-        for round_index in range(max(scroll_rounds, 0) + 1):
-            settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
-            items, meta = await extract_visible_comment_items_async(
-                page,
-                group_id=group_id,
-                parent_post_id=parent_post_id,
-                max_items=max_items,
-            )
-            added_count = merge_comment_items(
-                collected=collected,
-                items=items,
-                max_items=max_items,
-            )
-            stagnant_windows = stagnant_windows + 1 if added_count == 0 else 0
-            scroll_action: dict[str, Any] = {}
-            should_scroll = round_index < max(scroll_rounds, 0) and len(collected) < max_items
-            if should_scroll:
-                scroll_action = await scroll_comment_load_more_async(page)
-            round_stats.append(
-                build_comment_round_stats(
-                    round_index=round_index,
-                    items=items,
-                    meta=meta,
-                    accumulated_count=len(collected),
-                    scroll_action=scroll_action,
-                    added_count=added_count,
-                    stagnant_windows=stagnant_windows,
-                    dom_settle=settle,
-                )
-            )
-            if round_index >= max(scroll_rounds, 0) or len(collected) >= max_items:
-                break
-            if scroll_action and not bool(scroll_action.get("moved")):
-                break
-            if stagnant_windows >= CONSECUTIVE_STAGNANT_WINDOW_STOP_COUNT:
-                break
-            await page.wait_for_timeout(max(scroll_wait_ms, 0))
-    finally:
-        try:
-            if snapshot_captured:
-                await restore_comment_scroll_snapshot_async(page)
-        finally:
-            await end_comment_load_more_guard_async(page)
+    rounds = max(scroll_rounds, 0)
+    wait_ms = max(scroll_wait_ms, 0)
 
-    items = [item for _aliases, item in collected[:max(max_items, 1)]]
+    async def collect_round(
+        _round_index: int,
+    ) -> CollectionRoundObservation[CommentCollectionMeta, CommentDomSettleResult]:
+        settle = await wait_for_comment_dom_settle_async(page, max_items=max_items)
+        items, meta = await extract_visible_comment_items_async(
+            page,
+            group_id=group_id,
+            parent_post_id=parent_post_id,
+            max_items=max_items,
+        )
+        return CollectionRoundObservation(items=items, meta=meta, extra=settle)
+
+    def merge_round_items(
+        collected: CollectedItems,
+        items: list[ExtractedItem],
+        _round_index: int,
+    ) -> int:
+        return merge_comment_items(
+            collected=collected,
+            items=items,
+            max_items=max_items,
+        )
+
+    def build_stats(
+        context: CollectionRoundContext[CommentCollectionMeta, CommentDomSettleResult],
+    ) -> CommentExtractRoundStats:
+        return build_comment_round_stats(
+            round_index=context.round_index,
+            items=context.items,
+            meta=context.meta,
+            accumulated_count=context.accumulated_count,
+            scroll_action=context.scroll_action,
+            added_count=context.added_count,
+            stagnant_windows=context.stagnant_windows,
+            dom_settle=context.extra,
+        )
+
+    def should_scroll(
+        context: CollectionRoundContext[CommentCollectionMeta, CommentDomSettleResult],
+    ) -> bool:
+        return context.round_index < rounds and context.accumulated_count < max_items
+
+    async def wait(milliseconds: int) -> None:
+        await page.wait_for_timeout(milliseconds)
+
+    result = await run_collection_loop_async(
+        rounds=rounds,
+        wait_ms=wait_ms,
+        target_count=max_items,
+        collect_round=collect_round,
+        merge_items=merge_round_items,
+        build_round_stats=build_stats,
+        should_scroll=should_scroll,
+        should_stop=lambda _context: False,
+        wait=wait,
+        scroll=lambda: scroll_comment_load_more_async(page),
+        capture_snapshot=lambda: capture_comment_scroll_snapshot_async(page),
+        restore_snapshot=lambda: restore_comment_scroll_snapshot_async(page),
+        end_guard=lambda: end_comment_load_more_guard_async(page),
+    )
+
+    items = [item for _aliases, item in result.collected[: max(max_items, 1)]]
     stop_reason = infer_comment_stop_reason(
         accumulated_count=len(items),
         target_count=max(max_items, 1),
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         scroll_rounds=scroll_rounds,
         auto_load_more=auto_load_more,
     )
-    return items, round_stats, build_comment_collection_meta(
+    return items, result.round_stats, build_comment_collection_meta(
         target_count=max_items,
-        round_stats=round_stats,
+        round_stats=result.round_stats,
         accumulated_count=len(items),
         stop_reason=stop_reason,
         auto_load_more=auto_load_more,

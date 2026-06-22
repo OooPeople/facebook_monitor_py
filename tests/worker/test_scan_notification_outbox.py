@@ -39,6 +39,9 @@ from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
 )
 from facebook_monitor.notifications.outbox_match_enqueue import (
+    MatchNotificationEnqueueRequest,
+)
+from facebook_monitor.notifications.outbox_match_enqueue import (
     queue_match_notifications_after_commit,
 )
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
@@ -87,25 +90,29 @@ def test_queue_match_notifications_reports_no_entries_for_duplicate_dedupe(
             app=app,
             target=target,
             config=config,
-            item_key="post:dedupe",
-            logical_item_id=logical_seen.logical_item_id,
-            author="作者",
-            item_text="票券",
-            permalink="https://www.facebook.com/groups/123/posts/1",
-            matched_keyword="票券",
-            item_kind=ItemKind.POST,
+            request=MatchNotificationEnqueueRequest(
+                item_key="post:dedupe",
+                logical_item_id=logical_seen.logical_item_id,
+                author="作者",
+                item_text="票券",
+                permalink="https://www.facebook.com/groups/123/posts/1",
+                matched_keyword="票券",
+                item_kind=ItemKind.POST,
+            ),
         )
         duplicate_entries = queue_match_notifications_after_commit(
             app=app,
             target=target,
             config=config,
-            item_key="post:dedupe-alias",
-            logical_item_id=logical_seen.logical_item_id,
-            author="作者",
-            item_text="票券",
-            permalink="https://www.facebook.com/groups/123/posts/1",
-            matched_keyword="票券",
-            item_kind=ItemKind.POST,
+            request=MatchNotificationEnqueueRequest(
+                item_key="post:dedupe-alias",
+                logical_item_id=logical_seen.logical_item_id,
+                author="作者",
+                item_text="票券",
+                permalink="https://www.facebook.com/groups/123/posts/1",
+                matched_keyword="票券",
+                item_kind=ItemKind.POST,
+            ),
         )
         pending_outbox = app.repositories.notification_outbox.list_pending()
         dedupe_count = app.repositories.notification_outbox.connection.execute(

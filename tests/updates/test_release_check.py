@@ -125,11 +125,29 @@ def test_evaluate_release_reports_available_macos_arm64_asset() -> None:
 
 
 @pytest.mark.parametrize(
-    ("current_version", "tag_name", "expected_status", "expected_reason"),
+    (
+        "current_version",
+        "tag_name",
+        "expected_status",
+        "expected_reason",
+        "expected_release_url",
+    ),
     [
-        ("0.1.0", "", "unavailable", "missing_tag_name"),
-        ("not-a-version", "v0.2.0", "unavailable", "invalid_version"),
-        ("0.1.0", "not-a-version", "unavailable", "invalid_version"),
+        ("0.1.0", "", "unavailable", "missing_tag_name", ""),
+        (
+            "not-a-version",
+            "v0.2.0",
+            "unavailable",
+            "invalid_version",
+            "https://github.com/OooPeople/facebook_monitor_py/releases/v0.2.0",
+        ),
+        (
+            "0.1.0",
+            "not-a-version",
+            "unavailable",
+            "invalid_version",
+            "https://github.com/OooPeople/facebook_monitor_py/releases/not-a-version",
+        ),
     ],
 )
 def test_evaluate_release_preserves_version_failure_reasons(
@@ -137,6 +155,7 @@ def test_evaluate_release_preserves_version_failure_reasons(
     tag_name: str,
     expected_status: str,
     expected_reason: str,
+    expected_release_url: str,
 ) -> None:
     """release identity / version parse 失敗時不可進入 asset gate。"""
 
@@ -151,6 +170,7 @@ def test_evaluate_release_preserves_version_failure_reasons(
     assert result.checked is True
     assert result.status == expected_status
     assert result.failure_reason == expected_reason
+    assert result.release_url == expected_release_url
     assert result.update_available is False
     assert result.asset_name == ""
 
@@ -207,6 +227,8 @@ def test_evaluate_release_marks_missing_sha256_as_not_installable() -> None:
     assert result.failure_reason == "sha256_asset_missing"
     assert result.asset_name == "facebook-monitor-0.1.0-windows-portable.zip"
     assert result.sha256_asset_name == ""
+    assert result.manifest_asset_name == "facebook-monitor-0.1.0-manifest.json"
+    assert result.manifest_signature_asset_name == "facebook-monitor-0.1.0-manifest.json.sig"
 
 
 def test_evaluate_release_marks_missing_manifest_as_not_installable() -> None:

@@ -8,6 +8,7 @@ Extractor、sort 與 load-more 仍由 target-kind-specific pipeline 負責。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from datetime import timedelta
 from typing import Any
 
@@ -24,6 +25,7 @@ from facebook_monitor.core.models import KeywordGroupMatch
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import SeenAliasMarkResult
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -36,6 +38,9 @@ from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
+from facebook_monitor.notifications.outbox_match_enqueue import (
+    MatchNotificationEnqueueRequest,
+)
 from facebook_monitor.notifications.outbox_match_enqueue import (
     queue_match_notifications_after_commit,
 )
@@ -92,7 +97,7 @@ class MatchNotificationPayload:
     """保存 shared finalize 層準備送出的 match 通知資料。"""
 
     item_key: str
-    logical_item_id: int | None
+    logical_item_id: int
     item_kind: ItemKind
     author: str
     text: str
@@ -142,6 +147,20 @@ class _ClassifiedScanItem:
 
 
 @dataclass(frozen=True)
+class _SeenClassificationWrite:
+    """保存 logical / legacy seen 寫入與本輪 newness 判斷。"""
+
+    logical_seen: SeenAliasMarkResult
+    legacy_seen_within_horizon: bool
+
+    @property
+    def is_new(self) -> bool:
+        """logical 首見且 legacy horizon 內未見過時，才視為本輪新項目。"""
+
+        return self.logical_seen.is_new and not self.legacy_seen_within_horizon
+
+
+@dataclass(frozen=True)
 class _ScanFinalizeAccumulator:
     """保存 finalize transaction 內累積出的寫入結果。"""
 
@@ -151,6 +170,24 @@ class _ScanFinalizeAccumulator:
     history_entries: list[MatchHistoryEntry]
     notification_payloads: list[MatchNotificationPayload]
     match_notification_outbox_counts: list[int]
+
+
+@dataclass(frozen=True)
+class _RecordedMatchSideEffects:
+    """保存單筆 matched item 在 transaction 內完成的 side effects。"""
+
+    history_entry: MatchHistoryEntry
+    notification_payload: MatchNotificationPayload
+    notification_outbox_count: int
+
+
+@dataclass(frozen=True)
+class _SuccessScanSnapshotWrite:
+    """保存 success scan run 與 latest snapshot 寫入結果。"""
+
+    scan_run_id: int
+    latest_items: tuple[LatestScanItem, ...]
+    scan_metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -405,7 +442,7 @@ def finalize_scan_items(
         items=items,
         baseline_mode=baseline_mode,
     )
-    scan_run_id, latest_items, scan_metadata = _record_success_scan_snapshot(
+    snapshot_write = _record_success_scan_snapshot(
         app=app,
         target=target,
         config=config,
@@ -415,9 +452,9 @@ def finalize_scan_items(
         accumulator=accumulator,
     )
     return _build_scan_finalize_result(
-        scan_run_id=scan_run_id,
-        latest_items=latest_items,
-        scan_metadata=scan_metadata,
+        scan_run_id=snapshot_write.scan_run_id,
+        latest_items=snapshot_write.latest_items,
+        scan_metadata=snapshot_write.scan_metadata,
         accumulator=accumulator,
     )
 
@@ -462,19 +499,17 @@ def _process_scan_items_for_finalize(
             accumulator.matched_items.append(item)
         if not result.eligible_for_notify:
             continue
-        (
-            history_entry,
-            notification_payload,
-            notification_outbox_count,
-        ) = _record_match_notification_side_effects(
+        side_effects = _record_match_notification_side_effects(
             app=app,
             target=target,
             config=config,
             classified=classified,
         )
-        accumulator.history_entries.append(history_entry)
-        accumulator.notification_payloads.append(notification_payload)
-        accumulator.match_notification_outbox_counts.append(notification_outbox_count)
+        accumulator.history_entries.append(side_effects.history_entry)
+        accumulator.notification_payloads.append(side_effects.notification_payload)
+        accumulator.match_notification_outbox_counts.append(
+            side_effects.notification_outbox_count
+        )
     return accumulator
 
 
@@ -487,6 +522,32 @@ def _mark_seen_and_classify_item(
     baseline_mode: bool,
 ) -> _ClassifiedScanItem:
     """標記 seen aliases 並產生單筆 scan match result。"""
+
+    seen_write = _mark_seen_aliases_for_classification(
+        app=app,
+        target=target,
+        item=item,
+    )
+    keyword_evaluation = keyword_matcher.evaluate(item.text)
+    return _ClassifiedScanItem(
+        result=build_scan_match_result(
+            item=item,
+            is_new=seen_write.is_new,
+            keyword_evaluation=keyword_evaluation,
+            baseline_mode=baseline_mode,
+            logical_item_id=seen_write.logical_seen.logical_item_id,
+        ),
+        keyword_evaluation=keyword_evaluation,
+    )
+
+
+def _mark_seen_aliases_for_classification(
+    *,
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    item: NormalizedScanItem,
+) -> _SeenClassificationWrite:
+    """依固定順序寫入 logical seen、讀取 legacy horizon，再寫入 legacy seen。"""
 
     seen_item = SeenItem(
         scope_id=target.scope_id,
@@ -510,16 +571,9 @@ def _mark_seen_and_classify_item(
         seen_item,
         item.alias_keys,
     )
-    keyword_evaluation = keyword_matcher.evaluate(item.text)
-    return _ClassifiedScanItem(
-        result=build_scan_match_result(
-            item=item,
-            is_new=logical_seen.is_new and not legacy_seen_within_horizon,
-            keyword_evaluation=keyword_evaluation,
-            baseline_mode=baseline_mode,
-            logical_item_id=logical_seen.logical_item_id,
-        ),
-        keyword_evaluation=keyword_evaluation,
+    return _SeenClassificationWrite(
+        logical_seen=logical_seen,
+        legacy_seen_within_horizon=legacy_seen_within_horizon,
     )
 
 
@@ -529,13 +583,42 @@ def _record_match_notification_side_effects(
     target: TargetDescriptor,
     config: TargetConfig,
     classified: _ClassifiedScanItem,
-) -> tuple[MatchHistoryEntry, MatchNotificationPayload, int]:
+) -> _RecordedMatchSideEffects:
     """寫入 match history 並註冊 notification outbox after-commit dispatch。"""
+
+    recorded_at = utc_now()
+    history_entry = _build_match_history_entry(
+        target=target,
+        classified=classified,
+        recorded_at=recorded_at,
+    )
+    app.repositories.match_history.add(history_entry)
+
+    notification_payload = _build_match_notification_payload(classified.result)
+    notification_outbox_entries = queue_match_notifications_after_commit(
+        app=app,
+        target=target,
+        config=config,
+        request=_build_match_notification_enqueue_request(notification_payload),
+    )
+    return _RecordedMatchSideEffects(
+        history_entry=history_entry,
+        notification_payload=notification_payload,
+        notification_outbox_count=len(notification_outbox_entries),
+    )
+
+
+def _build_match_history_entry(
+    *,
+    target: TargetDescriptor,
+    classified: _ClassifiedScanItem,
+    recorded_at: datetime,
+) -> MatchHistoryEntry:
+    """建立 match history row；實際寫入仍由 caller 在同一 transaction 執行。"""
 
     result = classified.result
     item = result.item
-    recorded_at = utc_now()
-    history_entry = MatchHistoryEntry(
+    return MatchHistoryEntry(
         target_id=target.id,
         group_id=target.group_id,
         group_name=_match_history_group_name(target),
@@ -554,30 +637,45 @@ def _record_match_notification_side_effects(
         recorded_at=recorded_at,
         created_at=recorded_at,
     )
-    app.repositories.match_history.add(history_entry)
 
-    notification_payload = MatchNotificationPayload(
+
+def _build_match_notification_payload(result: ScanMatchResult) -> MatchNotificationPayload:
+    """將 match result 轉成 notification enqueue input。"""
+
+    item = result.item
+    return MatchNotificationPayload(
         item_key=item.item_key,
-        logical_item_id=result.logical_item_id,
+        logical_item_id=_require_match_notification_logical_item_id(result),
         item_kind=item.item_kind,
         author=item.author,
         text=item.display_text or item.text,
         permalink=item.permalink,
         matched_keyword=result.matched_keyword,
     )
-    notification_outbox_entries = queue_match_notifications_after_commit(
-        app=app,
-        target=target,
-        config=config,
-        item_key=notification_payload.item_key,
-        logical_item_id=notification_payload.logical_item_id,
-        author=notification_payload.author,
-        item_text=notification_payload.text,
-        permalink=notification_payload.permalink,
-        matched_keyword=notification_payload.matched_keyword,
-        item_kind=notification_payload.item_kind,
+
+
+def _require_match_notification_logical_item_id(result: ScanMatchResult) -> int:
+    """通知 path 必須有 logical item id，否則 dedupe 語義不完整。"""
+
+    if result.logical_item_id is None:
+        raise RuntimeError("match notification requires logical_item_id")
+    return result.logical_item_id
+
+
+def _build_match_notification_enqueue_request(
+    payload: MatchNotificationPayload,
+) -> MatchNotificationEnqueueRequest:
+    """將 finalize result payload 轉成 outbox enqueue request。"""
+
+    return MatchNotificationEnqueueRequest(
+        item_key=payload.item_key,
+        logical_item_id=payload.logical_item_id,
+        item_kind=payload.item_kind,
+        author=payload.author,
+        item_text=payload.text,
+        permalink=payload.permalink,
+        matched_keyword=payload.matched_keyword,
     )
-    return history_entry, notification_payload, len(notification_outbox_entries)
 
 
 def _match_history_group_name(target: TargetDescriptor) -> str:
@@ -598,7 +696,7 @@ def _record_success_scan_snapshot(
     metadata: dict[str, Any],
     baseline_mode: bool,
     accumulator: _ScanFinalizeAccumulator,
-) -> tuple[int, tuple[LatestScanItem, ...], dict[str, Any]]:
+) -> _SuccessScanSnapshotWrite:
     """寫入 scan run 與 latest snapshot；仍由 caller 持有同一個 transaction。"""
 
     scan_metadata = _build_success_scan_metadata(
@@ -634,7 +732,11 @@ def _record_success_scan_snapshot(
     app.repositories.latest_scan_items.replace_for_target(target.id, latest_items)
     if not baseline_mode or accumulator.match_results:
         app.repositories.scan_scope_state.mark_initialized(target.scope_id)
-    return scan_run_id, latest_items, scan_metadata
+    return _SuccessScanSnapshotWrite(
+        scan_run_id=scan_run_id,
+        latest_items=latest_items,
+        scan_metadata=scan_metadata,
+    )
 
 
 def _build_success_scan_metadata(

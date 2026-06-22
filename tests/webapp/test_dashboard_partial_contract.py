@@ -1,4 +1,10 @@
-"""Dashboard partial update contract tests。"""
+"""Dashboard partial update static contract tests。
+
+這組 tests 鎖住 Python serializer、static JS consumed keys 與 server-rendered
+DOM anchors 的 drift；它不取代 browser-level partial update behavior tests。
+若 frontend 改用 destructuring、bracket access 或不同 payload variable name，
+需同步更新 helper。
+"""
 
 from __future__ import annotations
 
@@ -42,7 +48,11 @@ def _serializer_return_keys(function_name: str) -> set[str]:
 
 
 def _js_property_names(root_name: str) -> set[str]:
-    """擷取 static JS 對物件欄位的 dot / optional-chain 讀取。"""
+    """擷取 static JS 對物件欄位的 dot / optional-chain 讀取。
+
+    這是 partial update payload drift guard，不是完整 JS parser；若 frontend
+    改用 destructuring / bracket notation，需同步更新本 helper。
+    """
 
     text = PARTIAL_UPDATES_JS_PATH.read_text(encoding="utf-8")
     return set(

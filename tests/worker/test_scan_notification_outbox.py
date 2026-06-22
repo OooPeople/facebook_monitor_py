@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from typing import cast
 
+import pytest
+
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import TargetConfigPatch
@@ -58,6 +60,25 @@ def _dispatch_pending_for_db(
 
     with SqliteApplicationContext(db_path) as app:
         return dispatch_new_pending_notification_outbox(app=app, **kwargs).dispatched_count
+
+
+def test_match_notification_enqueue_request_requires_positive_logical_item_id() -> None:
+    """match notification request 不接受缺失或非正整數 logical id。"""
+
+    for logical_item_id in (0, -1, True, cast(Any, None)):
+        with pytest.raises(
+            ValueError,
+            match="match notification requires positive logical_item_id",
+        ):
+            MatchNotificationEnqueueRequest(
+                item_key="post:invalid",
+                logical_item_id=logical_item_id,
+                author="作者",
+                item_text="票券",
+                permalink="https://example.test/post",
+                matched_keyword="票券",
+                item_kind=ItemKind.POST,
+            )
 
 
 def test_queue_match_notifications_reports_no_entries_for_duplicate_dedupe(

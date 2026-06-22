@@ -135,6 +135,17 @@
       "split_trigger": "新增 release policy family 或整合 download/apply 行為"
     },
     {
+      "path_glob": "src/facebook_monitor/updates/zip_inspection.py",
+      "category": "shared_update_zip_inspection_policy",
+      "reason": "Shared release/runtime zip preflight policy；維持 updater apply 與 release artifact validation 的 path、duplicate、size 與 symlink validation 對齊。",
+      "must_not_add": [
+        "release platform-specific artifact layout",
+        "updater apply replacement behavior",
+        "manifest key lifecycle or channel policy"
+      ],
+      "split_trigger": "新增另一個 artifact policy family、archive format 或 platform-specific inspection behavior"
+    },
+    {
       "path_glob": "src/facebook_monitor/worker/resident_main_executor_attempt.py",
       "symbol": "run_queue_item",
       "symbol_kind": "function",
@@ -145,6 +156,18 @@
         "dashboard presentation behavior"
       ],
       "split_trigger": "新增另一個 attempt phase 或 ownership family"
+    },
+    {
+      "path_glob": "src/facebook_monitor/worker/resident_failure_decisions.py",
+      "category": "resident_attempt_exception_taxonomy",
+      "reason": "Pure resident attempt exception/failure decision taxonomy；必須維持 side-effect-free，不擁有 DB、page pool、runtime restart 或 notification side effects。",
+      "must_not_add": [
+        "database writes",
+        "page pool cleanup behavior",
+        "runtime restart side effects",
+        "notification dispatch behavior"
+      ],
+      "split_trigger": "新增另一個 exception taxonomy family、failure source family 或 terminal outcome family"
     },
     {
       "path_glob": "src/facebook_monitor/worker/scan_finalize.py",
@@ -251,6 +274,18 @@
         "browser lifecycle orchestration"
       ],
       "split_trigger": "新增 feed extraction payload family 或 selector/wait/resource-loading 行為"
+    },
+    {
+      "path_glob": "src/facebook_monitor/facebook/collection_runner.py",
+      "category": "facebook_collection_loop_runner",
+      "reason": "Shared feed/comments collection loop runner；只擁有 loop、scroll、stagnant、snapshot 與 cleanup。Domain-specific DOM extraction、normalization、metadata shape 與 DB/runtime behavior 必須留在外層。",
+      "must_not_add": [
+        "Facebook DOM selector behavior",
+        "database access",
+        "runtime state transitions",
+        "notification behavior"
+      ],
+      "split_trigger": "新增 domain hook family、selector/wait/resource-loading policy 或 seen-stop read model"
     },
     {
       "path_glob": "src/facebook_monitor/facebook/comment_extraction_*",

@@ -32,6 +32,12 @@ class MatchNotificationEnqueueRequest:
     logical_item_id: int
     item_kind: ItemKind
 
+    def __post_init__(self) -> None:
+        """match notification 必須綁定正整數 logical item id 以維持 dedupe 語義。"""
+
+        if type(self.logical_item_id) is not int or self.logical_item_id <= 0:
+            raise ValueError("match notification requires positive logical_item_id")
+
 
 def queue_match_notifications_after_commit(
     *,

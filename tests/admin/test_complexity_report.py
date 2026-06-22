@@ -811,13 +811,16 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     }
 
     assert len(known_large) == 8
-    assert len(watchlist) == 25
+    assert len(watchlist) == 28
     assert "scripts/admin/complexity_report*.py" in watchlist_paths
     assert "src/facebook_monitor/facebook/feed_extractor.py" not in {
         annotation.path_glob for annotation in known_large
     }
+    assert "src/facebook_monitor/facebook/collection_runner.py" in watchlist_paths
     assert "src/facebook_monitor/facebook/feed_extractor.py" in watchlist_paths
     assert "src/facebook_monitor/updates/apply.py" in watchlist_paths
+    assert "src/facebook_monitor/updates/zip_inspection.py" in watchlist_paths
+    assert "src/facebook_monitor/worker/resident_failure_decisions.py" in watchlist_paths
     assert "src/facebook_monitor/worker/scan_failure_finalize.py" in watchlist_paths
     assert (
         "src/facebook_monitor/persistence/repositories/notification_outbox.py"
@@ -873,3 +876,33 @@ def test_default_scan_finalize_function_annotations_match_report() -> None:
         "prepare_guarded_skipped_scan_commit",
         "record_prepared_guarded_skipped_scan",
     } <= names
+
+
+def test_default_shared_policy_file_annotations_match_report() -> None:
+    """新增 shared policy modules 的 file-level annotations 應命中 report rows。"""
+
+    result = load_annotations_with_warnings(Path("docs/maintainability_annotations.json"))
+    report = collect_report(
+        [
+            Path("src/facebook_monitor/facebook/collection_runner.py"),
+            Path("src/facebook_monitor/updates/zip_inspection.py"),
+            Path("src/facebook_monitor/worker/resident_failure_decisions.py"),
+        ],
+        include_extensions=(".py",),
+        exclude_globs=(),
+        annotations=result.annotations,
+        annotation_warnings=result.warnings,
+    )
+    rows = watchlist_files(
+        report.source_files,
+        report.annotations,
+        top=len(report.source_files),
+    )
+    paths = {metric.path.as_posix() for metric, _ in rows}
+
+    assert report.annotation_warnings == ()
+    assert {
+        "src/facebook_monitor/facebook/collection_runner.py",
+        "src/facebook_monitor/updates/zip_inspection.py",
+        "src/facebook_monitor/worker/resident_failure_decisions.py",
+    } <= paths

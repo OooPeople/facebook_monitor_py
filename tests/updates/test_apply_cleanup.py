@@ -10,6 +10,7 @@ import pytest
 from facebook_monitor.updates.apply import apply_loaded_pending_update_file
 from facebook_monitor.updates.apply import UpdaterApplyResult
 from facebook_monitor.updates.apply_cleanup import _backup_folder_name
+from facebook_monitor.updates.apply_cleanup import _cleanup_applied_artifact_parent
 from facebook_monitor.updates.apply_cleanup import _cleanup_applied_update
 from facebook_monitor.updates.apply_cleanup import _cleanup_old_backup_dirs
 from facebook_monitor.updates.apply_cleanup import _prepare_empty_dir
@@ -174,6 +175,65 @@ def test_cleanup_applied_update_removes_atomic_attempt_set(tmp_path: Path) -> No
     assert other_set.exists()
     assert (other_set / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert not pending_path.exists()
+
+
+def test_cleanup_applied_update_removes_manifest_signature_and_staging(
+    tmp_path: Path,
+) -> None:
+    """成功套用後需清掉 signed manifest、signature、marker 與 staging dir。"""
+
+    zip_path = (
+        tmp_path
+        / "app"
+        / "data"
+        / "updates"
+        / "0.1.0"
+        / "attempt-current"
+        / "update.zip"
+    )
+    zip_path.parent.mkdir(parents=True)
+    zip_path.write_text("zip", encoding="utf-8")
+    pending = pending_update(tmp_path, zip_path=zip_path, digest="a" * 64)
+    assert pending.manifest_path is not None
+    assert pending.manifest_signature_path is not None
+    staging_dir = pending.runtime_dir / "update_staging" / pending.version
+    staging_dir.mkdir(parents=True)
+    (staging_dir / "old.txt").write_text("old", encoding="utf-8")
+    pending_path = pending.runtime_dir / "pending_update.json"
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text("{}", encoding="utf-8")
+
+    warnings = _cleanup_applied_update(pending_path, pending)
+
+    assert warnings == ()
+    assert not zip_path.parent.exists()
+    assert not pending.manifest_path.exists()
+    assert not pending.manifest_signature_path.exists()
+    assert not staging_dir.exists()
+    assert not pending_path.exists()
+
+
+def test_cleanup_applied_artifact_parent_reports_symlink_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """artifact parent 若是 reparse/symlink，不可 follow 刪除且要回 warning。"""
+
+    updates_dir = tmp_path / "updates"
+    parent = updates_dir / "0.1.0" / "attempt-current"
+    parent.mkdir(parents=True)
+    (parent / "keep.txt").write_text("keep", encoding="utf-8")
+    warnings: list[str] = []
+
+    monkeypatch.setattr(
+        "facebook_monitor.updates.apply_cleanup.is_reparse_or_symlink",
+        lambda path: path == parent,
+    )
+
+    _cleanup_applied_artifact_parent(parent, updates_dir=updates_dir, warnings=warnings)
+
+    assert parent.exists()
+    assert any("updates_parent_unsafe" in warning for warning in warnings)
 
 
 def test_apply_loaded_pending_update_file_logs_cleanup_warnings(

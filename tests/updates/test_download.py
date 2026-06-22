@@ -85,20 +85,26 @@ def fixed_uuid4() -> FixedUuid:
     return FixedUuid()
 
 
-def manifest_bytes_for(zip_bytes: bytes) -> bytes:
+def manifest_bytes_for(
+    zip_bytes: bytes,
+    *,
+    repository: str = "OooPeople/facebook_monitor_py",
+    platform: str = "windows",
+    size: int | None = None,
+) -> bytes:
     """建立測試用 signed manifest bytes。"""
 
     payload = {
         "schema_version": 1,
         "version": "0.1.0",
-        "repository": "OooPeople/facebook_monitor_py",
+        "repository": repository,
         "key_id": TEST_KEY_ID,
         "assets": [
             {
                 "name": ASSET_NAME,
-                "platform": "windows",
+                "platform": platform,
                 "sha256": hashlib.sha256(zip_bytes).hexdigest(),
-                "size": len(zip_bytes),
+                "size": len(zip_bytes) if size is None else size,
             }
         ],
     }
@@ -234,6 +240,38 @@ def evil_redirect_transport(*, zip_bytes: bytes) -> httpx.MockTransport:
         if str(request.url) == ASSET_URL:
             return httpx.Response(302, headers={"location": "https://example.com/app.zip"})
         if str(request.url) == "https://example.com/app.zip":
+            return httpx.Response(200, content=zip_bytes)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def manifest_policy_failure_transport(
+    *,
+    zip_bytes: bytes,
+    repository: str = "OooPeople/facebook_monitor_py",
+    platform: str = "windows",
+    size: int | None = None,
+) -> httpx.MockTransport:
+    """建立 manifest policy 與本次下載目標不一致的 mock transport。"""
+
+    manifest_bytes = manifest_bytes_for(
+        zip_bytes,
+        repository=repository,
+        platform=platform,
+        size=size,
+    )
+    signature_bytes = signature_bytes_for(manifest_bytes)
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == MANIFEST_URL:
+            return httpx.Response(200, content=manifest_bytes)
+        if str(request.url) == MANIFEST_SIGNATURE_URL:
+            return httpx.Response(200, content=signature_bytes)
+        if str(request.url) == SHA256_URL:
+            return httpx.Response(200, text=f"{digest}  {ASSET_NAME}\n")
+        if str(request.url) == ASSET_URL:
             return httpx.Response(200, content=zip_bytes)
         return httpx.Response(404)
 
@@ -460,6 +498,70 @@ def test_download_and_verify_update_requires_sha256_asset_name(tmp_path: Path) -
     assert not (tmp_path / "updates").exists()
 
 
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "reason"),
+    [
+        ("update_available", False, "update_not_available"),
+        ("asset_name", "", "update_not_available"),
+        ("asset_download_url", "", "asset_download_url_missing"),
+        ("manifest_asset_download_url", "", "manifest_asset_url_missing"),
+        ("manifest_signature_asset_name", "", "manifest_signature_asset_missing"),
+        (
+            "manifest_signature_asset_download_url",
+            "",
+            "manifest_signature_asset_url_missing",
+        ),
+    ],
+)
+def test_download_and_verify_update_rejects_missing_required_metadata(
+    tmp_path: Path,
+    field_name: str,
+    field_value: object,
+    reason: str,
+) -> None:
+    """缺少任一必要 release download metadata 時，不可建立 updates dir。"""
+
+    check = _update_check_with_field(field_name, field_value)
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=check,
+            updates_dir=tmp_path / "updates",
+            transport=mock_transport(zip_bytes=b"unused", sha256_text="unused"),
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == reason
+    assert not (tmp_path / "updates").exists()
+
+
+def _update_check_with_field(field_name: str, field_value: object) -> UpdateCheckResult:
+    """建立單一 release metadata 欄位被覆寫的 update check fixture。"""
+
+    check = update_check()
+    if field_name == "update_available":
+        assert isinstance(field_value, bool)
+        return replace(check, update_available=field_value)
+    if field_name == "asset_name":
+        assert isinstance(field_value, str)
+        return replace(check, asset_name=field_value)
+    if field_name == "asset_download_url":
+        assert isinstance(field_value, str)
+        return replace(check, asset_download_url=field_value)
+    if field_name == "manifest_asset_download_url":
+        assert isinstance(field_value, str)
+        return replace(check, manifest_asset_download_url=field_value)
+    if field_name == "manifest_signature_asset_name":
+        assert isinstance(field_value, str)
+        return replace(check, manifest_signature_asset_name=field_value)
+    if field_name == "manifest_signature_asset_download_url":
+        assert isinstance(field_value, str)
+        return replace(check, manifest_signature_asset_download_url=field_value)
+    raise AssertionError(f"unknown update check field: {field_name}")
+
+
 def test_download_and_verify_update_requires_signed_manifest(tmp_path: Path) -> None:
     """只有 SHA256 sidecar 沒 signed manifest 時不可下載 zip。"""
 
@@ -522,6 +624,79 @@ def test_download_and_verify_update_rejects_non_github_final_redirect(
 
     assert result.status == "failed"
     assert result.failure_reason == "release_download_url_host_not_allowed"
+
+
+@pytest.mark.parametrize(
+    ("transport", "reason"),
+    [
+        (
+            manifest_policy_failure_transport(
+                zip_bytes=b"zip",
+                repository="OooPeople/other",
+            ),
+            "manifest_repository_mismatch",
+        ),
+        (
+            manifest_policy_failure_transport(zip_bytes=b"zip", platform="macos-arm64"),
+            "manifest_asset_platform_mismatch",
+        ),
+        (
+            manifest_policy_failure_transport(zip_bytes=b"zip", size=999),
+            "manifest_asset_size_mismatch",
+        ),
+    ],
+)
+def test_download_and_verify_update_propagates_manifest_policy_failures(
+    tmp_path: Path,
+    transport: httpx.MockTransport,
+    reason: str,
+) -> None:
+    """signed manifest policy failure 需回傳 failure result 並清掉 staging。"""
+
+    updates_dir = tmp_path / "updates"
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_dir,
+            transport=transport,
+            trusted_public_keys=trusted_public_keys(),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == reason
+    assert result.file_path is not None
+    assert not result.file_path.exists()
+    assert list((updates_dir / "0.1.0").iterdir()) == []
+
+
+def test_download_and_verify_update_propagates_untrusted_manifest_key(
+    tmp_path: Path,
+) -> None:
+    """manifest key 不受信任時，下載流程需回 failure 並清掉 staging。"""
+
+    zip_bytes = b"zip"
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    updates_dir = tmp_path / "updates"
+
+    result = asyncio.run(
+        download_and_verify_update(
+            update_check=update_check(),
+            updates_dir=updates_dir,
+            transport=mock_transport(
+                zip_bytes=zip_bytes,
+                sha256_text=f"{digest}  {ASSET_NAME}\n",
+            ),
+            trusted_public_keys={"other-key": trusted_public_keys()[TEST_KEY_ID]},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.failure_reason == "manifest_key_untrusted"
+    assert result.file_path is not None
+    assert not result.file_path.exists()
+    assert list((updates_dir / "0.1.0").iterdir()) == []
 
 
 def test_download_and_verify_update_rejects_invalid_version_dir(tmp_path: Path) -> None:

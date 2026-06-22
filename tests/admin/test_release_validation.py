@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.admin import check_static_js_syntax
 from scripts.admin import release_validation
 
@@ -29,6 +31,62 @@ def test_validation_steps_keep_git_diff_in_git_checkout() -> None:
     )
 
     assert "git diff --check" in [step.label for step in steps]
+
+
+def test_validation_steps_prepend_locked_sync_when_not_skipped() -> None:
+    """未指定 skip sync 時，第一步必須是 locked sync。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=False,
+        git_checkout=False,
+    )
+
+    assert steps[0].label == "uv sync"
+    assert steps[0].command == ["uv", "sync", "--locked", "--all-extras", "--dev"]
+    assert [step.label for step in steps].count("uv sync") == 1
+
+
+def test_validation_steps_skip_sync_omits_locked_sync() -> None:
+    """skip sync 只移除 uv sync，不應改變後續核心驗證 profile。"""
+
+    with_sync_steps = release_validation.validation_steps(
+        skip_sync=False,
+        git_checkout=False,
+    )
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=False,
+    )
+
+    labels = [step.label for step in steps]
+    assert "uv sync" not in labels
+    assert [(step.label, step.command) for step in steps] == [
+        (step.label, step.command) for step in with_sync_steps[1:]
+    ]
+
+
+def test_validation_steps_include_ruff_and_compileall_commands() -> None:
+    """release validation 的 lint/compile gates 要維持與本機上傳前檢查一致。"""
+
+    steps = release_validation.validation_steps(
+        skip_sync=True,
+        git_checkout=True,
+    )
+
+    ruff_step = next(step for step in steps if step.label == "ruff")
+    compile_step = next(step for step in steps if step.label == "compileall")
+    assert ruff_step.command == ["uv", "run", "ruff", "check", "src", "scripts", "tests"]
+    assert compile_step.command == [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "compileall",
+        "-q",
+        "src",
+        "scripts",
+        "tests",
+    ]
 
 
 def test_validation_steps_include_pip_audit_by_default() -> None:
@@ -337,3 +395,92 @@ def test_validate_cli_args_rejects_skip_manifest_without_artifacts() -> None:
     )
 
     assert error == "--skip-artifact-manifest requires --include-artifacts"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        argparse.Namespace(
+            include_artifacts=False,
+            artifact_platform="windows",
+            expected_signer_subject="",
+            expected_tag="",
+            skip_artifact_manifest=False,
+        ),
+        argparse.Namespace(
+            include_artifacts=True,
+            artifact_platform="windows",
+            expected_signer_subject="Example Publisher",
+            expected_tag="v0.1.0",
+            skip_artifact_manifest=False,
+        ),
+        argparse.Namespace(
+            include_artifacts=True,
+            artifact_platform="macos-arm64",
+            expected_signer_subject="",
+            expected_tag="v0.1.0",
+            skip_artifact_manifest=True,
+        ),
+    ],
+)
+def test_validate_cli_args_accepts_supported_combinations(
+    args: argparse.Namespace,
+) -> None:
+    """合法 artifact / skip flag 組合不可被過度防守的驗證拒絕。"""
+
+    assert release_validation.validate_cli_args(args) is None
+
+
+def test_completion_message_reports_plain_success_without_skip_qualifiers() -> None:
+    """無 skip flags 時完成訊息不可附加非 CI 完整的警語。"""
+
+    message = release_validation.completion_message(
+        argparse.Namespace(
+            skip_sync=False,
+            skip_audit=False,
+            include_artifacts=False,
+            skip_artifact_manifest=False,
+        )
+    )
+
+    assert message == "Local release validation passed."
+
+
+def test_main_maps_cli_flags_to_validation_steps(monkeypatch) -> None:
+    """main() 必須把 CLI skip/artifact flags 正確轉成 validation step 參數。"""
+
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_validation_steps(**kwargs):
+        captured_kwargs.update(kwargs)
+        return [release_validation.ValidationStep("sentinel", ["noop"])]
+
+    monkeypatch.setattr(
+        release_validation,
+        "parse_args",
+        lambda: argparse.Namespace(
+            skip_sync=True,
+            skip_audit=True,
+            include_artifacts=True,
+            skip_artifact_manifest=True,
+            artifact_platform="macos-arm64",
+            expected_signer_subject="",
+            expected_tag="v0.1.0",
+        ),
+    )
+    monkeypatch.setattr(release_validation, "print_environment", lambda: None)
+    monkeypatch.setattr(release_validation, "is_git_checkout", lambda: True)
+    monkeypatch.setattr(release_validation, "validation_steps", fake_validation_steps)
+    monkeypatch.setattr(release_validation, "run_step", lambda _step: 0)
+
+    assert release_validation.main() == 0
+    assert captured_kwargs == {
+        "skip_sync": True,
+        "git_checkout": True,
+        "include_audit": False,
+        "include_artifacts": True,
+        "require_artifact_manifest": False,
+        "artifact_platform": "macos-arm64",
+        "expected_signer_subject": "",
+        "expected_tag": "v0.1.0",
+    }

@@ -160,6 +160,63 @@ def test_target_settings_modal_attaches_controls_to_config_form() -> None:
         assert all('form="{{ notification_form_id }}"' in tag for tag in tags)
 
 
+def test_new_target_advanced_settings_reuses_shared_fields() -> None:
+    """新增 target 進階設定需沿用共用掃描、刷新與通知欄位 partial。"""
+
+    template = Path("src/facebook_monitor/webapp/templates/new_target.html").read_text(
+        encoding="utf-8"
+    )
+    pages_css = Path("src/facebook_monitor/webapp/static/styles/pages.css").read_text(
+        encoding="utf-8"
+    )
+    new_target_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/new_target.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'class="new-target-advanced" data-new-target-advanced' in template
+    assert 'class="new-target-advanced-summary"' in template
+    assert "data-new-target-advanced-toggle" in template
+    assert 'aria-controls="new-target-advanced-body"' in template
+    assert 'aria-expanded="false"' not in template
+    assert (
+        'class="collapse-toggle new-target-advanced-toggle-icon" aria-hidden="true"'
+        in template
+    )
+    assert 'class="collapse-toggle-icon new-target-advanced-chevron"' in template
+    assert 'id="new-target-advanced-body"' in template
+    assert "data-new-target-advanced-body" in template
+    assert "進階設定" in template
+    assert "掃描設定" in template
+    assert "刷新設定" in template
+    assert "通知設定" in template
+    assert "{% set scan_source = target_defaults %}" in template
+    assert '{% include "_scan_settings_fields.html" %}' in template
+    assert '{% include "_refresh_settings_fields.html" %}' in template
+    assert '{% include "_notification_settings_fields.html" %}' in template
+    assert "data-refresh-container" in template
+    assert 'name="max_items_per_scan" type="hidden"' not in template
+    assert 'name="auto_load_more" type="hidden"' not in template
+    assert 'name="auto_adjust_sort" type="hidden"' not in template
+    assert "data-sidebar-template-field" not in template
+    assert "data-sidebar-template-payload-name" not in template
+    assert "<fieldset" not in template
+    assert ".new-target-advanced" in pages_css
+    assert ".new-target-advanced-summary" in pages_css
+    assert ".new-target-advanced-summary::after" not in pages_css
+    assert ".new-target-advanced.is-expanded .collapse-toggle-icon" in pages_css
+    assert ".new-target-advanced-body[data-collapse-animating]" in pages_css
+    assert "transition: var(--collapse-panel-transition);" in pages_css
+    assert "prefers-reduced-motion: reduce" in pages_css
+    assert '"/static/dashboard/collapse_animation.js"' in new_target_js
+    assert "const syncAdvancedToggleState" in new_target_js
+    assert 'toggle.setAttribute("aria-expanded", String(expanded));' in new_target_js
+    assert "details.classList.toggle(\"is-expanded\", expanded);" in new_target_js
+    assert 'details.addEventListener("toggle", () => {' in new_target_js
+    assert "event.preventDefault();" in new_target_js
+    assert "details.open = true;" in new_target_js
+    assert "details.open = false;" in new_target_js
+
+
 def test_sidebar_template_apply_confirmation_shows_batch_impact() -> None:
     """群組模板套用確認必須列出批次覆蓋範圍與影響 target 摘要。"""
 

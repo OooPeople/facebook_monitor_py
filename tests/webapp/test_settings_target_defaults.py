@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -31,11 +33,14 @@ def test_settings_page_updates_target_keyword_defaults(tmp_path: Path) -> None:
     new_target_response = client.get("/targets/new")
 
     assert initial_response.status_code == 200
-    assert "關鍵字預設值" in initial_response.text
+    assert "排除關鍵字預設值" in initial_response.text
+    assert "儲存預設值" in initial_response.text
     assert "徵;收;已售" in initial_response.text
     assert "全收;回收" in initial_response.text
     assert save_response.status_code == 303
-    assert "message=" in save_response.headers["location"]
+    redirect_query = parse_qs(urlsplit(save_response.headers["location"]).query)
+    assert redirect_query["message"] == ["預設值已儲存"]
+    assert redirect_query["feedback"] == ["target_keyword_defaults_saved"]
     assert "售完,暫停" in settings_response.text
     assert "全收;回收" in settings_response.text
     assert 'name="exclude_keywords" type="hidden" value="售完,暫停"' in new_target_response.text

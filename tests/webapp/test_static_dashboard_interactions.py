@@ -389,12 +389,55 @@ def test_target_card_footer_stays_compact_after_moving_scan_diagnostics() -> Non
     layout_css = Path("src/facebook_monitor/webapp/static/styles/layout.css").read_text(
         encoding="utf-8"
     )
+    base_css = Path("src/facebook_monitor/webapp/static/styles/base.css").read_text(
+        encoding="utf-8"
+    )
     collapse_css = Path("src/facebook_monitor/webapp/static/styles/target-collapse.css").read_text(
         encoding="utf-8"
     )
 
+    assert "--collapse-panel-duration: 240ms;" in base_css
+    assert "--collapse-panel-opacity-duration: 180ms;" in base_css
+    assert "--collapse-height-transition: height var(--collapse-panel-duration) ease;" in base_css
+    assert (
+        "--collapse-opacity-transition: opacity var(--collapse-panel-opacity-duration) ease;"
+        in base_css
+    )
+    assert "--collapse-panel-transition:" in base_css
     assert ".target-card {\n  padding-bottom: 12px;\n}" in layout_css
     assert ".target-footer-controls {\n  align-items: center;" in collapse_css
+    assert "transition: var(--collapse-panel-transition);" in collapse_css
     assert "margin-top: 8px;" in collapse_css
     assert "height: 32px;" in collapse_css
     assert "width: 32px;" in collapse_css
+
+
+def test_new_target_advanced_collapse_matches_target_collapse_pattern() -> None:
+    """新增 target 進階設定收合需沿用卡片圓框按鈕與高度動畫模式。"""
+
+    template = Path("src/facebook_monitor/webapp/templates/new_target.html").read_text(
+        encoding="utf-8"
+    )
+    pages_css = Path("src/facebook_monitor/webapp/static/styles/pages.css").read_text(
+        encoding="utf-8"
+    )
+    collapse_css = Path("src/facebook_monitor/webapp/static/styles/target-collapse.css").read_text(
+        encoding="utf-8"
+    )
+    new_target_js = Path("src/facebook_monitor/webapp/static/dashboard/new_target.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'class="collapse-toggle new-target-advanced-toggle-icon"' in template
+    assert 'class="collapse-toggle-icon new-target-advanced-chevron"' in template
+    assert ".collapse-toggle {" in collapse_css
+    assert "height: 32px;" in collapse_css
+    assert "width: 32px;" in collapse_css
+    assert ".new-target-advanced-summary:hover .collapse-toggle" in pages_css
+    assert ".new-target-advanced-summary::after" not in pages_css
+    assert ".new-target-advanced-body[data-collapse-animating]" in pages_css
+    assert "transition: var(--collapse-panel-transition);" in pages_css
+    assert ".new-target-advanced.is-expanded .collapse-toggle-icon" in pages_css
+    assert "animateElementVisibility(body, true);" in new_target_js
+    assert "animateElementVisibility(body, false" in new_target_js
+    assert 'toggle.setAttribute("aria-expanded", String(expanded));' in new_target_js

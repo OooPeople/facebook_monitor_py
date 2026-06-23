@@ -37,13 +37,6 @@
         data-new-target-form
       >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input name="max_items_per_scan" type="hidden" value="{{ target_defaults.max_items_per_scan }}">
-        {% if target_defaults.auto_load_more %}
-          <input name="auto_load_more" type="hidden" value="on">
-        {% endif %}
-        {% if target_defaults.auto_adjust_sort %}
-          <input name="auto_adjust_sort" type="hidden" value="on">
-        {% endif %}
         <input name="exclude_keywords" type="hidden" value="{{ target_keyword_defaults.exclude_keywords_text }}">
         <input name="exclude_ignore_phrases" type="hidden" value="{{ target_keyword_defaults.exclude_ignore_phrases_text }}">
         <section class="new-target-section">
@@ -71,16 +64,52 @@
           </div>
         </section>
 
-        <section class="new-target-section">
-          <h2>刷新設定</h2>
-          {% include "_refresh_settings_fields.html" %}
-        </section>
+        <details class="new-target-advanced" data-new-target-advanced>
+          <summary
+            class="new-target-advanced-summary"
+            data-new-target-advanced-toggle
+            aria-controls="new-target-advanced-body"
+          >
+            <span class="new-target-advanced-summary-copy">
+              <strong>進階設定</strong>
+              <small>使用預設掃描、刷新與通知設定；需要時可在建立前調整。</small>
+            </span>
+            <span class="collapse-toggle new-target-advanced-toggle-icon" aria-hidden="true">
+              <svg
+                class="collapse-toggle-icon new-target-advanced-chevron"
+                viewBox="0 0 24 24"
+                focusable="false"
+              >
+                <path d="m6 9 6 6 6-6"/>
+              </svg>
+            </span>
+          </summary>
 
-        <section class="new-target-section">
-          <h2>通知設定</h2>
-          {# 保留新 target 通知設定：移除全域通知預設後，使用者仍可在建立時明確選擇通道；預設不繼承任何隱性設定。 #}
-          {% include "_notification_settings_fields.html" %}
-        </section>
+          <div
+            id="new-target-advanced-body"
+            class="new-target-advanced-body"
+            data-new-target-advanced-body
+          >
+            <section class="new-target-section new-target-advanced-section">
+              <h2>掃描設定</h2>
+              {% set scan_source = target_defaults %}
+              {% include "_scan_settings_fields.html" %}
+            </section>
+
+            <section class="new-target-section new-target-advanced-section">
+              <h2>刷新設定</h2>
+              <div data-refresh-container>
+                {% include "_refresh_settings_fields.html" %}
+              </div>
+            </section>
+
+            <section class="new-target-section new-target-advanced-section">
+              <h2>通知設定</h2>
+              {# 保留新 target 通知設定：移除全域通知預設後，使用者仍可在建立時明確選擇通道；預設不繼承任何隱性設定。 #}
+              {% include "_notification_settings_fields.html" %}
+            </section>
+          </div>
+        </details>
 
         <footer class="new-target-actions settings-actions settings-actions--right">
           <a class="button" href="/">返回</a>

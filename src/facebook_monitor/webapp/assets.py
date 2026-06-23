@@ -12,6 +12,7 @@ ASSET_VERSION = APP_VERSION
 DASHBOARD_MODULE_FILENAMES = (
     "api.js",
     "card_collapse.js",
+    "collapse_animation.js",
     "cover_image_refresh.js",
     "csrf.js",
     "debug_tools.js",

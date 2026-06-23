@@ -37,7 +37,7 @@ setupDirtyFormStatus({
 });
 
 if (pageFeedback.feedback === "target_keyword_defaults_saved") {
-  showInlineStatus(targetKeywordStatus, "設定已更新", "saved", 2500);
+  showInlineStatus(targetKeywordStatus, "預設值已儲存", "saved", 2500);
 } else if (pageFeedback.message) {
   showToast(pageFeedback.message, "success");
 }

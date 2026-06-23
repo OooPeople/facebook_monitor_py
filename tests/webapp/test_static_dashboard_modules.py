@@ -29,6 +29,36 @@ def test_dashboard_import_map_covers_all_dashboard_modules() -> None:
     assert all(value.endswith(f"?v={ASSET_VERSION}") for value in import_map.values())
 
 
+def test_collapse_animation_helper_is_shared_by_card_and_new_target() -> None:
+    """收合動畫 primitive 應獨立於 target card 狀態邏輯供表單頁共用。"""
+
+    dashboard_dir = Path("src/facebook_monitor/webapp/static/dashboard")
+    animation_js = (dashboard_dir / "collapse_animation.js").read_text(encoding="utf-8")
+    card_collapse_js = (dashboard_dir / "card_collapse.js").read_text(encoding="utf-8")
+    new_target_js = (dashboard_dir / "new_target.js").read_text(encoding="utf-8")
+
+    assert "collapse_animation.js" in DASHBOARD_MODULE_FILENAMES
+    assert "export const animateElementVisibility" in animation_js
+    assert "--collapse-panel-duration" in animation_js
+    assert "getCollapseAnimationDurationMs" in animation_js
+    assert "collapseAnimationFallbackBufferMs" in animation_js
+    assert 'element.addEventListener("transitionend", transitionEndHandler);' in animation_js
+    assert 'event.propertyName === "height"' in animation_js
+    assert "data-collapse-animating" in animation_js
+    assert "collapseAnimationTimer" in animation_js
+    assert "afterFinish?.();" in animation_js
+    assert 'import { animateElementVisibility } from "/static/dashboard/collapse_animation.js";' in (
+        card_collapse_js
+    )
+    assert 'import { animateElementVisibility } from "/static/dashboard/collapse_animation.js";' in (
+        new_target_js
+    )
+    assert "const collapseAnimationMs" not in card_collapse_js
+    assert '"/static/dashboard/state.js"' not in new_target_js
+    assert "isTargetDirty" not in new_target_js
+    assert "setTargetCollapsed" not in new_target_js
+
+
 def test_dirty_form_helper_uses_form_elements_for_external_form_controls() -> None:
     """dirty helper 必須支援 modal 內用 form= 綁定的外部欄位。"""
 
@@ -90,6 +120,19 @@ def test_clear_feedback_params_removes_stable_feedback_code() -> None:
 
     assert "pageFeedback.feedback" in utils_js
     assert 'url.searchParams.delete("feedback")' in utils_js
+
+
+def test_settings_keyword_defaults_feedback_uses_saved_copy() -> None:
+    """Settings keyword defaults 成功回饋需對齊 route 成功訊息。"""
+
+    settings_js = Path("src/facebook_monitor/webapp/static/dashboard/settings.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'pageFeedback.feedback === "target_keyword_defaults_saved"' in settings_js
+    assert 'showInlineStatus(targetKeywordStatus, "預設值已儲存", "saved", 2500)' in (
+        settings_js
+    )
 
 
 def test_theme_toggle_contract_is_loaded_by_all_page_entrypoints() -> None:

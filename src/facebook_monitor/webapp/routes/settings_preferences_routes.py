@@ -50,7 +50,7 @@ def register_settings_preference_routes(app: FastAPI) -> None:
             return redirect_settings_with_error(str(exc))
         await save_target_keyword_defaults_for_settings(request, settings)
         return redirect_settings_with_message(
-            "關鍵字預設值已保存",
+            "預設值已儲存",
             feedback="target_keyword_defaults_saved",
         )
 

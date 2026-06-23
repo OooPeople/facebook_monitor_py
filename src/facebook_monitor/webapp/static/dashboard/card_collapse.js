@@ -1,45 +1,6 @@
 import { isTargetCollapsed, isTargetDirty, setTargetCollapsed } from "/static/dashboard/state.js";
 import { showInlineStatus } from "/static/dashboard/utils.js";
-
-const collapseAnimationMs = 240;
-
-const finishCollapseAnimation = (element) => {
-  element.removeAttribute("data-collapse-animating");
-  element.style.height = "";
-  element.style.opacity = "";
-};
-
-const animateElementVisibility = (element, visible) => {
-  if (!element) return;
-  window.clearTimeout(Number(element.dataset.collapseAnimationTimer || "0"));
-  element.removeAttribute("data-collapse-animating");
-
-  if (visible) {
-    element.hidden = false;
-    element.style.height = "0px";
-    element.style.opacity = "0";
-    element.setAttribute("data-collapse-animating", "true");
-    element.getBoundingClientRect();
-    element.style.height = `${element.scrollHeight}px`;
-    element.style.opacity = "1";
-  } else {
-    element.style.height = `${element.scrollHeight}px`;
-    element.style.opacity = "1";
-    element.setAttribute("data-collapse-animating", "true");
-    element.getBoundingClientRect();
-    element.style.height = "0px";
-    element.style.opacity = "0";
-  }
-
-  const timer = window.setTimeout(() => {
-    if (!visible) {
-      element.hidden = true;
-    }
-    finishCollapseAnimation(element);
-    delete element.dataset.collapseAnimationTimer;
-  }, collapseAnimationMs);
-  element.dataset.collapseAnimationTimer = String(timer);
-};
+import { animateElementVisibility } from "/static/dashboard/collapse_animation.js";
 
 const setCardCollapsed = (card, collapsed, { animate = false } = {}) => {
   const targetId = card.dataset.targetId || "";

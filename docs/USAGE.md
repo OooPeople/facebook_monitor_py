@@ -84,6 +84,8 @@ Web UI 目前只允許綁定本機 loopback host。`--host` 若指定非 loopbac
 - 社團單篇貼文 URL：建立 comments target。
 
 系統會依 URL 判斷 target type；使用者不需要手動選 target kind。
+新增頁的「進階設定」可在建立前調整掃描、刷新與通知；若不展開，掃描與刷新使用
+Python 版預設值，通知預設為關閉。
 
 每張 target 卡片的主要操作：
 
@@ -140,7 +142,7 @@ target 可啟用：
 - ntfy topic。
 - Discord webhook。
 
-新增 target 與群組設定模板會顯示通知設定；沒有勾選通道時，通知預設為關閉。既有 target 仍以自己的 target 設定為準。
+新增 target 的進階設定與群組設定模板都可設定通知；沒有勾選通道時，通知預設為關閉。既有 target 仍以自己的 target 設定為準。
 
 日常通知由 scan commit 後喚醒的 notification outbox background dispatcher 發送；Web UI 不提供 direct dispatch 作為一般操作入口。
 

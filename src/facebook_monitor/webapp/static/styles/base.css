@@ -38,6 +38,11 @@
   --shadow-sidebar: 8px 0 24px rgb(31 41 51 / 4%);
   --shadow-active-item: 0 1px 3px rgb(31 41 51 / 8%);
   --shadow-inset-subtle: inset 0 0 0 1px rgb(31 41 51 / 5%);
+  --collapse-panel-duration: 240ms;
+  --collapse-panel-opacity-duration: 180ms;
+  --collapse-height-transition: height var(--collapse-panel-duration) ease;
+  --collapse-opacity-transition: opacity var(--collapse-panel-opacity-duration) ease;
+  --collapse-panel-transition: var(--collapse-height-transition), var(--collapse-opacity-transition);
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   background: var(--page-bg);
   color: var(--text);
@@ -106,4 +111,3 @@ textarea {
 [hidden] {
   display: none !important;
 }
-

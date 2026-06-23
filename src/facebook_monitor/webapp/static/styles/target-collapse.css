@@ -2,7 +2,7 @@
 .target-collapsible[data-collapse-animating],
 .target-collapsed-summary[data-collapse-animating] {
   overflow: hidden;
-  transition: height 0.24s ease, opacity 0.18s ease;
+  transition: var(--collapse-panel-transition);
   will-change: height, opacity;
 }
 

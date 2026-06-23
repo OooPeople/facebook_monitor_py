@@ -33,6 +33,18 @@ from tests.helpers.webapp import FakeSchedulerManager
 from tests.webapp.app_test_helpers import create_app
 
 
+def _input_tag(html: str, field_name: str) -> str:
+    """取出測試頁面中指定欄位的 input tag。"""
+
+    match = re.search(
+        rf'<input\b(?=[^>]*name="{re.escape(field_name)}")[^>]*>',
+        html,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(0)
+
+
 def test_create_target_route_uses_saved_keyword_defaults_when_fields_are_omitted(
     tmp_path: Path,
 ) -> None:
@@ -234,6 +246,21 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     ) in form_response.text
     assert "自訂顯示名稱" in form_response.text
     assert "可留空，系統會嘗試使用社團名稱" in form_response.text
+    assert 'class="new-target-advanced" data-new-target-advanced' in form_response.text
+    assert 'class="new-target-advanced-summary"' in form_response.text
+    assert "data-new-target-advanced-toggle" in form_response.text
+    assert 'aria-controls="new-target-advanced-body"' in form_response.text
+    assert (
+        'class="collapse-toggle new-target-advanced-toggle-icon" aria-hidden="true"'
+        in form_response.text
+    )
+    assert 'class="collapse-toggle-icon new-target-advanced-chevron"' in form_response.text
+    assert 'id="new-target-advanced-body"' in form_response.text
+    assert "data-new-target-advanced-body" in form_response.text
+    assert "進階設定" in form_response.text
+    assert "掃描設定" in form_response.text
+    assert "刷新設定" in form_response.text
+    assert "通知設定" in form_response.text
     assert "data-new-target-form" in form_response.text
     assert 'data-loading-text="建立中..."' in form_response.text
     assert "data-secret-input" in form_response.text
@@ -254,7 +281,16 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
         form_response.text
     )
     assert f'value="{PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan}"' in form_response.text
-    assert 'name="auto_adjust_sort" type="hidden" value="on"' in form_response.text
+    assert form_response.text.count('name="max_items_per_scan"') == 1
+    assert form_response.text.count('name="auto_load_more"') == 1
+    assert form_response.text.count('name="auto_adjust_sort"') == 1
+    assert 'name="max_items_per_scan" type="hidden"' not in form_response.text
+    assert 'name="auto_load_more" type="hidden"' not in form_response.text
+    assert 'name="auto_adjust_sort" type="hidden"' not in form_response.text
+    assert 'type="checkbox"' in _input_tag(form_response.text, "auto_load_more")
+    assert "checked" in _input_tag(form_response.text, "auto_load_more")
+    assert 'type="checkbox"' in _input_tag(form_response.text, "auto_adjust_sort")
+    assert "checked" in _input_tag(form_response.text, "auto_adjust_sort")
     assert "Target kind" not in form_response.text
     assert create_response.status_code == 303
     with SqliteApplicationContext(db_path) as app_context:
@@ -282,6 +318,47 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
     assert config.ntfy_topic == "phase0test"
     assert config.enable_discord_notification
     assert config.discord_webhook == "https://discord.com/api/webhooks/1234567890/example_token"
+
+
+def test_create_target_route_allows_disabling_default_scan_options(
+    tmp_path: Path,
+) -> None:
+    """新增 target 進階掃描設定取消勾選時會明確保存關閉。"""
+
+    db_path = tmp_path / "app.db"
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=lambda _profile_dir, _url: "測試社團",
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "refresh_mode": "floating",
+            "fixed_refresh_sec": "60",
+            "min_refresh_sec": "20",
+            "max_refresh_sec": "40",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+        assert target is not None
+        config = app_context.repositories.configs.get_for_target(target)
+    assert config is not None
+    assert config.max_items_per_scan == 5
+    assert not config.auto_load_more
+    assert not config.auto_adjust_sort
 
 
 def test_create_target_route_uses_blank_notification_defaults(

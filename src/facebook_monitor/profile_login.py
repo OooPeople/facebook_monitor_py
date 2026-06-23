@@ -176,9 +176,9 @@ def read_facebook_cookie_names(cookie_db_path: Path) -> set[str]:
             """
             SELECT name, expires_utc
             FROM cookies
-            WHERE host_key LIKE ?
+            WHERE host_key = ? OR host_key LIKE ?
             """,
-            ("%facebook.com",),
+            ("facebook.com", "%.facebook.com"),
         ).fetchall()
     except sqlite3.Error:
         return set()

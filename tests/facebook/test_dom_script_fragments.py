@@ -300,6 +300,31 @@ def test_shared_permalink_helper_behavior_preserves_post_and_comment_routes() ->
     ]
 
 
+def test_shared_permalink_helper_rejects_expected_group_mismatch() -> None:
+    """JS permalink helper 不可在 expected group mismatch 時產生 permalink。"""
+
+    cases = [
+        {
+            "href": "https://www.facebook.com/groups/222518561920110/posts/1111111111111111/",
+            "expectedGroupId": "999999999999999",
+        },
+        {
+            "href": "https://www.facebook.com/photo.php?idorvanity=222518561920110&set=gm.4444444444444444",
+            "expectedGroupId": "999999999999999",
+        },
+        {
+            "href": "https://www.facebook.com/permalink.php?story_fbid=5555555555555555&id=222518561920110",
+            "expectedGroupId": "999999999999999",
+        },
+    ]
+
+    assert _run_permalink_helper_cases(cases) == [
+        {"permalink": "", "source": "unavailable"},
+        {"permalink": "", "source": "unavailable"},
+        {"permalink": "", "source": "unavailable"},
+    ]
+
+
 def test_scroll_fragments_keep_responsibility_markers() -> None:
     """scroll fragment 需保留 posts、comments 與 guard 的核心語義。"""
 

@@ -24,6 +24,8 @@ from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.webapp.profile_session import ProfileSessionError
+from facebook_monitor.webapp.profile_session import ProfileSessionOptions
 from tests.helpers.webapp import FakeProfileManager
 from tests.helpers.webapp import FakeSchedulerManager
 from tests.helpers.notifications import NotificationRecorder
@@ -595,6 +597,32 @@ def test_settings_open_pauses_scheduler_until_profile_window_ends(tmp_path: Path
     assert scheduler_manager.running
 
 
+def test_settings_open_resumes_scheduler_when_profile_open_fails(tmp_path: Path) -> None:
+    """profile 視窗開啟失敗時，settings use case 不可讓 scheduler 留在暫停狀態。"""
+
+    db_path = tmp_path / "app.db"
+    profile_manager = FailingProfileManager()
+    scheduler_manager = FakeSchedulerManager()
+    scheduler_manager.running = True
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        profile_manager=profile_manager,
+        scheduler_manager=scheduler_manager,
+    )
+    client = TestClient(app)
+
+    response = client.post("/settings/facebook/open", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/settings?error=")
+    assert profile_manager.open_count == 1
+    assert scheduler_manager.stopped_count == 1
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.running
+    assert app.state.scheduler_paused_for_profile is False
+
+
 def test_manual_scan_does_not_restart_scheduler_while_profile_window_is_active(
     tmp_path: Path,
 ) -> None:
@@ -670,3 +698,18 @@ def test_webui_shutdown_closes_active_profile_window(tmp_path: Path) -> None:
     assert not profile_manager.active
     assert profile_manager.close_count == 1
     assert scheduler_manager.stopped_count == 1
+
+
+class FailingProfileManager(FakeProfileManager):
+    """測試用 profile manager，open 時固定失敗。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.open_count = 0
+
+    def open(self, options: ProfileSessionOptions) -> None:
+        """模擬 Playwright/profile lease 開啟失敗。"""
+
+        self.open_count += 1
+        self.options = options
+        raise ProfileSessionError("profile busy")

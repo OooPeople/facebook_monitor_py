@@ -90,6 +90,74 @@ def test_launcher_runs_guided_login_when_profile_has_no_cookie_session(
     assert uvicorn_ports == [8765]
 
 
+def test_launcher_does_not_start_web_ui_when_guided_login_is_cancelled(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """使用者關閉引導登入視窗時，launcher 不啟動 Web UI 也不標記 profile OK。"""
+
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "app.db"
+    monkeypatch.setattr(launcher, "profile_has_facebook_session_cookies", lambda _path: False)
+    monkeypatch.setattr(launcher, "run_guided_facebook_login", lambda _options: False)
+    monkeypatch.setattr(
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("uvicorn should not run")
+        ),
+    )
+
+    try:
+        exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--no-open-browser", "--port", "8765"]
+        )
+    finally:
+        reset_app_logging()
+
+    with SqliteApplicationContext(db_path) as app:
+        status = app.repositories.app_settings.get_profile_session_status()
+    assert exit_code == 2
+    assert status.state != ProfileSessionState.OK
+
+
+def test_launcher_does_not_start_web_ui_when_guided_login_fails(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """引導登入無法開啟時，launcher 保留 needs-login 狀態並回傳失敗。"""
+
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "app.db"
+    monkeypatch.setattr(launcher, "profile_has_facebook_session_cookies", lambda _path: False)
+
+    def fail_guided_login(_options: launcher.GuidedLoginOptions) -> bool:
+        raise launcher.GuidedLoginError("profile busy")
+
+    monkeypatch.setattr(launcher, "run_guided_facebook_login", fail_guided_login)
+    monkeypatch.setattr(
+        launcher,
+        "_run_uvicorn_with_shutdown_hook",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("uvicorn should not run")
+        ),
+    )
+
+    try:
+        exit_code = launcher.main(
+            ["--data-dir", str(data_dir), "--no-open-browser", "--port", "8765"]
+        )
+    finally:
+        reset_app_logging()
+
+    with SqliteApplicationContext(db_path) as app:
+        status = app.repositories.app_settings.get_profile_session_status()
+    assert exit_code == 2
+    assert status.state != ProfileSessionState.OK
+    assert "無法開啟 Facebook 登入視窗：profile busy" in capsys.readouterr().out
+
+
 def test_launcher_rejects_shared_db_profile_across_data_dirs(
     tmp_path,
     monkeypatch,

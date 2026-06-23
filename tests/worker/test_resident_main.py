@@ -69,6 +69,32 @@ def test_playwright_shutdown_noise_context_requires_unretrieved_future_message()
     assert not is_playwright_shutdown_noise_context(
         {"message": "Future exception was never retrieved", "exception": RuntimeError("boom")}
     )
+    assert not is_playwright_shutdown_noise_context(
+        {"message": "Future exception was never retrieved", "exception": RuntimeError("target closed")}
+    )
+
+
+def test_playwright_shutdown_noise_context_accepts_high_confidence_closed_sources() -> None:
+    """shutdown noise 可消化 Playwright target closed 或完整 driver closed 訊息。"""
+
+    assert is_playwright_shutdown_noise_context(
+        {
+            "message": "Future exception was never retrieved",
+            "exception": AsyncPlaywrightError("Target closed"),
+        }
+    )
+    assert is_playwright_shutdown_noise_context(
+        {
+            "message": "Future exception was never retrieved",
+            "exception": RuntimeError("Connection closed while reading from the driver"),
+        }
+    )
+    assert is_playwright_shutdown_noise_context(
+        {
+            "message": "Future exception was never retrieved",
+            "exception": _wrapped_playwright_target_closed_exception(),
+        }
+    )
 
 
 def test_playwright_shutdown_handler_suppresses_unretrieved_runtime_closed_future() -> None:
@@ -82,14 +108,18 @@ def test_playwright_shutdown_handler_suppresses_unretrieved_runtime_closed_futur
         loop.set_exception_handler(lambda _loop, context: previous_calls.append(context))
         restore_handler = _install_playwright_shutdown_exception_handler()
         try:
-            loop.call_exception_handler(
-                {
-                    "message": "Future exception was never retrieved",
-                    "exception": AsyncPlaywrightError(
-                        "Target page, context or browser has been closed"
-                    ),
-                }
-            )
+            for exception in (
+                AsyncPlaywrightError("Target page, context or browser has been closed"),
+                AsyncPlaywrightError("Target closed"),
+                RuntimeError("Connection closed while reading from the driver"),
+                _wrapped_playwright_target_closed_exception(),
+            ):
+                loop.call_exception_handler(
+                    {
+                        "message": "Future exception was never retrieved",
+                        "exception": exception,
+                    }
+                )
         finally:
             restore_handler()
             loop.set_exception_handler(original_handler)
@@ -153,6 +183,58 @@ def test_playwright_shutdown_handler_delegates_unrelated_future_exception() -> N
     assert isinstance(previous_calls[0]["exception"], RuntimeError)
 
 
+def test_playwright_shutdown_handler_delegates_generic_target_closed_future() -> None:
+    """generic target closed 訊息不足以讓 shutdown handler 消音。"""
+
+    previous_calls: list[dict[str, object]] = []
+
+    async def run_test() -> None:
+        loop = asyncio.get_running_loop()
+        original_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: previous_calls.append(context))
+        restore_handler = _install_playwright_shutdown_exception_handler()
+        try:
+            context = {
+                "message": "Future exception was never retrieved",
+                "exception": RuntimeError("target closed"),
+            }
+            loop.call_exception_handler(context)
+        finally:
+            restore_handler()
+            loop.set_exception_handler(original_handler)
+
+    asyncio.run(run_test())
+
+    assert len(previous_calls) == 1
+    assert str(previous_calls[0]["exception"]) == "target closed"
+
+
+def test_playwright_shutdown_handler_delegates_task_target_closed_context() -> None:
+    """Task context 即使帶 Playwright target closed，也不可被 shutdown handler 消音。"""
+
+    previous_calls: list[dict[str, object]] = []
+
+    async def run_test() -> None:
+        loop = asyncio.get_running_loop()
+        original_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: previous_calls.append(context))
+        restore_handler = _install_playwright_shutdown_exception_handler()
+        try:
+            context = {
+                "message": "Task exception was never retrieved",
+                "exception": AsyncPlaywrightError("Target closed"),
+            }
+            loop.call_exception_handler(context)
+        finally:
+            restore_handler()
+            loop.set_exception_handler(original_handler)
+
+    asyncio.run(run_test())
+
+    assert len(previous_calls) == 1
+    assert previous_calls[0]["message"] == "Task exception was never retrieved"
+
+
 def test_playwright_shutdown_handler_restores_previous_handler() -> None:
     """restore handler 後 event loop 應回到安裝前的 exception handler。"""
 
@@ -186,3 +268,15 @@ def test_playwright_shutdown_handler_restores_previous_handler() -> None:
     asyncio.run(run_test())
 
     assert len(previous_calls) == 1
+
+
+def _wrapped_playwright_target_closed_exception() -> RuntimeError:
+    """建立模擬 background Future 包住 Playwright target closed 的例外。"""
+
+    try:
+        try:
+            raise AsyncPlaywrightError("Target closed")
+        except AsyncPlaywrightError as exc:
+            raise RuntimeError("background task failed") from exc
+    except RuntimeError as exc:
+        return exc

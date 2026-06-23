@@ -19,11 +19,18 @@ def test_should_skip_refresh_failure_for_shutdown_handles_runtime_closed_only_wh
 
     exc = AsyncPlaywrightError("Target page, context or browser has been closed")
     wrapped = _wrapped_runtime_closed_exception()
+    generic_target_closed = RuntimeError("target closed")
+    wrapped_generic_target_closed = _wrapped_generic_target_closed_exception()
 
     assert should_skip_refresh_failure_for_shutdown(exc, lambda: True)
     assert should_skip_refresh_failure_for_shutdown(wrapped, lambda: True)
     assert not should_skip_refresh_failure_for_shutdown(exc, lambda: False)
     assert not should_skip_refresh_failure_for_shutdown(RuntimeError("boom"), lambda: True)
+    assert not should_skip_refresh_failure_for_shutdown(generic_target_closed, lambda: True)
+    assert not should_skip_refresh_failure_for_shutdown(
+        wrapped_generic_target_closed,
+        lambda: True,
+    )
 
 
 def test_runtime_closed_refresh_failure_still_requests_scheduler_runtime_handling() -> None:
@@ -34,6 +41,7 @@ def test_runtime_closed_refresh_failure_still_requests_scheduler_runtime_handlin
 
     assert is_scheduler_runtime_refresh_failure(exc)
     assert is_scheduler_runtime_refresh_failure(wrapped)
+    assert is_scheduler_runtime_refresh_failure(RuntimeError("target closed"))
 
 
 def test_runtime_refresh_failure_detail_uses_nearest_runtime_closed_exception() -> None:
@@ -52,6 +60,18 @@ def _wrapped_runtime_closed_exception() -> GroupMetadataError:
         try:
             raise AsyncPlaywrightError("Target page, context or browser has been closed")
         except AsyncPlaywrightError as exc:
+            raise GroupMetadataError("metadata refresh failed") from exc
+    except GroupMetadataError as exc:
+        return exc
+
+
+def _wrapped_generic_target_closed_exception() -> GroupMetadataError:
+    """建立模擬 metadata helper 包住 generic target closed 的例外。"""
+
+    try:
+        try:
+            raise RuntimeError("target closed")
+        except RuntimeError as exc:
             raise GroupMetadataError("metadata refresh failed") from exc
     except GroupMetadataError as exc:
         return exc

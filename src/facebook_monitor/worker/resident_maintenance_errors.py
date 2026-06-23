@@ -12,6 +12,9 @@ from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.worker.playwright_runtime_errors import (
     is_playwright_runtime_closed_exception,
 )
+from facebook_monitor.worker.resident_runtime_errors import (
+    is_resident_shutdown_runtime_closed_exception,
+)
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision_for_db,
@@ -104,10 +107,7 @@ def should_skip_refresh_failure_for_shutdown(
 ) -> bool:
     """停止流程中 Playwright runtime 關閉不應污染 maintenance job 診斷。"""
 
-    return should_stop() and any(
-        isinstance(current, Exception) and is_playwright_runtime_closed_exception(current)
-        for current in _iter_exception_chain(exc)
-    )
+    return should_stop() and is_resident_shutdown_runtime_closed_exception(exc)
 
 
 def is_scheduler_runtime_refresh_failure(exc: Exception) -> bool:

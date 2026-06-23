@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Iterator
 import logging
 
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
-from facebook_monitor.worker.resident_runtime_errors import (
-    _is_playwright_driver_shutdown_exception,
+from facebook_monitor.worker.playwright_runtime_errors import (
+    is_playwright_runtime_closed_exception,
 )
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_failure_finalize import (
@@ -87,17 +88,13 @@ def record_refresh_runtime_failure(
 def runtime_refresh_failure_detail(exc: Exception) -> tuple[str, str]:
     """取出最接近 Playwright runtime closed 的 exception 類型與訊息。"""
 
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _iter_exception_chain(exc):
         if isinstance(current, Exception) and (
             classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON
             or classify_wrapped_playwright_exception(current) == SCHEDULER_RUNTIME_REASON
-            or _is_playwright_driver_shutdown_exception(current)
+            or is_playwright_runtime_closed_exception(current)
         ):
             return current.__class__.__name__, format_exception_message(current)
-        current = current.__cause__ or current.__context__
     return exc.__class__.__name__, format_exception_message(exc)
 
 
@@ -105,27 +102,37 @@ def should_skip_refresh_failure_for_shutdown(
     exc: Exception,
     should_stop: StopCheckCallable,
 ) -> bool:
-    """停止流程中 Playwright driver 關閉不應污染 maintenance job 診斷。"""
+    """停止流程中 Playwright runtime 關閉不應污染 maintenance job 診斷。"""
 
-    return should_stop() and _is_playwright_driver_shutdown_exception(exc)
+    return should_stop() and any(
+        isinstance(current, Exception) and is_playwright_runtime_closed_exception(current)
+        for current in _iter_exception_chain(exc)
+    )
 
 
 def is_scheduler_runtime_refresh_failure(exc: Exception) -> bool:
     """判斷 metadata/cover refresh 失敗是否代表 browser runtime 已損壞。"""
 
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _iter_exception_chain(exc):
         if isinstance(current, Exception):
             if classify_playwright_exception(current) == SCHEDULER_RUNTIME_REASON:
                 return True
             if classify_wrapped_playwright_exception(current) == SCHEDULER_RUNTIME_REASON:
                 return True
-            if _is_playwright_driver_shutdown_exception(current):
+            if is_playwright_runtime_closed_exception(current):
                 return True
-        current = current.__cause__ or current.__context__
     return False
+
+
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """沿著 cause/context 走訪 exception chain，避免 wrapper 隱藏 runtime closed。"""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
 
 
 def format_exception_message(exc: Exception) -> str:

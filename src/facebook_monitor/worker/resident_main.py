@@ -96,11 +96,9 @@ def _install_playwright_shutdown_exception_handler() -> Callable[[], None]:
     previous_handler = loop.get_exception_handler()
 
     def handle_exception(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
-        """只消化 Playwright driver shutdown 的已知背景 future 例外。"""
+        """只消化 Playwright runtime shutdown 的已知背景 future 例外。"""
 
-        if resident_runtime_errors._is_playwright_driver_shutdown_exception(
-            context.get("exception")
-        ):
+        if resident_runtime_errors.is_playwright_shutdown_noise_context(context):
             return
         if previous_handler is not None:
             previous_handler(loop, context)

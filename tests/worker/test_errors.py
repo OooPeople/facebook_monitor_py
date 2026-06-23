@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
@@ -10,6 +11,46 @@ from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Connection closed while reading from the driver",
+        "Target page, context or browser has been closed",
+        "Page, context or browser has been closed",
+        "Browser has been closed",
+        "Context has been closed",
+        "Page has been closed",
+        "Target closed",
+    ),
+)
+def test_classify_playwright_runtime_closed_messages_as_scheduler_runtime(
+    message: str,
+) -> None:
+    """Playwright runtime closed token 應維持 scheduler runtime failure policy。"""
+
+    reason = classify_playwright_exception(AsyncPlaywrightError(message))
+
+    assert reason == SCHEDULER_RUNTIME_REASON
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Page.evaluate: Target page, context or browser has been closed",
+        "BrowserContext.new_page: Browser has been closed",
+        "Target closed",
+    ),
+)
+def test_classify_wrapped_runtime_closed_messages_as_scheduler_runtime(
+    message: str,
+) -> None:
+    """被一般 Exception 包住的 runtime closed token 仍應要求 scheduler runtime restart。"""
+
+    reason = classify_wrapped_playwright_exception(Exception(message))
+
+    assert reason == SCHEDULER_RUNTIME_REASON
 
 
 def test_classify_playwright_browser_context_closed_as_scheduler_runtime() -> None:

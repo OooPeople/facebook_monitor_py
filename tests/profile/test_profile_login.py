@@ -65,6 +65,22 @@ def test_profile_has_facebook_session_cookies_reads_chromium_cookie_db(
     assert profile_has_facebook_session_cookies(profile_dir)
 
 
+def test_profile_cookie_check_accepts_exact_facebook_host(tmp_path: Path) -> None:
+    """exact facebook.com host 也應被視為有效 Facebook session cookie domain。"""
+
+    profile_dir = tmp_path / "profile"
+    cookie_db_path = profile_dir / "Default" / "Network" / "Cookies"
+    _write_cookie_db(
+        cookie_db_path,
+        [
+            ("c_user", "facebook.com", _chromium_expires_utc(3600)),
+            ("xs", "facebook.com", _chromium_expires_utc(3600)),
+        ],
+    )
+
+    assert profile_has_facebook_session_cookies(profile_dir)
+
+
 def test_profile_cookie_check_rejects_missing_or_expired_cookie(tmp_path: Path) -> None:
     """缺少必要 cookie 或 cookie 已過期時，不視為已有可用登入資料。"""
 

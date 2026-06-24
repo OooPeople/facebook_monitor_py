@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import textwrap
+
+import pytest
 
 
 from facebook_monitor.webapp.assets import ASSET_VERSION
@@ -42,6 +47,8 @@ def test_collapse_animation_helper_is_shared_by_card_and_new_target() -> None:
     assert "--collapse-panel-duration" in animation_js
     assert "getCollapseAnimationDurationMs" in animation_js
     assert "collapseAnimationFallbackBufferMs" in animation_js
+    assert "if (durationMs <= 0) {" in animation_js
+    assert "finish();\n    return;" in animation_js
     assert 'element.addEventListener("transitionend", transitionEndHandler);' in animation_js
     assert 'event.propertyName === "height"' in animation_js
     assert "data-collapse-animating" in animation_js
@@ -57,6 +64,98 @@ def test_collapse_animation_helper_is_shared_by_card_and_new_target() -> None:
     assert '"/static/dashboard/state.js"' not in new_target_js
     assert "isTargetDirty" not in new_target_js
     assert "setTargetCollapsed" not in new_target_js
+
+
+def test_collapse_animation_finishes_immediately_for_zero_duration() -> None:
+    """reduced motion duration 為 0 時 helper 不應等待 fallback timer。"""
+
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        pytest.skip("node is required to execute collapse animation behavior tests")
+    module_path = Path(
+        "src/facebook_monitor/webapp/static/dashboard/collapse_animation.js"
+    ).resolve()
+    script = textwrap.dedent(
+        """
+        import assert from "node:assert/strict";
+        import { pathToFileURL } from "node:url";
+
+        globalThis.window = {
+          clearTimeout(id) {
+            globalThis.clearedTimer = id;
+          },
+          getComputedStyle() {
+            return {
+              getPropertyValue(name) {
+                assert.equal(name, "--collapse-panel-duration");
+                return "0ms";
+              },
+            };
+          },
+          setTimeout() {
+            globalThis.timerScheduled = true;
+            return 1;
+          },
+        };
+
+        const { animateElementVisibility } = await import(pathToFileURL(process.argv[1]).href);
+
+        const calls = [];
+        const element = {
+          collapseTransitionEndHandler: undefined,
+          dataset: { collapseAnimationTimer: "7" },
+          hidden: false,
+          scrollHeight: 48,
+          style: {},
+          addEventListener() {
+            calls.push("addEventListener");
+          },
+          getBoundingClientRect() {
+            calls.push("layout");
+            return {};
+          },
+          removeAttribute(name) {
+            calls.push(`remove:${name}`);
+            if (name === "data-collapse-animating") {
+              delete this.dataset.collapseAnimating;
+            }
+          },
+          removeEventListener() {
+            calls.push("removeEventListener");
+          },
+          setAttribute(name, value) {
+            calls.push(`set:${name}`);
+            if (name === "data-collapse-animating") {
+              this.dataset.collapseAnimating = value;
+            }
+          },
+        };
+
+        let afterFinishCount = 0;
+        animateElementVisibility(element, false, {
+          afterFinish: () => {
+            afterFinishCount += 1;
+          },
+        });
+
+        assert.equal(element.hidden, true);
+        assert.equal(element.dataset.collapseAnimating, undefined);
+        assert.equal(element.dataset.collapseAnimationTimer, undefined);
+        assert.equal(element.style.height, "");
+        assert.equal(element.style.opacity, "");
+        assert.equal(afterFinishCount, 1);
+        assert.equal(globalThis.timerScheduled, undefined);
+        assert.equal(calls.includes("addEventListener"), false);
+        assert.equal(calls.includes("layout"), true);
+      """
+    )
+
+    subprocess.run(
+        [node_bin, "--input-type=module", "-e", script, str(module_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_dirty_form_helper_uses_form_elements_for_external_form_controls() -> None:

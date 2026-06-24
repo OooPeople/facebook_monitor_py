@@ -69,11 +69,16 @@ export const animateElementVisibility = (element, visible, { afterFinish = null 
       finish();
     }
   };
+  const durationMs = getCollapseAnimationDurationMs(element);
+  if (durationMs <= 0) {
+    finish();
+    return;
+  }
   element.collapseTransitionEndHandler = transitionEndHandler;
   element.addEventListener("transitionend", transitionEndHandler);
   const timer = window.setTimeout(
     finish,
-    getCollapseAnimationDurationMs(element) + collapseAnimationFallbackBufferMs,
+    durationMs + collapseAnimationFallbackBufferMs,
   );
   element.dataset.collapseAnimationTimer = String(timer);
 };

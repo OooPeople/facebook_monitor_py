@@ -142,3 +142,69 @@ def test_new_target_advanced_collapse_browser_interaction(tmp_path: Path) -> Non
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_new_target_advanced_collapse_reduced_motion_finishes_immediately(
+    tmp_path: Path,
+) -> None:
+    """reduced motion 下進階設定收合不應留下動畫等待狀態。"""
+
+    server, thread, url = _start_webapp(tmp_path / "app.db", tmp_path / "profile")
+    try:
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(headless=True)
+            except PlaywrightError as exc:
+                pytest.skip(f"chromium browser is not installed: {exc}")
+            try:
+                context = browser.new_context(
+                    reduced_motion="reduce",
+                    viewport={"width": 1280, "height": 900},
+                )
+                try:
+                    page = context.new_page()
+                    page.goto(f"{url}/targets/new", wait_until="load")
+                    _wait_for_advanced_state(page, expanded=False)
+
+                    summary = page.locator("[data-new-target-advanced-toggle]")
+                    summary.click()
+                    assert _advanced_state(page) == {
+                        "ariaExpanded": "true",
+                        "bodyAnimating": False,
+                        "bodyHidden": False,
+                        "detailsOpen": True,
+                        "expandedClass": True,
+                    }
+
+                    summary.click()
+                    assert _advanced_state(page) == {
+                        "ariaExpanded": "false",
+                        "bodyAnimating": False,
+                        "bodyHidden": True,
+                        "detailsOpen": False,
+                        "expandedClass": False,
+                    }
+
+                    summary.focus()
+                    page.keyboard.press("Enter")
+                    assert _advanced_state(page)["bodyAnimating"] is False
+                    page.keyboard.press("Space")
+                    assert _advanced_state(page)["bodyAnimating"] is False
+
+                    summary.click()
+                    summary.click()
+                    summary.click()
+                    assert _advanced_state(page) == {
+                        "ariaExpanded": "true",
+                        "bodyAnimating": False,
+                        "bodyHidden": False,
+                        "detailsOpen": True,
+                        "expandedClass": True,
+                    }
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)

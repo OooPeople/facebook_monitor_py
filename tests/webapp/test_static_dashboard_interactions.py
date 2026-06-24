@@ -404,9 +404,17 @@ def test_target_card_footer_stays_compact_after_moving_scan_diagnostics() -> Non
         in base_css
     )
     assert "--collapse-panel-transition:" in base_css
+    reduced_motion_rule = base_css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert "--collapse-panel-duration: 0ms;" in reduced_motion_rule
+    assert "--collapse-panel-opacity-duration: 0ms;" in reduced_motion_rule
     assert ".target-card {\n  padding-bottom: 12px;\n}" in layout_css
     assert ".target-footer-controls {\n  align-items: center;" in collapse_css
     assert "transition: var(--collapse-panel-transition);" in collapse_css
+    collapse_reduced_motion_rule = collapse_css.split(
+        "@media (prefers-reduced-motion: reduce)", 1
+    )[1]
+    assert ".collapse-toggle-icon" in collapse_reduced_motion_rule
+    assert "transition: none;" in collapse_reduced_motion_rule
     assert "margin-top: 8px;" in collapse_css
     assert "height: 32px;" in collapse_css
     assert "width: 32px;" in collapse_css

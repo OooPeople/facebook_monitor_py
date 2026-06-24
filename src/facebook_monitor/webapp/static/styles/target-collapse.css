@@ -71,4 +71,8 @@
   .target-collapsed-summary[data-collapse-animating] {
     transition: none;
   }
+
+  .collapse-toggle-icon {
+    transition: none;
+  }
 }

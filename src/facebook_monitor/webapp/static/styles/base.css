@@ -85,6 +85,13 @@ html[data-theme="dark"] {
   --shadow-inset-subtle: inset 0 0 0 1px rgb(255 255 255 / 7%);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --collapse-panel-duration: 0ms;
+    --collapse-panel-opacity-duration: 0ms;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

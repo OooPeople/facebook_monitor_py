@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
+from facebook_monitor.application.facebook_access_circuit_service import (
+    FacebookAccessCircuitService,
+)
+from facebook_monitor.application.facebook_session_recovery_service import (
+    FacebookSessionRecoveryService,
+)
 from facebook_monitor.application.scan_recording_service import ScanRecordingService
 from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.sidebar_layout_service import SidebarLayoutService
@@ -22,8 +28,20 @@ from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepos
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
 from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
+from facebook_monitor.persistence.repositories.facebook_access_circuit import (
+    FacebookAccessCircuitRepository,
+)
+from facebook_monitor.persistence.repositories.facebook_automation_pacing import (
+    FacebookAutomationPacingRepository,
+)
+from facebook_monitor.persistence.repositories.facebook_session_recovery import (
+    FacebookSessionRecoveryRepository,
+)
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.logical_items import LogicalItemRepository
+from facebook_monitor.persistence.repositories.managed_profile_identity import (
+    ManagedProfileIdentityRepository,
+)
 from facebook_monitor.persistence.repositories.match_history import MatchHistoryRepository
 from facebook_monitor.persistence.repositories.notification_dedupe import (
     NotificationDedupeRepository,
@@ -77,6 +95,10 @@ class RepositoryBundle:
     sidebar_layout: SidebarLayoutRepository
     maintenance: RuntimeDataMaintenanceRepository
     dashboard_revision: DashboardRevisionRepository
+    facebook_access_circuit: FacebookAccessCircuitRepository
+    facebook_automation_pacing: FacebookAutomationPacingRepository
+    managed_profile_identity: ManagedProfileIdentityRepository
+    facebook_session_recovery: FacebookSessionRecoveryRepository
 
 
 @dataclass(frozen=True)
@@ -87,6 +109,8 @@ class ServiceBundle:
     target_cover_image_refresh: TargetCoverImageRefreshService
     scans: ScanRecordingService
     sidebar_layout: SidebarLayoutService
+    facebook_access_circuit: FacebookAccessCircuitService
+    facebook_session_recovery: FacebookSessionRecoveryService
 
 
 @dataclass(frozen=True)
@@ -148,6 +172,10 @@ def build_repositories(
         ),
         maintenance=RuntimeDataMaintenanceRepository(connection),
         dashboard_revision=DashboardRevisionRepository(connection),
+        facebook_access_circuit=FacebookAccessCircuitRepository(connection),
+        facebook_automation_pacing=FacebookAutomationPacingRepository(connection),
+        managed_profile_identity=ManagedProfileIdentityRepository(connection),
+        facebook_session_recovery=FacebookSessionRecoveryRepository(connection),
     )
 
 
@@ -175,6 +203,15 @@ def build_services(repositories: RepositoryBundle) -> ServiceBundle:
             configs=repositories.configs,
             app_settings=repositories.app_settings,
             sidebar_layout=repositories.sidebar_layout,
+        ),
+        facebook_access_circuit=FacebookAccessCircuitService(
+            repositories.facebook_access_circuit,
+            repositories.targets,
+        ),
+        facebook_session_recovery=FacebookSessionRecoveryService(
+            repositories.facebook_session_recovery,
+            repositories.facebook_automation_pacing,
+            repositories.targets,
         ),
     )
 

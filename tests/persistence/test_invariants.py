@@ -41,6 +41,24 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("target_runtime_state", "runtime_status"),
     ("target_cover_image_refresh_state", "status"),
     ("target_cover_image_refresh_state", "last_result"),
+    ("facebook_access_circuit_state", "state"),
+    ("facebook_access_circuit_state", "source_kind"),
+    ("facebook_access_circuit_state", "operation_kind"),
+    ("facebook_access_circuit_state", "trigger_action_kind"),
+    ("facebook_access_circuit_state", "recovery_recipe_kind"),
+    ("facebook_access_circuit_state", "requested_recipe_kind"),
+    ("facebook_access_circuit_state", "last_probe_result"),
+    ("facebook_access_circuit_events", "event_kind"),
+    ("facebook_access_circuit_events", "from_state"),
+    ("facebook_access_circuit_events", "to_state"),
+    ("facebook_access_circuit_events", "source_kind"),
+    ("facebook_access_circuit_events", "operation_kind"),
+    ("facebook_access_circuit_events", "trigger_action_kind"),
+    ("facebook_access_circuit_events", "recovery_recipe_kind"),
+    ("facebook_session_recovery_state", "status"),
+    ("facebook_session_recovery_state", "requested_operation_kind"),
+    ("facebook_session_recovery_state", "requested_recipe_kind"),
+    ("facebook_session_recovery_state", "last_probe_result"),
 }
 
 EXPECTED_BOOLEAN_CONTRACT_KEYS = {
@@ -78,6 +96,10 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("notification_dedupe", "dedupe_epoch"),
     ("notification_dedupe", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
+    ("facebook_access_circuit_state", "circuit_counts"),
+    ("facebook_access_circuit_events", "policy_delay_seconds"),
+    ("facebook_automation_pacing_state", "lease_generation"),
+    ("facebook_session_recovery_state", "generation"),
 }
 
 EXPECTED_DATETIME_CONTRACT_KEYS = {
@@ -108,6 +130,31 @@ EXPECTED_DATETIME_CONTRACT_KEYS = {
     ("sidebar_groups", "updated_at"),
     ("sidebar_target_placements", "updated_at"),
     ("sidebar_group_config_templates", "updated_at"),
+    ("facebook_access_circuit_state", "opened_at"),
+    ("facebook_access_circuit_state", "last_detected_at"),
+    ("facebook_access_circuit_state", "cooldown_until"),
+    ("facebook_access_circuit_state", "half_open_started_at"),
+    ("facebook_access_circuit_state", "half_open_lease_expires_at"),
+    ("facebook_access_circuit_state", "probe_requested_at"),
+    ("facebook_access_circuit_state", "last_probe_finished_at"),
+    ("facebook_access_circuit_state", "closed_at"),
+    ("facebook_access_circuit_state", "updated_at"),
+    ("facebook_access_circuit_events", "occurred_at"),
+    ("facebook_automation_pacing_state", "active_lease_expires_at"),
+    ("facebook_automation_pacing_state", "last_automation_started_at"),
+    ("facebook_automation_pacing_state", "last_automation_finished_at"),
+    ("facebook_automation_pacing_state", "next_automation_not_before"),
+    ("facebook_automation_pacing_state", "updated_at"),
+    ("managed_profile_identity_binding", "bound_at"),
+    ("managed_profile_identity_binding", "updated_at"),
+    ("facebook_session_recovery_state", "stale_detected_at"),
+    ("facebook_session_recovery_state", "earliest_probe_at"),
+    ("facebook_session_recovery_state", "request_requested_at"),
+    ("facebook_session_recovery_state", "probe_started_at"),
+    ("facebook_session_recovery_state", "probe_lease_expires_at"),
+    ("facebook_session_recovery_state", "last_probe_finished_at"),
+    ("facebook_session_recovery_state", "recovered_at"),
+    ("facebook_session_recovery_state", "updated_at"),
 }
 
 
@@ -223,6 +270,40 @@ def test_database_invariants_report_required_runtime_updated_at(
     assert "target_runtime_state" in formatted
     assert "updated_at" in formatted
     assert "datetime value is required" in formatted
+
+
+def test_circuit_invariant_output_redacts_profile_scope_key(tmp_path: Path) -> None:
+    """Invariant diagnostics 不得輸出 opaque profile scope key。"""
+
+    db_path = tmp_path / "app.db"
+    raw_scope_key = "private-profile-scope-key"
+    with SqliteApplicationContext(db_path) as app:
+        connection = app.repositories.targets.connection
+        connection.execute(
+            """
+            INSERT INTO facebook_access_circuit_state (
+                profile_scope_key, state, updated_at
+            ) VALUES (?, 'closed', '2026-05-01T00:00:00')
+            """,
+            (raw_scope_key,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE facebook_access_circuit_state
+            SET state = 'invalid-state'
+            WHERE profile_scope_key = ?
+            """,
+            (raw_scope_key,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        violations = validate_database_invariants(connection)
+
+    formatted = "\n".join(violation.format() for violation in violations)
+    assert "facebook_access_circuit_state[profile].state" in formatted
+    assert "datetime value must use UTC offset" in formatted
+    assert raw_scope_key not in formatted
 
 
 def test_database_invariants_report_duplicate_target_scopes(tmp_path: Path) -> None:

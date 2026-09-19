@@ -277,6 +277,181 @@ CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS facebook_access_circuit_state (
+    profile_scope_key TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('closed', 'open', 'half_open')),
+    episode_id TEXT NOT NULL DEFAULT '',
+    generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+    reason_code TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT ''
+        CHECK (source_kind IN ('', 'scan', 'metadata', 'cover', 'sync_resolver', 'probe')),
+    operation_kind TEXT NOT NULL DEFAULT ''
+        CHECK (operation_kind IN ('', 'posts_access', 'comments_access', 'group_metadata_access', 'cover_metadata_access', 'unknown')),
+    trigger_action_kind TEXT NOT NULL DEFAULT ''
+        CHECK (trigger_action_kind IN ('', 'group_feed_document', 'group_document', 'direct_document', 'reload', 'trusted_click', 'unknown')),
+    recovery_recipe_kind TEXT NOT NULL DEFAULT ''
+        CHECK (recovery_recipe_kind IN ('', 'group_feed_document_guard_v1', 'comments_group_trusted_click_v1', 'group_document_guard_v1', 'group_cover_guard_v1')),
+    trigger_target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+    opened_at TEXT NOT NULL DEFAULT '',
+    last_detected_at TEXT NOT NULL DEFAULT '',
+    cooldown_until TEXT NOT NULL DEFAULT '',
+    detection_count INTEGER NOT NULL DEFAULT 0 CHECK (detection_count >= 0),
+    reopen_count INTEGER NOT NULL DEFAULT 0 CHECK (reopen_count >= 0),
+    half_open_token TEXT NOT NULL DEFAULT '',
+    half_open_started_at TEXT NOT NULL DEFAULT '',
+    half_open_lease_expires_at TEXT NOT NULL DEFAULT '',
+    probe_request_id TEXT NOT NULL DEFAULT '',
+    probe_requested_at TEXT NOT NULL DEFAULT '',
+    requested_recipe_kind TEXT NOT NULL DEFAULT ''
+        CHECK (requested_recipe_kind IN ('', 'group_feed_document_guard_v1', 'comments_group_trusted_click_v1', 'group_document_guard_v1', 'group_cover_guard_v1')),
+    requested_target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+    last_probe_finished_at TEXT NOT NULL DEFAULT '',
+    last_probe_result TEXT NOT NULL DEFAULT ''
+        CHECK (last_probe_result IN ('', 'success', 'blocked', 'inconclusive', 'cancelled')),
+    closed_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    CHECK (
+        (state = 'half_open' AND half_open_token <> ''
+            AND half_open_started_at <> '' AND half_open_lease_expires_at <> ''
+            AND half_open_lease_expires_at > half_open_started_at)
+        OR
+        (state <> 'half_open' AND half_open_token = ''
+            AND half_open_started_at = '' AND half_open_lease_expires_at = '')
+    ),
+    CHECK (
+        state = 'closed'
+        OR (episode_id <> '' AND opened_at <> '' AND cooldown_until <> '')
+    ),
+    CHECK (
+        (probe_request_id = '' AND probe_requested_at = ''
+            AND requested_recipe_kind = '' AND requested_target_id IS NULL)
+        OR
+        (state = 'open' AND probe_request_id <> ''
+            AND probe_requested_at <> '' AND probe_requested_at >= cooldown_until
+            AND requested_recipe_kind <> '')
+    )
+);
+
+CREATE TABLE IF NOT EXISTS facebook_access_circuit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_scope_key TEXT NOT NULL
+        REFERENCES facebook_access_circuit_state(profile_scope_key) ON DELETE CASCADE,
+    episode_id TEXT NOT NULL,
+    event_kind TEXT NOT NULL CHECK (event_kind IN (
+        'opened', 'repeated_detection', 'probe_requested', 'half_open_acquired',
+        'probe_succeeded', 'probe_blocked', 'probe_inconclusive', 'probe_cancelled',
+        'lease_recovered', 'closed'
+    )),
+    from_state TEXT NOT NULL CHECK (from_state IN ('closed', 'open', 'half_open')),
+    to_state TEXT NOT NULL CHECK (to_state IN ('closed', 'open', 'half_open')),
+    reason_code TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT ''
+        CHECK (source_kind IN ('', 'scan', 'metadata', 'cover', 'sync_resolver', 'probe')),
+    operation_kind TEXT NOT NULL DEFAULT ''
+        CHECK (operation_kind IN ('', 'posts_access', 'comments_access', 'group_metadata_access', 'cover_metadata_access', 'unknown')),
+    trigger_action_kind TEXT NOT NULL DEFAULT ''
+        CHECK (trigger_action_kind IN ('', 'group_feed_document', 'group_document', 'direct_document', 'reload', 'trusted_click', 'unknown')),
+    recovery_recipe_kind TEXT NOT NULL DEFAULT ''
+        CHECK (recovery_recipe_kind IN ('', 'group_feed_document_guard_v1', 'comments_group_trusted_click_v1', 'group_document_guard_v1', 'group_cover_guard_v1')),
+    target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+    policy_delay_seconds INTEGER NOT NULL DEFAULT 0 CHECK (policy_delay_seconds >= 0),
+    occurred_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facebook_automation_pacing_state (
+    profile_scope_key TEXT PRIMARY KEY,
+    lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+    active_operation_id TEXT NOT NULL DEFAULT '',
+    active_work_kind TEXT NOT NULL DEFAULT '',
+    owner_session_id TEXT NOT NULL DEFAULT '',
+    active_lease_expires_at TEXT NOT NULL DEFAULT '',
+    last_automation_started_at TEXT NOT NULL DEFAULT '',
+    last_automation_finished_at TEXT NOT NULL DEFAULT '',
+    next_automation_not_before TEXT NOT NULL DEFAULT '',
+    last_outcome TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    CHECK (
+        (active_operation_id = '' AND active_work_kind = ''
+            AND owner_session_id = '' AND active_lease_expires_at = '')
+        OR
+        (active_operation_id <> '' AND active_work_kind <> ''
+            AND owner_session_id <> '' AND active_lease_expires_at <> '')
+    )
+);
+
+CREATE TABLE IF NOT EXISTS managed_profile_identity_binding (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    marker_uuid TEXT NOT NULL CHECK (length(marker_uuid) = 36),
+    bound_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facebook_session_recovery_state (
+    profile_scope_key TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+    status TEXT NOT NULL CHECK (
+        status IN ('hold', 'probe_pending', 'probing', 'recovered')
+    ),
+    marker_session_id TEXT NOT NULL CHECK (marker_session_id <> ''),
+    stale_detected_at TEXT NOT NULL,
+    earliest_probe_at TEXT NOT NULL,
+    request_id TEXT NOT NULL DEFAULT '',
+    request_requested_at TEXT NOT NULL DEFAULT '',
+    requested_target_id TEXT REFERENCES targets(id) ON DELETE SET NULL,
+    requested_operation_kind TEXT NOT NULL DEFAULT '' CHECK (
+        requested_operation_kind IN (
+            '', 'posts_access', 'comments_access', 'group_metadata_access',
+            'cover_metadata_access', 'unknown'
+        )
+    ),
+    requested_recipe_kind TEXT NOT NULL DEFAULT '' CHECK (
+        requested_recipe_kind IN (
+            '', 'group_feed_document_guard_v1',
+            'comments_group_trusted_click_v1', 'group_document_guard_v1',
+            'group_cover_guard_v1'
+        )
+    ),
+    probe_token TEXT NOT NULL DEFAULT '',
+    probe_started_at TEXT NOT NULL DEFAULT '',
+    probe_lease_expires_at TEXT NOT NULL DEFAULT '',
+    last_probe_finished_at TEXT NOT NULL DEFAULT '',
+    last_probe_result TEXT NOT NULL DEFAULT '' CHECK (
+        last_probe_result IN (
+            '', 'success', 'blocked', 'inconclusive', 'cancelled'
+        )
+    ),
+    recovered_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    CHECK (
+        (status = 'hold'
+            AND request_id = '' AND request_requested_at = ''
+            AND requested_target_id IS NULL
+            AND requested_operation_kind = '' AND requested_recipe_kind = ''
+            AND probe_token = '' AND probe_started_at = ''
+            AND probe_lease_expires_at = '' AND recovered_at = '')
+        OR
+        (status = 'probe_pending'
+            AND request_id <> '' AND request_requested_at <> ''
+            AND requested_operation_kind <> '' AND requested_recipe_kind <> ''
+            AND probe_token = '' AND probe_started_at = ''
+            AND probe_lease_expires_at = '' AND recovered_at = '')
+        OR
+        (status = 'probing'
+            AND request_id <> '' AND request_requested_at <> ''
+            AND requested_operation_kind <> '' AND requested_recipe_kind <> ''
+            AND probe_token <> '' AND probe_started_at <> ''
+            AND probe_lease_expires_at > probe_started_at
+            AND recovered_at = '')
+        OR
+        (status = 'recovered'
+            AND request_id = '' AND request_requested_at = ''
+            AND requested_target_id IS NULL
+            AND requested_operation_kind = '' AND requested_recipe_kind = ''
+            AND probe_token = '' AND probe_started_at = ''
+            AND probe_lease_expires_at = '' AND recovered_at <> '')
+    )
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -370,6 +545,12 @@ CREATE INDEX IF NOT EXISTS idx_notification_outbox_status_updated
     ON notification_outbox(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_cover_image_refresh_status_requested
     ON target_cover_image_refresh_state(status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_facebook_access_events_profile_occurred
+    ON facebook_access_circuit_events(profile_scope_key, occurred_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_facebook_access_events_episode
+    ON facebook_access_circuit_events(episode_id, id);
+CREATE INDEX IF NOT EXISTS idx_facebook_session_recovery_status_lease
+    ON facebook_session_recovery_state(status, probe_lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_sidebar_groups_order
     ON sidebar_groups(sort_order);
 CREATE INDEX IF NOT EXISTS idx_sidebar_target_placements_group_order
@@ -381,6 +562,9 @@ DASHBOARD_REVISION_TABLES = (
     "targets",
     "target_configs",
     "target_runtime_state",
+    "facebook_access_circuit_state",
+    "managed_profile_identity_binding",
+    "facebook_session_recovery_state",
     "scan_runs",
     "notification_events",
     "notification_outbox",
@@ -390,6 +574,30 @@ DASHBOARD_REVISION_TABLES = (
     "sidebar_groups",
     "sidebar_target_placements",
     "sidebar_group_config_templates",
+)
+FACEBOOK_ACCESS_CIRCUIT_REVISION_UPDATE_COLUMNS = (
+    "state",
+    "episode_id",
+    "generation",
+    "reason_code",
+    "source_kind",
+    "operation_kind",
+    "trigger_action_kind",
+    "recovery_recipe_kind",
+    "trigger_target_id",
+    "opened_at",
+    "cooldown_until",
+    "reopen_count",
+    "half_open_token",
+    "half_open_started_at",
+    "half_open_lease_expires_at",
+    "probe_request_id",
+    "probe_requested_at",
+    "requested_recipe_kind",
+    "requested_target_id",
+    "last_probe_finished_at",
+    "last_probe_result",
+    "closed_at",
 )
 
 
@@ -418,10 +626,14 @@ def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
     for table_name in DASHBOARD_REVISION_TABLES:
         for operation in ("INSERT", "UPDATE", "DELETE"):
             trigger_name = f"trg_dashboard_revision_{table_name}_{operation.lower()}"
+            trigger_operation = operation
+            if table_name == "facebook_access_circuit_state" and operation == "UPDATE":
+                columns = ", ".join(FACEBOOK_ACCESS_CIRCUIT_REVISION_UPDATE_COLUMNS)
+                trigger_operation = f"UPDATE OF {columns}"
             connection.execute(
                 f"""
                 CREATE TRIGGER {trigger_name}
-                AFTER {operation} ON {table_name}
+                AFTER {trigger_operation} ON {table_name}
                 BEGIN
                     UPDATE dashboard_revision
                     SET revision = revision + 1,

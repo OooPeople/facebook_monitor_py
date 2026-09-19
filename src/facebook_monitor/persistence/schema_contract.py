@@ -10,6 +10,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from facebook_monitor.core.facebook_access import FacebookAccessCircuitStatus
+from facebook_monitor.core.facebook_access import FacebookAccessEventKind
+from facebook_monitor.core.facebook_access import FacebookActionKind
+from facebook_monitor.core.facebook_access import FacebookProbeResult
+from facebook_monitor.core.facebook_access import FacebookProductOperationKind
+from facebook_monitor.core.facebook_access import FacebookRecoveryRecipeKind
+from facebook_monitor.core.facebook_access import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_session_recovery import FacebookSessionRecoveryStatus
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationDedupeStatus
@@ -183,6 +191,114 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         "last_result",
         _enum_values(TargetCoverImageRefreshResult) | frozenset({""}),
     ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "state",
+        _enum_values(FacebookAccessCircuitStatus),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "source_kind",
+        _enum_values(FacebookWorkSourceKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "operation_kind",
+        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "trigger_action_kind",
+        _enum_values(FacebookActionKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "recovery_recipe_kind",
+        _enum_values(FacebookRecoveryRecipeKind),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "requested_recipe_kind",
+        _enum_values(FacebookRecoveryRecipeKind),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "last_probe_result",
+        _enum_values(FacebookProbeResult),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "event_kind",
+        _enum_values(FacebookAccessEventKind),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "from_state",
+        _enum_values(FacebookAccessCircuitStatus),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "to_state",
+        _enum_values(FacebookAccessCircuitStatus),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "source_kind",
+        _enum_values(FacebookWorkSourceKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "operation_kind",
+        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "trigger_action_kind",
+        _enum_values(FacebookActionKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_access_circuit_events",
+        "id",
+        "recovery_recipe_kind",
+        _enum_values(FacebookRecoveryRecipeKind),
+    ),
+    SchemaEnumContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        "status",
+        _enum_values(FacebookSessionRecoveryStatus),
+    ),
+    SchemaEnumContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        "requested_operation_kind",
+        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+    ),
+    SchemaEnumContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        "requested_recipe_kind",
+        _enum_values(FacebookRecoveryRecipeKind),
+    ),
+    SchemaEnumContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        "last_probe_result",
+        _enum_values(FacebookProbeResult),
+    ),
 )
 
 
@@ -303,6 +419,30 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
             "OR consecutive_scan_skip_count < 0"
         ),
     ),
+    SchemaRangeContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        "circuit_counts",
+        "generation < 0 OR detection_count < 0 OR reopen_count < 0",
+    ),
+    SchemaRangeContract(
+        "facebook_access_circuit_events",
+        "id",
+        "policy_delay_seconds",
+        "policy_delay_seconds < 0",
+    ),
+    SchemaRangeContract(
+        "facebook_automation_pacing_state",
+        "'profile'",
+        "lease_generation",
+        "lease_generation < 0",
+    ),
+    SchemaRangeContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        "generation",
+        "generation < 1",
+    ),
 )
 
 
@@ -387,5 +527,60 @@ DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
         "sidebar_group_id",
         ("updated_at",),
         required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "facebook_access_circuit_state",
+        "'profile'",
+        (
+            "opened_at",
+            "last_detected_at",
+            "cooldown_until",
+            "half_open_started_at",
+            "half_open_lease_expires_at",
+            "probe_requested_at",
+            "last_probe_finished_at",
+            "closed_at",
+            "updated_at",
+        ),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "facebook_access_circuit_events",
+        "id",
+        ("occurred_at",),
+        required_fields=("occurred_at",),
+    ),
+    SchemaDatetimeContract(
+        "facebook_automation_pacing_state",
+        "'profile'",
+        (
+            "active_lease_expires_at",
+            "last_automation_started_at",
+            "last_automation_finished_at",
+            "next_automation_not_before",
+            "updated_at",
+        ),
+        required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "managed_profile_identity_binding",
+        "id",
+        ("bound_at", "updated_at"),
+        required_fields=("bound_at", "updated_at"),
+    ),
+    SchemaDatetimeContract(
+        "facebook_session_recovery_state",
+        "'profile'",
+        (
+            "stale_detected_at",
+            "earliest_probe_at",
+            "request_requested_at",
+            "probe_started_at",
+            "probe_lease_expires_at",
+            "last_probe_finished_at",
+            "recovered_at",
+            "updated_at",
+        ),
+        required_fields=("stale_detected_at", "earliest_probe_at", "updated_at"),
     ),
 )

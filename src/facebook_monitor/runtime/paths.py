@@ -14,6 +14,7 @@ import sys
 
 DEFAULT_PROFILE_NAME = "automation_default"
 DEFAULT_HOME_DATA_DIR_NAME = "facebook_monitor_data"
+FACEBOOK_AUTOMATION_SESSION_GUARDS_DIR_NAME = "facebook-automation-session-guards"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,12 @@ class RuntimePaths:
     templates_dir: Path
     static_dir: Path
 
+    @property
+    def facebook_automation_session_guards_dir(self) -> Path:
+        """回傳由data-dir管理、不得匯出的automation sentinel目錄。"""
+
+        return self.data_dir / FACEBOOK_AUTOMATION_SESSION_GUARDS_DIR_NAME
+
     def ensure_writable_dirs(self) -> None:
         """建立啟動時需要存在的可寫目錄。"""
 
@@ -45,6 +52,7 @@ class RuntimePaths:
             self.runtime_dir,
             self.exports_dir,
             self.updates_dir,
+            self.facebook_automation_session_guards_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 

@@ -43,7 +43,7 @@ class SchedulerRuntimeDefaults:
     resident_interval_seconds: float = DEFAULT_REFRESH_SECONDS
     one_shot_interval_seconds: float = 300
     scheduler_tick_seconds: float = 2
-    max_concurrent_scans: int = 4
+    max_concurrent_scans: int = 1
     scroll_rounds: int = 3
     scroll_wait_ms: int = 2500
     scan_timeout_seconds: float = 120
@@ -97,6 +97,39 @@ class ProfileLoginDefaults:
 
 
 @dataclass(frozen=True)
+class FacebookAccessDefaults:
+    """保存 profile 級 Facebook access circuit 的保守產品政策。"""
+
+    initial_cooldown_seconds: int = 12 * 60 * 60
+    reopen_cooldown_seconds: tuple[int, ...] = (
+        24 * 60 * 60,
+        48 * 60 * 60,
+        72 * 60 * 60,
+    )
+    inconclusive_cooldown_seconds: int = 60 * 60
+    half_open_lease_seconds: int = 5 * 60
+    probe_absolute_deadline_seconds: float = 120.0
+    probe_cleanup_grace_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
+class FacebookAutomationDefaults:
+    """保存 profile-wide Facebook automation 的不可繞過安全預設。"""
+
+    comments_group_navigation: bool = False
+    max_concurrency: int = 1
+    quiet_gap_min_seconds: float = 15
+    quiet_gap_max_seconds: float = 30
+    persistent_lease_seconds: float = 5 * 60
+    persistent_quiet_gap_seconds: float = 30
+    max_open_facebook_pages: int = 1
+    comments_effective_refresh_floor_seconds: int = 180
+    new_comments_refresh_min_seconds: int = 300
+    new_comments_refresh_max_seconds: int = 420
+    comments_max_unconfirmed_freshness_age_seconds: int = 900
+
+
+@dataclass(frozen=True)
 class UpdaterRuntimeDefaults:
     """保存更新下載與 updater smoke 的 Python 版預設值。"""
 
@@ -147,6 +180,7 @@ class PersistenceRetentionDefaults:
     logical_dedupe_horizon_days: int = 60
     terminal_outbox_retention_days: int = 7
     failed_outbox_retention_days: int = 14
+    facebook_access_event_retention_days: int = 90
     maintenance_interval_seconds: int = 3600
     maintenance_retry_interval_seconds: int = 60
 
@@ -156,6 +190,8 @@ PYTHON_SCHEDULER_RUNTIME_DEFAULTS = SchedulerRuntimeDefaults()
 PYTHON_BROWSER_RUNTIME_DEFAULTS = BrowserRuntimeDefaults()
 PYTHON_WEBUI_RUNTIME_DEFAULTS = WebUiRuntimeDefaults()
 PYTHON_PROFILE_LOGIN_DEFAULTS = ProfileLoginDefaults()
+PYTHON_FACEBOOK_ACCESS_DEFAULTS = FacebookAccessDefaults()
+PYTHON_FACEBOOK_AUTOMATION_DEFAULTS = FacebookAutomationDefaults()
 PYTHON_UPDATER_RUNTIME_DEFAULTS = UpdaterRuntimeDefaults()
 PYTHON_DIAGNOSTICS_RUNTIME_DEFAULTS = DiagnosticsRuntimeDefaults()
 PYTHON_NOTIFICATION_RUNTIME_DEFAULTS = NotificationRuntimeDefaults()

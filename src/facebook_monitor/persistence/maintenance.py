@@ -50,6 +50,7 @@ class BoundedRetentionPruneResult:
     notification_dedupe: int = 0
     logical_items: int = 0
     legacy_seen_items: int = 0
+    facebook_access_circuit_events: int = 0
 
     @property
     def total_deleted(self) -> int:
@@ -60,6 +61,7 @@ class BoundedRetentionPruneResult:
             + self.notification_dedupe
             + self.logical_items
             + self.legacy_seen_items
+            + self.facebook_access_circuit_events
         )
 
 
@@ -136,6 +138,9 @@ class RuntimeDataMaintenanceRepository:
         failed_outbox_retention_days: int = (
             PYTHON_PERSISTENCE_RETENTION_DEFAULTS.failed_outbox_retention_days
         ),
+        facebook_access_event_retention_days: int = (
+            PYTHON_PERSISTENCE_RETENTION_DEFAULTS.facebook_access_event_retention_days
+        ),
     ) -> BoundedRetentionPruneResult:
         """清理 bounded retention horizon 外的內部去重與 terminal outbox 資料。"""
 
@@ -149,6 +154,9 @@ class RuntimeDataMaintenanceRepository:
         failed_outbox_cutoff = encode_datetime(
             reference_time - timedelta(days=max(failed_outbox_retention_days, 0))
         )
+        facebook_access_event_cutoff = encode_datetime(
+            reference_time - timedelta(days=max(facebook_access_event_retention_days, 0))
+        )
         terminal_outbox = self._delete_terminal_outbox_before(
             outbox_cutoff,
             failed_outbox_cutoff=failed_outbox_cutoff,
@@ -156,12 +164,28 @@ class RuntimeDataMaintenanceRepository:
         notification_dedupe = self._delete_notification_dedupe_before(logical_cutoff)
         logical_items = self._delete_logical_items_before(logical_cutoff)
         legacy_seen_items = self._delete_legacy_seen_items_before(logical_cutoff)
+        facebook_access_circuit_events = self._delete_facebook_access_events_before(
+            facebook_access_event_cutoff
+        )
         return BoundedRetentionPruneResult(
             terminal_outbox=terminal_outbox,
             notification_dedupe=notification_dedupe,
             logical_items=logical_items,
             legacy_seen_items=legacy_seen_items,
+            facebook_access_circuit_events=facebook_access_circuit_events,
         )
+
+    def _delete_facebook_access_events_before(self, cutoff: str) -> int:
+        """刪除保留期限外的 privacy-safe circuit transition events。"""
+
+        cursor = self.connection.execute(
+            """
+            DELETE FROM facebook_access_circuit_events
+            WHERE occurred_at < ?
+            """,
+            (cutoff,),
+        )
+        return int(cursor.rowcount or 0)
 
     def _delete_terminal_outbox_before(
         self,

@@ -10,7 +10,7 @@ from facebook_monitor.persistence.current_schema import ensure_dashboard_revisio
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 43
 MIN_SUPPORTED_SCHEMA_VERSION = 35
 CURRENT_SCHEMA_TABLES = (
     "schema_metadata",
@@ -31,6 +31,11 @@ CURRENT_SCHEMA_TABLES = (
     "notification_outbox",
     "target_runtime_state",
     "target_cover_image_refresh_state",
+    "facebook_access_circuit_state",
+    "facebook_access_circuit_events",
+    "facebook_automation_pacing_state",
+    "managed_profile_identity_binding",
+    "facebook_session_recovery_state",
     "app_settings",
     "sidebar_groups",
     "sidebar_target_placements",
@@ -170,11 +175,66 @@ def _missing_current_schema_constraints(connection: sqlite3.Connection) -> list[
         "CHECK (paused IN (0, 1))",
         "CHECK (worker_mode IN ('headless', 'headed_compat'))",
     )
-    return [
+    missing = [
         f"targets.{index}"
         for index, constraint in enumerate(required_target_constraints, start=1)
         if constraint not in targets_sql
     ]
+    circuit_sql = _table_sql(connection, "facebook_access_circuit_state")
+    required_circuit_constraints = (
+        "CHECK (state IN ('closed', 'open', 'half_open'))",
+        "CHECK (generation >= 0)",
+        "state = 'half_open' AND half_open_token <> ''",
+        "half_open_lease_expires_at > half_open_started_at",
+        "state = 'closed'",
+        "probe_request_id = ''",
+        "probe_requested_at >= cooldown_until",
+    )
+    missing.extend(
+        f"facebook_access_circuit_state.{index}"
+        for index, constraint in enumerate(required_circuit_constraints, start=1)
+        if constraint not in circuit_sql
+    )
+    pacing_sql = _table_sql(connection, "facebook_automation_pacing_state")
+    required_pacing_constraints = (
+        "CHECK (lease_generation >= 0)",
+        "active_operation_id = '' AND active_work_kind = ''",
+        "active_operation_id <> '' AND active_work_kind <> ''",
+    )
+    missing.extend(
+        f"facebook_automation_pacing_state.{index}"
+        for index, constraint in enumerate(required_pacing_constraints, start=1)
+        if constraint not in pacing_sql
+    )
+    identity_sql = _table_sql(connection, "managed_profile_identity_binding")
+    required_identity_constraints = (
+        "CHECK (id = 1)",
+        "CHECK (length(marker_uuid) = 36)",
+    )
+    missing.extend(
+        f"managed_profile_identity_binding.{index}"
+        for index, constraint in enumerate(required_identity_constraints, start=1)
+        if constraint not in identity_sql
+    )
+    session_recovery_sql = _table_sql(connection, "facebook_session_recovery_state")
+    required_session_recovery_constraints = (
+        "CHECK (generation >= 1)",
+        "status IN ('hold', 'probe_pending', 'probing', 'recovered')",
+        "marker_session_id <> ''",
+        "status = 'probe_pending'",
+        "status = 'probing'",
+        "probe_lease_expires_at > probe_started_at",
+        "status = 'recovered'",
+    )
+    missing.extend(
+        f"facebook_session_recovery_state.{index}"
+        for index, constraint in enumerate(
+            required_session_recovery_constraints,
+            start=1,
+        )
+        if constraint not in session_recovery_sql
+    )
+    return missing
 
 
 def _table_sql(connection: sqlite3.Connection, table_name: str) -> str:

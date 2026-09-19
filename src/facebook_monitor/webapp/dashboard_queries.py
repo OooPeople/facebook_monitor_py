@@ -6,6 +6,18 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from facebook_monitor.application.facebook_access_observability import (
+    build_facebook_access_safe_snapshot,
+)
+from facebook_monitor.application.facebook_access_observability import (
+    FacebookAccessSafeSnapshot,
+)
+from facebook_monitor.application.facebook_access_observability import (
+    read_existing_facebook_access_observation,
+)
+from facebook_monitor.application.facebook_access_observability import (
+    read_existing_facebook_session_recovery_safe_snapshot,
+)
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.models import TargetRuntimeState
@@ -22,7 +34,11 @@ from facebook_monitor.webapp.dashboard_rows import read_target_card_row
 from facebook_monitor.webapp.dashboard_sidebar import build_sidebar_groups
 from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 from facebook_monitor.webapp.dashboard_warnings import build_database_invariant_warning
+from facebook_monitor.webapp.dashboard_warnings import build_facebook_access_circuit_banner
 from facebook_monitor.webapp.dashboard_warnings import build_profile_session_warning
+from facebook_monitor.webapp.facebook_access_runtime_hold import (
+    read_facebook_automation_runtime_hold,
+)
 from facebook_monitor.webapp.read_model_context import read_application_context
 from facebook_monitor.webapp.read_model_context import (
     raise_dashboard_read_unavailable_if_locked,
@@ -52,6 +68,8 @@ def get_dashboard_view(
     db_path: Path,
     *,
     session_started_at: datetime | None = None,
+    profile_dir: Path | None = None,
+    browser_session_active: bool = False,
 ) -> DashboardViewModel:
     """讀取 dashboard read model。"""
 
@@ -59,12 +77,17 @@ def get_dashboard_view(
         db_path,
         initialize_schema_on_enter=False,
         session_started_at=session_started_at,
+        profile_dir=profile_dir,
+        browser_session_active=browser_session_active,
     )
     return DashboardViewModel(
         rows=result.rows,
         sidebar_groups=result.sidebar_groups,
         profile_session_warning=build_profile_session_warning(
             result.profile_session_status
+        ),
+        facebook_access_circuit_banner=build_facebook_access_circuit_banner(
+            result.facebook_access_safe_snapshot
         ),
         database_invariant_warning=result.database_invariant_warning,
         dashboard_degraded=result.dashboard_degraded,
@@ -132,6 +155,8 @@ def _read_dashboard_model(
     *,
     initialize_schema_on_enter: bool,
     session_started_at: datetime | None,
+    profile_dir: Path | None = None,
+    browser_session_active: bool = False,
 ) -> DashboardReadResult:
     """讀取 dashboard rows 與 sidebar group sections。"""
 
@@ -140,6 +165,8 @@ def _read_dashboard_model(
             db_path,
             initialize_schema_on_enter=initialize_schema_on_enter,
             session_started_at=session_started_at,
+            profile_dir=profile_dir,
+            browser_session_active=browser_session_active,
         )
     except sqlite3.OperationalError as exc:
         if not initialize_schema_on_enter and _is_missing_schema_error(exc):
@@ -147,6 +174,8 @@ def _read_dashboard_model(
                 db_path,
                 initialize_schema_on_enter=True,
                 session_started_at=session_started_at,
+                profile_dir=profile_dir,
+                browser_session_active=browser_session_active,
             )
         raise_dashboard_read_unavailable_if_locked(exc)
         raise
@@ -157,9 +186,16 @@ def _list_target_rows(
     *,
     initialize_schema_on_enter: bool,
     session_started_at: datetime | None,
+    profile_dir: Path | None,
+    browser_session_active: bool,
 ) -> DashboardReadResult:
     """執行 target row read；必要時供空 DB 首次讀取補 schema 後重試。"""
 
+    facebook_access_safe_snapshot = _read_facebook_access_safe_snapshot(
+        db_path=db_path,
+        profile_dir=profile_dir,
+        browser_session_active=browser_session_active,
+    )
     with SqliteApplicationContext(
         db_path,
         initialize_schema_on_enter=initialize_schema_on_enter,
@@ -187,12 +223,14 @@ def _list_target_rows(
             return _degraded_dashboard_read_result(
                 app_context,
                 database_invariant_warning=database_invariant_warning,
+                facebook_access_safe_snapshot=facebook_access_safe_snapshot,
             )
         return DashboardReadResult(
             rows=rows,
             sidebar_groups=sidebar_groups,
             profile_session_status=app_context.repositories.app_settings
             .get_profile_session_status(),
+            facebook_access_safe_snapshot=facebook_access_safe_snapshot,
             database_invariant_warning=database_invariant_warning,
         )
 
@@ -201,6 +239,7 @@ def _degraded_dashboard_read_result(
     app_context: ApplicationContext,
     *,
     database_invariant_warning: DatabaseInvariantWarning,
+    facebook_access_safe_snapshot: FacebookAccessSafeSnapshot,
 ) -> DashboardReadResult:
     """DB invariant 已壞且 mapper 無法讀取時，回傳可顯示警告的降級首頁。"""
 
@@ -214,8 +253,46 @@ def _degraded_dashboard_read_result(
         ),
         profile_session_status=app_context.repositories.app_settings
         .get_profile_session_status(),
+        facebook_access_safe_snapshot=facebook_access_safe_snapshot,
         database_invariant_warning=database_invariant_warning,
         dashboard_degraded=True,
+    )
+
+
+def _read_facebook_access_safe_snapshot(
+    *,
+    db_path: Path,
+    profile_dir: Path | None,
+    browser_session_active: bool,
+) -> FacebookAccessSafeSnapshot:
+    """讀取目前 managed profile circuit，無 marker/row 時回 unavailable。"""
+
+    if profile_dir is None:
+        return FacebookAccessSafeSnapshot()
+    try:
+        runtime_hold = read_facebook_automation_runtime_hold(
+            db_path=db_path,
+            profile_dir=profile_dir,
+            browser_session_active=browser_session_active,
+        )
+        if runtime_hold == "unclean_session_hold":
+            session_recovery = read_existing_facebook_session_recovery_safe_snapshot(
+                db_path=db_path,
+                profile_dir=profile_dir,
+            )
+            if session_recovery is not None:
+                return session_recovery
+        observation = read_existing_facebook_access_observation(
+            db_path=db_path,
+            profile_dir=profile_dir,
+        )
+    except (OSError, ValueError):
+        return FacebookAccessSafeSnapshot()
+    return build_facebook_access_safe_snapshot(
+        observation.circuit,
+        profile_scope="managed_profile",
+        probe_request_outcome=observation.probe_request_outcome,
+        runtime_hold=runtime_hold,
     )
 
 

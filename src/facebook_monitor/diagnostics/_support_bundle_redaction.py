@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 
+from facebook_monitor.core.facebook_access import FacebookProbeFailureStage
 from facebook_monitor.core.redaction import redact_sensitive_text
 
 MAX_REDACTED_TEXT_LENGTH = 500
@@ -33,7 +34,17 @@ SUPPORT_BUNDLE_IDENTIFIER_ASSIGNMENT_RE = re.compile(
 )
 SUPPORT_BUNDLE_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:\\[^\s\"'<>]+")
 SUPPORT_BUNDLE_POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^/\s\"'<>]+/)+[^\s\"'<>]*")
+FACEBOOK_PROBE_FAILURE_LOG_RE = re.compile(
+    r"\bfacebook_probe_failure "
+    r"probe=(manual|session_recovery) "
+    r"stage=(" + "|".join(stage.value for stage in FacebookProbeFailureStage) + r") "
+    r"reason=([a-z0-9_]{1,80})\b"
+)
 SAFE_METADATA_STRING_KEYS = {
+    "classification",
+    "detector",
+    "failurediagnosticsstatus",
+    "fallbackmode",
     "worker",
     "workermode",
     "targetkind",
@@ -52,6 +63,7 @@ SAFE_METADATA_STRING_KEYS = {
     "textsource",
     "source",
     "scrolltargetlabel",
+    "urlkind",
 }
 SAFE_REASON_CODE_VALUES = {
     "auto_load_more_disabled",
@@ -67,6 +79,8 @@ SAFE_REASON_CODE_VALUES = {
     "extractor_empty",
     "extractor_failed",
     "extractor_runtime",
+    "facebook_page_guard_inconclusive",
+    "facebook_temporary_block",
     "login_required",
     "manual_skip",
     "no_comment_round_stats",
@@ -104,11 +118,25 @@ SAFE_REASON_CODE_VALUES = {
     "target_stopped",
     "unknown",
     "unknown_failure_owner_changed",
+    "unsupported_in_fallback",
     "visible_window_completed",
     "worker_failure_owner_changed",
     "worker_pool_unhealthy",
 }
 SAFE_METADATA_STRING_VALUES = {
+    "classification": {
+        "facebook_page_guard_inconclusive",
+        "facebook_temporary_block",
+        "unsupported_in_fallback",
+    },
+    "detector": {"facebook_scan_page_guard", "fallback_capability_guard"},
+    "fallbackmode": {"one_shot", "sync_resident_fallback"},
+    "failurediagnosticsstatus": {
+        "diagnostics_payload_too_large",
+        "diagnostics_serialization_failed",
+        "diagnostics_validation_failed",
+        "unsupported_diagnostics_type",
+    },
     "collectionstrategy": {
         "comments_nested_scroll",
         "comments_visible_window",
@@ -223,6 +251,14 @@ SAFE_METADATA_STRING_VALUES = {
         "headed_compat",
         "headless",
     },
+    "urlkind": {
+        "facebook_other",
+        "group_feed",
+        "group_permalink",
+        "group_post",
+        "non_facebook",
+        "unknown",
+    },
 }
 KNOWN_METADATA_KEYS = {
     "accumulatedcount",
@@ -251,6 +287,10 @@ KNOWN_METADATA_KEYS = {
     "domsettlestable",
     "domsettlewaitms",
     "exceptionclass",
+    "failurediagnostics",
+    "failurediagnosticsstatus",
+    "fallbackguard",
+    "fallbackmode",
     "expandcount",
     "filteredemptytextcount",
     "filterednonpostcount",
@@ -264,6 +304,7 @@ KNOWN_METADATA_KEYS = {
     "maxwindowcount",
     "message",
     "mode",
+    "pageguard",
     "name",
     "parentpostid",
     "parsedcount",
@@ -311,6 +352,17 @@ KNOWN_METADATA_KEYS = {
     "url",
     "worker",
     "workermode",
+    "articlecount",
+    "bodytextlength",
+    "browserworkstarted",
+    "classification",
+    "detector",
+    "detectorversion",
+    "facebookhost",
+    "matcheddetail",
+    "matchedheading",
+    "stableobservationcount",
+    "urlkind",
 }
 RUNTIME_DIAGNOSTIC_PATH_LABELS = {
     "data dir",
@@ -332,6 +384,8 @@ RUNTIME_DIAGNOSTIC_VALUE_LABELS = {
     "browser mode",
     "build date",
     "frozen",
+    "facebook access circuit",
+    "facebook automation pacing",
     "git commit",
     "host",
     "mode",
@@ -356,22 +410,44 @@ SAFE_APP_METADATA_KEYS = {
     "packaging_mode",
     "python_version",
 }
-SAFE_METADATA_NUMERIC_FRAGMENTS = (
-    "attempt",
-    "count",
-    "distance",
-    "height",
-    "index",
-    "limit",
-    "ms",
-    "observation",
-    "round",
-    "sec",
-    "step",
-    "streak",
-    "top",
-    "window",
-)
+SAFE_METADATA_NUMERIC_KEYS = {
+    "accumulatedcount",
+    "addedcount",
+    "articlecount",
+    "bodytextlength",
+    "candidatecount",
+    "commentcount",
+    "detectorversion",
+    "domsettlecandidatecount",
+    "domsettleobservations",
+    "domsettlewaitms",
+    "expandcount",
+    "filteredemptytextcount",
+    "filterednonpostcount",
+    "maxwindowcount",
+    "parsedcount",
+    "rawitemcount",
+    "requestedscrollrounds",
+    "roundcount",
+    "roundindex",
+    "scannedcount",
+    "scrollaftertop",
+    "scrollbeforetop",
+    "scrollheight",
+    "scrollmoveddistance",
+    "scrollrounds",
+    "scrollstep",
+    "scrolltargettop",
+    "scrolly",
+    "scrollwaitms",
+    "stableobservationcount",
+    "stagnantwindows",
+    "targetcount",
+    "uniqueitemcount",
+}
+SAFE_METADATA_DERIVED_CONTENT_NUMERIC_KEYS = {
+    "bodytextlength",
+}
 
 
 
@@ -477,36 +553,32 @@ def _sanitize_metadata_value(
 def _is_sensitive_metadata_key(key: str) -> bool:
     """判斷 metadata key 是否可能含有內容、URL 或外部 ID。"""
 
-    normalized = key.lower()
+    normalized = _normalize_metadata_key(key)
+    if normalized in SAFE_METADATA_DERIVED_CONTENT_NUMERIC_KEYS:
+        return False
     sensitive_fragments = (
         "arialabel",
         "author",
-        "comment_id",
         "commentid",
         "content",
         "cover",
         "description",
-        "group_id",
         "groupid",
         "href",
-        "item_key",
         "itemkey",
         "label",
         "message",
         "name",
-        "parent_post_id",
         "parentpostid",
         "permalink",
-        "post_id",
         "postid",
-        "scope_id",
         "scopeid",
         "text",
         "url",
     )
     return (
         normalized == "id"
-        or normalized.endswith("id")
+        or normalized.endswith(("id", "ids"))
         or any(fragment in normalized for fragment in sensitive_fragments)
     ) and not _is_safe_string_metadata_key(key)
 
@@ -522,7 +594,7 @@ def _is_safe_numeric_metadata_key(key: str) -> bool:
     """判斷 metadata 數值是否可保留。"""
 
     normalized = _normalize_metadata_key(key)
-    return any(fragment in normalized for fragment in SAFE_METADATA_NUMERIC_FRAGMENTS)
+    return normalized in SAFE_METADATA_NUMERIC_KEYS
 
 
 def _normalize_metadata_key(key: str) -> str:
@@ -609,7 +681,7 @@ def _merge_debug_metadata_counts(
     if not isinstance(key_counts, dict) or not isinstance(value_counts, dict):
         return
     for key, value in metadata.items():
-        if _is_sensitive_metadata_key(str(key)) and not _is_safe_string_metadata_key(str(key)):
+        if _is_sensitive_metadata_key(str(key)):
             continue
         key_name = _safe_metadata_key_label(key)
         key_counts[key_name] = int(key_counts.get(key_name, 0)) + 1
@@ -672,7 +744,26 @@ def _log_line_summary(
     summary = _freeform_summary(text, aliases=aliases)
     summary["level"] = _log_level_hint(text)
     summary["timestamp_prefix"] = _timestamp_prefix(text)
+    probe_failure = _facebook_probe_failure_log_summary(text)
+    if probe_failure is not None:
+        summary["facebook_probe_failure"] = probe_failure
     return summary
+
+
+def _facebook_probe_failure_log_summary(line: str) -> dict[str, str] | None:
+    """只解析 worker 寫出的固定 recovery probe failure 事件。"""
+
+    match = FACEBOOK_PROBE_FAILURE_LOG_RE.search(str(line or ""))
+    if match is None:
+        return None
+    reason = _safe_reason_code(match.group(3))
+    if not reason:
+        return None
+    return {
+        "probe": match.group(1),
+        "stage": match.group(2),
+        "reason": reason,
+    }
 
 
 def _runtime_diagnostics_text(

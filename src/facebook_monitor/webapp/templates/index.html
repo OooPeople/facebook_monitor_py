@@ -24,6 +24,42 @@
 
     <div class="toast-stack" aria-live="polite" aria-atomic="true">
       <div
+        class="toast warning facebook-access-circuit-banner"
+        data-facebook-access-circuit-banner
+        data-circuit-state="{{ facebook_access_circuit_banner.state }}"
+        {% if not facebook_access_circuit_banner.visible %}hidden{% endif %}
+      >
+        <strong data-circuit-title>{{ facebook_access_circuit_banner.title }}</strong>
+        <span data-circuit-message>{{ facebook_access_circuit_banner.message }}</span>
+        <span
+          data-circuit-last-probe-result
+          {% if not facebook_access_circuit_banner.last_probe_result_label %}hidden{% endif %}
+        >{{ facebook_access_circuit_banner.last_probe_result_label }}</span>
+        <span data-circuit-recovery-status>
+          {{ facebook_access_circuit_banner.recovery_status_message }}
+        </span>
+        <form method="post" action="/facebook-access/recovery-check" data-circuit-recovery-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if facebook_access_recovery_candidates %}
+            <label>
+              安全檢查對象
+              <select name="candidate" required data-circuit-recovery-target>
+                {% for candidate in facebook_access_recovery_candidates %}
+                  <option value="{{ candidate.request_value }}">
+                    {{ candidate.label }}{% if candidate.is_trigger_target %}（原觸發 target）{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </label>
+          {% endif %}
+          <button
+            type="submit"
+            data-circuit-recovery-button
+            {% if not facebook_access_circuit_banner.recovery_enabled %}disabled{% endif %}
+          >執行一次恢復檢查</button>
+        </form>
+      </div>
+      <div
         class="toast error profile-session-warning"
         data-profile-session-warning
         {% if not profile_session_warning.needs_login %}hidden{% endif %}

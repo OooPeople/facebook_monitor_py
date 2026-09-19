@@ -10,6 +10,7 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
 from facebook_monitor.webapp.dashboard_status_presenters import TargetStatusPresenter
 
 
@@ -62,6 +63,24 @@ def test_target_status_presenter_label_and_css_class_matrix(
 
     assert presenter.label == label
     assert presenter.css_class == css_class
+
+
+def test_comments_safe_navigation_pending_is_waiting_not_error() -> None:
+    """comments feature gate 應覆蓋 stale error badge，呈現為可恢復等待。"""
+
+    target = replace(_target_descriptor(), target_kind=TargetKind.COMMENTS)
+    presenter = TargetStatusPresenter(
+        target=target,
+        runtime_state=TargetRuntimeState(
+            target_id=target.id,
+            runtime_status=TargetRuntimeStatus.ERROR,
+        ),
+        scanning_supported=True,
+        deferred_reason=COMMENTS_SAFE_NAVIGATION_PENDING_REASON,
+    )
+
+    assert presenter.label == "等待安全站內導覽"
+    assert presenter.css_class == "queued"
 
 
 def _target_descriptor() -> TargetDescriptor:

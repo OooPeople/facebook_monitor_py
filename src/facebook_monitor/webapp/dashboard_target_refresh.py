@@ -11,6 +11,10 @@ from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
+from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
+from facebook_monitor.webapp.dashboard_status_presenters import (
+    COMMENTS_SAFE_NAVIGATION_PENDING_LABEL,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,8 @@ def next_refresh_display(row: Any) -> NextRefreshDisplay:
         or row.runtime_state.desired_state != TargetDesiredState.ACTIVE
     ):
         return NextRefreshDisplay(label="未排程")
+    if getattr(row, "deferred_reason", "") == COMMENTS_SAFE_NAVIGATION_PENDING_REASON:
+        return NextRefreshDisplay(label=COMMENTS_SAFE_NAVIGATION_PENDING_LABEL)
     if row.runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
         return NextRefreshDisplay(label="未排程")
     if row.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
@@ -78,6 +84,7 @@ def next_refresh_remaining_seconds(row: Any) -> int | None:
         default_interval_seconds=row.settings_presenter.fixed_refresh_value,
         target_id=row.target_id,
         latest_finished_at=row.latest_scan_run.finished_at if row.latest_scan_run else None,
+        target_kind=row.target.target_kind,
     )
     due_at = last_reference_at + timedelta(seconds=max(interval_seconds, 1))
     remaining_seconds = ceil((due_at - utc_now()).total_seconds())

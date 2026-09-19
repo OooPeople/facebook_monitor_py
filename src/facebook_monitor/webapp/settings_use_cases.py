@@ -128,6 +128,19 @@ def support_bundle_scheduler_state(app_state: object) -> dict[str, object]:
         "last_reused_page_count": getattr(state, "last_reused_page_count", 0),
         "last_closed_page_count": getattr(state, "last_closed_page_count", 0),
         "resident_browser_alive": bool(getattr(state, "resident_browser_alive", False)),
+        "automation_coordinator_active": bool(
+            getattr(state, "automation_coordinator_active", False)
+        ),
+        "automation_coordinator_work_kind": getattr(
+            state,
+            "automation_coordinator_work_kind",
+            "",
+        ),
+        "automation_coordinator_waiter_count": getattr(
+            state,
+            "automation_coordinator_waiter_count",
+            0,
+        ),
         "recovered_runtime_count": getattr(state, "recovered_runtime_count", 0),
         "notification_dispatch_count": getattr(state, "notification_dispatch_count", 0),
         "worker_health_ok": bool(getattr(state, "worker_health_ok", True)),

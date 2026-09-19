@@ -270,6 +270,20 @@ def test_revision_client_teardown_closes_sse_and_clears_timers() -> None:
     )
 
 
+def test_dashboard_safety_poll_refreshes_even_while_sse_is_open() -> None:
+    """Filesystem hold 與 cooldown 到期不得依賴 SQLite revision 或 SSE event。"""
+
+    revision_client_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
+    ).read_text(encoding="utf-8")
+    safety_poll = revision_client_js.split(
+        "runtime.safetyPollIntervalId = window.setInterval", 1
+    )[1].split("}, safetyPollIntervalMs);", 1)[0]
+
+    assert "state.revisionTransport" not in safety_poll
+    assert "void updateWhenSafe(state);" in safety_poll
+
+
 def test_revision_client_supports_polling_only_internal_transport_switch() -> None:
     """internal polling-only switch 不建立 EventSource，直接使用 revision endpoint。"""
 
@@ -321,6 +335,36 @@ def test_dashboard_partial_update_toggles_database_invariant_warning_safely() ->
     )
     assert 'warning.toggleAttribute("hidden", !hasViolations);' in warning_update
     assert "innerHTML" not in warning_update
+
+
+def test_dashboard_partial_update_toggles_global_circuit_banner_safely() -> None:
+    """Global circuit banner partial update 只用 textContent helper 與 hidden toggle。"""
+
+    index_template = Path("src/facebook_monitor/webapp/templates/index.html").read_text(
+        encoding="utf-8"
+    )
+    partial_updates_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    ).read_text(encoding="utf-8")
+
+    banner_update = partial_updates_js.split(
+        "const updateFacebookAccessCircuitBanner = (circuitPayload) => {",
+        1,
+    )[1].split("};", 1)[0]
+    assert "data-facebook-access-circuit-banner" in index_template
+    assert index_template.index("data-facebook-access-circuit-banner") < index_template.index(
+        'class="dashboard-layout"'
+    )
+    assert "[data-facebook-access-circuit-banner]" in banner_update
+    assert "Boolean(circuitPayload?.visible)" in banner_update
+    assert 'updateText(banner, "[data-circuit-title]"' in banner_update
+    assert 'updateText(banner, "[data-circuit-message]"' in banner_update
+    assert "[data-circuit-last-probe-result]" in banner_update
+    assert "[data-circuit-recovery-status]" in banner_update
+    assert "[data-circuit-recovery-button]" in banner_update
+    assert "recoveryButton.disabled" in banner_update
+    assert 'banner.toggleAttribute("hidden", !visible);' in banner_update
+    assert "innerHTML" not in banner_update
 
 
 def test_dashboard_partial_update_reloads_when_degraded_empty_state_changes() -> None:

@@ -10,10 +10,15 @@ from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dependencies import get_db_path
+from facebook_monitor.webapp.dependencies import get_profile_dir
+from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.dependencies import run_web_read_operation
 from facebook_monitor.webapp.dashboard_payloads import serialize_profile_session_warning
 from facebook_monitor.webapp.dashboard_payloads import serialize_database_invariant_warning
+from facebook_monitor.webapp.dashboard_payloads import (
+    serialize_facebook_access_circuit_banner,
+)
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_item
 from facebook_monitor.webapp.dashboard_payloads import serialize_sidebar_payload
 from facebook_monitor.webapp.dashboard_payloads import serialize_target_card
@@ -62,11 +67,17 @@ def register_dashboard_partial_routes(
 
         db_path = get_db_path(request)
         session_started_at = get_session_started_at(request)
+        profile_dir = get_profile_dir(request)
+        scheduler_state = get_scheduler_manager(request).state()
         try:
             dashboard = await run_web_read_operation(
                 lambda: get_dashboard_view(
                     db_path,
                     session_started_at=session_started_at,
+                    profile_dir=profile_dir,
+                    browser_session_active=bool(
+                        scheduler_state.resident_browser_alive
+                    ),
                 ),
                 operation_name="dashboard.cards",
             )
@@ -76,6 +87,9 @@ def register_dashboard_partial_routes(
             "dashboard_degraded": dashboard.dashboard_degraded,
             "profile_session_warning": serialize_profile_session_warning(
                 dashboard.profile_session_warning
+            ),
+            "facebook_access_circuit_banner": serialize_facebook_access_circuit_banner(
+                dashboard.facebook_access_circuit_banner
             ),
             "database_invariant_warning": serialize_database_invariant_warning(
                 dashboard.database_invariant_warning

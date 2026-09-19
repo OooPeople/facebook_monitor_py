@@ -18,6 +18,7 @@ from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
 from facebook_monitor.webapp import dashboard_target_refresh
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_target_refresh import NextRefreshDisplay
@@ -72,6 +73,19 @@ def test_next_refresh_display_reports_non_countdown_states(
         setattr(row, key, value)
 
     assert next_refresh_display(row) == NextRefreshDisplay(label=expected)
+
+
+def test_next_refresh_display_reports_comments_safe_navigation_wait() -> None:
+    """active comments feature gate 不應假裝即將刷新或顯示錯誤未排程。"""
+
+    row = _row()
+    row.deferred_reason = COMMENTS_SAFE_NAVIGATION_PENDING_REASON
+    row.runtime_state = replace(
+        row.runtime_state,
+        runtime_status=TargetRuntimeStatus.ERROR,
+    )
+
+    assert next_refresh_display(row) == NextRefreshDisplay(label="等待安全站內導覽")
 
 
 def test_next_refresh_display_uses_display_next_due_at(
@@ -200,7 +214,11 @@ def _row() -> SimpleNamespace:
     target_id = "target-1"
     return SimpleNamespace(
         target_id=target_id,
-        target=SimpleNamespace(enabled=True, paused=False),
+        target=SimpleNamespace(
+            enabled=True,
+            paused=False,
+            target_kind=TargetKind.POSTS,
+        ),
         runtime_state=TargetRuntimeState(
             target_id=target_id,
             desired_state=TargetDesiredState.ACTIVE,

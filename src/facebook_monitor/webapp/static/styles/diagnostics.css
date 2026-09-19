@@ -111,6 +111,8 @@
 
 .settings-summary-copy {
   color: var(--text);
+  display: grid;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -122,5 +124,12 @@
 .settings-summary-value {
   color: var(--text);
   font-weight: 400;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.settings-summary-detail {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  white-space: normal;
 }

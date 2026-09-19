@@ -10,11 +10,13 @@ from fastapi.testclient import TestClient
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
 from facebook_monitor.application.target_requests import TargetConfigPatch
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEvent
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
+from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.webapp.app import create_app
 from tests.helpers.webapp import render_seeded_index
@@ -49,6 +51,62 @@ def test_index_renders_target_identity_status_and_actions(tmp_path: Path) -> Non
     assert f'value="#target-{target_id}"' not in text
     assert "啟動自動掃描" not in text
     assert "停止自動掃描" not in text
+
+
+def test_active_comments_target_renders_safe_navigation_waiting_state(
+    tmp_path: Path,
+) -> None:
+    """active comments target 應顯示安全導覽等待，不冒充錯誤或排程中。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="204808657039646",
+                parent_post_id="2221704348683390",
+                canonical_url=(
+                    "https://www.facebook.com/groups/204808657039646/"
+                    "posts/2221704348683390"
+                ),
+                name="統一獅留言監視",
+                config=TargetConfigPatch(
+                    fixed_refresh_sec=60,
+                    jitter_enabled=False,
+                ),
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        state = app_context.repositories.runtime_states.get(target.id)
+
+    assert state is not None
+    assert state.desired_state == TargetDesiredState.ACTIVE
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            enforce_csrf=False,
+        )
+    )
+
+    response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    assert "等待安全站內導覽" in response.text
+    assert "下次刷新：等待安全站內導覽" in response.text
+    assert cards_response.status_code == 200
+    card = cards_response.json()["cards"][0]
+    assert card["status_label"] == "等待安全站內導覽"
+    assert card["status_class"] == "queued"
+    assert card["next_refresh_label"] == "下次刷新：等待安全站內導覽"
+    assert card["monitoring_action"] == "stop"
+    assert card["runtime_error"] == ""
+    assert "排序失敗" not in response.text
+    assert "要求 固定 60 秒 · 有效 固定 180 秒" in response.text
+    assert "原因：套用留言模式安全下限 180 秒" in response.text
+    assert "要求間隔：固定 60 秒" in response.text
+    assert "有效間隔：固定 180 秒" in response.text
+    assert "原因：套用留言模式安全下限 180 秒。" in response.text
 
 
 def test_index_renders_latest_preview_hits_and_highlights(tmp_path: Path) -> None:

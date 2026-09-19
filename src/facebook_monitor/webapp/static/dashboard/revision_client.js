@@ -187,12 +187,10 @@ export const setupRevisionClient = (state) => {
   }, pendingRefreshCheckMs);
   runtime.safetyPollIntervalId = window.setInterval(() => {
     if (
-      state.revisionTransport === "polling"
-      && !runtime.pollingIntervalId
-      && !shouldDelayRefresh(state)
+      !shouldDelayRefresh(state)
       && !state.pendingRefresh
     ) {
-      pollRevision(state);
+      void updateWhenSafe(state);
     }
   }, safetyPollIntervalMs);
 

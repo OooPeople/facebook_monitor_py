@@ -108,6 +108,9 @@ class SchedulerSessionState:
     recovered_runtime_count: int = 0
     notification_dispatch_count: int = 0
     worker_health_ok: bool = True
+    automation_coordinator_active: bool = False
+    automation_coordinator_work_kind: str = ""
+    automation_coordinator_waiter_count: int = 0
 
     @property
     def mode_label(self) -> str:
@@ -175,6 +178,9 @@ class BackgroundSchedulerManager:
         self.recovered_runtime_count = 0
         self.notification_dispatch_count = 0
         self.worker_health_ok = True
+        self.automation_coordinator_active = False
+        self.automation_coordinator_work_kind = ""
+        self.automation_coordinator_waiter_count = 0
         self.metadata_refresh_target_ids: set[str] = set()
         self.metadata_refresh_order: list[str] = []
         self._start_generation = 0
@@ -213,6 +219,13 @@ class BackgroundSchedulerManager:
                 recovered_runtime_count=self.recovered_runtime_count,
                 notification_dispatch_count=self.notification_dispatch_count,
                 worker_health_ok=self.worker_health_ok,
+                automation_coordinator_active=self.automation_coordinator_active,
+                automation_coordinator_work_kind=(
+                    self.automation_coordinator_work_kind
+                ),
+                automation_coordinator_waiter_count=(
+                    self.automation_coordinator_waiter_count
+                ),
             )
 
     def start(self, options: SchedulerSessionOptions) -> None:
@@ -242,6 +255,7 @@ class BackgroundSchedulerManager:
             self.stop_event = Event()
             self.wake_event = Event()
             self.resident_browser_alive = False
+            self._reset_automation_coordinator_snapshot_locked()
             self.last_error = ""
             self.lifecycle_state = SchedulerLifecycleState.STARTING
 
@@ -285,6 +299,7 @@ class BackgroundSchedulerManager:
             if self._is_thread_alive_locked():
                 return
             self.resident_browser_alive = False
+            self._reset_automation_coordinator_snapshot_locked()
             self.lifecycle_state = SchedulerLifecycleState.ERROR
             self.last_error = message
         logger.error(
@@ -307,6 +322,7 @@ class BackgroundSchedulerManager:
         with self._lock:
             if not self._is_thread_alive_locked():
                 self.resident_browser_alive = False
+                self._reset_automation_coordinator_snapshot_locked()
                 self.lifecycle_state = SchedulerLifecycleState.STOPPED
 
     def wake(self) -> None:
@@ -390,6 +406,7 @@ class BackgroundSchedulerManager:
                 with self._lock:
                     self.last_error = format_failure_message(reason, message)
                     self.resident_browser_alive = False
+                    self._reset_automation_coordinator_snapshot_locked()
                     self.lifecycle_state = SchedulerLifecycleState.ERROR
                 if sqlite_locked:
                     logger.warning(
@@ -431,6 +448,22 @@ class BackgroundSchedulerManager:
             self.recovered_runtime_count = summary.recovered_runtime_count
             self.notification_dispatch_count = summary.notification_dispatch_count
             self.worker_health_ok = summary.worker_health_ok
+            self.automation_coordinator_active = (
+                summary.automation_coordinator_active
+            )
+            self.automation_coordinator_work_kind = (
+                summary.automation_coordinator_work_kind
+            )
+            self.automation_coordinator_waiter_count = (
+                summary.automation_coordinator_waiter_count
+            )
+
+    def _reset_automation_coordinator_snapshot_locked(self) -> None:
+        """在 scheduler 非 resident-running 時清除 process-local 快照。"""
+
+        self.automation_coordinator_active = False
+        self.automation_coordinator_work_kind = ""
+        self.automation_coordinator_waiter_count = 0
 
     def _wait_for_next_cycle(self, seconds: float) -> bool:
         """等待下一輪；manual-start wake 可提前結束等待。"""

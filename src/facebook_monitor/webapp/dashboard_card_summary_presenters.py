@@ -112,7 +112,7 @@ class TargetCardSummaryPresenter:
             exclude_keywords_summary=self.settings.exclude_text or "未設定",
             latest_scan_label=self.latest_scan_label,
             hit_record_total_count=self.hit_record_total_count,
-            refresh_label=self.settings.refresh_mode_label,
+            refresh_label=self.settings.refresh_summary_label,
             max_items_label=self.settings.settings_summary.max_items_label,
             latest_error_summary=self.latest_failed_scan_summary,
         )

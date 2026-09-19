@@ -33,6 +33,36 @@ const updateProfileSessionWarning = (payload) => {
   warning.toggleAttribute("hidden", !needsLogin);
 };
 
+const updateFacebookAccessCircuitBanner = (circuitPayload) => {
+  const banner = document.querySelector("[data-facebook-access-circuit-banner]");
+  if (!banner) return;
+  const visible = Boolean(circuitPayload?.visible);
+  updateText(banner, "[data-circuit-title]", visible ? (circuitPayload.title || "") : "");
+  updateText(banner, "[data-circuit-message]", visible ? (circuitPayload.message || "") : "");
+  const lastProbeResult = banner.querySelector("[data-circuit-last-probe-result]");
+  if (lastProbeResult) {
+    const label = visible ? String(circuitPayload.last_probe_result_label || "") : "";
+    lastProbeResult.textContent = label;
+    lastProbeResult.toggleAttribute("hidden", !label);
+  }
+  updateText(
+    banner,
+    "[data-circuit-recovery-status]",
+    visible ? (circuitPayload.recovery_status_message || "") : "",
+  );
+  const recoveryButton = banner.querySelector("[data-circuit-recovery-button]");
+  if (recoveryButton) {
+    recoveryButton.disabled = !visible || !Boolean(circuitPayload.recovery_enabled);
+    recoveryButton.title = visible
+      ? String(circuitPayload.recovery_status_message || "")
+      : "";
+  }
+  banner.dataset.circuitState = visible
+    ? String(circuitPayload.state || "unknown")
+    : "unknown";
+  banner.toggleAttribute("hidden", !visible);
+};
+
 const updateDatabaseInvariantWarning = (payload) => {
   const warning = document.querySelector("[data-database-invariant-warning]");
   if (!warning) return;
@@ -272,6 +302,9 @@ export const applyDashboardPartialUpdate = async (state) => {
     const dashboardPayload = await fetchJson("/api/dashboard-cards");
     if (sequence !== state.partialUpdateSeq) return;
     updateProfileSessionWarning(dashboardPayload.profile_session_warning || {});
+    updateFacebookAccessCircuitBanner(
+      dashboardPayload.facebook_access_circuit_banner || {},
+    );
     updateDatabaseInvariantWarning(dashboardPayload.database_invariant_warning || {});
     const currentDashboardDegraded = Boolean(document.querySelector("[data-dashboard-degraded-empty]"));
     if (Boolean(dashboardPayload.dashboard_degraded) !== currentDashboardDegraded) {

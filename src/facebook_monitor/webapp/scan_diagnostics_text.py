@@ -23,6 +23,9 @@ from facebook_monitor.webapp.scan_diagnostics_comments_sections import (
     append_comments_meta,
     format_comment_round_debug,
 )
+from facebook_monitor.webapp.scan_diagnostics_failure_sections import (
+    append_failure_diagnostics,
+)
 from facebook_monitor.webapp.scan_diagnostics_items import append_latest_scan_items
 from facebook_monitor.webapp.scan_diagnostics_posts_sections import (
     append_collected_meta,
@@ -81,6 +84,7 @@ def build_completed_scan_diagnostics_text(
         config=context.config,
         metadata=metadata,
     )
+    append_failure_diagnostics(lines, metadata.get("failure_diagnostics"))
     append_sort_diagnostics_block(lines, "sort_adjust", metadata.get("sort_adjust"))
     append_sort_diagnostics_block(lines, "comment_sort", metadata.get("comment_sort"))
     append_comments_meta(lines, metadata.get("comments_meta"))

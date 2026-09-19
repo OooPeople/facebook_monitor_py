@@ -256,6 +256,86 @@ def test_failed_scan_diagnostics_text_keeps_failure_fields_and_latest_failed_sca
     assert lines[-1].startswith("metadata_json=")
 
 
+def test_failed_scan_diagnostics_shows_safe_page_guard_evidence() -> None:
+    """頁面限制 diagnostics 只顯示固定欄位，不顯示 raw 頁面資料。"""
+
+    scan = ScanRun(
+        target_id="target-1",
+        status=ScanStatus.FAILED,
+        started_at=_STARTED_AT,
+        finished_at=_FINISHED_AT,
+        error_message="Facebook temporary access block detected.",
+        metadata={
+            "reason": "facebook_temporary_block",
+            "failure_diagnostics": {
+                "page_guard": {
+                    "detector": "facebook_scan_page_guard",
+                    "detector_version": 1,
+                    "classification": "facebook_temporary_block",
+                    "facebook_host": True,
+                    "matched_heading": True,
+                    "matched_detail": True,
+                    "article_count": 0,
+                    "stable_observation_count": 2,
+                    "body_text_length": 48,
+                    "url_kind": "group_post",
+                }
+            },
+        },
+    )
+
+    text = build_scan_diagnostics_text(
+        target=_target(),
+        config=_config(),
+        runtime_state=_runtime_state(),
+        latest_scan_run=scan,
+    )
+
+    assert "failure_reason=Facebook 暫時限制存取" in text
+    assert "failure_diagnostics.page_guard:" in text
+    assert "  stable_observation_count=2" in text
+    assert "  url_kind=group_post" in text
+    assert "https://" not in text
+
+
+def test_failed_scan_diagnostics_shows_fallback_guard_evidence() -> None:
+    """fallback diagnostics 顯示能力邊界，不包含 target identity 或 URL。"""
+
+    scan = ScanRun(
+        target_id="target-1",
+        status=ScanStatus.FAILED,
+        started_at=_STARTED_AT,
+        finished_at=_FINISHED_AT,
+        error_message="Comments targets are unsupported in this fallback mode.",
+        metadata={
+            "reason": "unsupported_in_fallback",
+            "failure_diagnostics": {
+                "fallback_guard": {
+                    "detector": "fallback_capability_guard",
+                    "detector_version": 1,
+                    "classification": "unsupported_in_fallback",
+                    "fallback_mode": "sync_resident_fallback",
+                    "target_kind": "comments",
+                    "browser_work_started": False,
+                }
+            },
+        },
+    )
+
+    text = build_scan_diagnostics_text(
+        target=_target(),
+        config=_config(),
+        runtime_state=_runtime_state(),
+        latest_scan_run=scan,
+    )
+
+    assert "failure_reason=備援模式不支援留言監視" in text
+    assert "failure_diagnostics.fallback_guard:" in text
+    assert "  fallback_mode=sync_resident_fallback" in text
+    assert "  browser_work_started=False" in text
+    assert "https://" not in text
+
+
 def test_append_sort_block_shows_menu_candidate_texts_when_present() -> None:
     """sort block 有候選文字時才顯示，方便複製給 review。"""
 
@@ -374,7 +454,4 @@ def test_content_unavailable_failure_reason_is_user_readable() -> None:
     """內容不可見的 failed scan reason 會顯示成連結已失效。"""
 
     assert format_scan_failure_reason("content_unavailable") == "連結已失效"
-    assert (
-        format_scan_stop_reason("sort_adjust_unconfirmed_skip")
-        == "調整排序失敗，已跳過掃描"
-    )
+    assert format_scan_stop_reason("sort_adjust_unconfirmed_skip") == "調整排序失敗，已跳過掃描"

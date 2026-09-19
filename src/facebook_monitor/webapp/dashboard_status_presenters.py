@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
+
+
+COMMENTS_SAFE_NAVIGATION_PENDING_LABEL = "等待安全站內導覽"
 
 
 @dataclass(frozen=True)
@@ -16,6 +20,7 @@ class TargetStatusPresenter:
     target: TargetDescriptor
     runtime_state: TargetRuntimeState
     scanning_supported: bool
+    deferred_reason: str = ""
 
     @property
     def label(self) -> str:
@@ -25,6 +30,8 @@ class TargetStatusPresenter:
             return "停用"
         if self.target.paused:
             return "已停止"
+        if self.deferred_reason == COMMENTS_SAFE_NAVIGATION_PENDING_REASON:
+            return COMMENTS_SAFE_NAVIGATION_PENDING_LABEL
         if not self.scanning_supported:
             return "尚未接上掃描"
         labels = {
@@ -43,6 +50,8 @@ class TargetStatusPresenter:
             return "muted"
         if self.target.paused:
             return "stopped"
+        if self.deferred_reason == COMMENTS_SAFE_NAVIGATION_PENDING_REASON:
+            return "queued"
         if self.runtime_state.runtime_status == TargetRuntimeStatus.QUEUED:
             return "queued"
         if self.runtime_state.runtime_status == TargetRuntimeStatus.RUNNING:
@@ -50,3 +59,9 @@ class TargetStatusPresenter:
         if self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR:
             return "error"
         return "enabled"
+
+
+__all__ = [
+    "COMMENTS_SAFE_NAVIGATION_PENDING_LABEL",
+    "TargetStatusPresenter",
+]

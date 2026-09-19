@@ -9,21 +9,21 @@ import pytest
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_create_service import build_create_target_plan
 from facebook_monitor.application.target_create_service import create_or_update_target_from_plan
-from facebook_monitor.application.target_create_service import TargetCreateMetadata
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.facebook.route_detection import RouteDetectionError
 
 
-def test_create_target_use_case_adds_group_posts_target(tmp_path: Path) -> None:
-    """use case 會依社團 URL 建立 posts target 並保存 metadata/config。"""
+def test_create_target_use_case_adds_group_posts_target_with_pending_metadata(
+    tmp_path: Path,
+) -> None:
+    """無自訂名稱時先保存 posts target/config，再交由 resident 補 metadata。"""
 
     db_path = tmp_path / "app.db"
     plan = build_create_target_plan(
         group_url="https://www.facebook.com/groups/222518561920110/",
         display_name="",
-        scheduler_running=False,
     )
 
     with SqliteApplicationContext(db_path) as app_context:
@@ -31,21 +31,19 @@ def test_create_target_use_case_adds_group_posts_target(tmp_path: Path) -> None:
             app_context.services.targets,
             plan=plan,
             config=TargetConfigPatch(exclude_keywords=("售完",)),
-            metadata=TargetCreateMetadata(
-                group_name="票券社團",
-                group_cover_image_url="https://scontent.ftpe7-1.fna.fbcdn.net/example.jpg",
-            ),
         )
         target = app_context.repositories.targets.get(result.target.id)
         config = app_context.repositories.configs.get_for_target(result.target)
 
-    assert result.metadata_refresh_target_id == ""
     assert target is not None
+    assert result.metadata_refresh_target_id == target.id
+    assert result.metadata_refresh_pending
     assert target.target_kind == TargetKind.POSTS
     assert target.group_id == "222518561920110"
-    assert target.name == "票券社團"
-    assert target.group_name == "票券社團"
-    assert target.group_cover_image_url == "https://scontent.ftpe7-1.fna.fbcdn.net/example.jpg"
+    assert target.name == "group:222518561920110:posts"
+    assert target.group_name == ""
+    assert target.group_cover_image_url == ""
+    assert target.metadata_status == TargetMetadataStatus.PENDING
     assert config is not None
     assert config.exclude_keywords == ("售完",)
 
@@ -57,7 +55,6 @@ def test_create_target_use_case_adds_comments_target(tmp_path: Path) -> None:
     plan = build_create_target_plan(
         group_url="https://www.facebook.com/groups/204808657039646/permalink/2155501991970293",
         display_name="自訂留言",
-        scheduler_running=False,
     )
 
     with SqliteApplicationContext(db_path) as app_context:
@@ -69,6 +66,7 @@ def test_create_target_use_case_adds_comments_target(tmp_path: Path) -> None:
         target = app_context.repositories.targets.get(result.target.id)
 
     assert result.metadata_refresh_target_id == ""
+    assert not result.metadata_refresh_pending
     assert target is not None
     assert target.target_kind == TargetKind.COMMENTS
     assert target.group_id == "204808657039646"
@@ -79,16 +77,15 @@ def test_create_target_use_case_adds_comments_target(tmp_path: Path) -> None:
     assert target.name == "自訂留言"
 
 
-def test_create_target_use_case_marks_metadata_refresh_pending_when_scheduler_running(
+def test_create_target_use_case_marks_metadata_refresh_pending_without_custom_name(
     tmp_path: Path,
 ) -> None:
-    """scheduler running 時 use case 只標 pending 並回傳 commit 後 refresh 指示。"""
+    """metadata refresh 決策只看有無自訂名稱，不依賴 scheduler snapshot。"""
 
     db_path = tmp_path / "app.db"
     plan = build_create_target_plan(
         group_url="https://www.facebook.com/groups/222518561920110/",
         display_name="",
-        scheduler_running=True,
     )
 
     with SqliteApplicationContext(db_path) as app_context:
@@ -105,16 +102,15 @@ def test_create_target_use_case_marks_metadata_refresh_pending_when_scheduler_ru
     assert target.group_name == ""
 
 
-def test_create_target_use_case_marks_metadata_refresh_pending_from_resolver_outcome(
+def test_create_target_use_case_preserves_custom_name_without_metadata_refresh(
     tmp_path: Path,
 ) -> None:
-    """resolver 實際跳過時，即使 plan snapshot 是 stopped 也需補排 metadata refresh。"""
+    """使用者自訂名稱維持 resolved，且不交給 resident 覆寫。"""
 
     db_path = tmp_path / "app.db"
     plan = build_create_target_plan(
         group_url="https://www.facebook.com/groups/222518561920110/",
-        display_name="",
-        scheduler_running=False,
+        display_name="我的票券社團",
     )
 
     with SqliteApplicationContext(db_path) as app_context:
@@ -122,13 +118,14 @@ def test_create_target_use_case_marks_metadata_refresh_pending_from_resolver_out
             app_context.services.targets,
             plan=plan,
             config=TargetConfigPatch(),
-            metadata_refresh_required=True,
         )
         target = app_context.repositories.targets.get(result.target.id)
 
     assert target is not None
-    assert result.metadata_refresh_target_id == target.id
-    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert result.metadata_refresh_target_id == ""
+    assert not result.metadata_refresh_pending
+    assert target.name == "我的票券社團"
+    assert target.metadata_status == TargetMetadataStatus.RESOLVED
     assert target.group_name == ""
 
 
@@ -141,7 +138,6 @@ def test_create_target_plan_rejects_invalid_url_without_db_write(tmp_path: Path)
         build_create_target_plan(
             group_url="https://example.com/not-facebook",
             display_name="",
-            scheduler_running=False,
         )
 
     assert not db_path.exists()

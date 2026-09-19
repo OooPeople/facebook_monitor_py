@@ -6,6 +6,9 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from facebook_monitor.application.facebook_access_observability import (
+    FacebookAccessSafeSnapshot,
+)
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.webapp.dashboard_models import SidebarGroupSection
 from facebook_monitor.webapp.dashboard_models import TargetRow
@@ -48,12 +51,35 @@ class DatabaseInvariantWarning:
 
 
 @dataclass(frozen=True)
+class FacebookAccessCircuitBanner:
+    """保存 profile-wide Facebook automation 安全暫停 banner。"""
+
+    visible: bool = False
+    title: str = ""
+    message: str = ""
+    profile_scope: str = ""
+    state: str = "unknown"
+    reason: str = ""
+    cooldown_active: bool = False
+    cooldown_until: str = ""
+    probe_pending: bool = False
+    last_probe_result: str = ""
+    last_probe_result_label: str = ""
+    recovery_enabled: bool = False
+    recovery_disabled_reason: str = ""
+    recovery_status_message: str = ""
+
+
+@dataclass(frozen=True)
 class DashboardViewModel:
     """保存 dashboard template 所需 read model。"""
 
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...] = ()
     profile_session_warning: ProfileSessionWarning = ProfileSessionWarning()
+    facebook_access_circuit_banner: FacebookAccessCircuitBanner = (
+        FacebookAccessCircuitBanner()
+    )
     database_invariant_warning: DatabaseInvariantWarning = DatabaseInvariantWarning()
     dashboard_degraded: bool = False
 
@@ -86,9 +112,7 @@ class DashboardViewModel:
             {
                 "group_id": group.dom_group_id,
                 "template_updated_at": (
-                    group.template.updated_at.isoformat()
-                    if group.template is not None
-                    else ""
+                    group.template.updated_at.isoformat() if group.template is not None else ""
                 ),
             }
             for group in self.sidebar_groups
@@ -105,4 +129,5 @@ class DashboardReadResult:
     sidebar_groups: tuple[SidebarGroupSection, ...]
     profile_session_status: ProfileSessionStatus
     database_invariant_warning: DatabaseInvariantWarning
+    facebook_access_safe_snapshot: FacebookAccessSafeSnapshot = FacebookAccessSafeSnapshot()
     dashboard_degraded: bool = False

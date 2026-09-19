@@ -12,6 +12,12 @@ import zipfile
 
 import pytest
 
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.managed_profile_identity import (
+    resolve_managed_profile_identity,
+)
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.facebook_access import FacebookProductOperationKind
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
@@ -24,6 +30,10 @@ from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
+from facebook_monitor.automation.profile_identity import (
+    load_or_create_managed_profile_identity,
+)
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.diagnostics.support_bundle import create_support_bundle
 from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
 from facebook_monitor.diagnostics._support_bundle_target_collectors import (
@@ -45,6 +55,7 @@ from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SECRET_REENCRYPTION_MARKER_KEY
 from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.runtime.paths import resolve_runtime_paths
+from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 
 
 def test_support_bundle_table_counts_cover_required_schema_tables() -> None:
@@ -96,6 +107,244 @@ def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:
         ).fetchone()
     assert topic_row["ntfy_topic"] == "legacy-plaintext-topic"
     assert marker_row is None
+
+
+def test_support_bundle_facebook_access_circuit_snapshot_is_privacy_safe(
+    tmp_path: Path,
+) -> None:
+    """Circuit section 只輸出 alias/state/reason/cooldown，不含 owner identities。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    identity = load_or_create_managed_profile_identity(
+        profiles_root=paths.profiles_dir,
+        profile_dir=paths.profile_dir,
+    )
+    marker_value = identity.marker_path.read_text(encoding="ascii").strip()
+    opened_at = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    cooldown_until = datetime(2099, 7, 23, tzinfo=timezone.utc)
+    with SqliteConnection(paths.db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO facebook_access_circuit_state (
+                profile_scope_key, state, episode_id, generation, reason_code,
+                source_kind, operation_kind, trigger_action_kind, opened_at,
+                last_detected_at, cooldown_until, detection_count, updated_at
+            )
+            VALUES (?, 'open', 'private-episode', 1, ?, 'scan',
+                    'comments_access', 'direct_document', ?, ?, ?, 1, ?)
+            """,
+            (
+                identity.profile_scope_key,
+                FACEBOOK_TEMPORARY_BLOCK_REASON,
+                opened_at.isoformat(),
+                opened_at.isoformat(),
+                cooldown_until.isoformat(),
+                opened_at.isoformat(),
+            ),
+        )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("facebook_access_circuit.json").decode("utf-8"))
+        combined_text = "\n".join(archive.read(name).decode("utf-8") for name in archive.namelist())
+
+    assert payload == {
+        "available": True,
+        "identity_status": "legacy_unbound",
+        "runtime_hold": "",
+        "profile_scope": "profile_001",
+        "state": "open",
+        "reason": FACEBOOK_TEMPORARY_BLOCK_REASON,
+        "cooldown": {
+            "active": True,
+            "until": cooldown_until.isoformat(),
+        },
+    }
+    assert identity.profile_scope_key not in combined_text
+    assert marker_value not in combined_text
+    assert "private-episode" not in combined_text
+    assert paths.profile_dir.name not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_support_bundle_reports_missing_bound_profile_identity_without_secrets(
+    tmp_path: Path,
+) -> None:
+    """Durable marker 遺失時支援包需顯示 storage hold，且不得洩漏 identity。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    identity = resolve_managed_profile_identity(
+        db_path=paths.db_path,
+        profiles_root=paths.profiles_dir,
+        profile_dir=paths.profile_dir,
+    )
+    marker_value = str(identity.marker_uuid)
+    identity.marker_path.unlink()
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(
+            archive.read("facebook_access_circuit.json").decode("utf-8")
+        )
+        combined_text = "\n".join(
+            archive.read(name).decode("utf-8") for name in archive.namelist()
+        )
+
+    assert payload["identity_status"] == "missing"
+    assert payload["runtime_hold"] == "storage_critical"
+    assert payload["state"] == "storage_critical"
+    assert payload["available"] is True
+    assert marker_value not in combined_text
+    assert identity.profile_scope_key not in combined_text
+
+
+def test_support_bundle_facebook_automation_pacing_snapshot_is_privacy_safe(
+    tmp_path: Path,
+) -> None:
+    """Pacing section 不輸出 operation/session/raw profile owner identity。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    identity = load_or_create_managed_profile_identity(
+        profiles_root=paths.profiles_dir,
+        profile_dir=paths.profile_dir,
+    )
+    marker_value = identity.marker_path.read_text(encoding="ascii").strip()
+    started_at = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    lease_expires_at = datetime(2099, 7, 22, tzinfo=timezone.utc)
+    private_operation = "private-operation-123"
+    private_session = "private-session-456"
+    with SqliteApplicationContext(paths.db_path) as app:
+        pacing_result = app.repositories.facebook_automation_pacing.try_acquire(
+            identity.profile_scope_key,
+            operation_id=private_operation,
+            work_kind="target_scan",
+            owner_session_id=private_session,
+            started_at=started_at,
+            lease_expires_at=lease_expires_at,
+        )
+        assert pacing_result.token is not None
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(
+            archive.read("facebook_automation_pacing.json").decode("utf-8")
+        )
+        combined_text = "\n".join(
+            archive.read(name).decode("utf-8") for name in archive.namelist()
+        )
+
+    assert payload == {
+        "available": True,
+        "profile_scope": "profile_001",
+        "active": True,
+        "active_work_kind": "target_scan",
+        "active_lease": {
+            "expires_at": lease_expires_at.isoformat(),
+            "expired": False,
+        },
+        "quiet_period": {
+            "active": False,
+            "next_not_before": "",
+        },
+        "last_automation": {
+            "started_at": started_at.isoformat(),
+            "finished_at": "",
+            "outcome": "started",
+        },
+    }
+    assert identity.profile_scope_key not in combined_text
+    assert marker_value not in combined_text
+    assert private_operation not in combined_text
+    assert private_session not in combined_text
+
+
+def test_support_bundle_session_recovery_snapshot_is_bounded_and_privacy_safe(
+    tmp_path: Path,
+) -> None:
+    """Recovery section只輸出readiness/probe/result，不含任何durable identity。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    identity = resolve_managed_profile_identity(
+        db_path=paths.db_path,
+        profiles_root=paths.profiles_dir,
+        profile_dir=paths.profile_dir,
+    )
+    marker_session_id = "11111111-1111-4111-8111-111111111111"
+    observed_at = datetime(2026, 9, 19, tzinfo=timezone.utc)
+    with SqliteApplicationContext(paths.db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="private-recovery-group",
+                canonical_url="https://www.facebook.com/groups/private-recovery-group",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        reconciled = app.services.facebook_session_recovery.reconcile_stale_session(
+            identity.profile_scope_key,
+            marker_session_id=marker_session_id,
+            reconciled_at=observed_at,
+        )
+        requested = app.services.facebook_session_recovery.request_probe(
+            identity.profile_scope_key,
+            target_id=target.id,
+            operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+            requested_at=reconciled.state.earliest_probe_at,
+        )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(
+            archive.read("facebook_session_recovery.json").decode("utf-8")
+        )
+        combined_text = "\n".join(
+            archive.read(name).decode("utf-8") for name in archive.namelist()
+        )
+
+    assert payload == {
+        "available": True,
+        "status": "probe_pending",
+        "earliest_readiness_at": reconciled.state.earliest_probe_at.isoformat(),
+        "quiet_period_active": False,
+        "probe_state": "pending",
+        "last_result": "",
+    }
+    assert not {
+        "profile_scope_key",
+        "marker_session_id",
+        "request_id",
+        "requested_target_id",
+        "probe_token",
+    }.intersection(payload)
+    assert identity.profile_scope_key not in combined_text
+    assert marker_session_id not in combined_text
+    assert requested.state.request_id not in combined_text
+    assert target.id not in combined_text
+    assert "private-recovery-group" not in combined_text
 
 
 def test_target_inventory_marks_generic_facebook_logo_as_invalid_cover(
@@ -344,7 +593,7 @@ def test_support_bundle_pending_update_uses_expected_sha256_prefix(tmp_path: Pat
             {
                 "schema_version": 1,
                 "version": "1.2.3",
-                "repository": "owner/repo",
+                "repository": "secret-org/private-repo",
                 "platform": "windows-x64",
                 "zip_path": str(paths.updates_dir / "app.zip"),
                 "manifest_path": str(paths.updates_dir / "manifest.json"),
@@ -370,10 +619,13 @@ def test_support_bundle_pending_update_uses_expected_sha256_prefix(tmp_path: Pat
     assert pending_update["zip_path_present"] is True
     assert pending_update["manifest_path_present"] is True
     assert pending_update["signature_path_present"] is True
+    assert pending_update["repository_present"] is True
+    assert pending_update["repository_alias"] == "custom"
     assert pending_update["sha256_prefix"] == digest[:12]
     assert pending_update["expected_sha256_prefix"] == digest[:12]
     assert pending_update["actual_sha256_prefix"] == digest[:12]
     assert pending_update["sha256_match"] is True
+    assert "secret-org/private-repo" not in str(payload)
 
 
 def test_support_bundle_pending_update_reports_sha256_mismatch(tmp_path: Path) -> None:
@@ -388,7 +640,7 @@ def test_support_bundle_pending_update_reports_sha256_mismatch(tmp_path: Path) -
             {
                 "schema_version": 1,
                 "version": "1.2.3",
-                "repository": "owner/repo",
+                "repository": DEFAULT_UPDATE_REPOSITORY,
                 "platform": "windows-x64",
                 "zip_path": str(paths.updates_dir / "app.zip"),
                 "manifest_path": str(paths.updates_dir / "manifest.json"),
@@ -410,6 +662,9 @@ def test_support_bundle_pending_update_reports_sha256_mismatch(tmp_path: Path) -
         payload = json.loads(archive.read("maintenance_update_summary.json").decode("utf-8"))
 
     pending_update = payload["pending_update"]
+    assert pending_update["repository_present"] is True
+    assert pending_update["repository_alias"] == "public_default"
+    assert DEFAULT_UPDATE_REPOSITORY not in str(payload)
     assert pending_update["sha256_prefix"] == expected[:12]
     assert pending_update["expected_sha256_prefix"] == expected[:12]
     assert pending_update["actual_sha256_prefix"] == actual[:12]
@@ -468,6 +723,70 @@ def test_support_bundle_preserves_known_scan_stop_reason_counts(
         "unrecognized_code": 1,
     }
     assert "privateKeyValue" not in json.dumps(scan_payload, ensure_ascii=False)
+
+
+def test_support_bundle_keeps_safe_page_guard_diagnostics_without_raw_page_data(
+    tmp_path: Path,
+) -> None:
+    """實際 zip 應保留 page guard 證據 enum/count，並去除 raw URL/文字。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+    )
+    now = datetime(2026, 7, 22, 0, 0, tzinfo=timezone.utc)
+    with SqliteConnection(paths.db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        TargetRepository(connection).save(target)
+        ScanRunRepository(connection).add(
+            ScanRun(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                started_at=now,
+                finished_at=now,
+                metadata={
+                    "reason": "facebook_temporary_block",
+                    "failure_diagnostics": {
+                        "page_guard": {
+                            "detector": "facebook_scan_page_guard",
+                            "detector_version": 1,
+                            "classification": "facebook_temporary_block",
+                            "facebook_host": True,
+                            "matched_heading": True,
+                            "matched_detail": True,
+                            "article_count": 0,
+                            "stable_observation_count": 2,
+                            "body_text_length": 48,
+                            "url_kind": "group_post",
+                            "url": "https://www.facebook.com/groups/private/posts/999",
+                            "text": "private block page body",
+                        }
+                    },
+                },
+            )
+        )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(archive.read("scan_summaries.json").decode("utf-8"))
+
+    combined = json.dumps(payload, ensure_ascii=False)
+    page_guard = payload["runs"][0]["metadata"]["failure_diagnostics"]["page_guard"]
+    assert payload["failure_reason_counts"] == {"facebook_temporary_block": 1}
+    assert page_guard["detector"] == "facebook_scan_page_guard"
+    assert page_guard["detector_version"] == 1
+    assert page_guard["stable_observation_count"] == 2
+    assert page_guard["body_text_length"] == 48
+    assert page_guard["url_kind"] == "group_post"
+    assert "private" not in combined
+    assert "facebook.com" not in combined
 
 
 def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None:
@@ -621,6 +940,9 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
             "notification_diagnostics.json",
             "dedupe_summary.json",
             "profile_session.json",
+            "facebook_access_circuit.json",
+            "facebook_automation_pacing.json",
+            "facebook_session_recovery.json",
             "maintenance_update_summary.json",
             "scheduler_state.json",
             "log_tail.json",
@@ -648,6 +970,7 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
 
     assert ordered_names == expected_names
     assert names == set(expected_names)
+    assert manifest["schema_version"] == 5
     assert [
         (section["name"], section["file"])
         for section in manifest["sections"]
@@ -664,6 +987,9 @@ def test_support_bundle_includes_redacted_debug_sections(tmp_path: Path) -> None
         ("notification_diagnostics", "notification_diagnostics.json"),
         ("dedupe_summary", "dedupe_summary.json"),
         ("profile_session", "profile_session.json"),
+        ("facebook_access_circuit", "facebook_access_circuit.json"),
+        ("facebook_automation_pacing", "facebook_automation_pacing.json"),
+        ("facebook_session_recovery", "facebook_session_recovery.json"),
         ("maintenance_update_summary", "maintenance_update_summary.json"),
         ("scheduler_state", "scheduler_state.json"),
         ("log_tail", "log_tail.json"),
@@ -780,6 +1106,44 @@ def test_support_bundle_json_serialization_failure_is_isolated(
     assert database_summary["error"] == "TypeError"
     assert section["status"] == "unavailable"
     assert section["error"] == "TypeError"
+
+
+def test_support_bundle_circuit_collector_failure_is_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Circuit snapshot 讀取失敗時只降級該 section，不阻止支援包發布。"""
+
+    paths = resolve_runtime_paths(data_dir=tmp_path / "data", app_base_dir=tmp_path / "app")
+    paths.ensure_writable_dirs()
+
+    def fail_circuit_snapshot(*_args, **_kwargs):
+        raise RuntimeError("private profile scope secret")
+
+    monkeypatch.setattr(
+        "facebook_monitor.diagnostics.support_bundle._facebook_access_circuit_payload",
+        fail_circuit_snapshot,
+    )
+
+    result = create_support_bundle(
+        paths=paths,
+        runtime_diagnostics_text="",
+        app_metadata={},
+    )
+
+    with zipfile.ZipFile(result.path) as archive:
+        payload = json.loads(
+            archive.read("facebook_access_circuit.json").decode("utf-8")
+        )
+        manifest = json.loads(archive.read("bundle_manifest.json").decode("utf-8"))
+
+    section = next(
+        item for item in manifest["sections"]
+        if item["name"] == "facebook_access_circuit"
+    )
+    assert payload == {"available": False, "error": "RuntimeError"}
+    assert section["status"] == "unavailable"
+    assert "private profile scope secret" not in json.dumps(manifest, ensure_ascii=False)
 
 
 def test_support_bundle_keeps_inactive_stale_running_recovery_reason_code(

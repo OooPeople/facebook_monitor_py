@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from facebook_monitor.core.defaults import PYTHON_FACEBOOK_AUTOMATION_DEFAULTS
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
 from facebook_monitor.webapp.dashboard_status_presenters import TargetStatusPresenter
 
 
@@ -31,7 +33,19 @@ class TargetMonitoringPresenter:
             target=self.target,
             runtime_state=self.runtime_state,
             scanning_supported=self.scanning_supported,
+            deferred_reason=self.deferred_reason,
         )
+
+    @property
+    def deferred_reason(self) -> str:
+        """回傳 formal resident 尚不可安全執行此 target 的 typed reason。"""
+
+        if (
+            self.target.target_kind == TargetKind.COMMENTS
+            and not PYTHON_FACEBOOK_AUTOMATION_DEFAULTS.comments_group_navigation
+        ):
+            return COMMENTS_SAFE_NAVIGATION_PENDING_REASON
+        return ""
 
     @property
     def status_label(self) -> str:

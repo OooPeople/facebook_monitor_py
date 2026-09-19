@@ -6,10 +6,31 @@ import json
 from typing import cast
 
 from facebook_monitor.diagnostics._support_bundle_redaction import _freeform_summary
+from facebook_monitor.diagnostics._support_bundle_redaction import _log_line_summary
+from facebook_monitor.diagnostics._support_bundle_redaction import _merge_debug_metadata_counts
 from facebook_monitor.diagnostics._support_bundle_redaction import _redacted_truncated
 from facebook_monitor.diagnostics._support_bundle_redaction import _runtime_diagnostics_text
 from facebook_monitor.diagnostics._support_bundle_redaction import _sanitize_metadata
 from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
+
+
+def test_log_line_summary_preserves_only_allowlisted_probe_failure_fields() -> None:
+    """Recovery probe log只投影固定stage/reason，不輸出例外秘密。"""
+
+    aliases = _SupportBundleAliases()
+    summary = _log_line_summary(
+        "2026-09-19 WARNING facebook_probe_failure "
+        "probe=session_recovery stage=context_close reason=scheduler_runtime "
+        "secret=do-not-emit",
+        aliases=aliases,
+    )
+
+    assert summary["facebook_probe_failure"] == {
+        "probe": "session_recovery",
+        "stage": "context_close",
+        "reason": "scheduler_runtime",
+    }
+    assert "do-not-emit" not in json.dumps(summary, ensure_ascii=False)
 
 
 def test_sanitize_metadata_redacts_sensitive_and_unknown_values() -> None:
@@ -44,6 +65,118 @@ def test_sanitize_metadata_redacts_sensitive_and_unknown_values() -> None:
     assert "customer secret text" not in combined_text
     assert "private nested text" not in combined_text
     assert "secret item" not in combined_text
+
+
+def test_sanitize_metadata_never_emits_numeric_identifiers() -> None:
+    """numeric ID 即使 key 含 count 片段，巢狀或 list 內也不可輸出原值。"""
+
+    raw_ids = (
+        1234567890123456,
+        9876543210123456,
+        2345678901234567,
+        8765432109876543,
+    )
+    payload = _sanitize_metadata(
+        {
+            "account_id": raw_ids[0],
+            "discount_id": raw_ids[1],
+            "nested": {"account_id": raw_ids[2], "candidate_count": 3},
+            "items": [{"discount_id": raw_ids[3], "round_count": 1}],
+            "round_count": 2,
+        }
+    )
+    combined = json.dumps(payload, ensure_ascii=False)
+
+    assert '"candidate_count": 3' in combined
+    assert '"round_count": 1' in combined
+    assert payload["round_count"] == 2
+    for raw_id in raw_ids:
+        assert str(raw_id) not in combined
+
+
+def test_merge_debug_metadata_counts_never_aggregates_numeric_identifiers() -> None:
+    """debug counter 不可把 numeric identifier 拼進 value counter key。"""
+
+    raw_ids = (1234567890123456, 9876543210123456)
+    target_payload: dict[str, object] = {}
+
+    _merge_debug_metadata_counts(
+        target_payload,
+        {
+            "account_id": raw_ids[0],
+            "discount_id": raw_ids[1],
+            "candidate_count": 3,
+        },
+    )
+    combined = json.dumps(target_payload, ensure_ascii=False)
+
+    assert target_payload["debug_value_counts"] == {"candidate_count=3": 1}
+    for raw_id in raw_ids:
+        assert str(raw_id) not in combined
+
+
+def test_sanitize_metadata_preserves_only_safe_page_guard_diagnostics() -> None:
+    """page guard diagnostics 保留 enum/count，但不接受 raw URL 或頁面文字。"""
+
+    payload = _sanitize_metadata(
+        {
+            "reason": "facebook_temporary_block",
+            "failure_diagnostics": {
+                "page_guard": {
+                    "detector": "facebook_scan_page_guard",
+                    "detector_version": 1,
+                    "classification": "facebook_temporary_block",
+                    "facebook_host": True,
+                    "matched_heading": True,
+                    "matched_detail": True,
+                    "article_count": 0,
+                    "stable_observation_count": 2,
+                    "body_text_length": 48,
+                    "url_kind": "group_post",
+                    "url": "https://www.facebook.com/groups/private/posts/999",
+                    "text": "private page body",
+                }
+            },
+        }
+    )
+    combined = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["reason"] == "facebook_temporary_block"
+    assert "facebook_scan_page_guard" in combined
+    assert "group_post" in combined
+    assert '"detector_version": 1' in combined
+    assert '"body_text_length": 48' in combined
+    assert "private" not in combined
+    assert "facebook.com" not in combined
+
+
+def test_sanitize_metadata_preserves_safe_fallback_guard_diagnostics() -> None:
+    """fallback guard 只保留能力 enum 與 browser 尚未開始的布林證據。"""
+
+    payload = _sanitize_metadata(
+        {
+            "reason": "unsupported_in_fallback",
+            "failure_diagnostics": {
+                "fallback_guard": {
+                    "detector": "fallback_capability_guard",
+                    "detector_version": 1,
+                    "classification": "unsupported_in_fallback",
+                    "fallback_mode": "sync_resident_fallback",
+                    "target_kind": "comments",
+                    "browser_work_started": False,
+                    "url": "https://www.facebook.com/groups/private/posts/999",
+                }
+            },
+        }
+    )
+    combined = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["reason"] == "unsupported_in_fallback"
+    assert "fallback_capability_guard" in combined
+    assert "sync_resident_fallback" in combined
+    assert '"browser_work_started": false' in combined
+    assert "private" not in combined
+    assert "facebook.com" not in combined
 
 
 def test_redacted_truncated_aliases_identifier_assignments() -> None:

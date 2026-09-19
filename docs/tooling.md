@@ -118,6 +118,12 @@ Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | F
 git diff --check
 ```
 
+Facebook safety stack 變更至少要覆蓋 identity continuity、schema/migration、
+circuit/session-recovery CAS、session guard、coordinator/page budget、Web full/partial
+banner 與 support bundle redaction。Comments 尚未通過 group-first live gate 前，
+測試必須明確驗證 direct post `goto` / `reload` 次數為 0；不得用 direct permalink
+作人工恢復 probe。
+
 CI 使用固定的 `uv==0.9.0` 搭配 locked sync，並維持 report-only complexity
 summary、Playwright Chromium 安裝、lint、type check、static JS syntax check、
 pytest coverage 與 dependency audit。

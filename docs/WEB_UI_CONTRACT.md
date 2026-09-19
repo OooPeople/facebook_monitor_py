@@ -26,6 +26,7 @@ runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者�
 | 局部更新 | 前端 transport state 與 DOM replacement contract | revision 真實來源與 DB trigger 語義 |
 | 通知 | 顯示區塊與遮罩 secret 表單行為 | outbox、dedupe、dispatch、retry / cleanup 語義 |
 | Facebook 資料 | 畫面呈現的 diagnostics 欄位 | extractor、sort、load-more、scan pipeline 行為 |
+| Facebook safety | global banner、bounded reason、canary selector、recovery CTA | circuit/session-recovery owner、probe 與 browser runtime |
 
 ### UI 契約表
 
@@ -36,6 +37,11 @@ runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者�
 | 群組 template | 破壞性批次覆蓋，且必須要求使用者確認 | config fallback owner 或隱性全域繼承 |
 | 動態對話框 | confirm / input / action dialogs 走共用 helper | dashboard 流程內使用原生 `confirm/prompt/alert` |
 | Dashboard revision | 一個 EventSource，加上最多一個 polling fallback | 多條並行 transport paths 同時更新同一份 state |
+| Facebook safety banner | full page 與 batch partial 使用同一 read model；只呈現 bounded 狀態 | marker/profile path、UUID、target id 或 token |
+
+Facebook safety banner 的 canary `<select>` 只提交可由伺服器重新解析的 opaque
+candidate handle；不得把 raw target id 或 operation/target 複合值寫進 DOM。POST
+仍須重新列出當下 eligible candidates，再由 application service 重驗 target 狀態。
 
 ## Target Card 與結果呈現
 
@@ -65,6 +71,12 @@ runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者�
   SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。
 - EventSource open 後必須停止 fallback polling，任一時間最多保留一個
   EventSource 與一個 polling interval。
+- Facebook safety overlay 另保留單一低頻 partial refresh，因 cooldown 到期與
+  filesystem sentinel 不一定增加 SQLite dashboard revision。這條 refresh 只更新
+  safety payload，不可變成 sidebar/target card 的第二套一般 polling transport。
+- Safety banner 必須出現在 full page 與 batch partial；identity/marker storage 異常
+  顯示 `storage_critical`，不得退化成「沒有 circuit」。Recovery 尚未 ready 時顯示
+  bounded 原因；可恢復時由使用者選 active canary並送出一次 request。
 - route / template / static module 應消費 read model 或 presenter payload；不直接承擔 scan、dedupe、outbox 或 persistence owner 語義。
 - 新 UI 欄位若只是呈現既有狀態，優先擴充 read model / presenter；若需要新增持久狀態，必須先回到 `docs/ARCHITECTURE.md` 定義資料 owner 與 runtime 語義。
 

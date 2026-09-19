@@ -49,6 +49,10 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   或專用 profile 內找不到 Facebook `c_user` + `xs` cookie，
   會先開 Facebook 首頁登入視窗；登入完成後才啟動 Web UI。
 - launcher 不做每次啟動的網路 session check；session 失效、checkpoint 或 login page 由 worker 掃描 guard 標記為 `needs_login`，並透過 dashboard 警告提示使用者重啟。
+- Managed automation profile identity 由 profile 內的 private opaque marker 與 SQLite
+  `managed_profile_identity_binding` 共同維持；合法舊 marker 可在首次升級時 backfill。
+  已綁定後 marker 遺失、損毀或 UUID 不一致都必須在任何 Facebook I/O 前
+  fail closed，不得自動建立新 scope 繞過既有 circuit、pacing 或 session recovery。
 - `--profile-dir` 必須落在 `<data-dir>/profiles/` 底下；外部測試 profile
   只能使用 debug-only `--unsafe-profile-dir`，且不得指向日常 Chrome / Edge /
   Chromium profile。
@@ -120,9 +124,37 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - typed outcome / coordinator 只包現有 guarded finalize/failure/idle helper 與
   process-local cleanup，不擁有 scanner、Playwright page、scheduler policy、
   notification sender 或 dashboard transport。
-- scheduler running 時新增 target 若缺自訂名稱，Web route 不同步搶 profile；
-  若同步 metadata resolver 被跳過或失敗，先建立 target 並標記 metadata pending，
-  再由 resident metadata refresh 補齊名稱。
+- 所有正式 Facebook browser work 共用 profile-level coordinator 與 persistent
+  pacing lease。Persistent context 啟動時先收斂既有 pages；page budget 計算整個
+  context 的實際存活頁面，而非只算 pool ownership。Page/context 關閉失敗必須
+  poison runtime 並要求 restart，不可吞掉例外後繼續下一筆 work。
+- `facebook_access_circuit_state` 是 temporary-block/persistence-uncertain 的 durable
+  profile circuit owner；`facebook_session_recovery_state` 則只承載 stale
+  `normal_session` 的人工 healthcheck lifecycle，兩者不得混為同一狀態。
+- stale `normal_session` 啟動時只允許 DB-only owner/pacing recovery並套完整 quiet
+  gap，不開 browser。quiet gap 後由使用者挑選同 operation 的 active canary；
+  supervisor 以 persistent request、generation/token lease 執行一次 zero-product-write
+  probe。只有 probe success 且 browser context 已確認關閉後才可清 marker；blocked
+  轉成 access circuit，login/checkpoint/session-invalid 沿用 `needs_login`。
+- Access-circuit 與 stale-session probe 都會在 request/claim transaction 及真正
+  browser I/O 前重新驗證 target；target 已停用、暫停、刪除或 kind 不符時不得導航。
+- Approved recovery probe 從 durable claim 後共用一個 monotonic absolute deadline，
+  且不得超過該 claim 的 lease；coordinator、pacing 與 browser observation 不可各自
+  重置 timeout。Deadline 會 owner-aware 收斂為 inconclusive；外部 cancellation 通常
+  收斂為 cancelled 後重新傳遞。高信心 temporary block 一旦在有效 coordinator owner
+  下完成 runtime gate、durable circuit 與 recovery finish，便已越過不可逆安全線性化點；
+  其後才到達的 cancellation 只在資源收旂後重新傳遞，不得把 durable recovery 或
+  pacing outcome 從 blocked 降級為 cancelled。Context 與 Playwright teardown 另受
+  bounded cleanup grace 約束，未確認關閉時一律保留 marker、poison 當前
+  process browser I/O 並停止 resident runtime。通常的 circuit reset 不得解除這個
+  fatal poison，必須由全新 runtime/process 再經 durable marker reconcile 後重試。
+- Probe 非預期失敗只用 allowlisted stage/reason 寫入安全化 runtime log；不得記錄
+  exception message、URL、target、profile scope 或頁面內容。Support bundle 只投影
+  固定的 probe kind、stage 與 reason，不輸出 raw log line。
+- Web route 建立 target 時一律不啟動 Playwright 或搶用 profile。缺自訂名稱時先以
+  generated fallback 建立 target 並標記 metadata pending，commit 後要求 resident
+  metadata refresh 補齊名稱與封面；使用者已填自訂名稱時保留該顯示語義，不排會
+  覆寫名稱的 metadata refresh。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、
   keyword classification、match history、notification dedupe/outbox、
@@ -254,6 +286,8 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 ## Persistence
 
 - SQLite schema 使用明確版本與 migration chain。
+- v42 新增 durable managed-profile identity binding；v43 新增獨立 stale-session
+  recovery state。兩者都是安全狀態 owner，不得降級成 `app_settings` 或只存在記憶體。
 - 既有 DB 必須有有效 `schema_metadata.version`；缺失、無效或高於目前 app 支援版本時 fail fast。
 - 目前自動 migration 支援下限是 v35，也就是 v0.5.3 的 DB 版本；v35
   以前的歷史 DB 不再支援自動升級。
@@ -275,6 +309,10 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   notification dedupe references 會被保護。
 - support bundle 是 redacted 診斷 artifact，內容只含摘要、近期安全化 log 片段、
   schema/table counts、invariant summary 與 privacy-safe cover image host histogram。
+- Facebook safety diagnostics 只輸出 bounded identity/circuit/session-recovery/pacing
+  狀態與時間；不得輸出 marker UUID、session/request/probe token、raw profile scope、
+  target id、路徑或 marker 內容。Metadata 數值採 explicit allowlist，外部 ID
+  判斷優先於 count/duration 類數值。
 - cover image host 診斷只輸出 hostname / suffix / reject reason counts，不輸出完整
   URL、path、query、target id 或 target 名稱。
 - 產生時先寫同目錄 temp zip，best-effort 設定 private file permission，成功後才
@@ -311,6 +349,14 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - 成功的 unsafe Web route 只會 `wake()` notifier 加速下一輪 revision read，
   不直接製造 revision event；`/api/dashboard-revision` polling endpoint 保留作
   fallback、診斷與外部補償入口。
+- Facebook safety banner 同時依賴 DB、filesystem sentinel 與 wall-clock cooldown，
+  因此前端另有低頻 safety partial refresh；它不取代 revision/SSE，也不得擴成第二套
+  一般 dashboard 更新 transport。
+- Facebook safety banner 是 global state，不掛在單一 target card。Recovery action
+  只持久化一次 request 並喚醒 browser-free supervisor；Web route 不開 Playwright、
+  不自行 claim probe。原 trigger target 不可用時可明確選擇同 operation active canary。
+  Banner 只輸出 opaque candidate handle；POST 端重新列出 eligible candidates 後解析，
+  不把 raw target id 或 operation/target 複合值暴露在 safety DOM。
 - 命中紀錄 UI 稱 `match_history` 時間為「記錄時間」；API payload 與 DB 欄位都使用 `recorded_at`，舊版 `notified_at` 欄位由 v38 migration 重新命名。
 - hit records route 只負責 HTTP wiring；若未來新增 search、export、detail
   或 bulk 行為，產品語義需先下沉到 query/export/detail/bulk service，
@@ -342,6 +388,16 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - comments target 不是 posts 換 selector；必須保留 comment-specific extractor、
   canonicalization、cleanup、sort、nested scroll/load-more、dedupe、
   latest scan/history/notification persistence。
+- `comments_group_navigation` 預設為 false；在安全站內導覽 feature 通過 live gate
+  前，正式 resident planner 不派發 comments，page prepare 也必須在任何
+  `goto` / `reload` 前 fail-closed。one-shot 與 sync resident fallback 不支援
+  comments，且必須在 profile lease、browser/page 建立或 navigation 前拒絕。
+- Generic resident page preparer 永遠不得對 comments canonical post URL 執行
+  `goto` 或 `reload`；未來即使 activation flag 開啟，也必須由完成契約的獨立
+  group-first trusted-click preparer 接手，缺少 handler 時仍維持 safe defer。
+- comments 保存的 refresh 設定是 requested interval；scheduler 套用至少 180 秒的
+  effective safety floor。Web UI 必須同時顯示 requested、effective 與 floor 理由，
+  不得把 effective policy 靜默寫回並覆蓋使用者設定。
 - posts/comments 可共用純文字片段處理，但 selector、permalink、sort、load-more 與 target scope 不硬合併。
 - Python resident main worker 目前是 polling；不得宣稱 mutation relevance 已接上即時觸發。
 

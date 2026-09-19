@@ -8,6 +8,7 @@ from pathlib import Path
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class FailureScanCommitRequest:
     page_reused: bool | None = None
     scan_request_id: str = ""
     runtime_error_message: str | None = None
+    failure_diagnostics: WorkerFailureDiagnostics | None = None
 
 
 __all__ = ["FailureScanCommitRequest"]

@@ -9,6 +9,7 @@ import pytest
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
@@ -21,6 +22,7 @@ from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
+from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
@@ -99,6 +101,76 @@ def test_select_one_shot_target_by_group_id_when_multiple_targets_exist(tmp_path
 
         assert selected.id != first.id
         assert selected.id == second.id
+
+
+def test_one_shot_comments_fails_before_profile_lease_or_browser_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """comments one-shot 必須在 profile lease、launch、navigation 與 scanner 前拒絕。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="111",
+                parent_post_id="222",
+                canonical_url="https://www.facebook.com/groups/111/posts/222",
+            )
+        )
+
+    calls = {"profile_lease": 0, "playwright": 0, "launch": 0, "scanner": 0}
+
+    def forbidden(name: str) -> Any:
+        def fail(*args: object, **kwargs: object) -> Any:
+            calls[name] += 1
+            raise AssertionError(f"comments one-shot must not call {name}")
+
+        return fail
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.acquire_profile_lease",
+        forbidden("profile_lease"),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.sync_playwright",
+        forbidden("playwright"),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.launch_persistent_context_sync",
+        forbidden("launch"),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        forbidden("scanner"),
+    )
+
+    with pytest.raises(WorkerFailure) as exc_info:
+        run_one_shot_scan(
+            OneShotScanOptions(
+                db_path=db_path,
+                profile_dir=profile_dir,
+                target_id=target.id,
+            )
+        )
+    with SqliteApplicationContext(db_path) as app:
+        scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert exc_info.value.reason == "unsupported_in_fallback"
+    assert calls == {"profile_lease": 0, "playwright": 0, "launch": 0, "scanner": 0}
+    assert scan is not None
+    assert scan.metadata["reason"] == "unsupported_in_fallback"
+    assert scan.metadata["worker"] == "one_shot_fallback"
+    assert scan.metadata["failure_diagnostics"]["fallback_guard"] == {
+        "detector": "fallback_capability_guard",
+        "detector_version": 1,
+        "classification": "unsupported_in_fallback",
+        "fallback_mode": "one_shot",
+        "target_kind": "comments",
+        "browser_work_started": False,
+    }
 
 
 def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(
@@ -332,6 +404,42 @@ def test_record_failure_with_guard_does_not_fallback_after_owner_changed(
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == "current-worker"
+
+
+def test_one_shot_record_failure_preserves_typed_diagnostics(tmp_path: Path) -> None:
+    """debug one-shot failure finalize 也應保存同一份 typed diagnostics。"""
+
+    db_path = tmp_path / "app.db"
+    diagnostics = FacebookPageGuardDiagnostics(
+        classification="facebook_temporary_block",
+        facebook_host=True,
+        matched_heading=True,
+        matched_detail=True,
+        article_count=0,
+        stable_observation_count=2,
+        body_text_length=48,
+        url_kind="group_feed",
+    )
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="guard",
+                canonical_url="https://www.facebook.com/groups/guard",
+            )
+        )
+
+    record_failure(
+        db_path,
+        target,
+        "facebook_temporary_block",
+        "Facebook temporary access block detected.",
+        failure_diagnostics=diagnostics,
+    )
+
+    with SqliteApplicationContext(db_path) as app:
+        scan = app.repositories.scan_runs.latest_by_target(target.id)
+    assert scan is not None
+    assert scan.metadata["failure_diagnostics"] == diagnostics.to_safe_mapping()
 
 
 def test_run_one_shot_scan_skipped_success_preserves_direct_failure_streak(

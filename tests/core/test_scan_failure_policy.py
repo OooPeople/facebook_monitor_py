@@ -92,22 +92,10 @@ def test_unknown_retries_by_default_until_third_failure() -> None:
 def test_runtime_failure_notification_terminal_uses_failure_count() -> None:
     """runtime failure 通知資格用 failure_count 對齊 retry terminal 門檻。"""
 
-    assert (
-        is_runtime_failure_notification_terminal("unknown", failure_count=1)
-        is False
-    )
-    assert (
-        is_runtime_failure_notification_terminal("unknown", failure_count=3)
-        is True
-    )
-    assert (
-        is_runtime_failure_notification_terminal("login_required", failure_count=1)
-        is True
-    )
-    assert (
-        is_runtime_failure_notification_terminal("scheduler_stopping", failure_count=3)
-        is False
-    )
+    assert is_runtime_failure_notification_terminal("unknown", failure_count=1) is False
+    assert is_runtime_failure_notification_terminal("unknown", failure_count=3) is True
+    assert is_runtime_failure_notification_terminal("login_required", failure_count=1) is True
+    assert is_runtime_failure_notification_terminal("scheduler_stopping", failure_count=3) is False
 
 
 def test_scan_timeout_retries_and_discards_page() -> None:
@@ -213,6 +201,36 @@ def test_login_required_errors_immediately() -> None:
         assert decision.runtime_action == "error"
         assert decision.counts_toward_streak is False
         assert decision.notification_failure_count == 1
+
+
+def test_facebook_page_guard_failures_stop_retry_and_discard_page() -> None:
+    """頁面限制或不確定 guard 都不得自動導覽重試，並應丟棄目前 page。"""
+
+    for reason in (
+        "facebook_temporary_block",
+        "facebook_page_guard_inconclusive",
+    ):
+        decision = decide_scan_failure(reason, source="worker_failure")
+
+        assert decision.retryable is False
+        assert decision.target_action == "error"
+        assert decision.runtime_action == "error"
+        assert decision.counts_toward_streak is False
+        assert decision.discard_page is True
+        assert decision.auto_restart is False
+
+
+def test_unsupported_fallback_is_immediate_terminal_without_restart() -> None:
+    """不支援的 fallback 能力應立即停止，不能把安全拒絕當成可重試錯誤。"""
+
+    decision = decide_scan_failure("unsupported_in_fallback", source="worker_failure")
+
+    assert decision.retryable is False
+    assert decision.target_action == "error"
+    assert decision.runtime_action == "error"
+    assert decision.counts_toward_streak is False
+    assert decision.discard_page is False
+    assert decision.auto_restart is False
 
 
 def test_scheduler_cancel_keeps_target_idle() -> None:

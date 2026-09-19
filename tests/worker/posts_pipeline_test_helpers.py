@@ -165,6 +165,33 @@ class ContentUnavailablePostsPage(FakePage):
         raise AssertionError("content-unavailable scan should stop before sort")
 
 
+class TemporaryBlockPostsPage(FakePage):
+    """模擬高可信 Facebook 暫時限制頁。"""
+
+    url = "https://www.facebook.com/groups/222518561920110/permalink/123456789"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.guard_observation_count = 0
+
+    def locator(self, selector: str) -> FakeLocator:
+        """回傳不含私人內容的暫時限制 body。"""
+
+        return FakeLocator("你暫時遭到封鎖 你似乎過度使用了這項功能")
+
+    def evaluate(self, script: str, *args: Any) -> Any:
+        """只允許 page guard 結構 probe，排序與 extractor 必須 short-circuit。"""
+
+        if "headingTexts" in script and "articleCount" in script:
+            self.guard_observation_count += 1
+            return {
+                "headingTexts": ["你暫時遭到封鎖"],
+                "detailTexts": ["你似乎過度使用了這項功能"],
+                "articleCount": 0,
+            }
+        raise AssertionError("temporary-block scan should stop before sort")
+
+
 class GrowingFakePage(FakePage):
     """模擬 Facebook 每次捲動後逐步補入更多貼文。"""
 

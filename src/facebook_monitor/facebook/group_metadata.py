@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Awaitable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -22,12 +24,15 @@ from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_BROWSER_RUNTIME_DEFAULTS
 from facebook_monitor.core.external_url_policy import sanitize_facebook_group_cover_image_url
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
+from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.user_messages import format_failure_message_text
 from facebook_monitor.facebook.browser_capture import get_start_page
 from facebook_monitor.facebook.group_metadata_validation import body_mentions_unavailable_page
 from facebook_monitor.facebook.group_metadata_validation import final_url_matches_expected_group
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
+from facebook_monitor.worker.errors import WorkerFailure
 
 
 GROUP_METADATA_WAIT_MS = PYTHON_BROWSER_RUNTIME_DEFAULTS.group_metadata_wait_ms
@@ -55,6 +60,8 @@ class AsyncLocatorLike(Protocol):
 class AsyncPageLike(Protocol):
     """描述 metadata resolver 需要的 async page 能力。"""
 
+    url: str
+
     async def goto(self, url: str, *, wait_until: str) -> object:
         """前往指定 URL。"""
 
@@ -76,6 +83,29 @@ class AsyncBrowserContextLike(Protocol):
 
     async def new_page(self) -> AsyncPageLike:
         """建立新 page。"""
+
+
+AsyncPageGuard = Callable[[AsyncPageLike], Awaitable[None]]
+
+
+async def _run_metadata_page_guard(
+    page_guard: AsyncPageGuard | None,
+    page: AsyncPageLike,
+) -> None:
+    """保留 temporary-block typed signal，並維持既有 metadata 登入錯誤契約。"""
+
+    if page_guard is None:
+        return
+    try:
+        await page_guard(page)
+    except WorkerFailure as exc:
+        if exc.reason == FACEBOOK_TEMPORARY_BLOCK_REASON:
+            raise
+        if exc.reason == LOGIN_REQUIRED_REASON:
+            raise GroupMetadataError(
+                "Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入"
+            ) from exc
+        raise GroupMetadataError(format_failure_message_text(f"{exc.reason}: {exc}")) from exc
 
 
 async def resolve_group_name_with_context(
@@ -100,6 +130,7 @@ async def resolve_group_metadata_with_context(
     *,
     canonical_url: str,
     wait_ms: int = GROUP_METADATA_WAIT_MS,
+    page_guard: AsyncPageGuard | None = None,
 ) -> GroupMetadata:
     """使用既有 async browser context 解析 Facebook group name 與 cover image URL。"""
 
@@ -108,6 +139,7 @@ async def resolve_group_metadata_with_context(
         try:
             await page.goto(canonical_url, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
+            await _run_metadata_page_guard(page_guard, page)
             body_text = await page.locator("body").inner_text(timeout=10000)
             if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                 raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
@@ -127,8 +159,7 @@ async def resolve_group_metadata_with_context(
         raise
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
         raise GroupMetadataError(
-            "無法自動抓取社團名稱："
-            + format_failure_message_text(str(exc))
+            "無法自動抓取社團名稱：" + format_failure_message_text(str(exc))
         ) from exc
 
     if not group_name:
@@ -144,6 +175,7 @@ async def resolve_group_cover_image_with_context(
     *,
     canonical_url: str,
     wait_ms: int = GROUP_METADATA_WAIT_MS,
+    page_guard: AsyncPageGuard | None = None,
 ) -> str:
     """使用既有 async browser context 只解析 Facebook group cover image URL。"""
 
@@ -152,6 +184,7 @@ async def resolve_group_cover_image_with_context(
         try:
             await page.goto(canonical_url, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
+            await _run_metadata_page_guard(page_guard, page)
             body_text = await page.locator("body").inner_text(timeout=10000)
             if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
                 raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
@@ -170,8 +203,7 @@ async def resolve_group_cover_image_with_context(
         raise
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
         raise GroupMetadataError(
-            "無法自動抓取社團封面："
-            + format_failure_message_text(str(exc))
+            "無法自動抓取社團封面：" + format_failure_message_text(str(exc))
         ) from exc
     if not cover_image_url:
         raise GroupMetadataError("無法自動抓取社團封面，請稍後重試")
@@ -202,7 +234,9 @@ def resolve_group_metadata_with_profile(
     """使用 automation profile 開啟 group URL 並回傳社團名稱與 cover image URL。"""
 
     if not profile_dir.exists():
-        raise GroupMetadataError("automation profile 不存在，請先到設定頁開啟 Facebook 登入視窗並登入")
+        raise GroupMetadataError(
+            "automation profile 不存在，請先到設定頁開啟 Facebook 登入視窗並登入"
+        )
 
     try:
         with acquire_profile_lease(profile_dir, "社團名稱解析"):
@@ -216,8 +250,13 @@ def resolve_group_metadata_with_profile(
                     page.goto(canonical_url, wait_until="domcontentloaded")
                     page.wait_for_timeout(wait_ms)
                     body_text = page.locator("body").inner_text(timeout=10000)
-                    if "log into facebook" in body_text.lower() or "登入 facebook" in body_text.lower():
-                        raise GroupMetadataError("Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入")
+                    if (
+                        "log into facebook" in body_text.lower()
+                        or "登入 facebook" in body_text.lower()
+                    ):
+                        raise GroupMetadataError(
+                            "Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入"
+                        )
                     page_title = page.title()
                     group_name = clean_facebook_page_title(page_title)
                     _ensure_valid_group_metadata_page(
@@ -239,8 +278,7 @@ def resolve_group_metadata_with_profile(
         if "user data directory is already in use" in message or "processsingleton" in message:
             raise GroupMetadataError("automation profile 目前被其他 Playwright 視窗使用中") from exc
         raise GroupMetadataError(
-            "無法自動抓取社團名稱："
-            + format_failure_message_text(str(exc))
+            "無法自動抓取社團名稱：" + format_failure_message_text(str(exc))
         ) from exc
 
     if not group_name:
@@ -257,9 +295,7 @@ async def _extract_cover_image_url_async(page: object) -> str:
     if not hasattr(page, "evaluate"):
         return ""
     try:
-        return _normalize_cover_image_url(
-            await page.evaluate(_COVER_IMAGE_EXTRACTOR_SCRIPT)
-        )
+        return _normalize_cover_image_url(await page.evaluate(_COVER_IMAGE_EXTRACTOR_SCRIPT))
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError, TypeError):
         return ""
 

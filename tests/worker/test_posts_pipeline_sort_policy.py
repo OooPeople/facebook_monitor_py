@@ -66,6 +66,44 @@ class AsyncUnconfirmedSortFakePage:
         raise AssertionError("async sort-unconfirmed scan should skip before extractor")
 
 
+class AsyncTemporaryBlockLocator(AsyncFakeLocator):
+    """提供 async Facebook 暫時限制頁文字。"""
+
+    async def inner_text(self, *, timeout: int) -> str:
+        """回傳只供 page guard 使用的合成文字。"""
+
+        return "你暫時遭到封鎖 你似乎過度使用了這項功能"
+
+
+class AsyncTemporaryBlockPostsPage:
+    """模擬 async posts target 在排序前落入穩定暫時限制頁。"""
+
+    url = "https://www.facebook.com/groups/222518561920110"
+
+    def __init__(self) -> None:
+        self.sort_adjusted = False
+        self.guard_observations = 0
+
+    def locator(self, selector: str) -> AsyncTemporaryBlockLocator:
+        """回傳暫時限制頁 locator。"""
+
+        return AsyncTemporaryBlockLocator()
+
+    async def evaluate(self, script: str, *args: object) -> object:
+        """只允許 bounded page guard probe，不得進入排序或抽取。"""
+
+        assert "articleCount" in script
+        self.guard_observations += 1
+        return {
+            "headingTexts": ["你暫時遭到封鎖"],
+            "detailTexts": ["你似乎過度使用了這項功能"],
+            "articleCount": 0,
+        }
+
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        """模擬兩次 bounded observation 的短等待。"""
+
+
 class AsyncSuccessFakePage:
     """模擬 async posts scanner 成功抽取貼文。"""
 
@@ -354,6 +392,44 @@ def test_scan_posts_page_async_commit_ready_returns_protective_skip_without_db_w
     assert latest_items == []
     assert history == []
     assert notifications == []
+
+
+def test_async_posts_page_guard_short_circuits_before_sort_and_db_write(
+    tmp_path: Path,
+) -> None:
+    """async posts 主路徑應在排序前停止穩定暫時限制頁。"""
+
+    db_path = tmp_path / "app.db"
+    page = AsyncTemporaryBlockPostsPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url=page.url,
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        with pytest.raises(WorkerFailure) as exc_info:
+            asyncio.run(
+                scan_posts_page_async_commit_ready(
+                    page=page,
+                    app=app,
+                    target=target,
+                    config=config,
+                    scroll_rounds=0,
+                    scroll_wait_ms=0,
+                )
+            )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert exc_info.value.reason == "facebook_temporary_block"
+    assert page.guard_observations == 2
+    assert not page.sort_adjusted
+    assert latest_scan is None
 
 
 def test_scan_posts_page_async_commit_ready_returns_success_result_without_db_write(

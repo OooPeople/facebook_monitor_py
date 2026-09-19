@@ -29,18 +29,23 @@ async def run_resident_main_cycle_harness(
     """以正式 queue/executor 跑單 tick，供 worker tests 驗證狀態機。"""
 
     target_queue = TargetQueue()
-    executor = ExecutorWorkerPool(
-        options=options,
-        page_pool=page_pool,
-        target_queue=target_queue,
-        schedule_planner=schedule_planner,
-        scan_page=scan_page,
-        **(
-            {"comments_commit_ready_scan_page": comments_commit_ready_scan_page}
-            if comments_commit_ready_scan_page is not None
-            else {}
-        ),
-    )
+    if comments_commit_ready_scan_page is None:
+        executor = ExecutorWorkerPool(
+            options=options,
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=schedule_planner,
+            scan_page=scan_page,
+        )
+    else:
+        executor = ExecutorWorkerPool(
+            options=options,
+            page_pool=page_pool,
+            target_queue=target_queue,
+            schedule_planner=schedule_planner,
+            scan_page=scan_page,
+            comments_commit_ready_scan_page=comments_commit_ready_scan_page,
+        )
     await executor.start()
     runtime_restart_requested = False
     try:

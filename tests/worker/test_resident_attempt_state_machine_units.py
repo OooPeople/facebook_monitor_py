@@ -30,6 +30,7 @@ from facebook_monitor.worker.attempt_transitions import transition_from_attempt_
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 from facebook_monitor.worker.resident_failure_decisions import (
     decide_resident_attempt_exception,
 )
@@ -597,6 +598,30 @@ def test_failure_record_decision_classifies_exception_branches() -> None:
     assert unknown.source == "unknown_exception"
 
 
+def test_async_resident_failure_decision_preserves_typed_diagnostics() -> None:
+    """async resident exception decision 不得遺失 typed diagnostics。"""
+
+    diagnostics = FacebookPageGuardDiagnostics(
+        classification="facebook_temporary_block",
+        facebook_host=True,
+        matched_heading=True,
+        matched_detail=True,
+        article_count=0,
+        stable_observation_count=2,
+        body_text_length=48,
+        url_kind="group_post",
+    )
+    decision = failure_record_decision_for_worker_failure(
+        WorkerFailure(
+            "facebook_temporary_block",
+            "Facebook temporary access block detected.",
+            diagnostics=diagnostics,
+        )
+    )
+
+    assert decision.failure_diagnostics is diagnostics
+
+
 def test_resident_attempt_exception_decision_classifies_terminal_paths() -> None:
     """resident attempt exception taxonomy 應可不靠 executor side effects 測試。"""
 
@@ -644,21 +669,15 @@ def test_resident_attempt_exception_decision_classifies_terminal_paths() -> None
     assert worker.kind == ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
     assert worker.failure_record_decision is not None
     assert worker.failure_record_decision.reason == "worker_reason"
-    assert runtime_restart_cancel.kind == (
-        ResidentAttemptExceptionDecisionKind.RECORD_FAILURE
-    )
+    assert runtime_restart_cancel.kind == (ResidentAttemptExceptionDecisionKind.RECORD_FAILURE)
     assert runtime_restart_cancel.failure_record_decision is not None
-    assert runtime_restart_cancel.failure_record_decision.reason == (
-        SCHEDULER_RUNTIME_REASON
-    )
+    assert runtime_restart_cancel.failure_record_decision.reason == (SCHEDULER_RUNTIME_REASON)
     assert runtime_restart_cancel.reraise is False
     assert scheduler_stopping_cancel.kind == (
         ResidentAttemptExceptionDecisionKind.SCHEDULER_STOPPING_CANCELLATION
     )
     assert scheduler_stopping_cancel.reraise is True
-    assert pre_admission_cancel.kind == (
-        ResidentAttemptExceptionDecisionKind.PRE_ADMISSION_FAILURE
-    )
+    assert pre_admission_cancel.kind == (ResidentAttemptExceptionDecisionKind.PRE_ADMISSION_FAILURE)
     assert pre_admission_cancel.reason == "scheduler_cancel_before_running"
     assert pre_admission_cancel.outcome_kind == ResidentAttemptOutcomeKind.CANCELLED
     assert pre_admission_cancel.reraise is True
@@ -865,9 +884,7 @@ def test_finish_attempt_exception_decision_sqlite_lock_retry_uses_side_effect_ad
             pool=cast(attempt_module.ResidentExecutorAttemptHost, host),
             worker_id="worker-a",
             state=state,
-            decision=ResidentAttemptExceptionDecision.sqlite_lock_retry(
-                "OperationalError"
-            ),
+            decision=ResidentAttemptExceptionDecision.sqlite_lock_retry("OperationalError"),
         )
     )
 

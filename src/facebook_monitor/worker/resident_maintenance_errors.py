@@ -6,7 +6,10 @@ from collections.abc import Callable
 from collections.abc import Iterator
 import logging
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.core.user_messages import format_failure_message
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
 from facebook_monitor.worker.playwright_runtime_errors import (
@@ -16,6 +19,9 @@ from facebook_monitor.worker.resident_runtime_errors import (
     is_resident_shutdown_runtime_closed_exception,
 )
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.scan_failure_finalize import (
+    record_guarded_scan_failure_decision,
+)
 from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision_for_db,
 )
@@ -63,6 +69,45 @@ def handle_maintenance_refresh_exception(
         extra={"target_id": target_id},
     )
     mark_failed()
+    return False
+
+
+def handle_governed_maintenance_refresh_exception(
+    *,
+    app: ApplicationContext,
+    options: ResidentRuntimeOptions,
+    target_id: str,
+    exc: Exception,
+    stop_requested: StopCheckCallable,
+    request_runtime_restart: Callable[[], None] | None,
+    shutdown_log_message: str,
+    runtime_restart_log_message: str,
+    failure_log_message: str,
+    mark_failed: Callable[[ApplicationContext], None],
+) -> bool:
+    """在 caller 已持有 process/DB fence 時寫入 maintenance failure。"""
+
+    if should_skip_refresh_failure_for_shutdown(exc, stop_requested):
+        logger.info(shutdown_log_message, extra={"target_id": target_id})
+        return True
+    if is_scheduler_runtime_refresh_failure(exc):
+        logger.warning(runtime_restart_log_message, extra={"target_id": target_id})
+        exception_class, message = runtime_refresh_failure_detail(exc)
+        recorded_failure = record_guarded_scan_failure_decision(
+            app=app,
+            target_id=target_id,
+            reason=SCHEDULER_RUNTIME_REASON,
+            message=message,
+            source="unknown_exception",
+            worker_path="resident_main",
+            commit_guard=None,
+            exception_class=exception_class,
+        )
+        if recorded_failure is not None and request_runtime_restart is not None:
+            request_runtime_restart()
+        return True
+    logger.exception(failure_log_message, extra={"target_id": target_id})
+    mark_failed(app)
     return False
 
 
@@ -138,6 +183,8 @@ def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
 def format_exception_message(exc: Exception) -> str:
     """保留非預期例外類型，讓 maintenance 診斷可回查真正原因。"""
 
+    if isinstance(exc, WorkerFailure):
+        return format_failure_message(exc.reason, str(exc))
     message = str(exc).strip()
     if message:
         return f"{exc.__class__.__name__}: {message}"
@@ -148,6 +195,7 @@ __all__ = [
     "StopCheckCallable",
     "format_exception_message",
     "handle_maintenance_refresh_exception",
+    "handle_governed_maintenance_refresh_exception",
     "is_scheduler_runtime_refresh_failure",
     "record_refresh_runtime_failure",
     "runtime_refresh_failure_detail",

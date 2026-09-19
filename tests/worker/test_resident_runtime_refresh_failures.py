@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import nullcontext
 from dataclasses import replace
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main import run_resident_main_loop
@@ -35,6 +38,24 @@ from tests.worker.resident_main_test_helpers import RuntimeClosedOnPausedBrowser
 from tests.worker.resident_main_test_helpers import _stub_runtime_outbox_dispatch
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
+
+
+class _AdvancingAutomationClock:
+    """讓安全 pacing 測試無須真的等待，但仍保留 wall-clock 契約。"""
+
+    def __init__(self) -> None:
+        self.current = utc_now()
+
+    def now(self) -> datetime:
+        """回傳目前虛擬 UTC 時間。"""
+
+        return self.current
+
+    async def sleep(self, seconds: float) -> None:
+        """推進虛擬時間並讓出 event loop。"""
+
+        self.current += timedelta(seconds=max(float(seconds), 0.0))
+        await asyncio.sleep(0)
 
 
 def test_resident_main_loop_keeps_non_active_metadata_runtime_failure_pending(
@@ -97,6 +118,7 @@ def test_resident_main_loop_keeps_non_active_metadata_runtime_failure_pending(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -105,6 +127,8 @@ def test_resident_main_loop_keeps_non_active_metadata_runtime_failure_pending(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_first_cycle,
             ),
@@ -190,6 +214,7 @@ def test_resident_main_loop_keeps_non_active_cover_runtime_failure_pending(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -198,6 +223,8 @@ def test_resident_main_loop_keeps_non_active_cover_runtime_failure_pending(
                     interval_seconds=0,
                     scheduler_tick_seconds=0,
                 ),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_first_cycle,
             ),
@@ -294,6 +321,7 @@ def test_active_metadata_runtime_failure_notifies_after_scan_retries(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -303,6 +331,8 @@ def test_active_metadata_runtime_failure_notifies_after_scan_retries(
                     scheduler_tick_seconds=0,
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_terminal_failure,
             ),
@@ -413,6 +443,7 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -422,6 +453,8 @@ def test_active_cover_runtime_failure_defers_refresh_until_scan_retry(
                     scheduler_tick_seconds=0,
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),
@@ -529,6 +562,7 @@ def test_paused_metadata_runtime_failure_does_not_starve_active_scan(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -538,6 +572,8 @@ def test_paused_metadata_runtime_failure_does_not_starve_active_scan(
                     scheduler_tick_seconds=0,
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),
@@ -646,6 +682,7 @@ def test_paused_cover_runtime_failure_does_not_starve_active_scan(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -655,6 +692,8 @@ def test_paused_cover_runtime_failure_does_not_starve_active_scan(
                     scheduler_tick_seconds=0,
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
+                sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_scan_success,
             ),

@@ -9,8 +9,18 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
+from facebook_monitor.core.facebook_access import FacebookAdmissionToken
+from facebook_monitor.core.facebook_access import FacebookProductOperationKind
 from facebook_monitor.scheduler.planner import DueTarget
+
+
+class AsyncQueueLease(Protocol):
+    """描述 queue item 可移交並冪等釋放的 admission lease。"""
+
+    async def release(self) -> None:
+        """釋放 admission lease。"""
 
 
 @dataclass(frozen=True)
@@ -20,6 +30,16 @@ class QueueItem:
     due_target: DueTarget
     enqueue_reason: str
     enqueued_at: datetime
+    automation_lease: AsyncQueueLease | None = None
+    facebook_admission_token: FacebookAdmissionToken | None = None
+    facebook_operation_kind: FacebookProductOperationKind | None = None
+    facebook_source_owner_token: str = ""
+
+    async def release_automation_lease(self) -> None:
+        """冪等釋放 producer 移交給 executor 的 automation lease。"""
+
+        if self.automation_lease is not None:
+            await self.automation_lease.release()
 
 
 class TargetQueue:
@@ -131,6 +151,7 @@ class TargetQueue:
         """移除尚未被 worker 取出的 queue items，回傳取消的 target ids。"""
 
         cancelled_ids: list[str] = []
+        cancelled_items: list[QueueItem] = []
         async with self._lock:
             while True:
                 try:
@@ -143,9 +164,12 @@ class TargetQueue:
                 target_id = item.due_target.target_id
                 self._queued_target_ids.discard(target_id)
                 cancelled_ids.append(target_id)
+                cancelled_items.append(item)
             self._queued_order = [
                 target_id for target_id in self._queued_order if target_id not in set(cancelled_ids)
             ]
+        for item in cancelled_items:
+            await item.release_automation_lease()
         return tuple(cancelled_ids)
 
     async def join(self) -> None:

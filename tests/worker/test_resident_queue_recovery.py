@@ -1411,14 +1411,13 @@ def test_resident_success_result_is_committed_by_coordinator(
     assert executor.page_pool.pages[target.id].in_use_by_worker == ""
 
 
-def test_resident_comments_success_result_writes_visible_state_once(
+def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """resident comments success result 由 coordinator 寫入 visible state 一次。"""
+    """group-first 尚未接通前，comments 不得執行 scanner 或 visible write。"""
 
     parent_post_id = "2187454285426518"
-    comment_id = "9876543210987654"
     db_path = tmp_path / "app.db"
     dispatch_calls = _stub_runtime_outbox_dispatch(monkeypatch)
     with SqliteApplicationContext(db_path) as app:
@@ -1429,42 +1428,16 @@ def test_resident_comments_success_result_writes_visible_state_once(
                 canonical_url=(
                     f"https://www.facebook.com/groups/resident-comments/posts/{parent_post_id}"
                 ),
-                config=TargetConfigPatch(
-                    include_keywords=("票券",),
-                    enable_ntfy=True,
-                    ntfy_topic="phase5-comments-resident",
-                ),
             )
         )
         target = app.services.targets.restart_target_monitoring(target.id)
-        app.repositories.scan_scope_state.mark_initialized(target.scope_id)
 
-    async def scan_to_success_result(**kwargs: Any) -> SuccessScanResult:
-        return SuccessScanResult(
-            target_id=kwargs["target"].id,
-            url=kwargs["page"].url,
-            items=(
-                NormalizedScanItem(
-                    item_kind=ItemKind.COMMENT,
-                    item_key="comment:resident-success",
-                    alias_keys=("comment:resident-success",),
-                    group_id="resident-comments",
-                    parent_post_id=parent_post_id,
-                    comment_id=comment_id,
-                    author="留言作者",
-                    text="這是一則有票券關鍵字的留言",
-                    permalink=f"{kwargs['target'].canonical_url}?comment_id={comment_id}",
-                    raw_target_kind=kwargs["target"].target_kind.value,
-                    metadata={"commentId": comment_id},
-                ),
-            ),
-            item_count=1,
-            metadata={
-                "worker": "resident_main",
-                "comment_sort": {"reason": "unit_contract"},
-                "comments_meta": {"commentsWithCommentIdCount": 1},
-            },
-        )
+    scan_calls = 0
+
+    async def forbidden_comments_scan(**_kwargs: Any) -> SuccessScanResult:
+        nonlocal scan_calls
+        scan_calls += 1
+        raise AssertionError("comments scanner must remain deferred")
 
     async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
         target_queue = TargetQueue()
@@ -1478,8 +1451,8 @@ def test_resident_comments_success_result_writes_visible_state_once(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=as_async_scan_callable(scan_to_success_result),
-            comments_commit_ready_scan_page=scan_to_success_result,
+            scan_page=as_async_scan_callable(forbidden_comments_scan),
+            comments_commit_ready_scan_page=forbidden_comments_scan,
         )
         assert (
             await executor.enqueue_due_targets(
@@ -1497,10 +1470,10 @@ def test_resident_comments_success_result_writes_visible_state_once(
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
         await asyncio.wait_for(target_queue.join(), timeout=1)
-        assert result.success is True
-        assert result.failure is False
-        assert result.skipped is False
-        assert result.opened_page is True
+        assert not result.success
+        assert not result.failure
+        assert result.skipped
+        assert not result.opened_page
         assert await target_queue.snapshot() == (0, 0, ())
         return planner, executor
 
@@ -1511,39 +1484,23 @@ def test_resident_comments_success_result_writes_visible_state_once(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        outbox_entry = app.repositories.notification_outbox.get_by_idempotency_key(
-            build_notification_idempotency_key(
-                target_id=target.id,
-                item_key="comment:resident-success",
-                channel=NotificationChannel.NTFY,
-            )
-        )
-        scan_count = app.repositories.scan_runs.connection.execute(
-            "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
-            (target.id,),
-        ).fetchone()[0]
+        pending_outbox = app.repositories.notification_outbox.list_pending()
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert scan_count == 1
-    assert latest_scan is not None
-    assert latest_scan.status == ScanStatus.SUCCESS
-    assert latest_scan.metadata["comment_sort"] == {"reason": "unit_contract"}
-    assert len(latest_items) == 1
-    assert latest_items[0].item_kind == ItemKind.COMMENT
-    assert latest_items[0].debug_metadata["commentId"] == comment_id
-    assert len(history) == 1
-    assert history[0].item_kind == ItemKind.COMMENT
-    assert history[0].parent_post_id == parent_post_id
-    assert history[0].comment_id == comment_id
-    assert outbox_entry is not None
-    assert outbox_entry.item_kind == ItemKind.COMMENT
-    assert dispatch_calls == [db_path]
+    assert scan_calls == 0
+    assert latest_scan is None
+    assert latest_items == []
+    assert history == []
+    assert pending_outbox == []
+    assert dispatch_calls == []
     assert planner.dispatched_target_ids == [target.id]
     assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
-    assert executor.page_pool.pages[target.id].in_use_by_worker == ""
+    pooled_page = executor.page_pool.pages[target.id]
+    assert pooled_page.in_use_by_worker == ""
+    assert pooled_page.current_url == "about:blank"
 
 
 def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(

@@ -39,6 +39,7 @@ from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision,
 )
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
@@ -84,6 +85,54 @@ def test_record_guarded_scan_failure_ignores_stale_running_owner(
     assert state.active_worker_id == "worker-b"
     assert state.active_page_id == "page-b"
     assert state.last_started_at == refreshed_running.last_started_at
+
+
+def test_record_guarded_scan_failure_persists_only_typed_page_guard_diagnostics(
+    tmp_path: Path,
+) -> None:
+    """finalize 應保存 bounded typed diagnostics，且不需要 raw URL 或頁面文字。"""
+
+    db_path = tmp_path / "app.db"
+    diagnostics = FacebookPageGuardDiagnostics(
+        classification="facebook_temporary_block",
+        facebook_host=True,
+        matched_heading=True,
+        matched_detail=True,
+        article_count=0,
+        stable_observation_count=2,
+        body_text_length=48,
+        url_kind="group_post",
+    )
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="page-guard",
+                canonical_url="https://www.facebook.com/groups/page-guard",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        running = app.services.targets.mark_target_running(
+            target.id,
+            "worker-a",
+            page_id="page-a",
+        )
+
+        decision = record_guarded_scan_failure_decision(
+            app=app,
+            target_id=target.id,
+            reason="facebook_temporary_block",
+            message="Facebook temporary access block detected.",
+            source="worker_failure",
+            worker_path="resident_main",
+            commit_guard=scan_commit_guard_from_runtime_state(running),
+            failure_diagnostics=diagnostics,
+        )
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+
+    assert decision is not None
+    assert latest_scan is not None
+    assert latest_scan.metadata["failure_diagnostics"] == diagnostics.to_safe_mapping()
+    assert "facebook.com" not in str(latest_scan.metadata["failure_diagnostics"])
 
 
 def test_active_targets_runtime_failure_notifies_after_retry_limit(

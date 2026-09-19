@@ -34,6 +34,10 @@ from facebook_monitor.notifications.outbox_runtime_failure_enqueue import (
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
+from facebook_monitor.worker.failure_diagnostics import (
+    serialize_worker_failure_diagnostics,
+)
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_finalize import ensure_target_allows_scan_commit
@@ -61,6 +65,7 @@ class ScanFailureMetadata:
     auto_restart: bool = False
     recovery_action: str = ""
     raw_failure_detail: str = ""
+    failure_diagnostics: WorkerFailureDiagnostics | None = None
 
     def to_metadata(self) -> dict[str, Any]:
         """轉成 scan run JSON metadata。"""
@@ -89,6 +94,11 @@ class ScanFailureMetadata:
         raw_failure_detail = self.raw_failure_detail.strip()
         if raw_failure_detail:
             metadata["raw_failure_detail"] = raw_failure_detail
+        serialized_diagnostics = serialize_worker_failure_diagnostics(self.failure_diagnostics)
+        if serialized_diagnostics.payload:
+            metadata["failure_diagnostics"] = serialized_diagnostics.payload
+        elif not serialized_diagnostics.accepted:
+            metadata["failure_diagnostics_status"] = serialized_diagnostics.status
         return metadata
 
 
@@ -147,6 +157,7 @@ def record_scan_failure(
     recovery_action: str = "",
     force_record: bool = False,
     error_message_override: str = "",
+    failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> int:
     """透過 application context 記錄一筆標準失敗 scan run。"""
 
@@ -186,6 +197,7 @@ def record_scan_failure(
                 auto_restart=auto_restart,
                 recovery_action=recovery_action,
                 raw_failure_detail=message,
+                failure_diagnostics=failure_diagnostics,
             ).to_metadata(),
         )
     )
@@ -206,6 +218,7 @@ def record_guarded_scan_failure_result(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
+    failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> GuardedScanFailureFinalizeOutcome:
     """在同一 transaction 內確認 guard，並回傳 failure side-effect 摘要。"""
 
@@ -258,6 +271,7 @@ def record_guarded_scan_failure_result(
         recovery_action=decision.recovery_action,
         force_record=decision.counts_toward_streak or decision.terminal,
         error_message_override=scan_error_message,
+        failure_diagnostics=failure_diagnostics,
     )
     runtime_message = runtime_error_message or format_scan_failure_message(
         decision.reason,
@@ -320,6 +334,7 @@ def record_guarded_scan_failure_decision(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
+    failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> ScanFailureDecision | None:
     """Decision-only wrapper：保留既有 guarded failure finalize 回傳語義。"""
 
@@ -337,6 +352,7 @@ def record_guarded_scan_failure_decision(
         page_reused=page_reused,
         scan_request_id=scan_request_id,
         runtime_error_message=runtime_error_message,
+        failure_diagnostics=failure_diagnostics,
     )
     if isinstance(result, GuardedScanFailureFinalizeRejected):
         return None
@@ -358,6 +374,7 @@ def record_guarded_scan_failure_decision_for_db(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
+    failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> ScanFailureDecision | None:
     """用 DB path 執行 decision-only guarded failure finalize。"""
 
@@ -377,6 +394,7 @@ def record_guarded_scan_failure_decision_for_db(
                 page_reused=page_reused,
                 scan_request_id=scan_request_id,
                 runtime_error_message=runtime_error_message,
+                failure_diagnostics=failure_diagnostics,
             )
 
     return run_sqlite_operation_with_retry(
@@ -401,6 +419,7 @@ async def record_guarded_scan_failure_result_for_db_async(
     page_reused: bool | None = None,
     scan_request_id: str = "",
     runtime_error_message: str | None = None,
+    failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> GuardedScanFailureFinalizeOutcome:
     """async resident 用 result-returning guarded failure finalize。"""
 
@@ -420,6 +439,7 @@ async def record_guarded_scan_failure_result_for_db_async(
                 page_reused=page_reused,
                 scan_request_id=scan_request_id,
                 runtime_error_message=runtime_error_message,
+                failure_diagnostics=failure_diagnostics,
             )
 
     return await run_sqlite_operation_with_retry_async(

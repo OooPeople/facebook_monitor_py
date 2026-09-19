@@ -141,6 +141,7 @@ async def commit_failure_request_for_db_async(
         page_reused=request.page_reused,
         scan_request_id=request.scan_request_id,
         runtime_error_message=request.runtime_error_message,
+        failure_diagnostics=request.failure_diagnostics,
     )
     if isinstance(result, GuardedScanFailureFinalizeRejected):
         return _failure_rejection_outcome(target_id=request.target_id, result=result)

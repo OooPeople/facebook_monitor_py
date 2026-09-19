@@ -284,6 +284,80 @@ class ContentUnavailableCommentsPage(FakeCommentsPage):
         raise AssertionError("content-unavailable scan should stop before sort")
 
 
+class TemporaryBlockLocator(FakeLocator):
+    """提供 Facebook 暫時限制頁文字。"""
+
+    def inner_text(self, *, timeout: int) -> str:
+        """回傳只供 page guard 使用的合成文字。"""
+
+        return "你暫時遭到封鎖 你似乎過度使用了這項功能"
+
+
+class TemporaryBlockCommentsPage(FakeCommentsPage):
+    """模擬 comments target 在排序前落入穩定暫時限制頁。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.guard_observations = 0
+
+    def locator(self, selector: str) -> TemporaryBlockLocator:
+        """回傳暫時限制頁 locator。"""
+
+        return TemporaryBlockLocator()
+
+    def evaluate(self, script: str, payload: object = None) -> object:
+        """只允許 bounded page guard probe，不得進入排序或抽取。"""
+
+        assert "articleCount" in script
+        self.guard_observations += 1
+        return {
+            "headingTexts": ["你暫時遭到封鎖"],
+            "detailTexts": ["你似乎過度使用了這項功能"],
+            "articleCount": 0,
+        }
+
+    def wait_for_timeout(self, timeout: int) -> None:
+        """模擬兩次 bounded observation 的短等待。"""
+
+
+class AsyncTemporaryBlockLocator(AsyncFakeLocator):
+    """提供 async Facebook 暫時限制頁文字。"""
+
+    async def inner_text(self, *, timeout: int) -> str:
+        """回傳只供 page guard 使用的合成文字。"""
+
+        return "你暫時遭到封鎖 你似乎過度使用了這項功能"
+
+
+class AsyncTemporaryBlockCommentsPage:
+    """模擬 async comments target 在排序前落入暫時限制頁。"""
+
+    url = FakeCommentsPage.url
+
+    def __init__(self) -> None:
+        self.sort_adjusted = False
+        self.guard_observations = 0
+
+    def locator(self, selector: str) -> AsyncTemporaryBlockLocator:
+        """回傳暫時限制頁 locator。"""
+
+        return AsyncTemporaryBlockLocator()
+
+    async def evaluate(self, script: str, payload: object = None) -> object:
+        """只允許 bounded page guard probe，不得進入排序或抽取。"""
+
+        assert "articleCount" in script
+        self.guard_observations += 1
+        return {
+            "headingTexts": ["你暫時遭到封鎖"],
+            "detailTexts": ["你似乎過度使用了這項功能"],
+            "articleCount": 0,
+        }
+
+    async def wait_for_timeout(self, timeout: int) -> None:
+        """模擬兩次 bounded observation 的短等待。"""
+
+
 class FakeScrollableCommentsPage(FakeCommentsPage):
     """模擬 comments D3 nested scroll 後逐步載入更多留言。"""
 
@@ -824,6 +898,56 @@ def test_scan_comments_target_page_sync_and_finalize_raises_content_unavailable_
 
     assert exc_info.value.reason == "content_unavailable"
     assert not page.sort_adjusted
+
+
+def test_comments_page_guard_short_circuits_sync_and_async_before_sort(
+    tmp_path: Path,
+) -> None:
+    """comments 的 sync/async 主路徑都應在排序前停止暫時限制頁。"""
+
+    db_path = tmp_path / "app.db"
+    sync_page = TemporaryBlockCommentsPage()
+    async_page = AsyncTemporaryBlockCommentsPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=FakeCommentsPage.url,
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        with pytest.raises(WorkerFailure) as sync_exc:
+            scan_comments_target_page_sync_and_finalize(
+                page=sync_page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=0,
+                scroll_wait_ms=0,
+            )
+        with pytest.raises(WorkerFailure) as async_exc:
+            asyncio.run(
+                scan_comments_target_page_async_commit_ready(
+                    page=async_page,
+                    app=app,
+                    target=target,
+                    config=config,
+                    scroll_rounds=0,
+                    scroll_wait_ms=0,
+                )
+            )
+
+    assert sync_exc.value.reason == "facebook_temporary_block"
+    assert async_exc.value.reason == "facebook_temporary_block"
+    assert sync_page.guard_observations == 2
+    assert async_page.guard_observations == 2
+    assert not sync_page.sort_adjusted
+    assert not async_page.sort_adjusted
 
 
 def test_scan_comments_target_page_sync_and_finalize_collapses_duplicate_comment_text_in_notification(

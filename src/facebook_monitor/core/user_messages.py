@@ -14,6 +14,8 @@ from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.scan_failures import EXTRACTOR_EMPTY_REASON
 from facebook_monitor.core.scan_failures import EXTRACTOR_RUNTIME_REASON
+from facebook_monitor.core.scan_failures import FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
@@ -30,6 +32,7 @@ from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.core.scan_failures import UNSUPPORTED_IN_FALLBACK_REASON
 
 
 _CODED_MESSAGE_RE = re.compile(r"^([a-z][a-z0-9_]*)(?::\s*(.*))?$")
@@ -38,6 +41,8 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 _FAILURE_REASON_LABELS = {
     CONTENT_UNAVAILABLE_REASON: "連結已失效",
+    FACEBOOK_TEMPORARY_BLOCK_REASON: "Facebook 暫時限制存取",
+    FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON: "無法確認 Facebook 頁面狀態",
     LOGIN_REQUIRED_REASON: "需要重新登入",
     CHECKPOINT_REQUIRED_REASON: "需要完成 Facebook 驗證",
     SESSION_INVALID_REASON: "Facebook 工作階段失效",
@@ -54,6 +59,7 @@ _FAILURE_REASON_LABELS = {
     TARGET_MISSING_REASON: "找不到監視項目",
     TARGET_INVALID_REASON: "監視項目設定無效",
     TARGET_KIND_UNSUPPORTED_REASON: "監視項目類型不支援",
+    UNSUPPORTED_IN_FALLBACK_REASON: "備援模式不支援留言監視",
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數衝突",
     UNKNOWN_REASON: "未分類錯誤",
     STALE_RUNNING_REASON: "掃描狀態逾時",
@@ -62,6 +68,14 @@ _FAILURE_REASON_LABELS = {
 
 _FAILURE_REASON_DETAILS = {
     CONTENT_UNAVAILABLE_REASON: "Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。",
+    FACEBOOK_TEMPORARY_BLOCK_REASON: (
+        "Facebook 顯示目前的操作暫時受到限制。系統已停止自動重試；"
+        "請勿立即重試，也不需要因此重新登入。"
+    ),
+    FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON: (
+        "頁面出現疑似限制訊息，但目前結構不足以可靠判定。"
+        "系統已停止此監視項目的自動重試，請稍後確認或更新程式。"
+    ),
     LOGIN_REQUIRED_REASON: "Facebook 要求重新登入，請到設定頁開啟登入視窗完成登入。",
     CHECKPOINT_REQUIRED_REASON: "Facebook 要求完成身分或安全性驗證，請到設定頁開啟登入視窗處理。",
     SESSION_INVALID_REASON: "Facebook 工作階段已失效，請重新登入後再掃描。",
@@ -78,6 +92,10 @@ _FAILURE_REASON_DETAILS = {
     TARGET_MISSING_REASON: "掃描前找不到這個監視項目，可能已被刪除。",
     TARGET_INVALID_REASON: "監視項目設定不完整或與目前頁面不一致，請重新確認設定。",
     TARGET_KIND_UNSUPPORTED_REASON: "目前背景掃描不支援這個監視項目類型。",
+    UNSUPPORTED_IN_FALLBACK_REASON: (
+        "留言監視需要安全的站內導航流程，目前 one-shot / sync 備援模式不支援。"
+        "系統已在開啟瀏覽器前停止，不會直接載入貼文網址；請改用正式背景監視。"
+    ),
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數互相衝突，請只指定一種監視項目。",
     UNKNOWN_REASON: "發生未分類錯誤，請查看 log 或稍後重試。",
     STALE_RUNNING_REASON: "背景掃描心跳已逾時，系統已記錄本輪失敗並會重啟頁面重試。",
@@ -370,10 +388,7 @@ def _localized_exception_text(value: str) -> str:
     lower = text.lower()
     if not text:
         return ""
-    if (
-        "execution context was destroyed" in lower
-        or "most likely because of a navigation" in lower
-    ):
+    if "execution context was destroyed" in lower or "most likely because of a navigation" in lower:
         return _FAILURE_REASON_DETAILS[PAGE_LOAD_TIMEOUT_REASON]
     if "target page, context or browser has been closed" in lower:
         return "瀏覽器頁面或 context 已關閉，本輪掃描無法繼續。"

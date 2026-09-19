@@ -36,6 +36,39 @@ def test_failure_message_uses_reason_specific_detail() -> None:
     assert "Page.evaluate" not in message
 
 
+def test_facebook_page_guard_reasons_have_actionable_safe_messages() -> None:
+    """暫時限制與不確定狀態都應顯示可行動訊息，不暴露 raw detail。"""
+
+    blocked = format_failure_message(
+        "facebook_temporary_block",
+        "private page body https://www.facebook.com/groups/private",
+    )
+    inconclusive = format_failure_message(
+        "facebook_page_guard_inconclusive",
+        "private DOM detail",
+    )
+
+    assert "Facebook 暫時限制存取" in blocked
+    assert "自動重試" in blocked
+    assert "private" not in blocked
+    assert "無法確認 Facebook 頁面狀態" in inconclusive
+    assert "private" not in inconclusive
+
+
+def test_unsupported_fallback_message_explains_safe_alternative() -> None:
+    """fallback 拒絕應說明未開 browser/direct URL，並引導使用正式背景監視。"""
+
+    message = format_failure_message(
+        "unsupported_in_fallback",
+        "private direct post URL",
+    )
+
+    assert message.startswith("備援模式不支援留言監視：")
+    assert "直接載入貼文網址" in message
+    assert "正式背景監視" in message
+    assert "private" not in message
+
+
 def test_generic_raw_english_failure_message_is_not_exposed() -> None:
     """未知英文 exception 在使用者可見訊息中只能顯示中文摘要。"""
 
@@ -63,9 +96,7 @@ def test_notification_event_message_is_localized() -> None:
     """通知事件內部代碼顯示時必須轉成中文摘要。"""
 
     assert format_notification_event_message("discord_sent") == "Discord 通知已送出"
-    assert "系統設定" in format_notification_event_message(
-        "desktop_failed:macos_permission_denied"
-    )
+    assert "系統設定" in format_notification_event_message("desktop_failed:macos_permission_denied")
     assert "Facebook Monitor" in format_notification_event_message(
         "desktop_failed:macos_permission_denied"
     )
@@ -86,7 +117,4 @@ def test_notification_event_message_is_localized() -> None:
 def test_update_platform_unsupported_reason_is_localized() -> None:
     """更新平台不支援 reason 在 UI 顯示時必須是中文。"""
 
-    assert (
-        format_update_reason_message("platform_unsupported")
-        == "目前平台沒有對應的更新檔"
-    )
+    assert format_update_reason_message("platform_unsupported") == "目前平台沒有對應的更新檔"

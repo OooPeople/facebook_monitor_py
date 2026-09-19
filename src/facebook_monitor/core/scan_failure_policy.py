@@ -12,6 +12,8 @@ from typing import Literal
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.scan_failures import CHECKPOINT_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.core.scan_failures import FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.core.scan_failures import LOGIN_REQUIRED_REASON
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import PROFILE_LOCKED_REASON
@@ -26,6 +28,7 @@ from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
+from facebook_monitor.core.scan_failures import UNSUPPORTED_IN_FALLBACK_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 
 
@@ -45,6 +48,8 @@ IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
     {
         CHECKPOINT_REQUIRED_REASON,
         CONTENT_UNAVAILABLE_REASON,
+        FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON,
+        FACEBOOK_TEMPORARY_BLOCK_REASON,
         LOGIN_REQUIRED_REASON,
         PROFILE_LOCKED_REASON,
         PROFILE_MISSING_REASON,
@@ -53,18 +58,19 @@ IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
         TARGET_INVALID_REASON,
         TARGET_KIND_UNSUPPORTED_REASON,
         TARGET_MISSING_REASON,
+        UNSUPPORTED_IN_FALLBACK_REASON,
+    }
+)
+DISCARD_PAGE_FAILURE_REASONS = frozenset(
+    {
+        FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON,
+        FACEBOOK_TEMPORARY_BLOCK_REASON,
     }
 )
 STREAK_RETRY_FAILURE_LIMITS = {
-    PAGE_LOAD_TIMEOUT_REASON: (
-        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit
-    ),
-    STALE_RUNNING_REASON: (
-        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_failure_limit
-    ),
-    SCHEDULER_RUNTIME_REASON: (
-        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_runtime_failure_limit
-    ),
+    PAGE_LOAD_TIMEOUT_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit),
+    STALE_RUNNING_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_failure_limit),
+    SCHEDULER_RUNTIME_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_runtime_failure_limit),
     SORT_ADJUST_UNCONFIRMED_REASON: (
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_failure_limit
     ),
@@ -78,9 +84,7 @@ AUTO_RESTART_FAILURE_ACTIONS = {
     SORT_ADJUST_UNCONFIRMED_REASON: TARGET_PAGE_RESTART_ACTION,
 }
 DEFAULT_AUTO_RESTART_ACTION = TARGET_PAGE_RESTART_ACTION
-DISCARD_PAGE_FAILURE_SOURCES = frozenset(
-    {"playwright", "unknown_exception", "runtime_recovery"}
-)
+DISCARD_PAGE_FAILURE_SOURCES = frozenset({"playwright", "unknown_exception", "runtime_recovery"})
 NON_TERMINAL_NOTIFICATION_FAILURE_REASONS = (
     IDLE_FAILURE_REASONS | SCHEDULER_CANCEL_IDLE_FAILURE_REASONS
 )
@@ -126,11 +130,10 @@ def decide_scan_failure(
     """依 reason、來源與既有連續失敗狀態決定本輪失敗後的處置。"""
 
     normalized_reason = normalize_scan_failure_reason(reason)
-    discard_page = source in DISCARD_PAGE_FAILURE_SOURCES
-    if (
-        source == "scheduler_cancel"
-        and normalized_reason in SCHEDULER_CANCEL_IDLE_FAILURE_REASONS
-    ):
+    discard_page = (
+        source in DISCARD_PAGE_FAILURE_SOURCES or normalized_reason in DISCARD_PAGE_FAILURE_REASONS
+    )
+    if source == "scheduler_cancel" and normalized_reason in SCHEDULER_CANCEL_IDLE_FAILURE_REASONS:
         return ScanFailureDecision(
             reason=normalized_reason,
             retryable=True,

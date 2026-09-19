@@ -480,10 +480,10 @@ def test_polluted_metadata_refresh_skips_ineligible_rows_without_starving_next_t
     assert eligible_after.group_name == "測試社團"
 
 
-def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
+def test_due_scan_defers_polluted_metadata_refresh_without_facebook_io(
     tmp_path: Path,
 ) -> None:
-    """metadata repair 失敗只標 metadata failed，不改 scan failure 三次停用語義。"""
+    """due scan 優先時 metadata 保持待處理，且不能同 tick 建第二個 page。"""
 
     db_path = tmp_path / "app.db"
     scan_calls = 0
@@ -506,7 +506,7 @@ def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
         )
 
     async def scan_page(**kwargs: Any) -> object:
-        """metadata failure 不應阻擋正式 due scan。"""
+        """正式 due scan 應優先於 maintenance。"""
 
         nonlocal scan_calls
         scan_calls += 1
@@ -547,7 +547,7 @@ def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
 
         assert summary.selected_count == 1
         assert summary.metadata_refresh_count == 0
-        assert len(metadata_context.pages) == 1
+        assert len(metadata_context.pages) == 0
 
     asyncio.run(run_test())
 
@@ -556,8 +556,7 @@ def test_polluted_metadata_refresh_failure_does_not_block_due_scan(
         state = app.repositories.runtime_states.get(target.id)
     assert scan_calls == 1
     assert updated is not None
-    assert updated.metadata_status == TargetMetadataStatus.FAILED
-    assert "無法使用" in updated.metadata_error
+    assert updated.metadata_status != TargetMetadataStatus.FAILED
     assert state is not None
     assert state.consecutive_failure_count == 0
 

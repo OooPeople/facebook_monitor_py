@@ -14,6 +14,7 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import ContentUnavailablePostsPage
+from tests.worker.posts_pipeline_test_helpers import TemporaryBlockPostsPage
 from tests.worker.posts_pipeline_test_helpers import FakePage
 from tests.worker.posts_pipeline_test_helpers import GrowingFakePage
 
@@ -247,4 +248,36 @@ def test_scan_posts_page_sync_and_finalize_raises_content_unavailable_before_sor
             )
 
     assert exc_info.value.reason == "content_unavailable"
+    assert not page.sort_adjusted
+
+
+def test_scan_posts_page_sync_stops_temporary_block_before_sort(tmp_path: Path) -> None:
+    """暫時限制頁需在 posts sorter 前以獨立 reason 中止。"""
+
+    db_path = tmp_path / "app.db"
+    page = TemporaryBlockPostsPage()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="222518561920110",
+                canonical_url="https://www.facebook.com/groups/222518561920110",
+                config=TargetConfigPatch(auto_adjust_sort=True),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.repositories.configs.get_for_target(target)
+        assert config is not None
+
+        with pytest.raises(WorkerFailure) as exc_info:
+            scan_posts_page_sync_and_finalize(
+                page=page,
+                app=app,
+                target=target,
+                config=config,
+                scroll_rounds=0,
+                scroll_wait_ms=0,
+            )
+
+    assert exc_info.value.reason == "facebook_temporary_block"
+    assert page.guard_observation_count == 2
     assert not page.sort_adjusted

@@ -14,14 +14,27 @@ from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.worker.playwright_runtime_errors import (
     is_playwright_runtime_closed_message,
 )
+from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 
 
 class WorkerFailure(RuntimeError):
     """保存 worker 可記錄到 scan run 的失敗分類。"""
 
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        *,
+        diagnostics: WorkerFailureDiagnostics | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        if diagnostics is not None and not isinstance(
+            diagnostics,
+            WorkerFailureDiagnostics,
+        ):
+            raise TypeError("WorkerFailure diagnostics must use a typed DTO")
+        self.diagnostics = diagnostics
 
 
 def classify_playwright_exception(error: Exception) -> str:

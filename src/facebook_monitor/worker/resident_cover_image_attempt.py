@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 
+from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_metadata_policy import InvalidTargetMetadataError
 from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetCoverImageRefreshState
+from facebook_monitor.core.facebook_access import FacebookAdmissionToken
 from facebook_monitor.facebook.group_metadata import (
     AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
     GroupMetadataError,
@@ -20,6 +22,11 @@ from facebook_monitor.facebook.group_metadata_validation import (
 )
 from facebook_monitor.worker.resident_maintenance_errors import is_scheduler_runtime_refresh_failure
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
+from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
+from facebook_monitor.worker.facebook_automation_admission import (
+    FacebookAutomationAdmissionController,
+)
+from facebook_monitor.worker.facebook_visible_write import fenced_facebook_application_context
 
 
 logger = logging.getLogger(__name__)
@@ -40,27 +47,39 @@ async def refresh_target_group_cover_image_from_context(
     options: ResidentRuntimeOptions,
     browser_context: GroupMetadataBrowserContextLike,
     state: TargetCoverImageRefreshState,
+    automation_admission_controller: FacebookAutomationAdmissionController | None = None,
+    facebook_admission_token: FacebookAdmissionToken | None = None,
 ) -> bool:
     """用 resident browser context 只刷新 target group cover image URL。"""
 
-    attempt = _begin_cover_image_refresh_attempt(options=options, state=state)
+    attempt = _begin_cover_image_refresh_attempt(
+        options=options,
+        state=state,
+        automation_admission_controller=automation_admission_controller,
+        facebook_admission_token=facebook_admission_token,
+    )
     if attempt is None:
         return False
     try:
         cover_image_url = await resolve_group_cover_image_with_context(
             browser_context,
             canonical_url=f"https://www.facebook.com/groups/{attempt.group_id}",
+            page_guard=ensure_async_page_scannable,
         )
     except GroupMetadataError as exc:
         return _handle_cover_image_resolve_error(
             options=options,
             attempt=attempt,
             exc=exc,
+            automation_admission_controller=automation_admission_controller,
+            facebook_admission_token=facebook_admission_token,
         )
     return _finish_resolved_cover_image_refresh_attempt(
         options=options,
         attempt=attempt,
         cover_image_url=cover_image_url,
+        automation_admission_controller=automation_admission_controller,
+        facebook_admission_token=facebook_admission_token,
     )
 
 
@@ -68,12 +87,18 @@ def _begin_cover_image_refresh_attempt(
     *,
     options: ResidentRuntimeOptions,
     state: TargetCoverImageRefreshState,
+    automation_admission_controller: FacebookAutomationAdmissionController | None,
+    facebook_admission_token: FacebookAdmissionToken | None,
 ) -> _CoverImageRefreshAttempt | None:
     """鎖定 cover image refresh attempt 輸入，並標記本輪已嘗試。"""
 
     target_id = state.target_id
     reported_url = state.last_reported_url.strip()
-    with SqliteApplicationContext(options.db_path) as app:
+    with fenced_facebook_application_context(
+        db_path=options.db_path,
+        controller=automation_admission_controller,
+        token=facebook_admission_token,
+    ) as app:
         target = app.repositories.targets.get(target_id)
         if target is None:
             return None
@@ -93,15 +118,15 @@ def _begin_cover_image_refresh_attempt(
             requested_at=state.requested_at,
         ):
             return None
-    if not group_id:
-        mark_target_cover_image_refresh_failed(
-            options,
-            target_id,
-            "target group id is empty",
-            reported_url=reported_url,
-            requested_at=state.requested_at,
-        )
-        return None
+        if not group_id:
+            mark_target_cover_image_refresh_failed_in_app(
+                app,
+                target_id,
+                "target group id is empty",
+                reported_url=reported_url,
+                requested_at=state.requested_at,
+            )
+            return None
     return _CoverImageRefreshAttempt(
         target_id=target_id,
         group_id=group_id,
@@ -115,17 +140,29 @@ def _handle_cover_image_resolve_error(
     options: ResidentRuntimeOptions,
     attempt: _CoverImageRefreshAttempt,
     exc: GroupMetadataError,
+    automation_admission_controller: FacebookAutomationAdmissionController | None,
+    facebook_admission_token: FacebookAdmissionToken | None,
 ) -> bool:
     """處理 cover image resolve 失敗；回傳本 refresh job 是否已完成。"""
 
     if is_scheduler_runtime_refresh_failure(exc):
         raise
-    if clear_polluted_cover_image_url_if_current(
-        options,
-        target_id=attempt.target_id,
-        reported_url=attempt.reported_url,
-    ):
-        with SqliteApplicationContext(options.db_path) as app:
+    with fenced_facebook_application_context(
+        db_path=options.db_path,
+        controller=automation_admission_controller,
+        token=facebook_admission_token,
+    ) as app:
+        target = app.repositories.targets.get(attempt.target_id)
+        if target is None:
+            return False
+        current_url = target.group_cover_image_url.strip()
+        if current_url != attempt.reported_url:
+            return False
+        if has_polluted_group_cover_image_url(current_url):
+            app.services.target_cover_image_refresh.refresh_target_cover_image_url(
+                attempt.target_id,
+                "",
+            )
             app.services.target_cover_image_refresh.mark_succeeded(
                 attempt.target_id,
                 resolved_url="",
@@ -134,18 +171,17 @@ def _handle_cover_image_resolve_error(
                 reported_url=attempt.reported_url,
                 requested_at=attempt.requested_at,
             )
-        return True
-    logger.info(
-        "cover image refresh skipped",
-        extra={"target_id": attempt.target_id},
-    )
-    mark_target_cover_image_refresh_failed(
-        options,
-        attempt.target_id,
-        str(exc),
-        reported_url=attempt.reported_url,
-        requested_at=attempt.requested_at,
-    )
+            return True
+        logger.info(
+            "cover image refresh skipped",
+            extra={"target_id": attempt.target_id},
+        )
+        app.services.target_cover_image_refresh.mark_failed(
+            attempt.target_id,
+            str(exc),
+            reported_url=attempt.reported_url,
+            requested_at=attempt.requested_at,
+        )
     return False
 
 
@@ -154,10 +190,16 @@ def _finish_resolved_cover_image_refresh_attempt(
     options: ResidentRuntimeOptions,
     attempt: _CoverImageRefreshAttempt,
     cover_image_url: str,
+    automation_admission_controller: FacebookAutomationAdmissionController | None,
+    facebook_admission_token: FacebookAdmissionToken | None,
 ) -> bool:
     """寫回已 resolve 的 cover image URL；回傳本 refresh job 是否已完成。"""
 
-    with SqliteApplicationContext(options.db_path) as app:
+    with fenced_facebook_application_context(
+        db_path=options.db_path,
+        controller=automation_admission_controller,
+        token=facebook_admission_token,
+    ) as app:
         target = app.repositories.targets.get(attempt.target_id)
         if target is None:
             return False
@@ -230,11 +272,30 @@ def mark_target_cover_image_refresh_failed(
     """將 cover image refresh 失敗寫回獨立狀態；target 已刪除時忽略。"""
 
     with SqliteApplicationContext(options.db_path) as app:
-        if app.repositories.targets.get(target_id) is None:
-            return
-        app.services.target_cover_image_refresh.mark_failed(
+        mark_target_cover_image_refresh_failed_in_app(
+            app,
             target_id,
             error,
             reported_url=reported_url,
             requested_at=requested_at,
         )
+
+
+def mark_target_cover_image_refresh_failed_in_app(
+    app: ApplicationContext,
+    target_id: str,
+    error: str,
+    *,
+    reported_url: str | None = None,
+    requested_at: datetime | None = None,
+) -> None:
+    """在 caller 擁有的 transaction/fence 內寫入 cover failure。"""
+
+    if app.repositories.targets.get(target_id) is None:
+        return
+    app.services.target_cover_image_refresh.mark_failed(
+        target_id,
+        error,
+        reported_url=reported_url,
+        requested_at=requested_at,
+    )

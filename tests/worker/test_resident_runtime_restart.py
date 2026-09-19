@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import nullcontext
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ from facebook_monitor.application.target_requests import UpsertCommentsTargetReq
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -29,11 +32,29 @@ from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
-def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
+class _AdvancingAutomationClock:
+    """以虛擬 UTC 推進安全 pacing，不讓 runtime 測試真的等待。"""
+
+    def __init__(self) -> None:
+        self.current = utc_now()
+
+    def now(self) -> datetime:
+        """回傳目前虛擬時間。"""
+
+        return self.current
+
+    async def sleep(self, seconds: float) -> None:
+        """推進 wall clock 並讓出 event loop。"""
+
+        self.current += timedelta(seconds=max(float(seconds), 0.0))
+        await asyncio.sleep(0)
+
+
+def test_resident_main_loop_does_not_schedule_comments_or_navigate(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """正式 loop 入口應把 comments target 派給 comments commit-ready scanner。"""
+    """正式 loop 在安全開關關閉時不得排程 comments 或建立 Facebook page。"""
 
     db_path = tmp_path / "app.db"
     profile_dir = tmp_path / "profile"
@@ -81,7 +102,7 @@ def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
         raise AssertionError("comments target should not use posts scanner")
 
     async def fake_comment_scan_page(**kwargs: Any) -> object:
-        """記錄正式 loop comments keyword 派發結果。"""
+        """安全停用期間正式 loop 不得呼叫 comments scanner。"""
 
         comment_calls.append(kwargs["target"].id)
         return build_success_scan_result_for_test(
@@ -103,6 +124,7 @@ def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -114,6 +136,8 @@ def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
                 ),
                 scan_page=as_async_scan_callable(fake_post_scan_page),
                 comments_commit_ready_scan_page=as_async_scan_callable(fake_comment_scan_page),
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -122,8 +146,9 @@ def test_resident_main_loop_uses_comments_commit_ready_scanner_keyword(
 
     assert len(contexts) == 1
     assert contexts[0].closed is True
+    assert contexts[0].pages == []
     assert post_calls == []
-    assert comment_calls == [target.id]
+    assert comment_calls == []
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
     assert state is not None
@@ -202,6 +227,7 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
             stop_event.set()
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -213,6 +239,9 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
                 scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
+                sleep_fn=lambda _seconds: asyncio.sleep(0),
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -305,6 +334,7 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
         stop_event.set()
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -316,6 +346,8 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
                 scan_page=as_async_scan_callable(unused_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_cycle,
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -430,6 +462,7 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
             stop_event.set()
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -442,6 +475,8 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
                 scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_second_runtime,
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -456,13 +491,11 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
     assert contexts[0].closed is True
     assert contexts[1].closed is True
     assert second_runtime_summary.worker_health_ok is True
-    assert set(second_runtime_summary.worker_statuses) == {
-        "resident-slot-1:running",
-        "resident-slot-2:running",
-        "resident-slot-3:running",
-        "resident-slot-4:running",
-    }
-    assert caplog.text.count("resident_executor_start max_concurrent_scans=4") == 2
+    assert set(second_runtime_summary.worker_statuses) == {"resident-slot-1:running"}
+    assert caplog.text.count(
+        "resident_executor_start configured_max_concurrent_scans=4 "
+        "effective_max_concurrent_scans=1"
+    ) == 2
     assert "resident_executor_worker_stopped worker_id=resident-slot-" in caplog.text
     assert "reason=exception exception_class=RuntimeError" in caplog.text
 
@@ -561,6 +594,7 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
         allow_scan_finish.set()
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -573,6 +607,8 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
                 on_cycle=release_after_first_summary,
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -680,6 +716,7 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -690,6 +727,8 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
                 sleep_fn=fake_sleep,
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
             ),
@@ -705,18 +744,17 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
     assert scan_calls == 2
 
 
-def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
+def test_resident_main_loop_retries_other_queued_targets_after_runtime_restart(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """runtime restart 取消的其他 running targets 要在新 context 立即補掃。"""
+    """單 worker 安全模式下，runtime restart 後仍應補掃其他 queued target。"""
 
     db_path = tmp_path / "app.db"
     profile_dir = tmp_path / "profile"
     profile_dir.mkdir()
     contexts: list[FakeAsyncBrowserContext] = []
     first_target_started = asyncio.Event()
-    second_target_started = asyncio.Event()
     stop_event = asyncio.Event()
     success_counts: dict[str, int] = {}
 
@@ -764,11 +802,7 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
         target = kwargs["target"]
         if target.id == first.id and not first_target_started.is_set():
             first_target_started.set()
-            await second_target_started.wait()
             raise AsyncPlaywrightError("Target page, context or browser has been closed")
-        if target.id == second.id and not second_target_started.is_set():
-            second_target_started.set()
-            await asyncio.sleep(10)
         success_counts[target.id] = success_counts.get(target.id, 0) + 1
         return build_success_scan_result_for_test(
             target=target,
@@ -795,6 +829,7 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
     )
 
     async def run_test() -> None:
+        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -807,6 +842,8 @@ def test_resident_main_loop_retries_other_running_targets_after_runtime_restart(
                 scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_both_succeed,
+                automation_sleep_fn=clock.sleep,
+                automation_clock=clock.now,
             ),
             timeout=3,
         )

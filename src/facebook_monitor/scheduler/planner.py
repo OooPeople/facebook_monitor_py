@@ -87,6 +87,7 @@ class TargetSchedulePlanner:
                     default_interval_seconds=default_interval_seconds,
                     target_id=target.id,
                     latest_finished_at=latest_finished_at,
+                    target_kind=target.target_kind,
                 )
                 if runtime_state.scan_requested_at is not None:
                     selected.append(

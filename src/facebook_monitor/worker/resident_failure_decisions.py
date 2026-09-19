@@ -25,6 +25,7 @@ from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.errors import classify_wrapped_playwright_exception
+from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 
@@ -51,6 +52,7 @@ class ResidentFailureRecordDecision:
     request_runtime_restart: bool = True
     include_page_counts_in_log: bool = True
     include_page_counts_in_result: bool = False
+    failure_diagnostics: WorkerFailureDiagnostics | None = None
 
 
 @dataclass(frozen=True)
@@ -265,9 +267,7 @@ _EXCEPTION_DECISION_VALIDATORS = {
     ResidentAttemptExceptionDecisionKind.SCHEDULER_STOPPING_CANCELLATION: (
         _validate_scheduler_cancel_exception_decision
     ),
-    ResidentAttemptExceptionDecisionKind.PROPAGATE: (
-        _validate_propagate_exception_decision
-    ),
+    ResidentAttemptExceptionDecisionKind.PROPAGATE: (_validate_propagate_exception_decision),
 }
 
 
@@ -298,9 +298,7 @@ def decide_resident_attempt_exception(
         return ResidentAttemptExceptionDecision.scheduler_stopping_cancellation()
     if isinstance(exc, sqlite3.OperationalError):
         if is_sqlite_lock_error(exc):
-            return ResidentAttemptExceptionDecision.sqlite_lock_retry(
-                exc.__class__.__name__
-            )
+            return ResidentAttemptExceptionDecision.sqlite_lock_retry(exc.__class__.__name__)
         return ResidentAttemptExceptionDecision.propagate()
     if isinstance(exc, (AsyncPlaywrightTimeoutError, AsyncPlaywrightError)):
         return ResidentAttemptExceptionDecision.record_failure(
@@ -388,6 +386,7 @@ def failure_record_decision_for_worker_failure(
         exception_class=exc.__class__.__name__,
         owner_changed_reason="worker_failure_owner_changed",
         include_page_counts_in_result=True,
+        failure_diagnostics=exc.diagnostics,
     )
 
 

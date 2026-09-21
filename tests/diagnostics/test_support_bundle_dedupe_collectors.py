@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -21,7 +22,7 @@ def test_dedupe_summary_aliases_all_private_identifiers(tmp_path: Path) -> None:
     """dedupe summary 只輸出 alias/count/timestamp，不輸出 raw scope/target ids。"""
 
     db_path = tmp_path / "app.db"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         initialize_schema(connection)
         connection.execute(
             """
@@ -164,7 +165,7 @@ def test_dedupe_summary_scan_scope_state_is_bounded_to_latest_100(
 
     db_path = tmp_path / "app.db"
     base = datetime(2026, 5, 1, tzinfo=timezone.utc)
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         initialize_schema(connection)
         for index in range(101):
             connection.execute(
@@ -191,7 +192,7 @@ def test_dedupe_summary_handles_missing_legacy_tables(tmp_path: Path) -> None:
     """舊 DB 缺少 dedupe tables 時，collector 應回傳空 section 而不是失敗。"""
 
     db_path = tmp_path / "app.db"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
     payload = _dedupe_summary_payload(db_path, _SupportBundleAliases())

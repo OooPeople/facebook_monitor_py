@@ -77,18 +77,32 @@ async def _commit_failure_request_for_test(
     )
 
 
+def _notification_outbox_count_for_target(
+    app: ApplicationContext,
+    target_id: str,
+) -> int:
+    """回傳 target 的全部 outbox durable rows，不限 status。"""
+
+    row = app.repositories.notification_outbox.connection.execute(
+        "SELECT COUNT(*) FROM notification_outbox WHERE target_id = ?",
+        (target_id,),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
 def _assert_no_visible_scan_writes(app: ApplicationContext, target_id: str) -> None:
     """確認 validation / guard rejection 沒寫 visible scan state 或 outbox。"""
 
     latest_scan = app.repositories.scan_runs.latest_by_target(target_id)
     latest_items = app.repositories.latest_scan_items.list_by_target(target_id)
     history = app.repositories.match_history.list_by_target(target_id)
-    pending_outbox = app.repositories.notification_outbox.list_pending()
+    outbox_count = _notification_outbox_count_for_target(app, target_id)
 
     assert latest_scan is None
     assert latest_items == []
     assert history == []
-    assert pending_outbox == []
+    assert outbox_count == 0
 
 
 def test_scan_commit_coordinator_commits_success_and_idle(
@@ -152,14 +166,6 @@ def test_scan_commit_coordinator_commits_success_and_idle(
     assert outcome.scan_run_id > 0
     assert outcome.new_count == 1
     assert outcome.matched_count == 1
-    assert outcome.side_effects.wrote_scan_run is True
-    assert outcome.side_effects.wrote_latest_scan is True
-    assert outcome.side_effects.cleared_latest_scan is False
-    assert outcome.side_effects.wrote_match_history is True
-    assert outcome.side_effects.enqueued_match_notification_outbox is True
-    assert outcome.side_effects.enqueued_runtime_failure_notification_outbox is False
-    assert outcome.side_effects.updated_scope_state is True
-    assert outcome.side_effects.updated_runtime_state is True
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.active_worker_id == ""
@@ -206,13 +212,13 @@ def test_scan_commit_success_does_not_report_outbox_when_channels_disabled(
             commit_guard=fixture.commit_guard,
         )
         history = app.repositories.match_history.list_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        outbox_count = _notification_outbox_count_for_target(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.SUCCESS_COMMITTED
-    assert outcome.side_effects.wrote_match_history is True
-    assert outcome.side_effects.enqueued_match_notification_outbox is False
+    assert outcome.committed_visible_scan_state is True
+    assert outcome.scan_run_id > 0
     assert len(history) == 1
-    assert pending_outbox == []
+    assert outbox_count == 0
 
 
 def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
@@ -252,7 +258,7 @@ def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
         history = app.repositories.match_history.list_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        outbox_count = _notification_outbox_count_for_target(app, fixture.target.id)
         seen_count = app.repositories.seen_items.connection.execute(
             "SELECT COUNT(*) FROM seen_items WHERE scope_id = ?",
             (fixture.target.scope_id,),
@@ -260,7 +266,6 @@ def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.committed_visible_scan_state is False
-    assert outcome.side_effects.any is False
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == "worker-b"
@@ -268,7 +273,7 @@ def test_scan_commit_coordinator_success_reports_guard_mismatch_without_writes(
     assert latest_scan is None
     assert latest_items == []
     assert history == []
-    assert pending_outbox == []
+    assert outbox_count == 0
     assert seen_count == 0
 
 
@@ -369,18 +374,17 @@ def test_scan_commit_coordinator_success_reports_target_inactive_without_writes(
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
         history = app.repositories.match_history.list_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        outbox_count = _notification_outbox_count_for_target(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.TARGET_INACTIVE
     assert outcome.reason == "target_inactive_before_commit"
     assert outcome.committed_visible_scan_state is False
-    assert outcome.side_effects.any is False
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert latest_scan is None
     assert latest_items == []
     assert history == []
-    assert pending_outbox == []
+    assert outbox_count == 0
 
 
 def test_scan_commit_coordinator_success_reports_target_missing_without_writes(
@@ -406,10 +410,13 @@ def test_scan_commit_coordinator_success_reports_target_missing_without_writes(
             ),
             commit_guard=fixture.commit_guard,
         )
+        state = app.repositories.runtime_states.get(target_id)
+        _assert_no_visible_scan_writes(app, target_id)
 
     assert outcome.kind == ScanCommitOutcomeKind.TARGET_INACTIVE
     assert outcome.reason == "target_missing_before_commit"
-    assert outcome.side_effects.any is False
+    assert outcome.committed_visible_scan_state is False
+    assert state is None
 
 
 def test_scan_commit_coordinator_success_reports_runtime_missing_without_writes(
@@ -437,11 +444,12 @@ def test_scan_commit_coordinator_success_reports_runtime_missing_without_writes(
             ),
             commit_guard=fixture.commit_guard,
         )
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.reason == "runtime_state_missing_before_commit"
-    assert outcome.side_effects.any is False
+    assert state is None
 
 
 def test_scan_commit_coordinator_success_reports_runtime_not_running_without_writes(
@@ -471,11 +479,15 @@ def test_scan_commit_coordinator_success_reports_runtime_not_running_without_wri
             ),
             commit_guard=fixture.commit_guard,
         )
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.reason == "runtime_not_running_before_commit"
-    assert outcome.side_effects.any is False
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
 
 
 def test_scan_commit_coordinator_success_reports_started_at_mismatch_without_writes(
@@ -486,7 +498,7 @@ def test_scan_commit_coordinator_success_reports_started_at_mismatch_without_wri
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app, include_keywords=("票券",))
-        app.services.targets.mark_target_running(
+        current_state = app.services.targets.mark_target_running(
             fixture.target.id,
             fixture.commit_guard.worker_id,
             page_id=fixture.commit_guard.page_id,
@@ -504,11 +516,12 @@ def test_scan_commit_coordinator_success_reports_started_at_mismatch_without_wri
             ),
             commit_guard=fixture.commit_guard,
         )
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.reason == "scan_started_at_changed_before_commit"
-    assert outcome.side_effects.any is False
+    assert state == current_state
 
 
 def test_scan_commit_coordinator_success_reports_page_mismatch_without_writes(
@@ -534,11 +547,15 @@ def test_scan_commit_coordinator_success_reports_page_mismatch_without_writes(
             ),
             commit_guard=fixture.commit_guard,
         )
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.reason == "page_owner_changed_before_commit"
-    assert outcome.side_effects.any is False
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == fixture.commit_guard.worker_id
+    assert state.active_page_id == "page-b"
 
 
 def test_scan_commit_coordinator_rejects_success_result_target_mismatch(
@@ -774,9 +791,6 @@ def test_scan_commit_coordinator_commits_guarded_failure(
         assert outcome.committed_visible_scan_state is True
         assert outcome.scan_run_id > 0
         assert outcome.runtime_failure_notification_count == 0
-        assert outcome.side_effects.wrote_scan_run is True
-        assert outcome.side_effects.enqueued_runtime_failure_notification_outbox is False
-        assert outcome.side_effects.updated_runtime_state is True
         assert outcome.failure_decision is not None
         assert outcome.reason == outcome.failure_decision.reason
         assert outcome.discard_page == outcome.failure_decision.discard_page
@@ -786,6 +800,7 @@ def test_scan_commit_coordinator_commits_guarded_failure(
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
+        outbox_count = _notification_outbox_count_for_target(app, fixture.target.id)
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
@@ -793,6 +808,7 @@ def test_scan_commit_coordinator_commits_guarded_failure(
     assert latest_scan is not None
     assert latest_scan.status == ScanStatus.FAILED
     assert latest_scan.metadata["reason"] == UNKNOWN_REASON
+    assert outbox_count == 0
 
 
 def test_scan_commit_coordinator_commits_failure_request(
@@ -819,17 +835,21 @@ def test_scan_commit_coordinator_commits_failure_request(
             )
         )
         assert outcome.kind == ScanCommitOutcomeKind.FAILURE_COMMITTED
+        assert outcome.committed_visible_scan_state is True
         assert outcome.scan_run_id > 0
-        assert outcome.side_effects.wrote_scan_run is True
-        assert outcome.side_effects.updated_runtime_state is True
         assert outcome.failure_decision is not None
         assert outcome.reason == UNKNOWN_REASON
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
 
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
     assert latest_scan is not None
     assert latest_scan.status == ScanStatus.FAILED
     assert latest_scan.metadata["page_reused"] is False
@@ -844,7 +864,7 @@ def test_scan_commit_coordinator_failure_duplicate_reports_no_scan_run_write(
     with SqliteApplicationContext(db_path) as app:
         fixture = _create_running_target_with_guard(app)
 
-    async def run_test() -> tuple[int, int, bool, int, bool, bool]:
+    async def run_test() -> tuple[int, int, bool, int]:
         first = await _commit_failure_request_for_test(
             db_path=db_path,
             target_id=fixture.target.id,
@@ -877,17 +897,13 @@ def test_scan_commit_coordinator_failure_duplicate_reports_no_scan_run_write(
             second.scan_run_id,
             second.committed_visible_scan_state,
             second.runtime_failure_notification_count,
-            second.side_effects.wrote_scan_run,
-            second.side_effects.updated_runtime_state,
         )
 
     (
         first_scan_run_id,
         second_scan_run_id,
         committed,
-        outbox_count,
-        duplicate_wrote_scan_run,
-        duplicate_updated_runtime,
+        reported_outbox_count,
     ) = asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
@@ -895,14 +911,27 @@ def test_scan_commit_coordinator_failure_duplicate_reports_no_scan_run_write(
             "SELECT COUNT(*) FROM scan_runs WHERE target_id = ? AND status = ?",
             (fixture.target.id, ScanStatus.FAILED.value),
         ).fetchone()[0]
+        latest_scan_row_id = app.repositories.scan_runs.connection.execute(
+            "SELECT id FROM scan_runs WHERE target_id = ? ORDER BY id DESC LIMIT 1",
+            (fixture.target.id,),
+        ).fetchone()[0]
+        state = app.repositories.runtime_states.get(fixture.target.id)
+        durable_outbox_count = _notification_outbox_count_for_target(
+            app,
+            fixture.target.id,
+        )
 
     assert first_scan_run_id > 0
     assert second_scan_run_id == 0
     assert committed is False
-    assert outbox_count == 0
-    assert duplicate_wrote_scan_run is False
-    assert duplicate_updated_runtime is True
+    assert reported_outbox_count == 0
     assert failed_scan_count == 1
+    assert latest_scan_row_id == first_scan_run_id
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
+    assert durable_outbox_count == 0
 
 
 def test_scan_commit_coordinator_failure_reports_runtime_outbox_count(
@@ -950,11 +979,7 @@ def test_scan_commit_coordinator_failure_reports_runtime_outbox_count(
             )
             latest_scan_run_id = outcome.scan_run_id
             latest_outbox_count = outcome.runtime_failure_notification_count
-            assert outcome.side_effects.wrote_scan_run is True
-            assert outcome.side_effects.enqueued_runtime_failure_notification_outbox is (
-                outcome.runtime_failure_notification_count > 0
-            )
-            assert outcome.side_effects.updated_runtime_state is True
+            assert outcome.committed_visible_scan_state is True
         return latest_scan_run_id, latest_outbox_count
 
     terminal_scan_run_id, terminal_outbox_count = asyncio.run(run_test())
@@ -1007,17 +1032,13 @@ def test_scan_commit_coordinator_commits_existing_protective_skip(
         state = app.repositories.runtime_states.get(fixture.target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
+        history = app.repositories.match_history.list_by_target(fixture.target.id)
+        outbox_count = _notification_outbox_count_for_target(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.SKIP_COMMITTED
     assert outcome.committed_visible_scan_state is True
     assert outcome.scan_run_id > 0
     assert outcome.reason == SORT_ADJUST_UNCONFIRMED_REASON
-    assert outcome.side_effects.wrote_scan_run is True
-    assert outcome.side_effects.wrote_latest_scan is False
-    assert outcome.side_effects.cleared_latest_scan is True
-    assert outcome.side_effects.wrote_match_history is False
-    assert outcome.side_effects.enqueued_match_notification_outbox is False
-    assert outcome.side_effects.updated_runtime_state is True
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.consecutive_scan_skip_count == 1
@@ -1025,6 +1046,8 @@ def test_scan_commit_coordinator_commits_existing_protective_skip(
     assert latest_scan.status == ScanStatus.SUCCESS
     assert latest_scan.metadata["scan_skipped"] is True
     assert latest_items == []
+    assert history == []
+    assert outbox_count == 0
 
 
 def test_scan_commit_coordinator_skip_stale_owner_writes_nothing(
@@ -1055,20 +1078,14 @@ def test_scan_commit_coordinator_skip_stale_owner_writes_nothing(
             commit_guard=fixture.commit_guard,
         )
         state = app.repositories.runtime_states.get(fixture.target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
     assert outcome.reason == "owner_changed_before_commit"
-    assert outcome.side_effects.any is False
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == current_guard.worker_id
     assert state.active_page_id == current_guard.page_id
-    assert latest_scan is None
-    assert latest_items == []
-    assert pending_outbox == []
 
 
 def test_scan_commit_coordinator_skip_target_inactive_writes_nothing(
@@ -1094,19 +1111,13 @@ def test_scan_commit_coordinator_skip_target_inactive_writes_nothing(
             commit_guard=fixture.commit_guard,
         )
         state = app.repositories.runtime_states.get(fixture.target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        latest_items = app.repositories.latest_scan_items.list_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert outcome.kind == ScanCommitOutcomeKind.TARGET_INACTIVE
     assert outcome.reason == "target_inactive_before_commit"
     assert outcome.committed_visible_scan_state is False
-    assert outcome.side_effects.any is False
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert latest_scan is None
-    assert latest_items == []
-    assert pending_outbox == []
 
 
 def test_scan_commit_coordinator_skip_guard_failure_happens_before_visible_writes(
@@ -1188,21 +1199,17 @@ def test_scan_commit_coordinator_failure_reports_guard_mismatch_without_writes(
         assert outcome.kind == ScanCommitOutcomeKind.GUARD_MISMATCH
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(fixture.target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == current_guard.worker_id
     assert state.active_page_id == current_guard.page_id
-    assert latest_scan is None
-    assert pending_outbox == []
 
 
 def test_scan_commit_coordinator_failure_post_write_guard_failure_rolls_back(
@@ -1321,19 +1328,15 @@ def test_scan_commit_coordinator_failure_reports_target_inactive_without_writes(
         assert outcome.reason == "target_inactive_before_commit"
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(fixture.target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        _assert_no_visible_scan_writes(app, fixture.target.id)
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert latest_scan is None
-    assert pending_outbox == []
 
 
 def test_scan_commit_coordinator_failure_reports_target_missing_without_writes(
@@ -1362,12 +1365,14 @@ def test_scan_commit_coordinator_failure_reports_target_missing_without_writes(
         assert outcome.reason == "target_missing_before_commit"
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target_id)
         _assert_no_visible_scan_writes(app, target_id)
+
+    assert state is None
 
 
 def test_scan_commit_coordinator_failure_reports_runtime_missing_without_writes(
@@ -1402,12 +1407,17 @@ def test_scan_commit_coordinator_failure_reports_runtime_missing_without_writes(
         assert outcome.reason == "runtime_not_running_before_commit"
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
 
 
 def test_scan_commit_coordinator_failure_reports_runtime_not_running_without_writes(
@@ -1440,12 +1450,17 @@ def test_scan_commit_coordinator_failure_reports_runtime_not_running_without_wri
         assert outcome.reason == "runtime_not_running_before_commit"
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(fixture.target.id)
         _assert_no_visible_scan_writes(app, fixture.target.id)
+
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.active_worker_id == ""
+    assert state.active_page_id == ""
 
 
 def test_scan_commit_coordinator_failure_reports_page_mismatch_without_writes(
@@ -1474,7 +1489,6 @@ def test_scan_commit_coordinator_failure_reports_page_mismatch_without_writes(
         assert outcome.reason == "page_owner_changed_before_commit"
         assert outcome.failure_decision is None
         assert outcome.committed_visible_scan_state is False
-        assert outcome.side_effects.any is False
 
     asyncio.run(run_test())
 

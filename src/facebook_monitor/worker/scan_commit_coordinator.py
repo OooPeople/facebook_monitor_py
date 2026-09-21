@@ -19,9 +19,6 @@ from facebook_monitor.worker.scan_commit_permissions import ScanCommitPermission
 from facebook_monitor.worker.scan_commit_permissions import ScanCommitPermissionKind
 from facebook_monitor.worker.scan_commit_permissions import classify_scan_commit_permission
 from facebook_monitor.worker.scan_commit_requests import FailureScanCommitRequest
-from facebook_monitor.worker.scan_commit_side_effects import side_effects_for_failure
-from facebook_monitor.worker.scan_commit_side_effects import side_effects_for_protective_skip
-from facebook_monitor.worker.scan_commit_side_effects import side_effects_for_success
 from facebook_monitor.worker.scan_commit_validation import (
     validate_protective_skip_result_for_target,
 )
@@ -69,7 +66,6 @@ def commit_guarded_protective_skip(
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.SKIP_COMMITTED,
         target_id=target.id,
-        side_effects=side_effects_for_protective_skip(finalize_result),
         reason=str(finalize_result.scan_summary.get("skip_reason") or ""),
         scan_run_id=finalize_result.scan_run_id,
     )
@@ -115,7 +111,6 @@ def commit_success(
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.SUCCESS_COMMITTED,
         target_id=target.id,
-        side_effects=side_effects_for_success(finalize_result),
         scan_run_id=finalize_result.scan_run_id,
         matched_count=finalize_result.matched_count,
         new_count=finalize_result.new_count,
@@ -149,7 +144,6 @@ async def commit_failure_request_for_db_async(
     return ScanCommitOutcome(
         kind=ScanCommitOutcomeKind.FAILURE_COMMITTED,
         target_id=request.target_id,
-        side_effects=side_effects_for_failure(result),
         reason=decision.reason,
         scan_run_id=result.scan_run_id,
         request_runtime_restart=(decision.recovery_action == SCHEDULER_RUNTIME_RESTART_ACTION),

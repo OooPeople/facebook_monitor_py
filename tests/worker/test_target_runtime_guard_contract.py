@@ -37,7 +37,6 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/scan_commit_outcomes.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_permissions.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_requests.py",
-    ROOT / "src/facebook_monitor/worker/scan_commit_side_effects.py",
     ROOT / "src/facebook_monitor/worker/scan_commit_validation.py",
     ROOT / "src/facebook_monitor/worker/scan_finalize.py",
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",

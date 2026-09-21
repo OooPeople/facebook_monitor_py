@@ -148,12 +148,21 @@ def test_resident_main_scan_sqlite_lock_requeues_without_failure(
 
     with SqliteApplicationContext(db_path) as app:
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        outbox_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_outbox WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
         state = app.repositories.runtime_states.get(target.id)
 
     assert summary.failure_count == 0
     assert summary.skipped_count == 1
     assert summary.worker_health_ok is True
     assert latest_scan is None
+    assert latest_items == []
+    assert history == []
+    assert outbox_count == 0
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.scan_requested_at is not None
@@ -217,12 +226,21 @@ def test_resident_main_scan_commit_writer_lock_requeues_without_failure(
 
     with SqliteApplicationContext(db_path) as app:
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
+        history = app.repositories.match_history.list_by_target(target.id)
+        outbox_count = app.repositories.notification_outbox.connection.execute(
+            "SELECT COUNT(*) FROM notification_outbox WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()[0]
         state = app.repositories.runtime_states.get(target.id)
 
     assert summary.failure_count == 0
     assert summary.skipped_count == 1
     assert summary.worker_health_ok is True
     assert latest_scan is None
+    assert latest_items == []
+    assert history == []
+    assert outbox_count == 0
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.scan_requested_at is not None

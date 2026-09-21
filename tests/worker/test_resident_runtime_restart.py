@@ -379,8 +379,6 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
             self,
             target_id: str,
             page_id: str,
-            *,
-            current_url: str = "",
         ) -> bool:
             nonlocal release_failed
             if not release_failed:
@@ -389,7 +387,6 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
             return await super().release_if_page_id(
                 target_id,
                 page_id,
-                current_url=current_url,
             )
 
     async def fake_launch_persistent_context_async(
@@ -518,8 +515,6 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
             self,
             target_id: str,
             page_id: str,
-            *,
-            current_url: str = "",
         ) -> bool:
             nonlocal release_failed
             if not release_failed:
@@ -528,7 +523,6 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
             return await super().release_if_page_id(
                 target_id,
                 page_id,
-                current_url=current_url,
             )
 
     async def fake_launch_persistent_context_async(

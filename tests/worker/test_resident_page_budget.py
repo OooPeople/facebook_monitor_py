@@ -122,7 +122,6 @@ def test_page_close_failure_preserves_ownership_without_poisoning_other_targets(
         pool.pages["target"] = PageOwnership(
             page=failing_page,
             page_id="page-1",
-            target_id="target",
             in_use_by_worker="worker-1",
         )
 

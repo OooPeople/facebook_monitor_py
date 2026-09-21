@@ -270,13 +270,11 @@ def test_resident_running_claim_rejected_does_not_release_reserved_page(
         async def record_release_if_page_id(
             target_id: str,
             page_id: str,
-            *,
-            current_url: str = "",
         ) -> bool:
             release_if_calls.append((target_id, page_id))
             return False
 
-        async def record_release(target_id: str, *, current_url: str = "") -> None:
+        async def record_release(target_id: str) -> None:
             release_calls.append(target_id)
 
         monkeypatch.setattr(page_pool, "release_if_page_id", record_release_if_page_id)
@@ -872,9 +870,7 @@ def test_resident_failure_discard_ignores_newer_page_id() -> None:
         page_pool.pages[target_id] = PageOwnership(
             page=new_page,
             page_id="new-page",
-            target_id=target_id,
             in_use_by_worker="worker-new",
-            current_url="https://new.example",
         )
 
         class DiscardHost:
@@ -1058,9 +1054,7 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
         page_pool.pages[target.id] = PageOwnership(
             page=new_page,
             page_id="page-b",
-            target_id=target.id,
             in_use_by_worker="worker-b",
-            current_url="https://new.example",
         )
 
         task.cancel()
@@ -1797,7 +1791,6 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
     assert pooled_page.page_id
     assert id(pooled_page.page) == observed_page_objects[0]
     assert pooled_page.in_use_by_worker == ""
-    assert pooled_page.current_url == target.canonical_url
 
 
 def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(

@@ -982,9 +982,7 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
         page_pool.pages[target_id] = PageOwnership(
             page=page,
             page_id="new-page",
-            target_id=target_id,
             in_use_by_worker="worker-new",
-            current_url="https://current.example",
         )
         unregistered: list[tuple[str, str]] = []
 
@@ -1018,7 +1016,6 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
 
         assert await target_queue.snapshot() == (0, 1, ())
         assert page_pool.pages[target_id].in_use_by_worker == "worker-new"
-        assert page_pool.pages[target_id].current_url == "https://current.example"
         assert not page.closed
         assert unregistered == [(target_id, "old-owner")]
 

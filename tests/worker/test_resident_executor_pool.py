@@ -285,31 +285,33 @@ def test_resident_page_pool_page_id_guards_ignore_stale_attempt() -> None:
         ownership = PageOwnership(
             page=page,
             page_id="current-page",
-            target_id="target-1",
             in_use_by_worker="worker-current",
-            current_url="https://current.example",
         )
         pool.pages["target-1"] = ownership
 
         released = await pool.release_if_page_id(
             "target-1",
             "stale-page",
-            current_url="https://stale-release.example",
         )
         reloaded_at = await pool.mark_reloaded_if_page_id(
             "target-1",
             "stale-page",
-            current_url="https://stale-reload.example",
         )
         discarded = await pool.discard_if_page_id("target-1", "stale-page")
+        matching_reloaded_at = await pool.mark_reloaded_if_page_id(
+            "target-1",
+            "current-page",
+        )
 
         assert released is False
         assert reloaded_at is None
         assert discarded is False
+        assert matching_reloaded_at is not None
+        utc_offset = matching_reloaded_at.utcoffset()
+        assert utc_offset is not None
+        assert utc_offset.total_seconds() == 0
         assert pool.pages["target-1"] is ownership
         assert ownership.in_use_by_worker == "worker-current"
-        assert ownership.current_url == "https://current.example"
-        assert ownership.last_reloaded_at is None
         assert not page.closed
 
     asyncio.run(run_test())

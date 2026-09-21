@@ -297,7 +297,6 @@ async def _prepare_attempt_page(
     reloaded_at = await pool.page_pool.mark_reloaded_if_page_id(
         state.target_id,
         state.page_id,
-        current_url=str(getattr(page, "url", "") or ""),
     )
 
     def mark_reloaded_operation() -> TargetRuntimeState | None:

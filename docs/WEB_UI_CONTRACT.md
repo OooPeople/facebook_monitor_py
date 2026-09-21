@@ -63,6 +63,9 @@ runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者�
 ## Partial Update 與資料邊界
 
 - 前端收到 dashboard batch payload 後更新 sidebar 與 target cards；partial update 的 revision 來源以 `docs/ARCHITECTURE.md#web-ui-語義` 為準。
+- Dashboard invariant warning，以及單一卡片與命中紀錄的 invariant validation，
+  都只代表當次畫面已載入的 read scope，不得宣稱已驗證全庫健康；完整 audit 邊界以
+  `docs/ARCHITECTURE.md#web-ui-語義` 為準。
 - 前端 revision transport 預設使用 EventSource 長 SSE；無 EventSource 支援或
   SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。
 - EventSource open 後必須停止 fallback polling，任一時間最多保留一個

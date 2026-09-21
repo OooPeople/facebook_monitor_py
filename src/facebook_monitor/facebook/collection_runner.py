@@ -85,7 +85,6 @@ def run_collection_loop(
     get_scroll_metrics: Callable[[], dict[str, Any]] | None = None,
     capture_snapshot: Callable[[], object] | None = None,
     restore_snapshot: Callable[[], object] | None = None,
-    end_guard: Callable[[], object] | None = None,
 ) -> CollectionRunResult[RoundStatsT]:
     """執行同步多輪 collection loop。"""
 
@@ -132,12 +131,8 @@ def run_collection_loop(
                 break
             wait(wait_ms)
     finally:
-        try:
-            if snapshot_captured and restore_snapshot is not None:
-                restore_snapshot()
-        finally:
-            if end_guard is not None:
-                end_guard()
+        if snapshot_captured and restore_snapshot is not None:
+            restore_snapshot()
     return CollectionRunResult(collected=collected, round_stats=round_stats)
 
 
@@ -159,7 +154,6 @@ async def run_collection_loop_async(
     get_scroll_metrics: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     capture_snapshot: Callable[[], Awaitable[object]] | None = None,
     restore_snapshot: Callable[[], Awaitable[object]] | None = None,
-    end_guard: Callable[[], Awaitable[object]] | None = None,
 ) -> CollectionRunResult[RoundStatsT]:
     """執行 async 多輪 collection loop。"""
 
@@ -208,12 +202,8 @@ async def run_collection_loop_async(
                 break
             await wait(wait_ms)
     finally:
-        try:
-            if snapshot_captured and restore_snapshot is not None:
-                await restore_snapshot()
-        finally:
-            if end_guard is not None:
-                await end_guard()
+        if snapshot_captured and restore_snapshot is not None:
+            await restore_snapshot()
     return CollectionRunResult(collected=collected, round_stats=round_stats)
 
 

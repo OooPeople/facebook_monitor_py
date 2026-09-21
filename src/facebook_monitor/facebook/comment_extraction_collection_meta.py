@@ -17,7 +17,6 @@ def build_comment_collection_meta(
     accumulated_count: int,
     stop_reason: str,
     auto_load_more: bool,
-    guard_reason: str = "",
 ) -> CommentCollectionMeta:
     """彙整 comments 跨視窗 collected meta。"""
 
@@ -52,7 +51,6 @@ def build_comment_collection_meta(
             (stat.load_more_mode for stat in round_stats if stat.load_more_mode != "off"),
             "comment_nested_scroll" if auto_load_more else "off",
         ),
-        guard_reason=guard_reason,
         stop_reason=stop_reason,
         dom_settle_attempted=dom_settle_attempted,
         dom_settle_stable=all(

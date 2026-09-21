@@ -41,7 +41,6 @@ class SchedulerRuntimeDefaults:
     """保存 scheduler / worker runtime 的 Python 版預設值。"""
 
     resident_interval_seconds: float = DEFAULT_REFRESH_SECONDS
-    one_shot_interval_seconds: float = 300
     scheduler_tick_seconds: float = 2
     max_concurrent_scans: int = 4
     scroll_rounds: int = 3

@@ -973,7 +973,7 @@ def test_start_route_supports_comments_target(tmp_path: Path) -> None:
 
 
 def test_scan_once_requests_resident_scan_for_posts_and_comments(tmp_path: Path) -> None:
-    """Web UI scan-once 只排入 resident scan request，不啟動 one-shot fallback。"""
+    """Web UI scan-once 只排入 resident scan request，不啟動 one-shot debug。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:

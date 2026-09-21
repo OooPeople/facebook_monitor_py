@@ -19,7 +19,6 @@ FORMAL_RUNTIME_FACADE_MODULE = "target_runtime_service"
 PACKAGE_SOURCE_FILES = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/scheduler/runtime_recovery.py",
-    ROOT / "src/facebook_monitor/scheduler/one_shot_loop.py",
     ROOT / "src/facebook_monitor/worker/attempt_cleanup.py",
     ROOT / "src/facebook_monitor/worker/attempt_outcomes.py",
     ROOT / "src/facebook_monitor/worker/attempt_transitions.py",
@@ -42,7 +41,6 @@ FORMAL_RUNTIME_BOUNDARY_FILES = (
     ROOT / "src/facebook_monitor/worker/scan_commit_validation.py",
     ROOT / "src/facebook_monitor/worker/scan_finalize.py",
     ROOT / "src/facebook_monitor/worker/scan_failure_finalize.py",
-    ROOT / "src/facebook_monitor/worker/sync_resident_fallback.py",
 )
 FORMAL_ASYNC_SCANNER_FILES = (
     ROOT / "src/facebook_monitor/worker/posts_pipeline.py",
@@ -135,11 +133,6 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
         "src/facebook_monitor/worker/scan_failure_finalize.py",
         "record_active_targets_runtime_failure_notifications",
         "force_apply_scan_failure_decision",
-    ),
-    (
-        "src/facebook_monitor/worker/sync_resident_fallback.py",
-        "_load_sync_resident_target_attempt",
-        "force_mark_resident_target_error",
     ),
 }
 SCAN_COMMIT_HELPERS = {

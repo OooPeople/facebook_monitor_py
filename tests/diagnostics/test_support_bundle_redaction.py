@@ -14,8 +14,8 @@ from facebook_monitor.diagnostics._support_bundle_redaction import _sanitize_met
 from facebook_monitor.diagnostics._support_bundle_redaction import _SupportBundleAliases
 
 
-def test_log_line_summary_preserves_only_allowlisted_probe_failure_fields() -> None:
-    """Recovery probe log只投影固定stage/reason，不輸出例外秘密。"""
+def test_log_line_summary_treats_historical_probe_failure_as_freeform() -> None:
+    """歷史 probe log 只走一般摘要，不恢復專用事件投影或洩漏秘密。"""
 
     aliases = _SupportBundleAliases()
     summary = _log_line_summary(
@@ -25,12 +25,12 @@ def test_log_line_summary_preserves_only_allowlisted_probe_failure_fields() -> N
         aliases=aliases,
     )
 
-    assert summary["facebook_probe_failure"] == {
-        "probe": "session_recovery",
-        "stage": "context_close",
-        "reason": "scheduler_runtime",
-    }
-    assert "do-not-emit" not in json.dumps(summary, ensure_ascii=False)
+    combined = json.dumps(summary, ensure_ascii=False)
+
+    assert "facebook_probe_failure" not in summary
+    assert summary["has_secret_like"] is True
+    assert "do-not-emit" not in combined
+    assert "session_recovery" not in combined
 
 
 def test_sanitize_metadata_redacts_sensitive_and_unknown_values() -> None:
@@ -146,35 +146,6 @@ def test_sanitize_metadata_preserves_only_safe_page_guard_diagnostics() -> None:
     assert "group_post" in combined
     assert '"detector_version": 1' in combined
     assert '"body_text_length": 48' in combined
-    assert "private" not in combined
-    assert "facebook.com" not in combined
-
-
-def test_sanitize_metadata_preserves_safe_fallback_guard_diagnostics() -> None:
-    """fallback guard 只保留能力 enum 與 browser 尚未開始的布林證據。"""
-
-    payload = _sanitize_metadata(
-        {
-            "reason": "unsupported_in_fallback",
-            "failure_diagnostics": {
-                "fallback_guard": {
-                    "detector": "fallback_capability_guard",
-                    "detector_version": 1,
-                    "classification": "unsupported_in_fallback",
-                    "fallback_mode": "sync_resident_fallback",
-                    "target_kind": "comments",
-                    "browser_work_started": False,
-                    "url": "https://www.facebook.com/groups/private/posts/999",
-                }
-            },
-        }
-    )
-    combined = json.dumps(payload, ensure_ascii=False)
-
-    assert payload["reason"] == "unsupported_in_fallback"
-    assert "fallback_capability_guard" in combined
-    assert "sync_resident_fallback" in combined
-    assert '"browser_work_started": false' in combined
     assert "private" not in combined
     assert "facebook.com" not in combined
 

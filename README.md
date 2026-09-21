@@ -3,7 +3,7 @@
 Facebook Monitor Py 是一個本機優先的 Facebook 社團監視工具，使用
 Python、Playwright、FastAPI 與 SQLite 實作。它透過獨立 automation profile
 監視社團貼文與單篇貼文留言，並以本機 Web UI 管理 target、掃描狀態與通知。
-正式 resident 與 sync fallback 都支援 comments 掃描；one-shot fallback 維持 posts-only。
+正式 async resident 支援 posts 與 comments 掃描；single-target one-shot debug 維持 posts-only。
 
 這個專案不只是「能跑的爬蟲」。它重點放在 target-scoped state、安全的本機操作、可恢復的通知發送、清楚的診斷資訊，以及可長期維護的 Python 應用邊界。
 

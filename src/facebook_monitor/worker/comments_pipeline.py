@@ -7,7 +7,6 @@ scan run 寫入交由 shared scan finalize layer，避免 comments 與 posts 後
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from facebook_monitor.application.context import ApplicationContext
@@ -20,47 +19,25 @@ from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
 from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
 from facebook_monitor.facebook.comment_extraction_models import CommentExtractRoundStats
-from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_diagnostics
 from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_diagnostics_async
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.sort_results import SortAdjustResult
-from facebook_monitor.facebook.sort_runtime import ensure_preferred_comment_sort
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_comment_sort_async
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
-from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
 from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
-from facebook_monitor.worker.scan_orchestration import SyncScannablePageLike
 from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata
 from facebook_monitor.worker.scan_metadata import SORT_ADJUST_SKIP_COLLECTION_MODE
 from facebook_monitor.worker.scan_metadata import build_sort_adjust_skip_meta
 from facebook_monitor.worker.scan_metadata import with_scan_skipped_reason
-from facebook_monitor.worker.scan_finalize import finalize_scan_items
 from facebook_monitor.worker.scan_finalize import normalize_extracted_scan_items
-from facebook_monitor.worker.scan_finalize import record_guarded_skipped_scan
-from facebook_monitor.worker.scan_finalize import record_unguarded_skipped_scan_for_one_shot
-from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_SKIP_REASON
 from facebook_monitor.worker.scan_finalize import SORT_ADJUST_UNCONFIRMED_STOP_REASON
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 from facebook_monitor.worker.scan_sort_policy import should_skip_scan_for_unconfirmed_sort
-
-
-@dataclass(frozen=True)
-class CommentsScanSummary:
-    """保存 comments 單輪掃描摘要。"""
-
-    target_id: str
-    url: str
-    item_count: int
-    new_count: int
-    matched_count: int
-    scan_run_id: int
-    round_stats: tuple[CommentExtractRoundStats, ...] = ()
-
 
 def build_comments_scan_metadata(
     *,
@@ -159,90 +136,6 @@ def build_comments_sort_unconfirmed_skip_metadata(
     )
 
 
-def scan_comments_target_page_sync_and_finalize(
-    *,
-    page: SyncScannablePageLike,
-    app: ApplicationContext,
-    target: TargetDescriptor,
-    config: TargetConfig,
-    scroll_rounds: int = 0,
-    scroll_wait_ms: int = 0,
-    commit_guard: ScanCommitGuard | None = None,
-) -> CommentsScanSummary:
-    """sync/fallback 掃描目前留言頁，並直接寫入 visible scan state。"""
-
-    ensure_comments_target(target)
-    ensure_sync_page_scannable(page)
-
-    sort_adjust_result = ensure_preferred_comment_sort(
-        page,
-        enabled=config.auto_adjust_sort,
-    )
-    effective_scroll_rounds = resolve_effective_scan_scroll_rounds(
-        config=config,
-        requested_scroll_rounds=scroll_rounds,
-    )
-    if should_skip_scan_for_unconfirmed_sort(
-        config=config,
-        sort_adjust_result=sort_adjust_result,
-    ):
-        skip_metadata = build_comments_sort_unconfirmed_skip_metadata(
-            config=config,
-            sort_adjust_result=sort_adjust_result,
-            scroll_rounds=effective_scroll_rounds,
-            requested_scroll_rounds=scroll_rounds,
-            scroll_wait_ms=scroll_wait_ms,
-        )
-        if commit_guard is None:
-            finalize_result = record_unguarded_skipped_scan_for_one_shot(
-                app=app,
-                target=target,
-                metadata=skip_metadata,
-            )
-        else:
-            finalize_result = record_guarded_skipped_scan(
-                app=app,
-                target=target,
-                commit_guard=commit_guard,
-                metadata=skip_metadata,
-            )
-        return CommentsScanSummary(
-            target_id=target.id,
-            url=str(page.url),
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=finalize_result.scan_run_id,
-            round_stats=(),
-        )
-    items, round_stats, collection_meta = collect_comment_items_with_diagnostics(
-        page=page,
-        group_id=target.group_id,
-        parent_post_id=target.parent_post_id,
-        max_items=config.max_items_per_scan,
-        scroll_rounds=effective_scroll_rounds,
-        scroll_wait_ms=scroll_wait_ms,
-        auto_load_more=config.auto_load_more,
-    )
-    if not items:
-        raise WorkerFailure(EXTRACTOR_EMPTY_REASON, "No comment-like items were extracted.")
-    return finalize_comments_pipeline_scan(
-        page_url=str(page.url),
-        app=app,
-        target=target,
-        config=config,
-        items=items,
-        collection_meta=collection_meta,
-        sort_adjust_result=sort_adjust_result,
-        round_stats=round_stats,
-        scroll_rounds=effective_scroll_rounds,
-        requested_scroll_rounds=scroll_rounds,
-        scroll_wait_ms=scroll_wait_ms,
-        auto_load_more=config.auto_load_more,
-        commit_guard=commit_guard,
-    )
-
-
 async def scan_comments_target_page_async_commit_ready(
     *,
     page: AsyncScannablePageLike,
@@ -319,57 +212,6 @@ def ensure_comments_target(target: TargetDescriptor) -> None:
             TARGET_INVALID_REASON,
             "Comments target requires parent_post_id and scope_id.",
         )
-
-
-def finalize_comments_pipeline_scan(
-    *,
-    page_url: str,
-    app: ApplicationContext,
-    target: TargetDescriptor,
-    config: TargetConfig,
-    items: list[ExtractedItem],
-    collection_meta: CommentCollectionMeta,
-    sort_adjust_result: SortAdjustResult,
-    round_stats: list[CommentExtractRoundStats],
-    scroll_rounds: int,
-    requested_scroll_rounds: int,
-    scroll_wait_ms: int,
-    auto_load_more: bool,
-    commit_guard: ScanCommitGuard | None = None,
-) -> CommentsScanSummary:
-    """將 comments scan items 交給 shared finalize 層寫入後處理狀態。"""
-
-    success_result = build_comments_pipeline_success_result(
-        page_url=page_url,
-        target=target,
-        config=config,
-        items=items,
-        collection_meta=collection_meta,
-        sort_adjust_result=sort_adjust_result,
-        round_stats=round_stats,
-        scroll_rounds=scroll_rounds,
-        requested_scroll_rounds=requested_scroll_rounds,
-        scroll_wait_ms=scroll_wait_ms,
-        auto_load_more=auto_load_more,
-    )
-    finalize_result = finalize_scan_items(
-        app=app,
-        target=target,
-        config=config,
-        items=list(success_result.items),
-        item_count=success_result.item_count,
-        metadata=dict(success_result.metadata),
-        commit_guard=commit_guard,
-    )
-    return CommentsScanSummary(
-        target_id=target.id,
-        url=success_result.url,
-        item_count=success_result.item_count,
-        new_count=finalize_result.new_count,
-        matched_count=finalize_result.matched_count,
-        scan_run_id=finalize_result.scan_run_id,
-        round_stats=tuple(round_stats),
-    )
 
 
 def build_comments_pipeline_success_result(

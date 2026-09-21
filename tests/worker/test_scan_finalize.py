@@ -1538,7 +1538,7 @@ def test_unguarded_protective_skip_uses_explicit_force_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """one-shot fallback skip 應走 explicit force path，不套用 resident guard。"""
+    """Single-target one-shot debug skip 走 explicit force path，不套用 resident guard。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:

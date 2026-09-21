@@ -35,7 +35,6 @@ class CommentCollectionMeta:
     max_window_count: int = 1
     stagnant_windows: int = 0
     load_more_mode: str = "off"
-    guard_reason: str = ""
     stop_reason: str = "visible_window_completed"
     dom_settle_attempted: bool = False
     dom_settle_stable: bool = False
@@ -60,7 +59,6 @@ class CommentCollectionMeta:
             "maxWindowCount": self.max_window_count,
             "stagnantWindows": self.stagnant_windows,
             "loadMoreMode": self.load_more_mode,
-            "guardReason": self.guard_reason,
             "filteredEmptyTextCount": self.filtered_empty_text_count,
             "filteredNonPostCount": self.filtered_non_post_count,
             "articleElementCount": self.article_element_count,

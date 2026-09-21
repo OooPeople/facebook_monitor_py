@@ -203,21 +203,70 @@ def test_login_required_errors_immediately() -> None:
         assert decision.notification_failure_count == 1
 
 
-def test_facebook_page_guard_failures_stop_retry_and_discard_page() -> None:
-    """頁面限制或不確定 guard 都不得自動導覽重試，並應丟棄目前 page。"""
+def test_confirmed_facebook_block_is_immediate_terminal_and_discards_page() -> None:
+    """只有confirmed block立即terminal；目前page仍必須丟棄。"""
 
-    for reason in (
-        "facebook_temporary_block",
+    decision = decide_scan_failure("facebook_temporary_block", source="worker_failure")
+
+    assert decision.retryable is False
+    assert decision.target_action == "error"
+    assert decision.runtime_action == "error"
+    assert decision.counts_toward_streak is False
+    assert decision.discard_page is True
+    assert decision.auto_restart is False
+
+
+def test_inconclusive_page_guard_uses_same_reason_three_failure_streak() -> None:
+    """inconclusive前兩次will_retry，第三次terminal，且每次discard page。"""
+
+    decisions = []
+    previous_count = 0
+    for _attempt in range(3):
+        decision = decide_scan_failure(
+            "facebook_page_guard_inconclusive",
+            source="worker_failure",
+            previous_failure_reason="facebook_page_guard_inconclusive",
+            previous_failure_count=previous_count,
+        )
+        decisions.append(decision)
+        previous_count = decision.retry_streak
+
+    assert [decision.runtime_action for decision in decisions] == [
+        "will_retry",
+        "will_retry",
+        "error",
+    ]
+    assert [decision.retry_streak for decision in decisions] == [1, 2, 3]
+    assert [decision.retryable for decision in decisions] == [True, True, False]
+    assert all(decision.counts_toward_streak for decision in decisions)
+    assert all(decision.retry_limit == 3 for decision in decisions)
+    assert all(decision.discard_page for decision in decisions)
+    assert is_runtime_failure_notification_terminal(
         "facebook_page_guard_inconclusive",
-    ):
-        decision = decide_scan_failure(reason, source="worker_failure")
+        failure_count=2,
+        source="worker_failure",
+    ) is False
+    assert is_runtime_failure_notification_terminal(
+        "facebook_page_guard_inconclusive",
+        failure_count=3,
+        source="worker_failure",
+    ) is True
 
-        assert decision.retryable is False
-        assert decision.target_action == "error"
-        assert decision.runtime_action == "error"
-        assert decision.counts_toward_streak is False
-        assert decision.discard_page is True
-        assert decision.auto_restart is False
+
+def test_inconclusive_page_guard_reason_change_restarts_streak_at_one() -> None:
+    """前一輪reason不同時，inconclusive沿用既有規則從第一輪重算。"""
+
+    decision = decide_scan_failure(
+        "facebook_page_guard_inconclusive",
+        source="worker_failure",
+        previous_failure_reason="page_load_timeout",
+        previous_failure_count=2,
+    )
+
+    assert decision.retry_streak == 1
+    assert decision.runtime_action == "will_retry"
+    assert decision.target_action == "idle"
+    assert decision.discard_page is True
 
 
 def test_unsupported_fallback_is_immediate_terminal_without_restart() -> None:

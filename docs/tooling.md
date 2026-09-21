@@ -15,8 +15,8 @@ manifest 與 frozen smoke 細節看 `packaging/README.md`。
 - `--profile-dir` 只能指向 `<data-dir>/profiles/` 底下；外部測試 profile
   必須使用 debug-only 的 `--unsafe-profile-dir`，且仍會拒絕常見 Chrome /
   Edge / Chromium 日常 profile。
-- 新功能預設先接 Web UI + resident main 主路徑；debug / fallback 工具只有在有實際維護價值時才跟進。
-- One-shot debug / fallback scheduler 可能只會將通知寫入 notification outbox；
+- 新功能預設先接 Web UI + resident main 主路徑；debug 工具只有在有實際維護價值時才跟進。
+- One-shot debug 可能只會將通知寫入 notification outbox；
   除非同一 process 已啟動 outbox dispatcher，否則不保證掃描後立即送出外部
   notification。
 - 正式 Web UI / resident main 路徑才提供背景 dispatcher drain 語義。
@@ -47,8 +47,6 @@ manifest 與 frozen smoke 細節看 `packaging/README.md`。
 | Capture Posts Target | `scripts/debug/capture_posts_target.py` | Debug | 開啟瀏覽器擷取目前社團頁作為 posts target | 否 |
 | One-shot Scan | `scripts/debug/one_shot_scan.py` | Debug | 對已保存 target 執行一次 one-shot 掃描 | 否 |
 | Worker Probe | `scripts/debug/worker_probe.py` | Debug | DB-free headless extractor probe；不跑正式 scan pipeline | 否 |
-| Text Newline Probe | `scripts/debug/text_newline_probe.py` | Debug | 檢查可見 Facebook DOM 文字是否仍能取得換行資訊；不跑正式 scan pipeline | 否 |
-| One-shot Scheduler | `scripts/internal/one_shot_scheduler.py` | Internal | 直接啟動 one-shot debug/fallback scheduler loop，不作正式主路徑保證 | 否 |
 | Resident Main | `scripts/internal/resident_main.py` | Internal | 直接啟動正式 async resident main worker loop | 否 |
 | uv wrapper | `scripts/uv.ps1` | 指令 wrapper | 固定從專案根目錄執行 uv，並使用工作區內 cache | 否，wrapper |
 
@@ -81,7 +79,6 @@ Release / packaging scripts 的細節放在 `packaging/README.md`。本表只作
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_frozen_updater.py
 .\scripts\uv.ps1 run python .\scripts\admin\smoke_relogin_flow.py --headed
 .\scripts\uv.ps1 run python .\scripts\debug\one_shot_scan.py --group-id "<group_id>" --scroll-rounds 3
-.\scripts\uv.ps1 run python .\scripts\debug\text_newline_probe.py "<facebook_url>" --mode auto
 .\scripts\uv.ps1 run python .\scripts\internal\resident_main.py --max-cycles 2 --interval-seconds 1
 .\scripts\uv.ps1 run python .\scripts\admin\console.py --data-dir "D:\fb_monitor_data"
 ```
@@ -120,8 +117,8 @@ git diff --check
 
 Facebook temporary-block 變更至少要覆蓋 schema/migration、incident transaction
 rollback、process-local trip/cancel、single/batch Start generation race、Web full/partial
-warning 與 support bundle redaction。Comments direct URL／same-route reload 必須各有
-正式 resident 與 sync fallback regression，且 detector 要在後續 Facebook action 前執行。
+warning 與 support bundle redaction。Comments direct URL／same-route reload 必須有正式
+resident regression，且 detector 要在後續 Facebook action 前執行。
 
 CI 使用固定的 `uv==0.9.0` 搭配 locked sync，並維持 report-only complexity
 summary、Playwright Chromium 安裝、lint、type check、static JS syntax check、

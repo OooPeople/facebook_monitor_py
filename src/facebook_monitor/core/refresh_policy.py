@@ -1,7 +1,7 @@
 """掃描刷新週期計算。
 
-職責：集中處理固定秒數與 jitter 範圍，讓 one-shot scheduler 與 resident
-worker 使用同一套到期判斷。
+職責：集中處理固定秒數與 jitter 範圍，讓 resident worker 各層使用同一套
+到期判斷。
 """
 
 from __future__ import annotations

@@ -48,7 +48,7 @@ from facebook_monitor.worker.resident_main_executor_types import AsyncTargetScan
 from facebook_monitor.worker.resident_main_executor_types import ExecutorCounters
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.resident_shared import force_mark_resident_target_idle
+from facebook_monitor.worker.resident_shared import mark_resident_target_idle_if_not_running
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
@@ -135,7 +135,7 @@ class ExecutorWorkerPool:
                 if runtime_restart:
                     await self._request_target_retry_after_runtime_restart_async(target_id)
                 else:
-                    force_mark_resident_target_idle(self.options.db_path, target_id)
+                    mark_resident_target_idle_if_not_running(self.options.db_path, target_id)
         if cancel_running and runtime_restart:
             await self._cancel_active_attempts_for_runtime_restart()
 
@@ -463,13 +463,6 @@ class ExecutorWorkerPool:
             item = await self.target_queue.get()
             if item is None:
                 return
-            if self.facebook_runtime.signal.is_tripped():
-                force_mark_resident_target_idle(
-                    self.options.db_path,
-                    item.due_target.target_id,
-                )
-                await self.target_queue.complete(item.due_target.target_id)
-                continue
             attempt_task: asyncio.Task[AsyncTargetScanResult] = asyncio.create_task(
                 self._run_queue_item(worker_id, item),
                 name=f"{worker_id}:{item.due_target.target_id}",

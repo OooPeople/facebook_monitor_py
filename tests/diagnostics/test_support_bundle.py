@@ -54,10 +54,20 @@ from facebook_monitor.runtime.paths import resolve_runtime_paths
 from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 
 
+_RETIRED_FACEBOOK_STATE_TABLES = {
+    "facebook_access_circuit_state",
+    "facebook_access_circuit_events",
+    "facebook_automation_pacing_state",
+    "managed_profile_identity_binding",
+    "facebook_session_recovery_state",
+}
+
+
 def test_support_bundle_table_counts_cover_required_schema_tables() -> None:
     """支援包 table counts 需跟上正式 schema table，避免新增 table 後漏診斷。"""
 
     assert set(_SUPPORT_COUNT_TABLES) == REQUIRED_CURRENT_SCHEMA_TABLES
+    assert not set(_SUPPORT_COUNT_TABLES) & _RETIRED_FACEBOOK_STATE_TABLES
 
 
 def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:
@@ -85,11 +95,19 @@ def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:
             ),
         )
 
-    create_support_bundle(
+    result = create_support_bundle(
         paths=paths,
         runtime_diagnostics_text="",
         app_metadata={},
     )
+
+    with zipfile.ZipFile(result.path) as archive:
+        database_summary = json.loads(
+            archive.read("database_summary.json").decode("utf-8")
+        )
+        database_health = json.loads(
+            archive.read("database_health.json").decode("utf-8")
+        )
 
     with SqliteConnection(paths.db_path) as sqlite:
         connection = sqlite.require_connection()
@@ -103,6 +121,8 @@ def test_support_bundle_database_summary_is_readonly(tmp_path: Path) -> None:
         ).fetchone()
     assert topic_row["ntfy_topic"] == "legacy-plaintext-topic"
     assert marker_row is None
+    assert not set(database_summary["table_counts"]) & _RETIRED_FACEBOOK_STATE_TABLES
+    assert not set(database_health["tables"]) & _RETIRED_FACEBOOK_STATE_TABLES
 
 
 def test_support_bundle_temporary_block_warning_is_current_and_privacy_safe(

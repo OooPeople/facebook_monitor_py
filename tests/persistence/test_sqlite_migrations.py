@@ -5,6 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import NotificationOutboxEntry
+from facebook_monitor.persistence.migrations import migrate_39_to_40
+from facebook_monitor.persistence.migrations import migrate_40_to_41
+from facebook_monitor.persistence.migrations import migrate_41_to_42
+from facebook_monitor.persistence.migrations import migrate_42_to_43
+from facebook_monitor.persistence.migrations import run_known_migrations
 from facebook_monitor.persistence.schema import MIN_SUPPORTED_SCHEMA_VERSION
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
 from facebook_monitor.persistence.schema import initialize_schema
@@ -13,6 +23,130 @@ from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from tests.persistence.sqlite_test_helpers import table_exists
 from tests.persistence.sqlite_test_helpers import table_has_column
 from tests.persistence.sqlite_test_helpers import table_sql
+
+
+_RETIRED_FACEBOOK_STATE_TABLES = (
+    "facebook_access_circuit_events",
+    "facebook_session_recovery_state",
+    "facebook_automation_pacing_state",
+    "managed_profile_identity_binding",
+    "facebook_access_circuit_state",
+)
+
+
+def test_fresh_v46_schema_omits_retired_facebook_state_tables(tmp_path: Path) -> None:
+    """Fresh v46 只建立現行 warning truth，不再建立五張退役狀態表。"""
+
+    with SqliteConnection(tmp_path / "app.db") as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+
+        assert SCHEMA_VERSION == 46
+        assert table_exists(connection, "facebook_temporary_block_warning")
+        assert not any(table_exists(connection, name) for name in _RETIRED_FACEBOOK_STATE_TABLES)
+
+
+def test_v45_to_v46_drops_retired_tables_and_preserves_active_data(
+    tmp_path: Path,
+) -> None:
+    """v45 升級只移除退役表，保留 target/config/runtime/outbox 正式資料。"""
+
+    db_path = tmp_path / "app.db"
+    outbox_key = "v45-preserved-outbox"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="v45-active",
+                canonical_url="https://www.facebook.com/groups/v45-active",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=outbox_key,
+                target_id=target.id,
+                item_key="item-a",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="title",
+                message="message",
+            )
+        )
+        connection = app.repositories.targets.connection
+        migrate_39_to_40(connection)
+        migrate_40_to_41(connection)
+        migrate_41_to_42(connection)
+        migrate_42_to_43(connection)
+        connection.execute(
+            "UPDATE schema_metadata SET value = '45' WHERE key = 'version'"
+        )
+
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"]
+        target_row = connection.execute(
+            "SELECT id FROM targets WHERE id = ?", (target.id,)
+        ).fetchone()
+        config_row = connection.execute(
+            "SELECT target_id FROM target_configs WHERE target_id = ?", (target.id,)
+        ).fetchone()
+        runtime_row = connection.execute(
+            "SELECT desired_state FROM target_runtime_state WHERE target_id = ?",
+            (target.id,),
+        ).fetchone()
+        outbox_row = connection.execute(
+            "SELECT idempotency_key FROM notification_outbox WHERE idempotency_key = ?",
+            (outbox_key,),
+        ).fetchone()
+
+        assert version == "46"
+        assert target_row is not None
+        assert config_row is not None
+        assert runtime_row is not None and runtime_row["desired_state"] == "active"
+        assert outbox_row is not None
+        assert not any(table_exists(connection, name) for name in _RETIRED_FACEBOOK_STATE_TABLES)
+
+
+def test_v45_to_v46_drop_and_version_update_rollback_together(tmp_path: Path) -> None:
+    """v46 destructive drops 與 schema version 必須位於同一 transaction。"""
+
+    db_path = tmp_path / "rollback.db"
+    with SqliteConnection(db_path) as sqlite:
+        connection = sqlite.require_connection()
+        initialize_schema(connection)
+        migrate_39_to_40(connection)
+        migrate_40_to_41(connection)
+        migrate_41_to_42(connection)
+        migrate_42_to_43(connection)
+        connection.execute(
+            "UPDATE schema_metadata SET value = '45' WHERE key = 'version'"
+        )
+        connection.commit()
+
+        run_known_migrations(connection, from_version=45, to_version=46)
+
+        assert connection.in_transaction
+        assert not any(
+            table_exists(connection, name) for name in _RETIRED_FACEBOOK_STATE_TABLES
+        )
+        assert connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"] == "46"
+
+        connection.rollback()
+
+        missing_after_rollback = [
+            name
+            for name in _RETIRED_FACEBOOK_STATE_TABLES
+            if not table_exists(connection, name)
+        ]
+        assert not missing_after_rollback, missing_after_rollback
+        assert connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'version'"
+        ).fetchone()["value"] == "45"
 
 
 def test_initialize_schema_migrates_v35_fixture_to_current(tmp_path: Path) -> None:

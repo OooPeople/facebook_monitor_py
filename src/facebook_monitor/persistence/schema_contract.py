@@ -27,60 +27,6 @@ from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 
 
-_LEGACY_CIRCUIT_STATUS_VALUES = frozenset({"closed", "open", "half_open"})
-_LEGACY_ACCESS_EVENT_KIND_VALUES = frozenset(
-    {
-        "opened",
-        "repeated_detection",
-        "probe_requested",
-        "half_open_acquired",
-        "probe_succeeded",
-        "probe_blocked",
-        "probe_inconclusive",
-        "probe_cancelled",
-        "lease_recovered",
-        "closed",
-    }
-)
-_LEGACY_WORK_SOURCE_VALUES = frozenset(
-    {"", "scan", "metadata", "cover", "sync_resolver", "probe"}
-)
-_LEGACY_OPERATION_VALUES = frozenset(
-    {
-        "",
-        "posts_access",
-        "comments_access",
-        "group_metadata_access",
-        "cover_metadata_access",
-        "unknown",
-    }
-)
-_LEGACY_ACTION_VALUES = frozenset(
-    {
-        "",
-        "group_feed_document",
-        "group_document",
-        "direct_document",
-        "reload",
-        "trusted_click",
-        "unknown",
-    }
-)
-_LEGACY_RECOVERY_RECIPE_VALUES = frozenset(
-    {
-        "",
-        "group_feed_document_guard_v1",
-        "comments_group_trusted_click_v1",
-        "group_document_guard_v1",
-        "group_cover_guard_v1",
-    }
-)
-_LEGACY_PROBE_RESULT_VALUES = frozenset(
-    {"", "success", "blocked", "inconclusive", "cancelled"}
-)
-_LEGACY_SESSION_RECOVERY_STATUS_VALUES = frozenset(
-    {"hold", "probe_pending", "probing", "recovered"}
-)
 _TEMPORARY_BLOCK_WARNING_SOURCE_VALUES = frozenset(
     {"cover", "metadata", "scan", "sync_resolver"}
 )
@@ -279,114 +225,6 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         "action_kind",
         _TEMPORARY_BLOCK_WARNING_ACTION_VALUES,
     ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "state",
-        _LEGACY_CIRCUIT_STATUS_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "source_kind",
-        _LEGACY_WORK_SOURCE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "operation_kind",
-        _LEGACY_OPERATION_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "trigger_action_kind",
-        _LEGACY_ACTION_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "recovery_recipe_kind",
-        _LEGACY_RECOVERY_RECIPE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "requested_recipe_kind",
-        _LEGACY_RECOVERY_RECIPE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "last_probe_result",
-        _LEGACY_PROBE_RESULT_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "event_kind",
-        _LEGACY_ACCESS_EVENT_KIND_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "from_state",
-        _LEGACY_CIRCUIT_STATUS_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "to_state",
-        _LEGACY_CIRCUIT_STATUS_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "source_kind",
-        _LEGACY_WORK_SOURCE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "operation_kind",
-        _LEGACY_OPERATION_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "trigger_action_kind",
-        _LEGACY_ACTION_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_access_circuit_events",
-        "id",
-        "recovery_recipe_kind",
-        _LEGACY_RECOVERY_RECIPE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        "status",
-        _LEGACY_SESSION_RECOVERY_STATUS_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        "requested_operation_kind",
-        _LEGACY_OPERATION_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        "requested_recipe_kind",
-        _LEGACY_RECOVERY_RECIPE_VALUES,
-    ),
-    SchemaEnumContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        "last_probe_result",
-        _LEGACY_PROBE_RESULT_VALUES,
-    ),
 )
 
 
@@ -519,30 +357,6 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         "warning_window",
         "warning_until <= detected_at",
     ),
-    SchemaRangeContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        "circuit_counts",
-        "generation < 0 OR detection_count < 0 OR reopen_count < 0",
-    ),
-    SchemaRangeContract(
-        "facebook_access_circuit_events",
-        "id",
-        "policy_delay_seconds",
-        "policy_delay_seconds < 0",
-    ),
-    SchemaRangeContract(
-        "facebook_automation_pacing_state",
-        "'profile'",
-        "lease_generation",
-        "lease_generation < 0",
-    ),
-    SchemaRangeContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        "generation",
-        "generation < 1",
-    ),
 )
 
 
@@ -633,60 +447,5 @@ DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
         "sidebar_group_id",
         ("updated_at",),
         required_fields=("updated_at",),
-    ),
-    SchemaDatetimeContract(
-        "facebook_access_circuit_state",
-        "'profile'",
-        (
-            "opened_at",
-            "last_detected_at",
-            "cooldown_until",
-            "half_open_started_at",
-            "half_open_lease_expires_at",
-            "probe_requested_at",
-            "last_probe_finished_at",
-            "closed_at",
-            "updated_at",
-        ),
-        required_fields=("updated_at",),
-    ),
-    SchemaDatetimeContract(
-        "facebook_access_circuit_events",
-        "id",
-        ("occurred_at",),
-        required_fields=("occurred_at",),
-    ),
-    SchemaDatetimeContract(
-        "facebook_automation_pacing_state",
-        "'profile'",
-        (
-            "active_lease_expires_at",
-            "last_automation_started_at",
-            "last_automation_finished_at",
-            "next_automation_not_before",
-            "updated_at",
-        ),
-        required_fields=("updated_at",),
-    ),
-    SchemaDatetimeContract(
-        "managed_profile_identity_binding",
-        "id",
-        ("bound_at", "updated_at"),
-        required_fields=("bound_at", "updated_at"),
-    ),
-    SchemaDatetimeContract(
-        "facebook_session_recovery_state",
-        "'profile'",
-        (
-            "stale_detected_at",
-            "earliest_probe_at",
-            "request_requested_at",
-            "probe_started_at",
-            "probe_lease_expires_at",
-            "last_probe_finished_at",
-            "recovered_at",
-            "updated_at",
-        ),
-        required_fields=("stale_detected_at", "earliest_probe_at", "updated_at"),
     ),
 )

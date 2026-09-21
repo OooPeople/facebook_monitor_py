@@ -102,9 +102,8 @@ Python 版預設值，通知預設為關閉。
 target 卡片 header 會顯示模式、最近掃描與下次刷新；右側 panel 會顯示最近一輪掃描結果摘要。最近通知摘要不放在 target header，避免和掃描排程資訊混在一起。
 
 comments target 會直接開啟 canonical post URL；同一 page 後續掃描會重新整理同一路徑。
-正式 resident 與 sync resident fallback 都支援這條流程，one-shot fallback 維持
-posts-only。Comments 與 posts 使用相同刷新設定，不會因 temporary-block 警告自動加長
-間隔或改寫設定。
+正式 async resident 支援這條流程；single-target one-shot debug 維持 posts-only。
+Comments 與 posts 使用相同刷新設定，不會因 temporary-block 警告自動加長間隔或改寫設定。
 
 若偵測到 Facebook 顯示「你暫時遭到封鎖」，系統會立即停止當下全部 Facebook
 自動化工作並停止所有當下正在監視的 targets。接下來 12 小時 dashboard 會顯示風險

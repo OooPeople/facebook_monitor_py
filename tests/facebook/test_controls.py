@@ -14,7 +14,6 @@ import facebook_monitor.facebook.sort_native_click as sort_native_click_module
 from facebook_monitor.facebook.comment_mutations import COMMENT_MUTATION_RELEVANCE_HELPERS_SCRIPT
 from facebook_monitor.facebook.feed_dom_scripts import POST_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.scroll_comment_scripts import COMMENT_SCROLL_LOAD_MORE_SCRIPT
-from facebook_monitor.facebook.scroll_guard_scripts import BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT
 from facebook_monitor.facebook.scroll_post_scripts import RESTORE_LOAD_MORE_SCROLL_SNAPSHOT_SCRIPT
 from facebook_monitor.facebook.scroll_post_scripts import SCROLL_LOAD_MORE_SCRIPT
 from facebook_monitor.facebook.sort_results import COMMENT_SORT_LABELS
@@ -1154,16 +1153,14 @@ def test_scroll_script_uses_target_by_and_restore_snapshot() -> None:
     assert "window.__facebookMonitorLoadMoreSnapshot" in RESTORE_LOAD_MORE_SCROLL_SNAPSHOT_SCRIPT
 
 
-def test_comment_scroll_script_uses_nested_targets_and_guard() -> None:
-    """comments load-more 必須保留 nested scroll target、scoring 與 guard 語義。"""
+def test_comment_scroll_script_uses_nested_targets() -> None:
+    """Comments load-more必須保留nested scroll target與scoring語義。"""
 
     assert "collectCommentScrollTargets" in COMMENT_SCROLL_LOAD_MORE_SCRIPT
     assert "scoreCommentScrollElement" in COMMENT_SCROLL_LOAD_MORE_SCRIPT
     assert "scrollFirstMovable" not in COMMENT_SCROLL_LOAD_MORE_SCRIPT
     assert "comment_nested_scroll" in COMMENT_SCROLL_LOAD_MORE_SCRIPT
     assert "movedDistance" in COMMENT_SCROLL_LOAD_MORE_SCRIPT
-    assert "window.__facebookMonitorScanRuntime" in BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT
-    assert "isLoadingMoreComments" in BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT
 
 
 def test_comment_mutation_relevance_helpers_match_product_chain() -> None:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.user_messages import format_failure_reason
+from facebook_monitor.notifications.payload import normalize_notification_single_line
 
 
 def build_runtime_failure_notification_message(
@@ -14,10 +17,11 @@ def build_runtime_failure_notification_message(
     failure_count: int,
     error_message: str,
     target_stopped: bool = True,
+    target_name_normalizer: Callable[[str], str] = normalize_notification_single_line,
 ) -> tuple[str, str]:
-    """建立 target runtime failure 通知標題與內容。"""
+    """建立 target runtime failure 通知標題與 enqueue-time 內容快照。"""
 
-    target_name = format_target_display_name(target)
+    target_name = target_name_normalizer(format_target_display_name(target))
     reason_label = format_failure_reason(reason)
     count = max(int(failure_count), 1)
     title = "Facebook Monitor target error"

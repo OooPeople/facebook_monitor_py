@@ -14,9 +14,9 @@ import facebook_monitor.facebook.comment_extractor as comment_extractor
 from facebook_monitor.facebook.comment_dom_scripts import COMMENTS_LIKE_ITEMS_SCRIPT
 from facebook_monitor.facebook.comment_extraction_models import CommentCollectionMeta
 from facebook_monitor.facebook.comment_extraction_models import CommentDomSettleResult
-from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more_guard_held
+from facebook_monitor.facebook.comment_extractor import collect_comment_items_with_load_more
 from facebook_monitor.facebook.comment_extractor import (
-    collect_comment_items_with_load_more_guard_held_async,
+    collect_comment_items_with_load_more_async,
 )
 from facebook_monitor.facebook.comment_extractor import extract_visible_comment_items
 from facebook_monitor.facebook.extracted_item import ExtractedItem
@@ -193,12 +193,11 @@ def test_extract_visible_comment_items_normalizes_and_dedupes() -> None:
     assert meta.accumulated_count == 1
 
 
-def test_collect_comments_releases_guard_when_snapshot_capture_fails(
+def test_collect_comments_does_not_restore_when_snapshot_capture_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """snapshot capture 失敗仍需釋放 comments load-more guard。"""
+    """Snapshot capture 失敗時不可執行未取得 snapshot 的 restore。"""
 
-    released: list[bool] = []
     restored: list[bool] = []
 
     def raise_snapshot(_page: object) -> None:
@@ -210,14 +209,8 @@ def test_collect_comments_releases_guard_when_snapshot_capture_fails(
         "restore_comment_scroll_snapshot",
         lambda _page: restored.append(True),
     )
-    monkeypatch.setattr(
-        comment_extractor,
-        "end_comment_load_more_guard",
-        lambda _page: released.append(True),
-    )
-
     with pytest.raises(RuntimeError, match="snapshot failed"):
-        collect_comment_items_with_load_more_guard_held(
+        collect_comment_items_with_load_more(
             page=object(),
             group_id="group",
             parent_post_id="post",
@@ -227,16 +220,14 @@ def test_collect_comments_releases_guard_when_snapshot_capture_fails(
             auto_load_more=True,
         )
 
-    assert released == [True]
     assert restored == []
 
 
-def test_collect_comments_async_releases_guard_when_snapshot_capture_fails(
+def test_collect_comments_async_does_not_restore_when_snapshot_capture_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """async snapshot capture 失敗仍需釋放 comments load-more guard。"""
+    """Async snapshot capture 失敗時不可執行未取得 snapshot 的 restore。"""
 
-    released: list[bool] = []
     restored: list[bool] = []
 
     async def raise_snapshot(_page: object) -> None:
@@ -244,9 +235,6 @@ def test_collect_comments_async_releases_guard_when_snapshot_capture_fails(
 
     async def restore_snapshot(_page: object) -> None:
         restored.append(True)
-
-    async def release_guard(_page: object) -> None:
-        released.append(True)
 
     monkeypatch.setattr(
         comment_extractor,
@@ -258,15 +246,9 @@ def test_collect_comments_async_releases_guard_when_snapshot_capture_fails(
         "restore_comment_scroll_snapshot_async",
         restore_snapshot,
     )
-    monkeypatch.setattr(
-        comment_extractor,
-        "end_comment_load_more_guard_async",
-        release_guard,
-    )
-
     async def run_test() -> None:
         with pytest.raises(RuntimeError, match="snapshot failed"):
-            await collect_comment_items_with_load_more_guard_held_async(
+            await collect_comment_items_with_load_more_async(
                 page=object(),
                 group_id="group",
                 parent_post_id="post",
@@ -278,27 +260,19 @@ def test_collect_comments_async_releases_guard_when_snapshot_capture_fails(
 
     asyncio.run(run_test())
 
-    assert released == [True]
     assert restored == []
 
 
-def test_collect_comments_releases_guard_when_snapshot_restore_fails(
+def test_collect_comments_propagates_snapshot_restore_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """snapshot restore 失敗仍需釋放 comments load-more guard。"""
-
-    released: list[bool] = []
+    """Snapshot restore 失敗不可被 collection cleanup 吞掉。"""
 
     def raise_restore(_page: object) -> None:
         raise RuntimeError("restore failed")
 
     monkeypatch.setattr(comment_extractor, "capture_comment_scroll_snapshot", lambda _page: None)
     monkeypatch.setattr(comment_extractor, "restore_comment_scroll_snapshot", raise_restore)
-    monkeypatch.setattr(
-        comment_extractor,
-        "end_comment_load_more_guard",
-        lambda _page: released.append(True),
-    )
     monkeypatch.setattr(
         comment_extractor,
         "wait_for_comment_dom_settle",
@@ -319,7 +293,7 @@ def test_collect_comments_releases_guard_when_snapshot_restore_fails(
     )
 
     with pytest.raises(RuntimeError, match="restore failed"):
-        collect_comment_items_with_load_more_guard_held(
+        collect_comment_items_with_load_more(
             page=object(),
             group_id="group",
             parent_post_id="post",
@@ -329,24 +303,16 @@ def test_collect_comments_releases_guard_when_snapshot_restore_fails(
             auto_load_more=True,
         )
 
-    assert released == [True]
-
-
-def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
+def test_collect_comments_async_propagates_snapshot_restore_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """async snapshot restore 失敗仍需釋放 comments load-more guard。"""
-
-    released: list[bool] = []
+    """Async snapshot restore 失敗不可被 collection cleanup 吞掉。"""
 
     async def capture_snapshot(_page: object) -> None:
         return None
 
     async def raise_restore(_page: object) -> None:
         raise RuntimeError("restore failed")
-
-    async def release_guard(_page: object) -> None:
-        released.append(True)
 
     async def wait_for_settle(_page: object, *, max_items: int) -> None:
         return None
@@ -380,11 +346,6 @@ def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
     )
     monkeypatch.setattr(
         comment_extractor,
-        "end_comment_load_more_guard_async",
-        release_guard,
-    )
-    monkeypatch.setattr(
-        comment_extractor,
         "wait_for_comment_dom_settle_async",
         wait_for_settle,
     )
@@ -396,7 +357,7 @@ def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
 
     async def run_test() -> None:
         with pytest.raises(RuntimeError, match="restore failed"):
-            await collect_comment_items_with_load_more_guard_held_async(
+            await collect_comment_items_with_load_more_async(
                 page=object(),
                 group_id="group",
                 parent_post_id="post",
@@ -408,13 +369,10 @@ def test_collect_comments_async_releases_guard_when_snapshot_restore_fails(
 
     asyncio.run(run_test())
 
-    assert released == [True]
-
-
-def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
+def test_collect_comments_stalled_scroll_success_restores_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """comments guard-held loop 成功時保留 stalled-scroll stop reason 與 cleanup。"""
+    """Comments loop成功時保留 stalled-scroll stop reason 與 snapshot cleanup。"""
 
     events: list[str] = []
     scrolls: list[str] = []
@@ -428,11 +386,6 @@ def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
         comment_extractor,
         "restore_comment_scroll_snapshot",
         lambda _page: events.append("restore"),
-    )
-    monkeypatch.setattr(
-        comment_extractor,
-        "end_comment_load_more_guard",
-        lambda _page: events.append("end_guard"),
     )
     monkeypatch.setattr(
         comment_extractor,
@@ -465,7 +418,7 @@ def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
 
     monkeypatch.setattr(comment_extractor, "scroll_comment_load_more", scroll)
 
-    items, round_stats, meta = collect_comment_items_with_load_more_guard_held(
+    items, round_stats, meta = collect_comment_items_with_load_more(
         page=object(),
         group_id="group",
         parent_post_id="post",
@@ -475,7 +428,7 @@ def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
         auto_load_more=True,
     )
 
-    assert events == ["capture", "restore", "end_guard"]
+    assert events == ["capture", "restore"]
     assert scrolls == ["scroll"]
     assert [item.comment_id for item in items] == ["1001"]
     assert round_stats[0].scroll_moved is False
@@ -487,10 +440,10 @@ def test_collect_comments_guard_held_stalled_scroll_success_releases_guard(
     assert meta.dom_settle_stable is True
 
 
-def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
+def test_collect_comments_async_stalled_scroll_matches_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """async comments guard-held loop 保留 stalled-scroll 與 cleanup 語義。"""
+    """Async comments loop保留 stalled-scroll 與 snapshot cleanup 語義。"""
 
     async def run_test() -> None:
         events: list[str] = []
@@ -501,9 +454,6 @@ def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
 
         async def restore_snapshot(_page: object) -> None:
             events.append("restore")
-
-        async def end_guard(_page: object) -> None:
-            events.append("end_guard")
 
         async def wait_for_settle(
             _page: object,
@@ -551,11 +501,6 @@ def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
         )
         monkeypatch.setattr(
             comment_extractor,
-            "end_comment_load_more_guard_async",
-            end_guard,
-        )
-        monkeypatch.setattr(
-            comment_extractor,
             "wait_for_comment_dom_settle_async",
             wait_for_settle,
         )
@@ -566,7 +511,7 @@ def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
         )
         monkeypatch.setattr(comment_extractor, "scroll_comment_load_more_async", scroll)
 
-        items, round_stats, meta = await collect_comment_items_with_load_more_guard_held_async(
+        items, round_stats, meta = await collect_comment_items_with_load_more_async(
             page=object(),
             group_id="group",
             parent_post_id="post",
@@ -576,7 +521,7 @@ def test_collect_comments_guard_held_async_stalled_scroll_matches_sync(
             auto_load_more=True,
         )
 
-        assert events == ["capture", "restore", "end_guard"]
+        assert events == ["capture", "restore"]
         assert scrolls == ["scroll"]
         assert [item.comment_id for item in items] == ["1001"]
         assert round_stats[0].scroll_moved is False

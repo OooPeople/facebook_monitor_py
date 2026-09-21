@@ -1,4 +1,4 @@
-"""Schema v45 temporary-block warning persistence tests。"""
+"""Schema v46 temporary-block warning persistence tests。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,9 @@ from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
 from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
 from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
 from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
-from facebook_monitor.persistence.migrations import migrate_44_to_45
 from facebook_monitor.persistence.current_schema import create_current_schema
+from facebook_monitor.persistence.migrations import migrate_39_to_40
+from facebook_monitor.persistence.migrations import migrate_44_to_45
 from tests.persistence.sqlite_test_helpers import table_sql
 
 
@@ -62,8 +63,8 @@ def test_repository_records_singleton_generation_and_fixed_warning_window(
     assert revision_after >= revision_before + 2
 
 
-def test_v45_warning_schema_rejects_probe_source(tmp_path: Path) -> None:
-    """Fresh v45 schema 不得承載已移除的 recovery probe source。"""
+def test_v46_warning_schema_rejects_probe_source(tmp_path: Path) -> None:
+    """Fresh v46 schema 不得承載已移除的 recovery probe source。"""
 
     with SqliteApplicationContext(tmp_path / "app.db") as app:
         connection = app.repositories.targets.connection
@@ -85,7 +86,7 @@ def test_v45_warning_schema_rejects_probe_source(tmp_path: Path) -> None:
 
 
 def test_v44_migration_table_matches_current_schema() -> None:
-    """歷史 migration 與 fresh v45 schema 的 warning DDL 必須一致。"""
+    """歷史 migration 與 fresh v46 schema 的 warning DDL 必須一致。"""
 
     migrated = sqlite3.connect(":memory:")
     migrated.row_factory = sqlite3.Row
@@ -94,6 +95,7 @@ def test_v44_migration_table_matches_current_schema() -> None:
     try:
         create_current_schema(migrated)
         migrated.execute("DROP TABLE facebook_temporary_block_warning")
+        migrate_39_to_40(migrated)
         migrate_44_to_45(migrated)
         create_current_schema(expected)
 
@@ -133,6 +135,7 @@ def test_v44_to_v45_backfill_is_deterministic_and_never_pauses_targets(
         app.services.targets.pause_target_monitoring(pre_paused.id)
         connection = app.repositories.targets.connection
         connection.execute("DELETE FROM facebook_temporary_block_warning")
+        migrate_39_to_40(connection)
         _insert_legacy_warning(
             connection,
             scope="older-scope",
@@ -178,6 +181,7 @@ def test_v44_to_v45_ignores_non_block_and_invalid_time_rows(tmp_path: Path) -> N
     with SqliteApplicationContext(db_path) as app:
         connection = app.repositories.targets.connection
         connection.execute("DELETE FROM facebook_temporary_block_warning")
+        migrate_39_to_40(connection)
         _insert_legacy_warning(
             connection,
             scope="invalid-time",
@@ -212,6 +216,7 @@ def test_v44_to_v45_does_not_backfill_probe_only_warning(tmp_path: Path) -> None
     with SqliteApplicationContext(db_path) as app:
         connection = app.repositories.targets.connection
         connection.execute("DELETE FROM facebook_temporary_block_warning")
+        migrate_39_to_40(connection)
         _insert_legacy_warning(
             connection,
             scope="probe-only",
@@ -240,6 +245,7 @@ def test_v44_to_v45_probe_generation_does_not_advance_formal_warning(
     with SqliteApplicationContext(db_path) as app:
         connection = app.repositories.targets.connection
         connection.execute("DELETE FROM facebook_temporary_block_warning")
+        migrate_39_to_40(connection)
         _insert_legacy_warning(
             connection,
             scope="formal-scan",

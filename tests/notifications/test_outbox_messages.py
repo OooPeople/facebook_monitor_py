@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
+from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
+from facebook_monitor.application.target_display import format_target_display_name
 from facebook_monitor.notifications.match_message_builders import (
     build_match_compact_notification_message,
 )
@@ -16,6 +19,11 @@ from facebook_monitor.notifications.match_message_builders import (
 from facebook_monitor.notifications.runtime_failure_message_builders import (
     build_runtime_failure_notification_message,
 )
+from facebook_monitor.notifications.discord_format import normalize_discord_single_line
+from facebook_monitor.notifications.outbox_runtime_failure_builders import (
+    build_runtime_failure_channel_payloads,
+)
+from facebook_monitor.notifications.payload import normalize_notification_single_line
 from facebook_monitor.notifications.desktop_format import (
     build_runtime_failure_compact_notification_message,
 )
@@ -236,3 +244,50 @@ def test_runtime_failure_desktop_compact_message_has_shared_builder() -> None:
         "監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3 | "
         "狀態: 背景掃描錯誤 | 系統已停止此監視項目，請開啟 Web UI 檢查。"
     )
+
+
+def test_runtime_failure_outbox_normalizes_target_name_at_enqueue_by_channel() -> None:
+    """Runtime failure 三通道在 enqueue 時保存各自安全的單行名稱。"""
+
+    target = TargetDescriptor.for_group_posts(
+        group_id="222518561920110",
+        canonical_url="https://www.facebook.com/groups/222518561920110",
+        name="第一行\n第二行 <@all> *粗體* \x1b[31m紅色",
+    )
+    config = TargetConfig(
+        target_id=target.id,
+        enable_desktop_notification=True,
+        enable_ntfy=True,
+        ntfy_topic="topic",
+        enable_discord_notification=True,
+        discord_webhook="https://discord.com/api/webhooks/1234567890/token",
+    )
+
+    payloads = build_runtime_failure_channel_payloads(
+        target=target,
+        config=config,
+        scan_run_id=42,
+        normalized_reason="unknown",
+        failure_count=3,
+        error_message="背景掃描錯誤",
+        target_stopped=True,
+    )
+
+    payload_by_channel = {payload.channel: payload for payload in payloads}
+    display_name = format_target_display_name(target)
+    plain_name = normalize_notification_single_line(display_name)
+    discord_name = normalize_discord_single_line(display_name)
+    assert set(payload_by_channel) == {
+        NotificationChannel.DESKTOP,
+        NotificationChannel.NTFY,
+        NotificationChannel.DISCORD,
+    }
+    assert f"監視項目: {plain_name}" in payload_by_channel[NotificationChannel.DESKTOP].message
+    assert "\n" not in payload_by_channel[NotificationChannel.DESKTOP].message
+    assert payload_by_channel[NotificationChannel.NTFY].message.splitlines()[0] == (
+        f"監視項目: {plain_name}"
+    )
+    assert payload_by_channel[NotificationChannel.DISCORD].message.splitlines()[0] == (
+        f"監視項目: {discord_name}"
+    )
+    assert "\x1b" not in payload_by_channel[NotificationChannel.DISCORD].message

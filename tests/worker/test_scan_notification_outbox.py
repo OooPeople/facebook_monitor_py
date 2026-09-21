@@ -26,6 +26,7 @@ from facebook_monitor.core.models import SeenItem
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
+from facebook_monitor.notifications.desktop import DesktopNotificationResult
 from facebook_monitor.notifications.discord import DiscordConfig
 from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
@@ -988,10 +989,195 @@ def test_outbox_dispatch_releases_processing_heartbeat_before_external_io(
     assert in_transaction_during_send == [False]
 
 
-def test_outbox_dispatch_refreshes_polluted_match_group_line(
+def test_outbox_dispatch_keeps_enqueue_time_message_after_target_rename(
     tmp_path: Path,
 ) -> None:
-    """pending match outbox 投遞前會用目前 target 顯示名稱修正舊社團欄位。"""
+    """Target 入列後改名不重寫 message；dispatch 送出 immutable event snapshot。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+
+    def fake_ntfy_sender(
+        _config: NtfyConfig,
+        _title: str,
+        message: str,
+    ) -> NtfyResult:
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="snapshot-rename",
+                canonical_url="https://www.facebook.com/groups/snapshot-rename",
+                name="入列時名稱",
+                config=TargetConfigPatch(
+                    include_keywords=("票券",),
+                    enable_ntfy=True,
+                    ntfy_topic="snapshot-topic",
+                ),
+            )
+        )
+        target = _activate_target(app, target)
+        config = app.services.targets.get_config_for_target(target)
+        finalize_scan_items(
+            app=app,
+            target=target,
+            config=config,
+            items=[
+                NormalizedScanItem(
+                    item_kind=ItemKind.POST,
+                    item_key="post:snapshot-rename",
+                    alias_keys=("post:snapshot-rename",),
+                    group_id=target.group_id,
+                    text="票券快照",
+                )
+            ],
+            item_count=1,
+            metadata={"worker": "test_worker"},
+        )
+        entry = app.repositories.notification_outbox.get_by_idempotency_key(
+            build_notification_idempotency_key(
+                target_id=target.id,
+                item_key="post:snapshot-rename",
+                channel=NotificationChannel.NTFY,
+            )
+        )
+        assert entry is not None
+        stored_message = entry.message
+        app.services.targets.update_target_name(target.id, "投遞時新名稱")
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+
+    assert result.dispatched_count == 1
+    assert sent_messages == [stored_message]
+    assert "社團：入列時名稱" in stored_message
+    assert "投遞時新名稱" not in sent_messages[0]
+
+
+def test_outbox_dispatch_skips_endpoint_channel_disabled_after_enqueue(
+    tmp_path: Path,
+) -> None:
+    """Endpoint-bearing channel 以投遞時 config 判斷 disabled，message snapshot 不改。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+    stored_message = "社團：入列快照\n本文"
+
+    def fake_ntfy_sender(
+        _config: NtfyConfig,
+        _title: str,
+        message: str,
+    ) -> NtfyResult:
+        sent_messages.append(message)
+        return NtfyResult(ok=True, status_code=200, message="sent")
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="disabled-after-enqueue",
+                canonical_url="https://www.facebook.com/groups/disabled-after-enqueue",
+                config=TargetConfigPatch(enable_ntfy=True, ntfy_topic="old-topic"),
+            )
+        )
+        idempotency_key = f"{target.id}:disabled-after-enqueue:ntfy"
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=idempotency_key,
+                target_id=target.id,
+                item_key="disabled-after-enqueue",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.NTFY,
+                title="title",
+                message=stored_message,
+                endpoint="old-topic",
+            )
+        )
+        app.services.targets.update_target_config(
+            UpdateTargetConfigRequest(
+                target_id=target.id,
+                config=TargetConfigPatch(enable_ntfy=False),
+            )
+        )
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            ntfy_sender=fake_ntfy_sender,
+        )
+        stored = app.repositories.notification_outbox.get_by_idempotency_key(
+            idempotency_key
+        )
+
+    assert result.dispatched_count == 1
+    assert sent_messages == []
+    assert stored is not None
+    assert stored.status == NotificationOutboxStatus.SKIPPED
+    assert stored.endpoint == ""
+    assert stored.message == stored_message
+
+
+def test_outbox_dispatch_keeps_desktop_snapshot_when_current_config_disabled(
+    tmp_path: Path,
+) -> None:
+    """Desktop 無 endpoint；已 enqueue event 不因目前 config disabled 而被跳過。"""
+
+    db_path = tmp_path / "app.db"
+    sent_messages: list[str] = []
+    stored_message = "監視項目: 入列快照 | 錯誤類型: 測試"
+
+    def fake_desktop_sender(
+        _title: str,
+        message: str,
+    ) -> DesktopNotificationResult:
+        sent_messages.append(message)
+        return DesktopNotificationResult(
+            ok=True,
+            status_code=None,
+            message="desktop_sent",
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="desktop-snapshot",
+                canonical_url="https://www.facebook.com/groups/desktop-snapshot",
+            )
+        )
+        idempotency_key = f"{target.id}:desktop-snapshot:desktop"
+        app.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=idempotency_key,
+                target_id=target.id,
+                item_key="desktop-snapshot",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="title",
+                message=stored_message,
+            )
+        )
+
+        result = dispatch_new_pending_notification_outbox(
+            app=app,
+            desktop_sender=fake_desktop_sender,
+        )
+        stored = app.repositories.notification_outbox.get_by_idempotency_key(
+            idempotency_key
+        )
+
+    assert result.dispatched_count == 1
+    assert sent_messages == [stored_message]
+    assert stored is not None
+    assert stored.status == NotificationOutboxStatus.SENT
+    assert stored.message == stored_message
+
+
+def test_outbox_dispatch_preserves_legacy_polluted_match_message(
+    tmp_path: Path,
+) -> None:
+    """Legacy pending match outbox 依 enqueue snapshot 原樣投遞。"""
 
     db_path = tmp_path / "app.db"
     sent_messages: list[str] = []
@@ -1018,17 +1204,24 @@ def test_outbox_dispatch_refreshes_polluted_match_group_line(
                 ),
             )
         )
-        app.repositories.notification_outbox.enqueue(
-            NotificationOutboxEntry(
-                idempotency_key=f"{target.id}:post:old-name:ntfy",
-                target_id=target.id,
-                item_key="post:old-name",
-                item_kind=ItemKind.POST,
-                channel=NotificationChannel.NTFY,
-                title="title",
-                message="社團：Facebook | Error\n本文",
-                endpoint="phase0test",
+        timestamp = target.created_at.isoformat()
+        app.repositories.notification_outbox.connection.execute(
+            """
+            INSERT INTO notification_outbox (
+                idempotency_key, target_id, item_key, item_kind, channel, status,
+                title, message, endpoint, permalink, attempts, last_error,
+                created_at, updated_at
             )
+            VALUES (?, ?, 'post:old-name', 'post', 'ntfy', 'pending',
+                    'title', ?, 'phase0test', '', 0, '', ?, ?)
+            """,
+            (
+                f"{target.id}:post:old-name:ntfy",
+                target.id,
+                "社團：Facebook | Error\n本文",
+                timestamp,
+                timestamp,
+            ),
         )
 
         result = dispatch_new_pending_notification_outbox(
@@ -1037,13 +1230,13 @@ def test_outbox_dispatch_refreshes_polluted_match_group_line(
         )
 
     assert result.dispatched_count == 1
-    assert sent_messages == ["社團：測試社團\n本文"]
+    assert sent_messages == ["社團：Facebook | Error\n本文"]
 
 
-def test_outbox_dispatch_refreshes_only_first_match_group_header_with_channel_format(
+def test_outbox_dispatch_preserves_legacy_discord_match_message(
     tmp_path: Path,
 ) -> None:
-    """舊 match outbox 只修 metadata header，且套用實際通道格式。"""
+    """Legacy Discord match message 不在 dispatch-time 解析或重寫。"""
 
     db_path = tmp_path / "app.db"
     sent_messages: list[str] = []
@@ -1095,13 +1288,13 @@ def test_outbox_dispatch_refreshes_only_first_match_group_header_with_channel_fo
         )
 
     assert result.dispatched_count == 1
-    assert sent_messages == ["社團：我的 \\<測試\\> 名稱\n社團：正文不要改"]
+    assert sent_messages == ["社團：Facebook | Error\n社團：正文不要改"]
 
 
-def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
+def test_outbox_dispatch_preserves_legacy_polluted_runtime_failure_message(
     tmp_path: Path,
 ) -> None:
-    """舊 runtime failure pending row 投遞前也會修正污染 target 名稱。"""
+    """Legacy runtime failure pending message 依舊資料逐字投遞。"""
 
     db_path = tmp_path / "app.db"
     sent_messages: list[str] = []
@@ -1151,7 +1344,9 @@ def test_outbox_dispatch_refreshes_polluted_runtime_failure_target_line(
         )
 
     assert result.dispatched_count == 1
-    assert sent_messages == ["監視項目: 測試社團 | 錯誤類型: 未分類錯誤 | 連續次數: 3"]
+    assert sent_messages == [
+        "監視項目: Facebook | Error | 錯誤類型: 未分類錯誤 | 連續次數: 3"
+    ]
 
 
 def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(

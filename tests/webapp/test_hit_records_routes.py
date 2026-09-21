@@ -20,6 +20,9 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
+from facebook_monitor.webapp.hit_record_queries import (
+    _raise_if_hit_record_count_is_invariant_unsafe,
+)
 
 
 from tests.webapp.app_test_helpers import create_app
@@ -448,6 +451,81 @@ def test_hit_record_count_ignores_other_target_corrupt_match_history_datetime(
     assert response.json()["total_count"] == 0
 
 
+def test_hit_record_page_scope_ignores_corruption_outside_requested_page(
+    tmp_path: Path,
+) -> None:
+    """Full list 只驗同一 ORDER BY/LIMIT/OFFSET page，較舊壞列不拖垮當頁。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="hit-page-scope",
+                canonical_url="https://www.facebook.com/groups/hit-page-scope",
+                group_name="hit page scope",
+            )
+        )
+        older_at = target.created_at
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="older-good-page-row",
+                text="較舊但 latest 正常列",
+                include_rule="scope",
+                recorded_at=older_at,
+                created_at=older_at,
+            )
+        )
+        app_context.repositories.match_history.add(
+            MatchHistoryEntry(
+                target_id=target.id,
+                group_id=target.group_id,
+                group_name=target.group_name,
+                item_kind=ItemKind.POST,
+                item_key="newer-corrupt-page-row",
+                text="較新但非 latest 壞列",
+                include_rule="scope",
+                recorded_at=older_at + timedelta(seconds=1),
+                created_at=older_at + timedelta(seconds=1),
+            )
+        )
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="older-good-page-row",
+                    item_index=0,
+                    text="較舊但 latest 正常列",
+                )
+            ],
+        )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET created_at = ? WHERE item_key = ?",
+            ("not-a-datetime", "newer-corrupt-page-row"),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    first_page = client.get(
+        f"/api/targets/{target.id}/hit-records",
+        params={"limit": 1, "offset": 0},
+    )
+    expanded_page = client.get(
+        f"/api/targets/{target.id}/hit-records",
+        params={"limit": 2, "offset": 0},
+    )
+
+    assert first_page.status_code == 200
+    assert first_page.json()["items"][0]["content"] == "較舊但 latest 正常列"
+    assert expanded_page.status_code == 503
+
+
 def test_hit_record_count_returns_503_for_corrupt_match_history_recorded_at(
     tmp_path: Path,
 ) -> None:
@@ -532,6 +610,40 @@ def test_hit_record_preview_count_ignores_corrupt_match_history_before_session(
     assert count_response.status_code == 200
     assert count_response.json()["total_count"] == 0
     assert full_response.status_code == 503
+
+
+def test_hit_record_count_pushes_recorded_since_into_sql(tmp_path: Path) -> None:
+    """Count invariant preflight 必須在 SQL 範圍內過濾，不載入整個 target history。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="count-sql-scope",
+                canonical_url="https://www.facebook.com/groups/count-sql-scope",
+                group_name="count SQL scope",
+            )
+        )
+        statements: list[str] = []
+        connection = app_context.repositories.match_history.connection
+        connection.set_trace_callback(statements.append)
+        try:
+            _raise_if_hit_record_count_is_invariant_unsafe(
+                connection,
+                target_id=target.id,
+                recorded_since=target.created_at,
+            )
+        finally:
+            connection.set_trace_callback(None)
+
+    scoped_selects = [
+        " ".join(statement.upper().split())
+        for statement in statements
+        if "FROM MATCH_HISTORY" in statement.upper()
+    ]
+    assert scoped_selects
+    assert all("TARGET_ID =" in statement for statement in scoped_selects)
+    assert all("RECORDED_AT >=" in statement for statement in scoped_selects)
 
 
 def test_webui_sanitizes_preview_and_hit_record_permalinks(tmp_path: Path) -> None:

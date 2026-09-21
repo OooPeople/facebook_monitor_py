@@ -32,9 +32,6 @@ from facebook_monitor.facebook.scroll_comment_scripts import (
 from facebook_monitor.facebook.scroll_comment_scripts import (
     COMMENT_SCROLL_LOAD_MORE_SCRIPT as COMMENT_SCROLL_LOAD_MORE_FRAGMENT,
 )
-from facebook_monitor.facebook.scroll_guard_scripts import (
-    BEGIN_COMMENT_LOAD_MORE_GUARD_SCRIPT as BEGIN_COMMENT_LOAD_MORE_GUARD_FRAGMENT,
-)
 from facebook_monitor.facebook.scroll_post_scripts import (
     SCROLL_HELPERS_SCRIPT as SCROLL_HELPERS_FRAGMENT,
 )
@@ -326,7 +323,7 @@ def test_shared_permalink_helper_rejects_expected_group_mismatch() -> None:
 
 
 def test_scroll_fragments_keep_responsibility_markers() -> None:
-    """scroll fragment 需保留 posts、comments 與 guard 的核心語義。"""
+    """Scroll fragment需保留posts與comments核心語義。"""
 
     assert "getLoadMoreScrollTarget" in SCROLL_HELPERS_FRAGMENT
     assert "performConfiguredLoadMore" in SCROLL_LOAD_MORE_FRAGMENT
@@ -334,4 +331,3 @@ def test_scroll_fragments_keep_responsibility_markers() -> None:
     assert "comment_id=" not in SCROLL_HELPERS_FRAGMENT
     assert "collectCommentScrollTargets" in COMMENT_SCROLL_HELPERS_FRAGMENT
     assert "comment_nested_scroll" in COMMENT_SCROLL_LOAD_MORE_FRAGMENT
-    assert "window.__facebookMonitorScanRuntime" in BEGIN_COMMENT_LOAD_MORE_GUARD_FRAGMENT

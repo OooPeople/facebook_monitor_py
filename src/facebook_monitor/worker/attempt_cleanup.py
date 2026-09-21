@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 
@@ -19,7 +18,6 @@ class ResidentAttemptCleanupHost(Protocol):
 
     page_pool: AsyncResidentPagePool
     target_queue: TargetQueue
-    schedule_planner: TargetSchedulePlanner
 
     async def _unregister_active_attempt(self, target_id: str, owner_key: str) -> None:
         """解除 active attempt 登記。"""
@@ -34,7 +32,6 @@ class ResidentAttemptResources:
     active_attempt_key: str = ""
     page_id: str = ""
     page_acquired: bool = False
-    planner_dispatch_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -48,7 +45,6 @@ class ResidentAttemptCleanupPlan:
     unregister_active_attempt: bool = True
     release_page: bool = True
     complete_queue_item: bool = True
-    mark_planner_finished: bool = True
 
     @classmethod
     def from_resources(
@@ -68,7 +64,6 @@ class ResidentAttemptCleanupPlan:
             unregister_active_attempt=bool(resources.active_attempt_key),
             release_page=resources.page_acquired,
             complete_queue_item=resources.queue_item_consumed,
-            mark_planner_finished=bool(resources.planner_dispatch_id),
         )
 
 
@@ -88,8 +83,6 @@ async def run_resident_attempt_cleanup(
             await host.page_pool.release(plan.target_id)
     if plan.complete_queue_item:
         await host.target_queue.complete(plan.target_id, owner_key=plan.owner_key)
-    if plan.mark_planner_finished:
-        host.schedule_planner.mark_finished(plan.target_id)
 
 
 __all__ = [

@@ -225,8 +225,8 @@ def test_collection_loop_stops_after_stagnant_windows() -> None:
     assert result.collected == []
 
 
-def test_collection_loop_restores_snapshot_and_ends_guard_on_round_error() -> None:
-    """單輪抽取失敗時仍執行 snapshot restore 與 guard release。"""
+def test_collection_loop_restores_snapshot_on_round_error() -> None:
+    """單輪抽取失敗時仍執行 snapshot restore。"""
 
     events: list[str] = []
 
@@ -247,10 +247,9 @@ def test_collection_loop_restores_snapshot_and_ends_guard_on_round_error() -> No
             scroll=lambda: {"moved": True},
             capture_snapshot=lambda: events.append("capture"),
             restore_snapshot=lambda: events.append("restore"),
-            end_guard=lambda: events.append("end_guard"),
         )
 
-    assert events == ["capture", "restore", "end_guard"]
+    assert events == ["capture", "restore"]
 
 
 def test_collection_loop_async_matches_sync_target_count_stop() -> None:
@@ -292,6 +291,57 @@ def test_collection_loop_async_matches_sync_target_count_stop() -> None:
         assert scrolls == [1]
         assert result.round_stats == [1, 2]
         assert len(result.collected) == 2
+
+    asyncio.run(run_test())
+
+
+def test_collection_loop_async_cancellation_restores_snapshot_and_propagates() -> None:
+    """Async collection 取消時仍復原 snapshot，並保留 CancelledError。"""
+
+    async def run_test() -> None:
+        events: list[str] = []
+        round_started = asyncio.Event()
+
+        async def collect_round(
+            _round_index: int,
+        ) -> CollectionRoundObservation[dict[str, Any], None]:
+            round_started.set()
+            await asyncio.Future()
+            raise AssertionError("cancelled collection must not resume")
+
+        async def capture_snapshot() -> None:
+            events.append("capture")
+
+        async def restore_snapshot() -> None:
+            events.append("restore")
+
+        async def wait(_milliseconds: int) -> None:
+            return None
+
+        async def scroll() -> dict[str, Any]:
+            return {"moved": True}
+
+        task = asyncio.create_task(
+            run_collection_loop_async(
+                rounds=1,
+                wait_ms=0,
+                target_count=1,
+                collect_round=collect_round,
+                merge_items=_merge_items,
+                build_round_stats=lambda _context: None,
+                should_scroll=lambda _context: False,
+                should_stop=lambda _context: False,
+                wait=wait,
+                scroll=scroll,
+                capture_snapshot=capture_snapshot,
+                restore_snapshot=restore_snapshot,
+            )
+        )
+        await asyncio.wait_for(round_started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert events == ["capture", "restore"]
 
     asyncio.run(run_test())
 

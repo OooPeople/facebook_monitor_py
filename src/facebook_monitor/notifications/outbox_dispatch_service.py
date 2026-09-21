@@ -34,9 +34,6 @@ from facebook_monitor.notifications.outbox_dispatch_models import (
 from facebook_monitor.notifications.outbox_entry_refresh import (
     refresh_outbox_entry_delivery_endpoint,
 )
-from facebook_monitor.notifications.outbox_entry_refresh import (
-    refresh_outbox_entry_display_metadata_lines,
-)
 from facebook_monitor.notifications.ntfy import send_ntfy_notification
 from facebook_monitor.notifications.safe_messages import safe_exception_message
 from facebook_monitor.notifications.senders import DesktopSender
@@ -329,19 +326,15 @@ def mark_processing_and_refresh_outbox_entry(
     app: ApplicationContext,
     prepared: _PreparedOutboxDispatch,
 ) -> NotificationOutboxEntry:
-    """標記 processing 後刷新 endpoint 與顯示 metadata，保留既有 commit 邊界。"""
+    """標記 processing 後刷新 endpoint，保留既有 commit 邊界。"""
 
     ensure_current_outbox_claim(app=app, prepared=prepared)
     app.repositories.notification_outbox.connection.commit()
-    entry = refresh_outbox_entry_delivery_endpoint(
+    return refresh_outbox_entry_delivery_endpoint(
         app=app,
         target=prepared.target,
         entry=prepared.entry,
         claim_token=prepared.claim_token,
-    )
-    return refresh_outbox_entry_display_metadata_lines(
-        target=prepared.target,
-        entry=entry,
     )
 
 
@@ -457,6 +450,5 @@ __all__ = [
     "dispatch_notification_outbox_entries",
     "recover_stale_processing_outbox",
     "refresh_outbox_entry_delivery_endpoint",
-    "refresh_outbox_entry_display_metadata_lines",
     "retry_failed_notification_outbox",
 ]

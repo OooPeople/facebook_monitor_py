@@ -141,7 +141,11 @@ def test_success_scan_diagnostics_text_keeps_ordered_sections() -> None:
                 "mutation_suppression_ms": 3200,
                 "mutation_suppression_reason": "auto_adjust_sort",
             },
-            "comments_meta": {"mode": "comments", "targetCount": 2},
+            "comments_meta": {
+                "mode": "comments",
+                "targetCount": 2,
+                "guardReason": "comment_load_more_guard_active",
+            },
             "collected_meta": {"mode": "posts", "attempted": True},
             "rounds": [
                 {
@@ -209,6 +213,7 @@ def test_success_scan_diagnostics_text_keeps_ordered_sections() -> None:
     ]
     assert lines.index("sort_adjust:") < lines.index("comments_meta:")
     assert lines.index("comments_meta:") < lines.index("collected_meta:")
+    assert "guardReason=comment_load_more_guard_active" in lines
     assert lines.index("rounds:") < lines.index("latest_scan_items:")
     assert lines[-1].startswith("metadata_json=")
 
@@ -295,44 +300,6 @@ def test_failed_scan_diagnostics_shows_safe_page_guard_evidence() -> None:
     assert "failure_diagnostics.page_guard:" in text
     assert "  stable_observation_count=2" in text
     assert "  url_kind=group_post" in text
-    assert "https://" not in text
-
-
-def test_failed_scan_diagnostics_shows_fallback_guard_evidence() -> None:
-    """fallback diagnostics 顯示能力邊界，不包含 target identity 或 URL。"""
-
-    scan = ScanRun(
-        target_id="target-1",
-        status=ScanStatus.FAILED,
-        started_at=_STARTED_AT,
-        finished_at=_FINISHED_AT,
-        error_message="Comments targets are unsupported in this fallback mode.",
-        metadata={
-            "reason": "unsupported_in_fallback",
-            "failure_diagnostics": {
-                "fallback_guard": {
-                    "detector": "fallback_capability_guard",
-                    "detector_version": 1,
-                    "classification": "unsupported_in_fallback",
-                    "fallback_mode": "sync_resident_fallback",
-                    "target_kind": "comments",
-                    "browser_work_started": False,
-                }
-            },
-        },
-    )
-
-    text = build_scan_diagnostics_text(
-        target=_target(),
-        config=_config(),
-        runtime_state=_runtime_state(),
-        latest_scan_run=scan,
-    )
-
-    assert "failure_reason=備援模式不支援留言監視" in text
-    assert "failure_diagnostics.fallback_guard:" in text
-    assert "  fallback_mode=sync_resident_fallback" in text
-    assert "  browser_work_started=False" in text
     assert "https://" not in text
 
 

@@ -35,12 +35,8 @@ from facebook_monitor.facebook.collection_policy import (
 from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.extracted_item import make_item_key_aliases
 from facebook_monitor.facebook.comment_dom_settle_script import COMMENT_DOM_SETTLE_SCRIPT
-from facebook_monitor.facebook.scroll_control_runtime import begin_comment_load_more_guard
-from facebook_monitor.facebook.scroll_control_runtime import begin_comment_load_more_guard_async
 from facebook_monitor.facebook.scroll_control_runtime import capture_comment_scroll_snapshot
 from facebook_monitor.facebook.scroll_control_runtime import capture_comment_scroll_snapshot_async
-from facebook_monitor.facebook.scroll_control_runtime import end_comment_load_more_guard
-from facebook_monitor.facebook.scroll_control_runtime import end_comment_load_more_guard_async
 from facebook_monitor.facebook.scroll_control_runtime import restore_comment_scroll_snapshot
 from facebook_monitor.facebook.scroll_control_runtime import restore_comment_scroll_snapshot_async
 from facebook_monitor.facebook.scroll_control_runtime import scroll_comment_load_more
@@ -262,20 +258,7 @@ def collect_comment_items_with_diagnostics(
             auto_load_more=False,
         )
 
-    guard = begin_comment_load_more_guard(page)
-    if not guard.get("acquired"):
-        reason = str(guard.get("reason") or "comment_load_more_guard_active")
-        return collect_visible_comment_window_with_diagnostics(
-            page,
-            group_id=group_id,
-            parent_post_id=parent_post_id,
-            max_items=max_items,
-            stop_reason=reason,
-            auto_load_more=True,
-            guard_reason=reason,
-        )
-
-    return collect_comment_items_with_load_more_guard_held(
+    return collect_comment_items_with_load_more(
         page=page,
         group_id=group_id,
         parent_post_id=parent_post_id,
@@ -330,20 +313,7 @@ async def collect_comment_items_with_diagnostics_async(
             auto_load_more=False,
         )
 
-    guard = await begin_comment_load_more_guard_async(page)
-    if not guard.get("acquired"):
-        reason = str(guard.get("reason") or "comment_load_more_guard_active")
-        return await collect_visible_comment_window_with_diagnostics_async(
-            page,
-            group_id=group_id,
-            parent_post_id=parent_post_id,
-            max_items=max_items,
-            stop_reason=reason,
-            auto_load_more=True,
-            guard_reason=reason,
-        )
-
-    return await collect_comment_items_with_load_more_guard_held_async(
+    return await collect_comment_items_with_load_more_async(
         page=page,
         group_id=group_id,
         parent_post_id=parent_post_id,
@@ -362,7 +332,6 @@ def collect_visible_comment_window_with_diagnostics(
     max_items: int,
     stop_reason: str,
     auto_load_more: bool,
-    guard_reason: str = "",
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
     """收集單一 comments visible window，供 fallback 與 non-load-more 共用。"""
 
@@ -388,7 +357,6 @@ def collect_visible_comment_window_with_diagnostics(
         accumulated_count=len(items),
         stop_reason=stop_reason,
         auto_load_more=auto_load_more,
-        guard_reason=guard_reason,
     )
 
 
@@ -400,7 +368,6 @@ async def collect_visible_comment_window_with_diagnostics_async(
     max_items: int,
     stop_reason: str,
     auto_load_more: bool,
-    guard_reason: str = "",
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
     """async 版本：收集單一 comments visible window。"""
 
@@ -426,7 +393,6 @@ async def collect_visible_comment_window_with_diagnostics_async(
         accumulated_count=len(items),
         stop_reason=stop_reason,
         auto_load_more=auto_load_more,
-        guard_reason=guard_reason,
     )
 
 
@@ -477,7 +443,7 @@ def infer_comment_stop_reason(
     return "comment_collection_stopped"
 
 
-def collect_comment_items_with_load_more_guard_held(
+def collect_comment_items_with_load_more(
     *,
     page: Any,
     group_id: str,
@@ -487,7 +453,7 @@ def collect_comment_items_with_load_more_guard_held(
     scroll_wait_ms: int,
     auto_load_more: bool,
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
-    """在已取得 guard 時執行 comments nested scroll 收集。"""
+    """執行 comments nested scroll 收集並保證 snapshot 復原。"""
 
     rounds = max(scroll_rounds, 0)
     wait_ms = max(scroll_wait_ms, 0)
@@ -550,7 +516,6 @@ def collect_comment_items_with_load_more_guard_held(
         scroll=lambda: scroll_comment_load_more(page),
         capture_snapshot=lambda: capture_comment_scroll_snapshot(page),
         restore_snapshot=lambda: restore_comment_scroll_snapshot(page),
-        end_guard=lambda: end_comment_load_more_guard(page),
     )
 
     items = [item for _aliases, item in result.collected[: max(max_items, 1)]]
@@ -569,7 +534,7 @@ def collect_comment_items_with_load_more_guard_held(
         auto_load_more=auto_load_more,
     )
 
-async def collect_comment_items_with_load_more_guard_held_async(
+async def collect_comment_items_with_load_more_async(
     *,
     page: Any,
     group_id: str,
@@ -579,7 +544,7 @@ async def collect_comment_items_with_load_more_guard_held_async(
     scroll_wait_ms: int,
     auto_load_more: bool,
 ) -> tuple[list[ExtractedItem], list[CommentExtractRoundStats], CommentCollectionMeta]:
-    """async 版本：在已取得 guard 時執行 comments nested scroll 收集。"""
+    """Async 版本：執行 comments nested scroll 收集並保證 snapshot 復原。"""
 
     rounds = max(scroll_rounds, 0)
     wait_ms = max(scroll_wait_ms, 0)
@@ -642,7 +607,6 @@ async def collect_comment_items_with_load_more_guard_held_async(
         scroll=lambda: scroll_comment_load_more_async(page),
         capture_snapshot=lambda: capture_comment_scroll_snapshot_async(page),
         restore_snapshot=lambda: restore_comment_scroll_snapshot_async(page),
-        end_guard=lambda: end_comment_load_more_guard_async(page),
     )
 
     items = [item for _aliases, item in result.collected[: max(max_items, 1)]]

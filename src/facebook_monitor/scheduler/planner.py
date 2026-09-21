@@ -46,8 +46,6 @@ class TargetSchedulePlanner:
         self.scannable_target_kinds = scannable_target_kinds
         self.on_display_next_due_changed = on_display_next_due_changed
         self._next_due_at_by_target: dict[str, datetime] = {}
-        self._last_started_at_by_target: dict[str, datetime] = {}
-        self._last_finished_at_by_target: dict[str, datetime] = {}
 
     def list_due_targets(
         self,
@@ -131,17 +129,11 @@ class TargetSchedulePlanner:
         """target 成功取得 scan lock 後，依 start-to-start cadence 推進 next_due_at。"""
 
         current_time = now or datetime.now(timezone.utc)
-        self._last_started_at_by_target[due_target.target_id] = current_time
         next_due_at = current_time + timedelta(
             seconds=max(due_target.interval_seconds, 1)
         )
         self._next_due_at_by_target[due_target.target_id] = next_due_at
         self._publish_display_next_due_at(due_target.target_id, next_due_at)
-
-    def mark_finished(self, target_id: str, *, now: datetime | None = None) -> None:
-        """記錄 target 掃描完成時間，供 diagnostics 或後續策略使用。"""
-
-        self._last_finished_at_by_target[target_id] = now or datetime.now(timezone.utc)
 
     def prune_inactive(self, active_target_ids: set[str]) -> None:
         """移除已停用或已刪除 target 的排程暫存狀態。"""
@@ -150,8 +142,6 @@ class TargetSchedulePlanner:
             if target_id in active_target_ids:
                 continue
             self._next_due_at_by_target.pop(target_id, None)
-            self._last_started_at_by_target.pop(target_id, None)
-            self._last_finished_at_by_target.pop(target_id, None)
             self._publish_display_next_due_at(target_id, None)
 
     def _publish_display_next_due_at(

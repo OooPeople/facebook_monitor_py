@@ -12,7 +12,6 @@ from facebook_monitor.core.facebook_temporary_block import (
     TemporaryBlockWarningSnapshot,
 )
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.webapp.dashboard_collections import read_configs_by_target
 from facebook_monitor.webapp.dashboard_collections import read_dashboard_collections
 from facebook_monitor.webapp.dashboard_models import TargetRow
@@ -36,6 +35,12 @@ from facebook_monitor.webapp.read_model_context import (
 from facebook_monitor.webapp.read_model_invariants import inactive_invariant_target_ids
 from facebook_monitor.webapp.read_model_invariants import ReadModelInvariantMapperError
 from facebook_monitor.webapp.read_model_invariants import read_mapper_value
+from facebook_monitor.webapp.read_scope_invariants import (
+    validate_dashboard_read_scope,
+)
+from facebook_monitor.webapp.read_scope_invariants import (
+    validate_target_card_read_scope,
+)
 
 
 def list_target_rows(
@@ -100,8 +105,10 @@ def get_target_card(
 
     try:
         with read_application_context(db_path) as app_context:
-            violations = validate_database_invariants(
-                app_context.repositories.targets.connection
+            violations = validate_target_card_read_scope(
+                app_context.repositories.targets.connection,
+                target_id,
+                session_started_at=session_started_at,
             )
             if target_id in inactive_invariant_target_ids(
                 app_context.repositories.targets.connection,
@@ -176,8 +183,11 @@ def _list_target_rows(
         connection = app_context.repositories.runtime_states.connection
         if not connection.in_transaction:
             connection.execute("BEGIN")
+        database_invariant_violations = validate_dashboard_read_scope(
+            connection,
+            session_started_at=session_started_at,
+        )
         warning_snapshot = app_context.services.facebook_temporary_block_warning.get()
-        database_invariant_violations = validate_database_invariants(connection)
         database_invariant_warning = build_database_invariant_warning(
             database_invariant_violations
         )

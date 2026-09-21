@@ -10,7 +10,7 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - Python 版是目前正式維護主體；target/scope、config、seen、notification、sort、load-more、diagnostics 等語義以本 repo 的 domain、application、worker 與 Web UI 契約為準。
 - 原始 userscript repo 只作為歷史背景與必要時的行為追溯來源，不是日常開發的本地 reference。
 - Web UI 是正式日常入口；scheduler 是 Web UI 背後的背景服務，不是使用者第二個主開關。
-- async resident worker 是正式產品主路徑；one-shot 與 sync resident worker 僅作 fallback / debug tooling。
+- async resident worker 是唯一正式產品主路徑；single-target one-shot 只保留為 debug 工具。
 - 新功能優先沿用 Python 版既有模組邊界、資料模型、diagnostics 與測試契約；若刻意改變既有產品語義，需在 handoff 中說明原因與風險。
 
 ## 審查速覽表
@@ -20,7 +20,7 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 | 範圍 | 目前決策 | 非目標 / 暫緩項目 | 驗證負責範圍 |
 |---|---|---|---|
 | 日常入口 | Web UI `facebook-monitor` | CLI/admin tools 作為日常使用者介面 | README、`docs/tooling.md` |
-| Worker 主路徑 | async resident worker | one-shot/sync worker 功能對齊 | worker tests、release validation |
+| Worker 主路徑 | async resident worker | 維護第二套 resident/scheduler path | worker tests、release validation |
 | Dashboard 更新 | 長 SSE + revision fallback polling | 短 SSE / 每個 client 各自長期讀 DB | Web UI tests、`docs/WEB_UI_CONTRACT.md` |
 | Notification dispatch | DB outbox + background dispatcher | 在 scan transaction / event loop 內做外部 I/O | notification / worker tests |
 | Updater 信任鏈 | signed manifest + SHA256 cross-check | OS 發布者身分簽章 | updater / release artifact tests |
@@ -65,8 +65,8 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   service，再視需要由 façade 暴露。
 - `persistence/`：SQLite schema、migrations、repository、runtime data maintenance。
 - `facebook/`：Facebook route detection、permalink、DOM extraction、sort 與 scroll helper。
-- `worker/`：posts/comments scan pipeline、shared finalize、resident worker 與 fallback/debug workers。
-- `scheduler/`：target planner、runtime recovery、one-shot fallback scheduler。
+- `worker/`：posts/comments scan pipeline、shared finalize、resident worker 與 single-target debug helper。
+- `scheduler/`：正式 resident 使用的 target planner 與 runtime recovery。
 - `notifications/`：desktop / ntfy / Discord sender、safe diagnostics、
   channel dispatch、outbox enqueue / dispatch service 與 process-local dispatcher。
 - `webapp/`：FastAPI assembly、routes、form models、read model、presenters、templates、static modules。
@@ -130,8 +130,8 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - 單一與 sidebar group／批次 Start 使用相同 generation-confirm policy。Server 在同一
   writer transaction 內重讀 warning；generation 相同或 warning 已過期才套用原有 Start
   command，舊 generation 不得修改 target。確認不消耗 warning，期限內下次 Start 仍提示。
-- 確認後完全沿用 target 原設定、scheduler concurrency、refresh、metadata、cover、
-  comments 與 fallback 流程；不加入隱性限速、單頁限制、額外 refresh floor 或 recovery
+- 確認後完全沿用 target 原設定、scheduler concurrency、refresh、metadata、cover 與
+  posts/comments 掃描流程；不加入隱性限速、單頁限制、額外 refresh floor 或 recovery
   程序。Browser page/context cleanup 失敗沿用既有 runtime retry 與失敗處理。
 - Web route 建立 target 時，若使用者已填自訂名稱就直接保留；若沒有自訂名稱且
   scheduler 正在執行，先建立 target 並在 commit 後排 resident metadata refresh；只有
@@ -160,6 +160,11 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   service claim pending rows 後執行。
 - `notification_dedupe` 承擔長期防重複語義，`notification_outbox` 只保存
   投遞佇列與近期投遞狀態。
+- Outbox 的 title/message 是 enqueue-time event snapshot；target 後續改名或 legacy
+  pending row 的既有內容都不在 dispatch-time 解析、修補或重寫。Runtime failure 名稱在
+  enqueue 時依 Desktop/ntfy 或 Discord 格式正規化。
+- ntfy / Discord 在 dispatch-time 只刷新目前 endpoint；目前通道 disabled 時記為 skipped。
+  Desktop 沒有 endpoint，已 enqueue 的 event 仍依原 snapshot 投遞。
 - failed outbox rows 不由一般 scan commit 自動重試；日常 UI 只顯示失敗筆數與清除入口，目前不提供 failed 通知重試入口。
 - notification outbox cleanup 不是一般 runtime cleanup：Settings 的「清除失敗通知」
   只清 failed rows；target「重置通知狀態」只清該 target 的 outbox rows；
@@ -270,11 +275,14 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 ## Persistence
 
 - SQLite schema 使用明確版本與 migration chain。
-- v42～v44 的 managed-profile identity、session recovery、access circuit 與 pacing tables
-  是歷史 schema 相容資料，不再是現行 runtime、Start 或 Web UI 的限制來源。v45 建立
-  singleton `facebook_temporary_block_warning`；migration 只從可確認為正式 scan、
-  metadata、cover 或 sync-resolver 的 legacy temporary-block evidence 回填 warning，
-  不重演 target stop。
+- v42～v44 曾建立 managed-profile identity、session recovery、access circuit 與
+  pacing tables；v45 先建立 singleton `facebook_temporary_block_warning`，且只從可確認為
+  正式 scan、metadata、cover 或 sync-resolver 的 legacy temporary-block evidence 回填
+  warning，不重演 target stop。v46 在完成這段 backfill 後移除五張退役表；歷史 migration
+  仍保留供 v35～v45 DB 依序升級。
+- v46 是 destructive schema boundary：舊版 app 不支援 v46，不能用舊 binary 開啟已升級的
+  DB；若必須 downgrade，需先還原由舊版 app 建立的完整 DB 備份，不能只降低
+  `schema_metadata.version`。
 - 既有 DB 必須有有效 `schema_metadata.version`；缺失、無效或高於目前 app 支援版本時 fail fast。
 - 目前自動 migration 支援下限是 v35，也就是 v0.5.3 的 DB 版本；v35
   以前的歷史 DB 不再支援自動升級。
@@ -298,8 +306,8 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   schema/table counts、invariant summary 與 privacy-safe cover image host histogram。
 - Facebook temporary-block diagnostics 只輸出 warning 是否有效、generation、時間與
   bounded source／operation／action；不得輸出 raw target、profile、session、token、
-  evidence、URL 或路徑。歷史 marker／probe 字串只可留在 log redaction sanitizer，
-  不得投影成現行 runtime 功能。
+  evidence、URL 或路徑。歷史 marker／probe log 只按一般 freeform redaction 處理，
+  不保留專用 parser 或 structured projection，也不得投影成現行 runtime 功能。
 - cover image host 診斷只輸出 hostname / suffix / reject reason counts，不輸出完整
   URL、path、query、target id 或 target 名稱。
 - 產生時先寫同目錄 temp zip，best-effort 設定 private file permission，成功後才
@@ -349,6 +357,9 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - dashboard / target card / hit records read model 需要對 inactive 或 paused
   的 corrupt row 有韌性：不應讓單一壞列拖垮整頁或其他 target；
   active fatal invariant 仍應回報阻擋或 degraded 狀態。
+- 日常 Web read 的 invariant 檢查只涵蓋該次實際載入的 target、card、sidebar、
+  scan/latest/preview page 與關聯資料；首頁警告只代表目前畫面讀取範圍，不代表全庫
+  健康。管理腳本與 support bundle 的 database health 仍執行完整資料庫 audit。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
 
@@ -373,13 +384,16 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - comments target 不是 posts 換 selector；必須保留 comment-specific extractor、
   canonicalization、cleanup、sort、nested scroll/load-more、dedupe、
   latest scan/history/notification persistence。
-- 正式 resident 與 sync resident fallback 的 comments page preparation 沿用 canonical
-  direct URL；首次進入使用 `goto`，同 route 後續掃描使用 `reload`。temporary-block
+- 正式 async resident 的 comments page preparation 沿用 canonical direct URL；首次進入
+  使用 `goto`，同 route 後續掃描使用 `reload`。temporary-block
   detector 需在 sort、load-more、extractor 與後續 action 前再次檢查並觸發全停。
-- One-shot 維持 posts-only fallback；不得為 comments 建立看似可用但實際不執行的
+- Single-target one-shot debug 維持 posts-only；不得為 comments 建立看似可用但實際不執行的
   failure shell。
 - comments 與 posts 使用相同 refresh policy；不得因 temporary-block 警告額外套用
   refresh floor 或改寫使用者設定。
+- 正式 comments load-more 的單一 owner 由 queue、runtime 與 page ownership 保護，
+  不再使用 page-global guard 或產生新的 guard artifact；歷史 scan rows 的
+  `comment_load_more_guard_active` reason 仍保留 reader、label 與 redaction 相容。
 - posts/comments 可共用純文字片段處理，但 selector、permalink、sort、load-more 與 target scope 不硬合併。
 - Python resident main worker 目前是 polling；`facebook/comment_mutations.py` 只刻意保留
   可測的 DOM mutation relevance helper，尚無 runtime caller 或長駐 MutationObserver，
@@ -391,7 +405,6 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 
 - `loadMoreMode=wheel`
 - `phase_offset_sec`
-- one-shot scheduler queue 化
 - comments mutation-triggered wake-up：現有 relevance helper 可作為未來討論起點；
   正式實作前必須另行確認 observer install/reinstall 生命週期、debounce、
   page/queue ownership、與 polling 的去重及 fallback、stop/runtime rebuild cleanup、

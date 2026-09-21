@@ -1,4 +1,4 @@
-"""Facebook access circuit schema v40 tests。"""
+"""Facebook access legacy schema migration 與 v46 移除契約測試。"""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import sqlite3
 
 import pytest
 
-from facebook_monitor.persistence.current_schema import create_current_schema
 from facebook_monitor.persistence.migrations import migrate_39_to_40
 from facebook_monitor.persistence.migrations import migrate_41_to_42
 from facebook_monitor.persistence.migrations import migrate_42_to_43
+from facebook_monitor.persistence.migrations import migrate_43_to_44
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.persistence.schema import SCHEMA_VERSION
@@ -42,30 +42,19 @@ def test_v39_to_v40_migration_function_is_idempotent(tmp_path: Path) -> None:
             ("requested_target_id", "targets", "SET NULL"),
             ("trigger_target_id", "targets", "SET NULL"),
         }
-        migrated_sql = {
-            table_name: _normalized_sql(table_sql(connection, table_name))
-            for table_name in (
-                "facebook_access_circuit_state",
-                "facebook_access_circuit_events",
-            )
-        }
+        state_sql = _normalized_sql(
+            table_sql(connection, "facebook_access_circuit_state")
+        )
+        events_sql = _normalized_sql(
+            table_sql(connection, "facebook_access_circuit_events")
+        )
 
-    expected = sqlite3.connect(":memory:")
-    expected.row_factory = sqlite3.Row
-    try:
-        create_current_schema(expected)
-        expected_sql = {
-            table_name: _normalized_sql(table_sql(expected, table_name))
-            for table_name in migrated_sql
-        }
-    finally:
-        expected.close()
-
-    assert migrated_sql == expected_sql
+    assert "check(statein('closed','open','half_open'))" in state_sql
+    assert "referencesfacebook_access_circuit_state" in events_sql
 
 
-def test_v39_schema_migrates_through_v45_and_rerun_is_safe(tmp_path: Path) -> None:
-    """v39 依序建立 legacy state與最小 warning truth且可重跑。"""
+def test_v39_schema_migrates_through_v46_and_rerun_is_safe(tmp_path: Path) -> None:
+    """v39 依序完成歷史 migration，v46 移除退役表且可安全重跑。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
@@ -104,22 +93,24 @@ def test_v39_schema_migrates_through_v45_and_rerun_is_safe(tmp_path: Path) -> No
         }
 
         assert version == str(SCHEMA_VERSION)
-        assert SCHEMA_VERSION == 45
+        assert SCHEMA_VERSION == 46
         assert table_exists(connection, "facebook_temporary_block_warning")
-        assert table_exists(connection, "managed_profile_identity_binding")
-        assert table_exists(connection, "facebook_session_recovery_state")
-        assert table_exists(connection, "facebook_automation_pacing_state")
-        assert table_exists(connection, "facebook_access_circuit_state")
-        assert table_exists(connection, "facebook_access_circuit_events")
-        assert "idx_facebook_access_events_profile_occurred" in indexes
-        assert "idx_facebook_access_events_episode" in indexes
-        inert_tables = {
+        retired_tables = {
             "facebook_access_circuit_state",
             "facebook_access_circuit_events",
+            "facebook_automation_pacing_state",
             "managed_profile_identity_binding",
             "facebook_session_recovery_state",
         }
-        assert not {table for table, _name in dashboard_triggers} & inert_tables
+        assert not {
+            table_name for table_name in retired_tables if table_exists(connection, table_name)
+        }
+        assert not {
+            "idx_facebook_access_events_profile_occurred",
+            "idx_facebook_access_events_episode",
+            "idx_facebook_session_recovery_status_lease",
+        } & indexes
+        assert not {table for table, _name in dashboard_triggers} & retired_tables
 
 
 def test_v43_to_v44_converts_temporary_block_lock_to_warning(tmp_path: Path) -> None:
@@ -127,6 +118,9 @@ def test_v43_to_v44_converts_temporary_block_lock_to_warning(tmp_path: Path) -> 
 
     db_path = tmp_path / "temporary-block-migration.db"
     with SqliteApplicationContext(db_path) as app:
+        migrate_39_to_40(app.repositories.targets.connection)
+        migrate_41_to_42(app.repositories.targets.connection)
+        migrate_42_to_43(app.repositories.targets.connection)
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="migration-group",
@@ -183,14 +177,6 @@ def test_v43_to_v44_converts_temporary_block_lock_to_warning(tmp_path: Path) -> 
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
         initialize_schema(connection)
-        state = connection.execute(
-            """
-            SELECT state, generation, reason_code, cooldown_until,
-                   recovery_recipe_kind, probe_request_id, half_open_token
-            FROM facebook_access_circuit_state
-            WHERE profile_scope_key = 'migration-profile'
-            """
-        ).fetchone()
         migrated_target = connection.execute(
             "SELECT paused FROM targets WHERE id = ?",
             (target.id,),
@@ -213,31 +199,12 @@ def test_v43_to_v44_converts_temporary_block_lock_to_warning(tmp_path: Path) -> 
             """,
             (paused_target.id,),
         ).fetchone()
-        events = connection.execute(
-            """
-            SELECT event_kind, from_state, to_state
-            FROM facebook_access_circuit_events
-            WHERE profile_scope_key = 'migration-profile'
-            ORDER BY id
-            """
-        ).fetchall()
-
         warning = connection.execute(
             "SELECT * FROM facebook_temporary_block_warning WHERE id = 1"
         ).fetchone()
         assert connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'version'"
-        ).fetchone()["value"] == "45"
-        assert state is not None
-        assert dict(state) == {
-            "state": "closed",
-            "generation": 2,
-            "reason_code": "facebook_temporary_block",
-            "cooldown_until": "2026-09-20T14:00:00.000Z",
-            "recovery_recipe_kind": "",
-            "probe_request_id": "",
-            "half_open_token": "",
-        }
+        ).fetchone()["value"] == "46"
         assert migrated_target is not None
         assert int(migrated_target["paused"]) == 1
         assert runtime is not None
@@ -257,11 +224,12 @@ def test_v43_to_v44_converts_temporary_block_lock_to_warning(tmp_path: Path) -> 
             "consecutive_failure_count": 3,
             "updated_at": "2026-09-19T23:00:00+00:00",
         }
-        assert [tuple(row) for row in events] == [("closed", "open", "closed")]
         assert warning is not None
         assert warning["generation"] == 3
         assert warning["detected_at"] == "2026-09-20T02:00:00+00:00"
         assert warning["warning_until"] == "2026-09-20T14:00:00+00:00"
+        assert not table_exists(connection, "facebook_access_circuit_state")
+        assert not table_exists(connection, "facebook_access_circuit_events")
 
 
 def test_v43_to_v44_preserves_ambiguous_blocked_session_hold(tmp_path: Path) -> None:
@@ -269,6 +237,9 @@ def test_v43_to_v44_preserves_ambiguous_blocked_session_hold(tmp_path: Path) -> 
 
     db_path = tmp_path / "blocked-session-migration.db"
     with SqliteApplicationContext(db_path) as app:
+        migrate_39_to_40(app.repositories.targets.connection)
+        migrate_41_to_42(app.repositories.targets.connection)
+        migrate_42_to_43(app.repositories.targets.connection)
         app.repositories.targets.connection.execute(
             """
             INSERT INTO facebook_session_recovery_state (
@@ -286,14 +257,8 @@ def test_v43_to_v44_preserves_ambiguous_blocked_session_hold(tmp_path: Path) -> 
                 "2026-09-20T02:00:00+00:00",
             ),
         )
-        app.repositories.targets.connection.execute(
-            "UPDATE schema_metadata SET value = '43' WHERE key = 'version'"
-        )
-
-    with SqliteConnection(db_path) as sqlite:
-        connection = sqlite.require_connection()
-        initialize_schema(connection)
-        state = connection.execute(
+        migrate_43_to_44(app.repositories.targets.connection)
+        state = app.repositories.targets.connection.execute(
             """
             SELECT generation, status, last_probe_result, recovered_at
             FROM facebook_session_recovery_state
@@ -310,10 +275,10 @@ def test_v43_to_v44_preserves_ambiguous_blocked_session_hold(tmp_path: Path) -> 
     }
 
 
-def test_v41_to_v42_identity_binding_migration_matches_current_schema(
+def test_v41_to_v42_identity_binding_migration_remains_idempotent(
     tmp_path: Path,
 ) -> None:
-    """Identity binding migration 可重跑，且 DDL 與 current schema 一致。"""
+    """已發布的 identity binding migration 仍可獨立重跑。"""
 
     db_path = tmp_path / "identity-migration.db"
     with SqliteConnection(db_path) as sqlite:
@@ -323,24 +288,13 @@ def test_v41_to_v42_identity_binding_migration_matches_current_schema(
         migrated_sql = _normalized_sql(
             table_sql(connection, "managed_profile_identity_binding")
         )
-
-    expected = sqlite3.connect(":memory:")
-    expected.row_factory = sqlite3.Row
-    try:
-        create_current_schema(expected)
-        expected_sql = _normalized_sql(
-            table_sql(expected, "managed_profile_identity_binding")
-        )
-    finally:
-        expected.close()
-
-    assert migrated_sql == expected_sql
+    assert "check(length(marker_uuid)=36)" in migrated_sql
 
 
-def test_v42_to_v43_session_recovery_migration_matches_current_schema(
+def test_v42_to_v43_session_recovery_migration_remains_idempotent(
     tmp_path: Path,
 ) -> None:
-    """Legacy v43 recovery DDL 可重跑，且與 current schema 保持一致。"""
+    """已發布的 session recovery migration 仍可獨立重跑。"""
 
     db_path = tmp_path / "session-recovery-migration.db"
     with SqliteConnection(db_path) as sqlite:
@@ -358,21 +312,11 @@ def test_v42_to_v43_session_recovery_migration_matches_current_schema(
             ).fetchall()
         }
 
-    expected = sqlite3.connect(":memory:")
-    expected.row_factory = sqlite3.Row
-    try:
-        create_current_schema(expected)
-        expected_sql = _normalized_sql(
-            table_sql(expected, "facebook_session_recovery_state")
-        )
-    finally:
-        expected.close()
-
-    assert migrated_sql == expected_sql
+    assert "check(generation>=1)" in migrated_sql
     assert "idx_facebook_session_recovery_status_lease" in indexes
 
 
-def test_session_recovery_schema_rejects_incomplete_probe_owner(
+def test_legacy_session_recovery_schema_rejects_incomplete_probe_owner(
     tmp_path: Path,
 ) -> None:
     """Legacy probing row 缺 request/token/lease 時仍由 DDL 拒絕。"""
@@ -380,7 +324,8 @@ def test_session_recovery_schema_rejects_incomplete_probe_owner(
     db_path = tmp_path / "session-recovery-check.db"
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
-        initialize_schema(connection)
+        connection.execute("CREATE TABLE targets (id TEXT PRIMARY KEY)")
+        migrate_42_to_43(connection)
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
@@ -399,13 +344,14 @@ def test_session_recovery_schema_rejects_incomplete_probe_owner(
             )
 
 
-def test_circuit_schema_enforces_cross_field_checks(tmp_path: Path) -> None:
-    """Half-open owner、open episode 與 pending request 必須符合 cross-field 契約。"""
+def test_legacy_circuit_schema_enforces_cross_field_checks(tmp_path: Path) -> None:
+    """已發布的 circuit migration 仍保留 cross-field 契約。"""
 
     db_path = tmp_path / "app.db"
     with SqliteConnection(db_path) as sqlite:
         connection = sqlite.require_connection()
-        initialize_schema(connection)
+        connection.execute("CREATE TABLE targets (id TEXT PRIMARY KEY)")
+        migrate_39_to_40(connection)
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(

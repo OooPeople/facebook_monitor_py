@@ -19,17 +19,6 @@ from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 
 
-_INERT_COMPATIBILITY_TABLES = frozenset(
-    {
-        "facebook_access_circuit_state",
-        "facebook_access_circuit_events",
-        "facebook_automation_pacing_state",
-        "managed_profile_identity_binding",
-        "facebook_session_recovery_state",
-    }
-)
-
-
 @dataclass(frozen=True)
 class DatabaseInvariantViolation:
     """描述一筆資料 invariant 違反。"""
@@ -64,8 +53,6 @@ def validate_database_invariants(
 def _enum_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
     violations: list[DatabaseInvariantViolation] = []
     for contract in ENUM_CONTRACTS:
-        if contract.table in _INERT_COMPATIBILITY_TABLES:
-            continue
         allowed = tuple(sorted(contract.allowed_values))
         allowed_placeholders = ",".join("?" for _ in allowed)
         rows = connection.execute(
@@ -113,8 +100,6 @@ def _boolean_violations(connection: sqlite3.Connection) -> list[DatabaseInvarian
 def _range_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
     violations: list[DatabaseInvariantViolation] = []
     for contract in RANGE_CONTRACTS:
-        if contract.table in _INERT_COMPATIBILITY_TABLES:
-            continue
         rows = connection.execute(
             (
                 f"SELECT {contract.row_id_column} AS row_id "
@@ -137,8 +122,6 @@ def _range_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantV
 def _datetime_violations(connection: sqlite3.Connection) -> list[DatabaseInvariantViolation]:
     violations: list[DatabaseInvariantViolation] = []
     for contract in DATETIME_CONTRACTS:
-        if contract.table in _INERT_COMPATIBILITY_TABLES:
-            continue
         fields = ", ".join(contract.fields)
         rows = connection.execute(
             f"SELECT {contract.row_id_column} AS row_id, {fields} FROM {contract.table}"

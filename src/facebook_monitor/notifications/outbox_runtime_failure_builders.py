@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from facebook_monitor.core.models import ItemKind
+from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationEventKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
@@ -10,9 +11,11 @@ from facebook_monitor.notifications.channel_plan import build_enabled_channel_pl
 from facebook_monitor.notifications.desktop_format import (
     build_runtime_failure_compact_notification_message,
 )
+from facebook_monitor.notifications.discord_format import normalize_discord_single_line
 from facebook_monitor.notifications.outbox_entry_builders import (
     NotificationOutboxChannelPayload,
 )
+from facebook_monitor.notifications.payload import normalize_notification_single_line
 from facebook_monitor.notifications.runtime_failure_message_builders import (
     build_runtime_failure_notification_message,
 )
@@ -49,15 +52,21 @@ def build_runtime_failure_channel_payloads(
     """依 target config 建立 terminal runtime failure 的 channel payloads。"""
 
     normalized_count = normalize_runtime_failure_count(failure_count)
-    title, message = build_runtime_failure_notification_message(
-        target=target,
-        reason=normalized_reason,
-        failure_count=normalized_count,
-        error_message=error_message,
-        target_stopped=target_stopped,
-    )
     payloads: list[NotificationOutboxChannelPayload] = []
     for plan in build_enabled_channel_plans(config):
+        target_name_normalizer = (
+            normalize_discord_single_line
+            if plan.channel == NotificationChannel.DISCORD
+            else normalize_notification_single_line
+        )
+        title, message = build_runtime_failure_notification_message(
+            target=target,
+            reason=normalized_reason,
+            failure_count=normalized_count,
+            error_message=error_message,
+            target_stopped=target_stopped,
+            target_name_normalizer=target_name_normalizer,
+        )
         payloads.append(
             NotificationOutboxChannelPayload(
                 channel=plan.channel,

@@ -42,19 +42,6 @@ _PAGE_GUARD_URL_KINDS: Final = frozenset(
         "unknown",
     }
 )
-_FALLBACK_GUARD_KEYS: Final = frozenset(
-    {
-        "detector",
-        "detector_version",
-        "classification",
-        "fallback_mode",
-        "target_kind",
-        "browser_work_started",
-    }
-)
-_FALLBACK_MODES: Final = frozenset({"one_shot", "sync_resident_fallback"})
-
-
 class WorkerFailureDiagnostics(ABC):
     """可附加到 WorkerFailure 的封閉 diagnostics DTO base。"""
 
@@ -97,8 +84,6 @@ def validate_serialized_worker_failure_diagnostics(
     """重新驗證 DB/UI 邊界讀到的 diagnostics mapping。"""
 
     payload = _validate_page_guard_payload(value)
-    if payload is None:
-        payload = _validate_fallback_guard_payload(value)
     if payload is None:
         return None
     serialized = json.dumps(
@@ -164,44 +149,6 @@ def _validate_page_guard_payload(
             "stable_observation_count": stable_count,
             "body_text_length": body_text_length,
             "url_kind": url_kind,
-        }
-    }
-
-
-def _validate_fallback_guard_payload(
-    value: object,
-) -> dict[str, object] | None:
-    """驗證 fallback capability guard 的固定 diagnostics variant。"""
-
-    if not isinstance(value, Mapping) or set(value) != {"fallback_guard"}:
-        return None
-    fallback_guard = value.get("fallback_guard")
-    if not isinstance(fallback_guard, Mapping):
-        return None
-    if set(fallback_guard) != _FALLBACK_GUARD_KEYS:
-        return None
-    detector_version = fallback_guard.get("detector_version")
-    fallback_mode = fallback_guard.get("fallback_mode")
-    if fallback_guard.get("detector") != "fallback_capability_guard":
-        return None
-    if not _is_bounded_int(detector_version, minimum=1, maximum=1000):
-        return None
-    if fallback_guard.get("classification") != "unsupported_in_fallback":
-        return None
-    if fallback_mode not in _FALLBACK_MODES:
-        return None
-    if fallback_guard.get("target_kind") != "comments":
-        return None
-    if fallback_guard.get("browser_work_started") is not False:
-        return None
-    return {
-        "fallback_guard": {
-            "detector": "fallback_capability_guard",
-            "detector_version": detector_version,
-            "classification": "unsupported_in_fallback",
-            "fallback_mode": fallback_mode,
-            "target_kind": "comments",
-            "browser_work_started": False,
         }
     }
 

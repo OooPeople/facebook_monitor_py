@@ -1,7 +1,7 @@
 """Target runtime recovery helpers。
 
-職責：提供正式 resident main 與 one-shot fallback scheduler 共用的 runtime state
-修復規則，避免正式 worker 從 fallback scheduler loop 匯入 helper。
+職責：提供正式 resident main 的 runtime state 修復規則，避免 process 中斷留下
+running / queued 狀態而永久卡住。
 """
 
 from __future__ import annotations

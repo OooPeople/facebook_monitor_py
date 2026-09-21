@@ -49,7 +49,7 @@ def build_database_invariant_warning(
         violation_count=len(violations),
         tables=tables,
         message=(
-            f"資料庫偵測到 {len(violations)} 個資料 invariant 異常{extra}。"
+            f"目前畫面讀取範圍偵測到 {len(violations)} 個資料 invariant 異常{extra}。"
             "請到設定下載支援包或執行資料檢查工具；系統不會自動修復資料。"
         ),
     )

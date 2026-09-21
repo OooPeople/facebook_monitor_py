@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -183,12 +184,15 @@ def test_missing_browser_executable_path_fails_explicitly(tmp_path: Path) -> Non
 
 
 def test_unsupported_browser_mode_fails_explicitly(tmp_path: Path) -> None:
-    """Chrome/Edge/custom 只預留介面，尚未偽裝成已支援。"""
+    """Raw unsupported mode 不因 enum 精簡而繞過明確錯誤。"""
 
     options = BrowserRuntimeOptions(
         profile_dir=tmp_path / "profile",
-        mode=BrowserMode.CHROME,
+        mode=cast(BrowserMode, "chrome"),
     )
 
-    with pytest.raises(BrowserRuntimeError):
+    with pytest.raises(
+        BrowserRuntimeError,
+        match="Only browser_mode=playwright_chromium is supported",
+    ):
         build_persistent_context_kwargs(options)

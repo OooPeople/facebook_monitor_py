@@ -1,7 +1,7 @@
 """Shared scan orchestration helpers。
 
 職責：集中 posts/comments pipeline 共用的頁面 guard 與 scan policy 計算。
-正式產品主路徑仍是 async resident；sync path 只作 fallback/debug。
+正式產品主路徑仍是 async resident；sync page guard 只供 debug 與建立 target 工具使用。
 """
 
 from __future__ import annotations

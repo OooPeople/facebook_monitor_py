@@ -92,7 +92,8 @@ review resident worker / scan commit state machine 時，需區分長期防禦�
   started_at mismatch guard、scanner result target identity validation、
   cleanup resource ownership、SQLite retry / stale recovery、notification outbox
   idempotency、support bundle redaction。
-- 過渡相容邊界：sync / one-shot finalizing scanner summary、尚未遷移為 commit-ready result 的 debug / fallback path。
+- 過渡相容邊界：single-target one-shot finalizing scanner summary、尚未遷移為
+  commit-ready result 的 debug path。
 
 正式 async resident path 不應為過渡相容保留 catch-all result fallback；scanner 應產生
 commit-ready result，既有 `ScanCommitGuard` 與 target runtime owner 必須持續保護

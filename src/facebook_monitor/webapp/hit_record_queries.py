@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 from facebook_monitor.core.defaults import PYTHON_WEBUI_RUNTIME_DEFAULTS
-from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
@@ -21,6 +20,9 @@ from facebook_monitor.webapp.read_model_invariants import has_target_or_runtime_
 from facebook_monitor.webapp.read_model_invariants import inactive_invariant_target_ids
 from facebook_monitor.webapp.read_model_invariants import read_mapper_value
 from facebook_monitor.webapp.read_model_invariants import ReadModelInvariantMapperError
+from facebook_monitor.webapp.read_scope_invariants import validate_hit_record_page_scope
+from facebook_monitor.webapp.read_scope_invariants import validate_notification_event_scope
+from facebook_monitor.webapp.read_scope_invariants import validate_target_identity_scope
 
 
 def target_exists(db_path: Path, target_id: str) -> bool:
@@ -28,8 +30,9 @@ def target_exists(db_path: Path, target_id: str) -> bool:
 
     try:
         with read_application_context(db_path) as app_context:
-            violations = validate_database_invariants(
-                app_context.repositories.targets.connection
+            violations = validate_target_identity_scope(
+                app_context.repositories.targets.connection,
+                target_id,
             )
             if target_id in inactive_invariant_target_ids(
                 app_context.repositories.targets.connection,
@@ -64,8 +67,11 @@ def list_hit_record_preview_rows(
 
     try:
         with read_application_context(db_path) as app_context:
-            violations = validate_database_invariants(
-                app_context.repositories.targets.connection
+            violations = validate_hit_record_page_scope(
+                app_context.repositories.targets.connection,
+                target_id,
+                limit=limit,
+                recorded_since=session_started_at,
             )
             return tuple(
                 HitRecordPreviewRow(entry=entry)
@@ -98,8 +104,11 @@ def list_full_hit_record_rows(
     bounded_offset = max(int(offset), 0)
     try:
         with read_application_context(db_path) as app_context:
-            violations = validate_database_invariants(
-                app_context.repositories.targets.connection
+            violations = validate_hit_record_page_scope(
+                app_context.repositories.targets.connection,
+                target_id,
+                limit=limit,
+                offset=bounded_offset,
             )
             entries = read_mapper_value(
                 lambda: app_context.repositories.match_history.list_by_target(
@@ -110,6 +119,11 @@ def list_full_hit_record_rows(
                 tables=("match_history",),
                 violations=violations,
             )
+            event_violations = validate_notification_event_scope(
+                app_context.repositories.targets.connection,
+                target_id,
+                item_keys=(entry.item_key for entry in entries),
+            )
             notification_events = read_mapper_value(
                 lambda: (
                     app_context.repositories.notification_events
@@ -119,7 +133,7 @@ def list_full_hit_record_rows(
                     )
                 ),
                 tables=("notification_events",),
-                violations=violations,
+                violations=event_violations,
             )
     except sqlite3.OperationalError as exc:
         raise_dashboard_read_unavailable_if_locked(exc)
@@ -146,11 +160,12 @@ def count_hit_records(
 
     try:
         with read_application_context(db_path) as app_context:
-            _raise_if_hit_record_count_is_invariant_unsafe(
-                app_context.repositories.match_history.connection,
-                target_id=target_id,
-                recorded_since=session_started_at,
-            )
+            if session_started_at is not None:
+                _raise_if_hit_record_count_is_invariant_unsafe(
+                    app_context.repositories.match_history.connection,
+                    target_id=target_id,
+                    recorded_since=session_started_at,
+                )
             return app_context.repositories.match_history.count_by_target(
                 target_id,
                 recorded_since=session_started_at,
@@ -168,36 +183,32 @@ def _raise_if_hit_record_count_is_invariant_unsafe(
 ) -> None:
     """確認 count 查詢範圍內沒有會讓 hit-record mapper 失敗的 datetime。"""
 
+    recorded_since_filter = ""
+    params: list[object] = [target_id]
+    if recorded_since is not None:
+        recorded_since_filter = "AND recorded_at >= ?"
+        params.append(encode_datetime(recorded_since))
     rows = connection.execute(
-        """
+        f"""
         SELECT id, recorded_at, created_at
         FROM match_history
         WHERE target_id = ?
+          {recorded_since_filter}
         """,
-        (target_id,),
+        tuple(params),
     ).fetchall()
-    since_text = encode_datetime(recorded_since)
     for row in rows:
-        if _hit_record_datetime_row_blocks_count(row, since_text=since_text):
+        if _hit_record_datetime_row_blocks_count(row):
             raise DashboardReadUnavailable("database invariant violation")
 
 
 def _hit_record_datetime_row_blocks_count(
     row: sqlite3.Row,
-    *,
-    since_text: str,
 ) -> bool:
     """回傳單筆 match_history datetime 是否會讓對應 read model 不可讀。"""
 
     recorded_at = str(row["recorded_at"] or "")
-    if since_text:
-        if not recorded_at:
-            return False
-        if not _is_valid_datetime_text(recorded_at):
-            return True
-        if recorded_at < since_text:
-            return False
-    elif recorded_at and not _is_valid_datetime_text(recorded_at):
+    if recorded_at and not _is_valid_datetime_text(recorded_at):
         return True
     created_at = str(row["created_at"] or "")
     return not created_at or not _is_valid_datetime_text(created_at)

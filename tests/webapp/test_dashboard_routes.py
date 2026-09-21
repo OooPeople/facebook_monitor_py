@@ -21,9 +21,11 @@ from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
+from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
+from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.webapp.dashboard_queries import get_dashboard_view
 from facebook_monitor.webapp.assets import ASSET_VERSION
 from tests.helpers.webapp import FakeSchedulerManager
@@ -86,7 +88,7 @@ def test_index_and_partial_payload_show_database_invariant_warning(
 
     assert index_response.status_code == 200
     assert "異常測試社團" in index_response.text
-    assert "資料庫偵測到 1 個資料 invariant 異常" in index_response.text
+    assert "目前畫面讀取範圍偵測到 1 個資料 invariant 異常" in index_response.text
     assert "設定下載支援包" in index_response.text
     payload = cards_response.json()
     warning = payload["database_invariant_warning"]
@@ -126,7 +128,7 @@ def test_database_invariant_warning_degrades_mapper_breaking_rows_without_ids(
     cards_response = client.get("/api/dashboard-cards")
 
     assert index_response.status_code == 200
-    assert "資料庫偵測到 1 個資料 invariant 異常" in index_response.text
+    assert "目前畫面讀取範圍偵測到 1 個資料 invariant 異常" in index_response.text
     assert "資料暫時無法載入" in index_response.text
     assert "目前沒有 target" not in index_response.text
     payload = cards_response.json()
@@ -355,6 +357,288 @@ def test_database_invariant_warning_degrades_corrupt_outbox_summary_datetime(
     assert cards_payload["database_invariant_warning"]["tables"] == ["notification_outbox"]
     assert cards_payload["cards"] == []
     assert card_response.status_code == 503
+
+
+def test_dashboard_scope_ignores_unloaded_history_but_full_audit_reports_it(
+    tmp_path: Path,
+) -> None:
+    """Dashboard 只驗 preview rows；全庫 audit 仍可抓到較舊壞 history。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="scoped-dashboard-history",
+                canonical_url="https://www.facebook.com/groups/scoped-dashboard-history",
+                group_name="dashboard scope 測試",
+            )
+        )
+    app = create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    with SqliteApplicationContext(db_path) as app_context:
+        for index in range(6):
+            recorded_at = app.state.session_started_at + timedelta(seconds=index + 1)
+            app_context.repositories.match_history.add(
+                MatchHistoryEntry(
+                    target_id=target.id,
+                    group_id=target.group_id,
+                    group_name=target.group_name,
+                    item_kind=ItemKind.POST,
+                    item_key=f"dashboard-scope-{index}",
+                    text=f"scope item {index}",
+                    include_rule="scope",
+                    recorded_at=recorded_at,
+                    created_at=recorded_at,
+                )
+            )
+        app_context.repositories.match_history.connection.execute(
+            "UPDATE match_history SET created_at = ? WHERE item_key = ?",
+            ("not-a-datetime", "dashboard-scope-0"),
+        )
+        violations = validate_database_invariants(
+            app_context.repositories.match_history.connection
+        )
+
+    response = TestClient(app).get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dashboard_degraded"] is False
+    assert payload["database_invariant_warning"]["has_violations"] is False
+    assert payload["cards"][0]["hit_record_total_count"] == 6
+    assert any(
+        violation.table == "match_history" and violation.field == "created_at"
+        for violation in violations
+    )
+
+
+def test_dashboard_scope_ignores_unused_terminal_outbox_datetimes(
+    tmp_path: Path,
+) -> None:
+    """Outbox summary 不映射 terminal datetime，scope warning 也不得宣稱已驗該欄位。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="terminal-outbox-scope",
+                canonical_url="https://www.facebook.com/groups/terminal-outbox-scope",
+                group_name="terminal outbox scope",
+            )
+        )
+        app_context.repositories.notification_outbox.enqueue(
+            NotificationOutboxEntry(
+                idempotency_key=f"{target.id}:terminal:desktop",
+                target_id=target.id,
+                item_key="terminal",
+                item_kind=ItemKind.POST,
+                channel=NotificationChannel.DESKTOP,
+                title="title",
+                message="message",
+            )
+        )
+        connection = app_context.repositories.notification_outbox.connection
+        connection.execute(
+            """
+            UPDATE notification_outbox
+            SET status = 'sent', created_at = ?, updated_at = ?
+            WHERE target_id = ?
+            """,
+            ("bad-terminal-created", "bad-terminal-updated", target.id),
+        )
+        violations = validate_database_invariants(connection)
+
+    response = TestClient(
+        create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    ).get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dashboard_degraded"] is False
+    assert payload["database_invariant_warning"]["has_violations"] is False
+    assert any(
+        violation.table == "notification_outbox"
+        and violation.field in {"created_at", "updated_at"}
+        for violation in violations
+    )
+
+
+def test_target_card_scope_ignores_other_target_corruption(tmp_path: Path) -> None:
+    """單卡 read 不掃描其他 target 的 latest rows。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        current = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="current-card-scope",
+                canonical_url="https://www.facebook.com/groups/current-card-scope",
+                group_name="目前單卡",
+            )
+        )
+        other = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="other-card-scope",
+                canonical_url="https://www.facebook.com/groups/other-card-scope",
+                group_name="其他單卡",
+            )
+        )
+        app_context.repositories.latest_scan_items.replace_for_target(
+            other.id,
+            [
+                LatestScanItem(
+                    target_id=other.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="other-bad-latest",
+                    item_index=0,
+                    text="其他 target 壞資料",
+                )
+            ],
+        )
+        app_context.repositories.latest_scan_items.connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE target_id = ?",
+            ("not-a-datetime", other.id),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    response = client.get(f"/api/targets/{current.id}/card")
+
+    assert response.status_code == 200
+    assert response.json()["target_id"] == current.id
+
+
+def test_target_card_scope_matches_negative_latest_item_limit(tmp_path: Path) -> None:
+    """污染的負 LIMIT 會讓 repository 讀全部 rows，validator 必須驗同一批。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="negative-card-limit",
+                canonical_url="https://www.facebook.com/groups/negative-card-limit",
+                group_name="negative card limit",
+            )
+        )
+        connection = app_context.repositories.latest_scan_items.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_configs SET max_items_per_scan = -1 WHERE target_id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key=f"negative-limit-{index}",
+                    item_index=index,
+                    text=f"item {index}",
+                )
+                for index in range(2)
+            ],
+        )
+        connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE item_key = ?",
+            ("not-a-datetime", "negative-limit-1"),
+        )
+
+    response = TestClient(
+        create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    ).get(f"/api/targets/{target.id}/card")
+
+    assert response.status_code == 503
+
+
+def test_target_card_scope_matches_zero_latest_item_limit(tmp_path: Path) -> None:
+    """LIMIT 0 不載入 latest row，validator 不得反向多驗並造成 503。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="zero-card-limit",
+                canonical_url="https://www.facebook.com/groups/zero-card-limit",
+                group_name="zero card limit",
+            )
+        )
+        connection = app_context.repositories.latest_scan_items.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_configs SET max_items_per_scan = 0 WHERE target_id = ?",
+            (target.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+        app_context.repositories.latest_scan_items.replace_for_target(
+            target.id,
+            [
+                LatestScanItem(
+                    target_id=target.id,
+                    scan_run_id=1,
+                    item_kind=ItemKind.POST,
+                    item_key="zero-limit-corrupt",
+                    item_index=0,
+                    text="not loaded",
+                )
+            ],
+        )
+        connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE target_id = ?",
+            ("not-a-datetime", target.id),
+        )
+
+    response = TestClient(
+        create_app(db_path=db_path, profile_dir=tmp_path / "profile")
+    ).get(f"/api/targets/{target.id}/card")
+
+    assert response.status_code == 200
+    assert "zero-limit-corrupt" not in response.text
+
+
+def test_web_reads_do_not_call_full_database_invariant_audit(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """日常 dashboard/card/hit reads 不得再進 persistence full audit。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="no-full-audit",
+                canonical_url="https://www.facebook.com/groups/no-full-audit",
+                group_name="不跑全庫 audit",
+            )
+        )
+
+    statements: list[str] = []
+    original_enter = SqliteConnection.__enter__
+
+    def traced_enter(connection_manager: SqliteConnection) -> SqliteConnection:
+        entered = original_enter(connection_manager)
+        entered.require_connection().set_trace_callback(statements.append)
+        return entered
+
+    def fail_full_audit(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Web read entered full database invariant audit")
+
+    monkeypatch.setattr(SqliteConnection, "__enter__", traced_enter)
+    monkeypatch.setattr(
+        "facebook_monitor.persistence.invariants.validate_database_invariants",
+        fail_full_audit,
+    )
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    assert client.get("/api/dashboard-cards").status_code == 200
+    assert client.get(f"/api/targets/{target.id}/card").status_code == 200
+    assert client.get(f"/api/targets/{target.id}/hit-records/preview").status_code == 200
+    assert client.get(f"/api/targets/{target.id}/hit-records/count").status_code == 200
+    assert client.get(f"/api/targets/{target.id}/hit-records").status_code == 200
+    normalized_statements = [" ".join(statement.lower().split()) for statement in statements]
+    assert not any(" from seen_items " in statement for statement in normalized_statements)
+    assert not any(" from logical_items " in statement for statement in normalized_statements)
 
 
 def test_target_card_returns_404_for_inactive_corrupt_target_row(

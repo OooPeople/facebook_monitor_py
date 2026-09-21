@@ -33,22 +33,6 @@ SUPPORT_BUNDLE_IDENTIFIER_ASSIGNMENT_RE = re.compile(
 )
 SUPPORT_BUNDLE_WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:\\[^\s\"'<>]+")
 SUPPORT_BUNDLE_POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^/\s\"'<>]+/)+[^\s\"'<>]*")
-_LEGACY_PROBE_FAILURE_STAGES = (
-    "resource_acquire",
-    "browser_launch",
-    "page_create",
-    "navigation",
-    "page_guard",
-    "route_identity",
-    "context_close",
-    "deadline",
-)
-FACEBOOK_PROBE_FAILURE_LOG_RE = re.compile(
-    r"\bfacebook_probe_failure "
-    r"probe=(manual|session_recovery) "
-    r"stage=(" + "|".join(_LEGACY_PROBE_FAILURE_STAGES) + r") "
-    r"reason=([a-z0-9_]{1,80})\b"
-)
 SAFE_METADATA_STRING_KEYS = {
     "classification",
     "detector",
@@ -136,10 +120,8 @@ SAFE_METADATA_STRING_VALUES = {
     "classification": {
         "facebook_page_guard_inconclusive",
         "facebook_temporary_block",
-        "unsupported_in_fallback",
     },
-    "detector": {"facebook_scan_page_guard", "fallback_capability_guard"},
-    "fallbackmode": {"one_shot", "sync_resident_fallback"},
+    "detector": {"facebook_scan_page_guard"},
     "failurediagnosticsstatus": {
         "diagnostics_payload_too_large",
         "diagnostics_serialization_failed",
@@ -753,26 +735,7 @@ def _log_line_summary(
     summary = _freeform_summary(text, aliases=aliases)
     summary["level"] = _log_level_hint(text)
     summary["timestamp_prefix"] = _timestamp_prefix(text)
-    probe_failure = _facebook_probe_failure_log_summary(text)
-    if probe_failure is not None:
-        summary["facebook_probe_failure"] = probe_failure
     return summary
-
-
-def _facebook_probe_failure_log_summary(line: str) -> dict[str, str] | None:
-    """只解析 worker 寫出的固定 recovery probe failure 事件。"""
-
-    match = FACEBOOK_PROBE_FAILURE_LOG_RE.search(str(line or ""))
-    if match is None:
-        return None
-    reason = _safe_reason_code(match.group(3))
-    if not reason:
-        return None
-    return {
-        "probe": match.group(1),
-        "stage": match.group(2),
-        "reason": reason,
-    }
 
 
 def _runtime_diagnostics_text(

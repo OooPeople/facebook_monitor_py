@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
+from pathlib import Path
 import sqlite3
 from typing import Protocol
 from typing import TypeVar
@@ -21,7 +22,6 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeState
-from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
@@ -155,7 +155,6 @@ class ResidentQueueAttemptState:
     acquired_page: bool = False
     owner_key: str = ""
     active_attempt_key: str = ""
-    planner_dispatch_id: str = ""
     commit_guard: ScanCommitGuard | None = None
     facebook_action_kind: FacebookActionKind = FacebookActionKind.UNKNOWN
     facebook_operation_kind: FacebookProductOperationKind = (
@@ -173,7 +172,6 @@ class ResidentQueueAttemptState:
                 active_attempt_key=self.active_attempt_key,
                 page_id=self.page_id,
                 page_acquired=self.acquired_page,
-                planner_dispatch_id=self.planner_dispatch_id,
             ),
         )
 
@@ -250,7 +248,6 @@ async def _load_and_admit_target_attempt(
     await pool._register_active_attempt(target_id, state.owner_key)
     state.active_attempt_key = state.owner_key
     pool.schedule_planner.mark_dispatched(item.due_target)
-    state.planner_dispatch_id = target_id
     logger.info(
         "resident_target_running target_id=%s worker_id=%s page_id=%s "
         "owner_key=%s enqueue_reason=%s enqueued_at=%s due_at=%s "
@@ -448,7 +445,7 @@ async def run_queue_item(
             cleanup_plan = transition.cleanup_plan
             return transition.outcome.to_scan_result()
     except FacebookAutomationRuntimeTripped:
-        return AsyncTargetScanResult(target_id=target_id, skipped=True)
+        raise
     except asyncio.CancelledError as exc:
         if pool.facebook_runtime.signal.is_tripped():
             raise
@@ -628,7 +625,7 @@ async def _finish_attempt_exception_decision(
             kind=decision.outcome_kind,
         )
     if decision.kind == ResidentAttemptExceptionDecisionKind.SCHEDULER_STOPPING_CANCELLATION:
-        return await _record_scheduler_stopping_cancellation(
+        return await _finish_scheduler_stopping_cancellation(
             pool=pool,
             state=state,
         )
@@ -754,33 +751,57 @@ async def _finish_failure_attempt_decision(
     return _with_state_cleanup(state, transition)
 
 
-async def _record_scheduler_stopping_cancellation(
+async def _finish_scheduler_stopping_cancellation(
     *,
     pool: ResidentExecutorAttemptHost,
     state: ResidentQueueAttemptState,
 ) -> ResidentAttemptTerminalTransition:
-    """保留 scheduler stopping guarded failure + re-raise 前的 transition。"""
+    """普通 scheduler shutdown 只以 owner guard 回 idle，不建立 failure scan。"""
 
-    commit_outcome = await commit_failure_request_for_db_async(
-        FailureScanCommitRequest(
-            db_path=pool.options.db_path,
-            target_id=state.target_id,
-            reason=SCHEDULER_STOPPING_REASON,
-            message="resident scheduler is stopping",
-            source="scheduler_cancel",
-            worker_path="resident_main",
-            commit_guard=_require_commit_guard(state),
-            exception_class="CancelledError",
-            page_reused=state.acquired_page and not state.opened,
-        )
+    commit_guard = _require_commit_guard(state)
+
+    idle_state = await pool._run_db_operation_with_retry(
+        "guarded_mark_target_idle_for_scheduler_cancellation",
+        lambda: _guarded_mark_scheduler_cancellation_idle(
+            pool.options.db_path,
+            state.target_id,
+            commit_guard,
+        ),
     )
-    transition = transition_from_scan_commit_outcome(
+    outcome = ResidentAttemptOutcome.skipped(
         target_id=state.target_id,
-        commit_outcome=commit_outcome,
-        opened_page=False,
-        reused_page=False,
+        kind=(
+            ResidentAttemptOutcomeKind.CANCELLED
+            if idle_state is not None
+            else ResidentAttemptOutcomeKind.OWNER_CHANGED
+        ),
+        reason=(
+            "scheduler_cancelled"
+            if idle_state is not None
+            else "scheduler_cancel_owner_changed"
+        ),
+    )
+    transition = transition_from_attempt_outcome(
+        target_id=state.target_id,
+        outcome=outcome,
     )
     return _with_state_cleanup(state, transition)
+
+
+def _guarded_mark_scheduler_cancellation_idle(
+    db_path: Path,
+    target_id: str,
+    commit_guard: ScanCommitGuard,
+) -> TargetRuntimeState | None:
+    """以既有 running owner guard 完成普通 shutdown 的 idle transition。"""
+
+    with SqliteApplicationContext(db_path) as app:
+        return app.services.targets.guarded_mark_target_idle(
+            target_id,
+            worker_id=commit_guard.worker_id,
+            started_at=commit_guard.started_at,
+            page_id=commit_guard.page_id,
+        )
 
 
 async def _discard_failed_attempt_page(

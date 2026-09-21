@@ -20,7 +20,6 @@ from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
 from facebook_monitor.core.scan_failure_policy import ScanFailureDecision
 from facebook_monitor.scheduler.planner import DueTarget
-from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.attempt_cleanup import ResidentAttemptCleanupPlan
 from facebook_monitor.worker.attempt_cleanup import ResidentAttemptResources
 from facebook_monitor.worker.attempt_cleanup import run_resident_attempt_cleanup
@@ -64,7 +63,6 @@ from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
-from tests.worker.resident_main_test_helpers import RecordingSchedulePlanner
 
 
 class _ExceptionDecisionHost:
@@ -90,6 +88,15 @@ class _ExceptionDecisionHost:
         """記錄 runtime restart side effect。"""
 
         self.runtime_restart_requests += 1
+
+    async def _run_db_operation_with_retry(
+        self,
+        _operation_name: str,
+        operation: Any,
+    ) -> Any:
+        """測試中直接執行不需 retry 的同步 DB operation。"""
+
+        return operation()
 
 
 class _RecordingExceptionDecisionPagePool:
@@ -263,7 +270,7 @@ def test_attempt_transition_wraps_existing_terminal_outcome() -> None:
 
 
 def test_cleanup_plan_from_pre_admission_resources_only_completes_queue() -> None:
-    """claim running 前沒有取得 page/planner/active token 時不做多餘 cleanup。"""
+    """claim running 前沒有取得 page/active token 時不做多餘 cleanup。"""
 
     plan = ResidentAttemptCleanupPlan.from_resources(
         target_id="target-1",
@@ -276,7 +283,6 @@ def test_cleanup_plan_from_pre_admission_resources_only_completes_queue() -> Non
     assert plan.complete_queue_item is True
     assert plan.unregister_active_attempt is False
     assert plan.release_page is False
-    assert plan.mark_planner_finished is False
 
 
 def test_cleanup_plan_does_not_release_reserved_but_unacquired_page() -> None:
@@ -297,7 +303,6 @@ def test_cleanup_plan_does_not_release_reserved_but_unacquired_page() -> None:
     assert plan.complete_queue_item is True
     assert plan.unregister_active_attempt is False
     assert plan.release_page is False
-    assert plan.mark_planner_finished is False
 
 
 def test_cleanup_plan_from_full_resources_runs_guarded_cleanup() -> None:
@@ -311,7 +316,6 @@ def test_cleanup_plan_from_full_resources_runs_guarded_cleanup() -> None:
             active_attempt_key="active-owner",
             page_id="page-1",
             page_acquired=True,
-            planner_dispatch_id="target-1",
         ),
     )
 
@@ -321,7 +325,6 @@ def test_cleanup_plan_from_full_resources_runs_guarded_cleanup() -> None:
     assert plan.complete_queue_item is True
     assert plan.unregister_active_attempt is True
     assert plan.release_page is True
-    assert plan.mark_planner_finished is True
 
 
 def test_cleanup_runner_uses_separate_queue_and_active_attempt_guards() -> None:
@@ -345,7 +348,6 @@ def test_cleanup_runner_uses_separate_queue_and_active_attempt_guards() -> None:
         await target_queue.bind_running_owner(target_id, "queue-owner")
 
         page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
-        planner = RecordingSchedulePlanner()
         unregistered: list[tuple[str, str]] = []
 
         class CleanupHost:
@@ -354,7 +356,6 @@ def test_cleanup_runner_uses_separate_queue_and_active_attempt_guards() -> None:
             def __init__(self) -> None:
                 self.page_pool: AsyncResidentPagePool = page_pool
                 self.target_queue: TargetQueue = target_queue
-                self.schedule_planner: TargetSchedulePlanner = planner
 
             async def _unregister_active_attempt(
                 self,
@@ -756,7 +757,6 @@ def test_finish_attempt_exception_decision_record_failure_pre_admission(
         acquired_page=True,
         owner_key="owner-a",
         active_attempt_key="attempt-a",
-        planner_dispatch_id="dispatch-a",
     )
     decision = ResidentAttemptExceptionDecision.record_failure(
         ResidentFailureRecordDecision(
@@ -829,7 +829,6 @@ def test_finish_attempt_exception_decision_record_failure_guarded_commit(
         acquired_page=True,
         owner_key="owner-a",
         active_attempt_key="attempt-a",
-        planner_dispatch_id="dispatch-a",
         commit_guard=guard,
     )
     record = ResidentFailureRecordDecision(
@@ -896,26 +895,26 @@ def test_finish_attempt_exception_decision_sqlite_lock_retry_uses_side_effect_ad
     assert host.sqlite_lock_retries == [("target-1", guard)]
 
 
-def test_finish_attempt_exception_decision_scheduler_cancel_commits_guarded_failure(
+def test_finish_attempt_exception_decision_scheduler_cancel_uses_guarded_idle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """scheduler stopping branch 應接到 guarded failure commit 並回傳 cleanup plan。"""
+    """scheduler stopping branch 應只 guarded 回 idle並回傳 cleanup plan。"""
 
-    requests: list[Any] = []
+    idle_calls: list[tuple[Path, str, ScanCommitGuard]] = []
 
-    async def fake_commit_failure_request(request: Any) -> ScanCommitOutcome:
-        requests.append(request)
-        return ScanCommitOutcome(
-            kind=ScanCommitOutcomeKind.SKIP_COMMITTED,
-            target_id=request.target_id,
-            reason=request.reason,
-        )
+    def fake_guarded_idle(
+        db_path: Path,
+        target_id: str,
+        commit_guard: ScanCommitGuard,
+    ) -> object:
+        idle_calls.append((db_path, target_id, commit_guard))
+        return object()
 
     monkeypatch.setattr(
         attempt_module,
-        "commit_failure_request_for_db_async",
-        fake_commit_failure_request,
+        "_guarded_mark_scheduler_cancellation_idle",
+        fake_guarded_idle,
     )
     host = _ExceptionDecisionHost(tmp_path / "app.db")
     guard = ScanCommitGuard(worker_id="worker-a", started_at=utc_now(), page_id="page-a")
@@ -938,13 +937,11 @@ def test_finish_attempt_exception_decision_scheduler_cancel_commits_guarded_fail
     )
 
     assert transition is not None
-    assert transition.outcome.kind == ResidentAttemptOutcomeKind.SKIPPED
-    assert transition.outcome.reason == "scheduler_stopping"
+    assert transition.outcome.kind == ResidentAttemptOutcomeKind.CANCELLED
+    assert transition.outcome.reason == "scheduler_cancelled"
     assert transition.cleanup_plan is not None
     assert transition.cleanup_plan.owner_key == "owner-a"
-    assert len(requests) == 1
-    assert requests[0].reason == "scheduler_stopping"
-    assert requests[0].commit_guard == guard
+    assert idle_calls == [(tmp_path / "app.db", "target-1", guard)]
 
 
 def test_finish_attempt_exception_decision_propagate_has_no_transition() -> None:
@@ -991,7 +988,6 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
             in_use_by_worker="worker-new",
             current_url="https://current.example",
         )
-        planner = RecordingSchedulePlanner()
         unregistered: list[tuple[str, str]] = []
 
         class CleanupHost:
@@ -1000,7 +996,6 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
             def __init__(self) -> None:
                 self.page_pool: AsyncResidentPagePool = page_pool
                 self.target_queue: TargetQueue = target_queue
-                self.schedule_planner: TargetSchedulePlanner = planner
 
             async def _unregister_active_attempt(
                 self,
@@ -1019,7 +1014,6 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
                     active_attempt_key="old-owner",
                     page_id="old-page",
                     page_acquired=True,
-                    planner_dispatch_id="test-dispatch",
                 ),
             ),
         )
@@ -1028,7 +1022,6 @@ def test_resident_attempt_cleanup_uses_owner_and_page_guards() -> None:
         assert page_pool.pages[target_id].in_use_by_worker == "worker-new"
         assert page_pool.pages[target_id].current_url == "https://current.example"
         assert not page.closed
-        assert planner.finished_target_ids == [target_id]
         assert unregistered == [(target_id, "old-owner")]
 
     asyncio.run(run_test())

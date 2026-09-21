@@ -261,6 +261,8 @@ def test_initialize_schema_rejects_current_version_duplicate_target_scopes(
             initialize_schema(connection)
         except RuntimeError as exc:
             assert "duplicate target scopes" in str(exc)
+            assert "restore a known-good backup" in str(exc)
+            assert "explicit versioned migration" in str(exc)
             assert "duplicate-current-copy" in str(exc)
         else:
             raise AssertionError("current duplicate target scopes should fail fast")

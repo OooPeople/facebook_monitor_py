@@ -593,6 +593,18 @@ def _bounded_legacy_value(
     return normalized if normalized in allowed else fallback
 
 
+def migrate_45_to_46(connection: sqlite3.Connection) -> None:
+    """移除已退役的 circuit、pacing、identity 與 recovery 相容資料表。"""
+
+    if not connection.in_transaction:
+        connection.execute("BEGIN")
+    connection.execute("DROP TABLE IF EXISTS facebook_access_circuit_events")
+    connection.execute("DROP TABLE IF EXISTS facebook_session_recovery_state")
+    connection.execute("DROP TABLE IF EXISTS facebook_automation_pacing_state")
+    connection.execute("DROP TABLE IF EXISTS managed_profile_identity_binding")
+    connection.execute("DROP TABLE IF EXISTS facebook_access_circuit_state")
+
+
 MIGRATIONS: dict[int, Migration] = {
     35: migrate_35_to_36,
     36: migrate_36_to_37,
@@ -604,6 +616,7 @@ MIGRATIONS: dict[int, Migration] = {
     42: migrate_42_to_43,
     43: migrate_43_to_44,
     44: migrate_44_to_45,
+    45: migrate_45_to_46,
 }
 
 
@@ -792,6 +805,7 @@ __all__ = [
     "migrate_42_to_43",
     "migrate_43_to_44",
     "migrate_44_to_45",
+    "migrate_45_to_46",
     "rebuild_targets_table_with_check_constraints",
     "run_known_migrations",
     "table_exists",

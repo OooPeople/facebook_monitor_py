@@ -10,13 +10,16 @@ from typing import Any
 from playwright.async_api import Error as AsyncPlaywrightError
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
+from facebook_monitor.core.scan_failures import FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
@@ -25,6 +28,7 @@ from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResu
 
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
+from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,
 )
@@ -410,3 +414,126 @@ def test_resident_main_cancels_scan_when_target_is_stopped(tmp_path: Path) -> No
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.last_error == ""
+
+
+def test_resident_inconclusive_page_guard_retries_twice_then_stops(
+    tmp_path: Path,
+) -> None:
+    """inconclusive第1/2次回idle，第3次error；每次discard且只在terminal入列通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inconclusive-three-strikes",
+                canonical_url=(
+                    "https://www.facebook.com/groups/inconclusive-three-strikes"
+                ),
+                config=TargetConfigPatch(enable_desktop_notification=True),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def inconclusive_scan(**_kwargs: Any) -> object:
+        raise WorkerFailure(
+            FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON,
+            "Facebook page guard evidence is inconclusive.",
+        )
+
+    async def run_test() -> None:
+        context = FakeAsyncBrowserContext()
+        page_pool = AsyncResidentPagePool(context)
+        for attempt in range(1, 4):
+            with SqliteApplicationContext(db_path) as app:
+                app.services.targets.request_target_scan(target.id)
+            summary = await run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                ),
+                page_pool=page_pool,
+                scan_page=as_async_scan_callable(inconclusive_scan),
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=attempt,
+            )
+            assert summary.failure_count == 1
+            assert await page_pool.size() == 0
+            assert context.pages[-1].closed is True
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+                pending_outbox = app.repositories.notification_outbox.list_pending()
+            assert state is not None
+            assert latest_scan is not None
+            assert state.consecutive_failure_count == attempt
+            assert latest_scan.metadata["retry_streak"] == attempt
+            assert latest_scan.metadata["retry_limit"] == 3
+            if attempt < 3:
+                assert state.runtime_status == TargetRuntimeStatus.IDLE
+                assert latest_scan.metadata["runtime_action"] == "will_retry"
+                assert pending_outbox == []
+            else:
+                assert state.runtime_status == TargetRuntimeStatus.ERROR
+                assert latest_scan.metadata["runtime_action"] == "error"
+                assert len(pending_outbox) == 1
+
+    asyncio.run(run_test())
+
+
+def test_resident_success_resets_inconclusive_page_guard_streak(tmp_path: Path) -> None:
+    """成功輪沿用既有runtime reset，下一次inconclusive重新從streak 1開始。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="inconclusive-success-reset",
+                canonical_url="https://www.facebook.com/groups/inconclusive-success-reset",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    outcomes = ["inconclusive", "success", "inconclusive"]
+
+    async def sequenced_scan(**kwargs: Any) -> object:
+        outcome = outcomes.pop(0)
+        if outcome == "inconclusive":
+            raise WorkerFailure(
+                FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON,
+                "Facebook page guard evidence is inconclusive.",
+            )
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
+        )
+
+    async def run_test() -> None:
+        page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
+        for cycle_index in range(1, 4):
+            with SqliteApplicationContext(db_path) as app:
+                app.services.targets.request_target_scan(target.id)
+            await run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                ),
+                page_pool=page_pool,
+                scan_page=as_async_scan_callable(sequenced_scan),
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=cycle_index,
+            )
+
+    asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+    assert state is not None
+    assert latest_scan is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.consecutive_failure_reason == FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
+    assert state.consecutive_failure_count == 1
+    assert latest_scan.metadata["retry_streak"] == 1
+    assert latest_scan.metadata["runtime_action"] == "will_retry"

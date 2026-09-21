@@ -108,7 +108,7 @@ sqlite3.connect("file:/.../app.db?mode=ro", uri=True, timeout=1)
 詳細產品語義以 `docs/ARCHITECTURE.md` 為主；AGENTS 只列最容易誤改、需要每次先看到的 guardrails。
 
 - 正式日常入口是 package entrypoint：`facebook-monitor`；profile 登入 / 檢查入口是 `facebook-monitor-login`。
-- async resident worker 是唯一正式產品主路徑；one-shot mode 與 sync resident worker 只作 fallback / debug tooling。
+- async resident worker 是唯一正式產品主路徑；single-target one-shot 只保留為 debug tooling。
 - 正式 config store 是 `target_configs[target_id]`；`group_configs` 不再是正式
   schema、runtime 或支援 migration source，不得作為正式 read/write path。
 - 新增正式 target 建立流程時，不得使用 internal `_create_*` helper；正式入口一律走 `upsert_*`。

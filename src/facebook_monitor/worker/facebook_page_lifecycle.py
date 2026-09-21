@@ -117,7 +117,7 @@ async def close_existing_context_pages_async(context: Any) -> None:
 
 
 def close_existing_context_pages_sync(context: Any) -> None:
-    """在 sync fallback 建立正式 page 前關閉 persistent context 自帶 pages。"""
+    """在 sync debug/tooling 建立受管 page 前關閉 persistent context 自帶 pages。"""
 
     for page in open_context_pages(context):
         close_page_checked_sync(page)

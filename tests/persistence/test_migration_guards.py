@@ -17,9 +17,10 @@ def test_schema_version_has_explicit_supported_migration_chain() -> None:
     assert set(MIGRATIONS) == set(range(MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION))
 
 
-def test_schema_repairs_module_does_not_exist() -> None:
+def test_schema_repair_modules_do_not_exist() -> None:
     """不得恢復 current-schema repair 平行路徑。"""
 
+    assert not Path("src/facebook_monitor/persistence/schema_repair.py").exists()
     assert not Path("src/facebook_monitor/persistence/schema_repairs.py").exists()
 
 

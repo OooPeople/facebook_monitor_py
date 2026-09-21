@@ -1,4 +1,4 @@
-"""同步 fallback／one-shot 的最小 Facebook work lifetime。
+"""Single-target one-shot debug 的最小 Facebook work lifetime。
 
 職責：只持有 OS profile lease、普通 application context 與 process-local
 one-way trip signal；不承載 circuit、pacing、marker 或 visible-write fence。
@@ -43,7 +43,7 @@ ProfileLeaseFactory = Callable[[Path, str], AbstractContextManager[object]]
 
 @dataclass
 class FacebookFallbackWork:
-    """保存單一同步 browser lifetime 的 DB path 與 one-way trip signal。"""
+    """保存單一 one-shot browser lifetime 的 DB path 與 one-way trip signal。"""
 
     db_path: Path
     signal: FacebookAutomationTripSignal

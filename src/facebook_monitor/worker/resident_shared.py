@@ -1,8 +1,7 @@
 """Resident main shared runtime helpers。
 
 職責：提供正式 resident main 與 executor 共同使用的 options、summary、
-target loading 與 route 判斷 helper。sync fallback worker 不放在本檔，
-避免 debug/fallback 與正式主路徑混名。
+target loading 與 route 判斷 helper。
 """
 
 from __future__ import annotations

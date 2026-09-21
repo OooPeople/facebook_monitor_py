@@ -23,13 +23,9 @@ BROWSER_EXECUTABLE_ENV = "FACEBOOK_MONITOR_BROWSER_EXECUTABLE"
 
 
 class BrowserMode(StrEnum):
-    """描述可預留的 browser backend 種類。"""
+    """描述目前正式支援的 browser backend。"""
 
     PLAYWRIGHT_CHROMIUM = "playwright_chromium"
-    CHROME = "chrome"
-    EDGE = "edge"
-    CUSTOM = "custom"
-    AUTO = "auto"
 
 
 class BrowserRuntimeError(RuntimeError):

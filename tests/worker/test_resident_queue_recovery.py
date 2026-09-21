@@ -22,7 +22,6 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.core.scan_failures import SCHEDULER_STOPPING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.notifications.outbox_idempotency import (
     build_notification_idempotency_key,
@@ -330,7 +329,6 @@ def test_resident_running_claim_rejected_does_not_release_reserved_page(
     assert latest_scan is None
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == []
-    assert planner.finished_target_ids == []
     assert release_if_calls == []
     assert release_calls == []
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
@@ -417,15 +415,82 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
     assert latest_scan is None
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == []
-    assert planner.finished_target_ids == []
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
 
 
-def test_resident_scheduler_stopping_cancellation_records_guarded_idle_failure(
+def test_executor_stop_pending_cancellation_does_not_overwrite_new_running_owner(
     tmp_path: Path,
 ) -> None:
-    """running 後一般取消會記錄 scheduler_stopping failure，清理後 re-raise。"""
+    """取消 pending item 時只可更新非 running row，不得 force 覆寫競態中新 owner。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="pending-stop-owner-race",
+                canonical_url="https://www.facebook.com/groups/pending-stop-owner-race",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def unused_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise AssertionError("pending target must not be scanned")
+
+    async def run_test() -> tuple[TargetQueue, ExecutorWorkerPool]:
+        target_queue = TargetQueue()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=RecordingSchedulePlanner(),
+            scan_page=as_async_scan_callable(unused_scan_page),
+        )
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                    ),
+                )
+            )
+            == 1
+        )
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.mark_target_running(
+                target.id,
+                "worker-new",
+                page_id="page-new",
+            )
+        await executor.stop(cancel_running=True, runtime_restart=False)
+        return target_queue, executor
+
+    target_queue, executor = asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.RUNNING
+    assert state.active_worker_id == "worker-new"
+    assert state.active_page_id == "page-new"
+    assert latest_scan is None
+    assert pending_outbox == []
+    assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
+    assert executor._active_attempt_tasks == {}  # noqa: SLF001
+
+
+def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_scan(
+    tmp_path: Path,
+) -> None:
+    """running 後一般取消只 guarded 回 idle，零 visible failure write 並 re-raise。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -498,13 +563,10 @@ def test_resident_scheduler_stopping_cancellation_records_guarded_idle_failure(
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.last_error == ""
     assert state.consecutive_failure_count == 0
-    assert latest_scan is not None
-    assert latest_scan.status == ScanStatus.FAILED
-    assert latest_scan.metadata["reason"] == SCHEDULER_STOPPING_REASON
+    assert latest_scan is None
     assert pending_outbox == []
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     assert target.id in executor.page_pool.pages
@@ -591,7 +653,6 @@ def test_resident_page_prepare_playwright_failure_discards_page_and_cleans_attem
     assert latest_scan.status == ScanStatus.FAILED
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     assert asyncio.run(executor.page_pool.size()) == 0
@@ -633,7 +694,7 @@ def test_resident_failure_discard_ignores_newer_page_id() -> None:
     asyncio.run(run_test())
 
 
-def test_resident_scheduler_stopping_cancellation_guard_mismatch_writes_no_failure(
+def test_resident_scheduler_stopping_cancellation_guard_mismatch_preserves_new_owner(
     tmp_path: Path,
 ) -> None:
     """scheduler stopping outcome 遇新 owner 時不可寫 stale failure。"""
@@ -660,7 +721,7 @@ def test_resident_scheduler_stopping_cancellation_guard_mismatch_writes_no_failu
         )
 
     class CancellationHost:
-        """測試用 host，只提供 cancellation helper 需要的 options。"""
+        """測試用 host，直接執行 cancellation helper 的 DB operation。"""
 
         def __init__(self) -> None:
             self.options = ResidentRuntimeOptions(
@@ -669,8 +730,15 @@ def test_resident_scheduler_stopping_cancellation_guard_mismatch_writes_no_failu
                 interval_seconds=60,
             )
 
+        async def _run_db_operation_with_retry(
+            self,
+            _operation_name: str,
+            operation: Any,
+        ) -> Any:
+            return operation()
+
     async def run_test() -> attempt_module.ResidentAttemptTerminalTransition:
-        return await attempt_module._record_scheduler_stopping_cancellation(  # noqa: SLF001
+        return await attempt_module._finish_scheduler_stopping_cancellation(  # noqa: SLF001
             pool=cast(attempt_module.ResidentExecutorAttemptHost, CancellationHost()),
             state=attempt_module.ResidentQueueAttemptState(
                 target_id=target.id,
@@ -810,7 +878,6 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
     assert pending_outbox == []
     assert asyncio.run(target_queue.snapshot()) == (0, 1, ())
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor.page_pool.pages[target.id].page_id == "page-b"
     assert executor.page_pool.pages[target.id].in_use_by_worker == "worker-b"
@@ -1310,7 +1377,6 @@ def test_resident_success_result_writes_visible_scan_state_once(
     assert outbox_entry is not None
     assert dispatch_calls == [db_path]
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     assert executor.page_pool.pages[target.id].in_use_by_worker == ""
@@ -1405,7 +1471,6 @@ def test_resident_success_result_is_committed_by_coordinator(
     assert latest_items[0].item_key == "post:resident-success-result"
     assert len(history) == 1
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     assert executor.page_pool.pages[target.id].in_use_by_worker == ""
@@ -1415,7 +1480,7 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """comments 應直接導航 canonical URL 並完成正式 visible write。"""
+    """comments 只允許單一 owner 導航 canonical URL 並完成 visible write。"""
 
     parent_post_id = "2187454285426518"
     db_path = tmp_path / "app.db"
@@ -1433,16 +1498,33 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
         target = app.services.targets.restart_target_monitoring(target.id)
 
     scan_calls = 0
-
-    async def comments_scan(**kwargs: Any) -> SuccessScanResult:
-        nonlocal scan_calls
-        scan_calls += 1
-        return build_success_scan_result_for_test(
-            target=kwargs["target"],
-            page_url=kwargs["page"].url,
-        )
+    active_scans = 0
+    max_active_scans = 0
+    observed_page_objects: list[int] = []
 
     async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
+        nonlocal active_scans, max_active_scans, scan_calls
+
+        scan_started = asyncio.Event()
+        release_scan = asyncio.Event()
+
+        async def comments_scan(**kwargs: Any) -> SuccessScanResult:
+            nonlocal active_scans, max_active_scans, scan_calls
+
+            scan_calls += 1
+            active_scans += 1
+            max_active_scans = max(max_active_scans, active_scans)
+            observed_page_objects.append(id(kwargs["page"]))
+            scan_started.set()
+            try:
+                await release_scan.wait()
+                return build_success_scan_result_for_test(
+                    target=kwargs["target"],
+                    page_url=kwargs["page"].url,
+                )
+            finally:
+                active_scans -= 1
+
         target_queue = TargetQueue()
         planner = RecordingSchedulePlanner()
         executor = ExecutorWorkerPool(
@@ -1450,6 +1532,7 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
                 db_path=db_path,
                 profile_dir=tmp_path / "profile",
                 interval_seconds=60,
+                max_concurrent_scans=2,
             ),
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
@@ -1457,27 +1540,23 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
             scan_page=as_async_scan_callable(comments_scan),
             comments_commit_ready_scan_page=comments_scan,
         )
-        assert (
-            await executor.enqueue_due_targets(
-                (
-                    DueTarget(
-                        target_id=target.id,
-                        interval_seconds=60,
-                        due_at=utc_now(),
-                    ),
-                )
-            )
-            == 1
+        due_target = DueTarget(
+            target_id=target.id,
+            interval_seconds=60,
+            due_at=utc_now(),
         )
-        item = await target_queue.get()
-        assert item is not None
-        result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
-        await asyncio.wait_for(target_queue.join(), timeout=1)
-        assert result.success
-        assert not result.failure
-        assert not result.skipped
-        assert result.opened_page
-        assert await target_queue.snapshot() == (0, 0, ())
+        await executor.start()
+        try:
+            assert await executor.enqueue_due_targets((due_target, due_target)) == 1
+            await asyncio.wait_for(scan_started.wait(), timeout=1)
+            assert await executor.enqueue_due_targets((due_target,)) == 0
+            assert await target_queue.snapshot() == (0, 1, ())
+            release_scan.set()
+            await asyncio.wait_for(target_queue.join(), timeout=1)
+            assert await target_queue.snapshot() == (0, 0, ())
+        finally:
+            release_scan.set()
+            await executor.stop(cancel_running=True)
         return planner, executor
 
     planner, executor = asyncio.run(run_test())
@@ -1492,6 +1571,8 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert scan_calls == 1
+    assert max_active_scans == 1
+    assert len(set(observed_page_objects)) == 1
     assert latest_scan is not None
     assert latest_scan.status == ScanStatus.SUCCESS
     assert latest_items == []
@@ -1499,10 +1580,12 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
     assert pending_outbox == []
     assert dispatch_calls == []
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     pooled_page = executor.page_pool.pages[target.id]
+    assert len(executor.page_pool.pages) == 1
+    assert pooled_page.page_id
+    assert id(pooled_page.page) == observed_page_objects[0]
     assert pooled_page.in_use_by_worker == ""
     assert pooled_page.current_url == target.canonical_url
 
@@ -1610,7 +1693,6 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
     assert history == []
     assert pending_outbox == []
     assert planner.dispatched_target_ids == [target.id]
-    assert planner.finished_target_ids == [target.id]
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
 

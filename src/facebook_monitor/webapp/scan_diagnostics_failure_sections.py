@@ -20,26 +20,13 @@ _PAGE_GUARD_KEYS = (
     "body_text_length",
     "url_kind",
 )
-_FALLBACK_GUARD_KEYS = (
-    "detector",
-    "detector_version",
-    "classification",
-    "fallback_mode",
-    "target_kind",
-    "browser_work_started",
-)
-
-
 def append_failure_diagnostics(lines: list[str], value: object) -> None:
     """輸出固定 allowlist 的 page guard 診斷，不接受 raw 文字或 URL。"""
 
     validated = validate_serialized_worker_failure_diagnostics(value)
     if validated is None:
         return
-    for section, keys in (
-        ("page_guard", _PAGE_GUARD_KEYS),
-        ("fallback_guard", _FALLBACK_GUARD_KEYS),
-    ):
+    for section, keys in (("page_guard", _PAGE_GUARD_KEYS),):
         guard = validated.get(section)
         if not isinstance(guard, Mapping):
             continue

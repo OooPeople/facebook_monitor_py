@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import MatchHistoryEntry
 from facebook_monitor.core.models import NotificationEvent
+from facebook_monitor.core.notification_channels import format_notification_channel_label
+from facebook_monitor.core.user_messages import format_notification_event_message
 from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
 from facebook_monitor.core.keyword_highlight import build_highlight_segment_dicts
-from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
-from facebook_monitor.webapp.notification_presenters import format_notification_event_message
 from facebook_monitor.webapp.notification_presenters import format_notification_status_label
 from facebook_monitor.webapp.preview_models import trim_preview_text
 from facebook_monitor.webapp.url_safety import safe_facebook_permalink

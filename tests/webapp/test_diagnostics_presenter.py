@@ -25,7 +25,7 @@ from facebook_monitor.webapp.scan_diagnostics_presenter import (
 from facebook_monitor.webapp.scan_diagnostics_sort_sections import (
     append_sort_diagnostics_block,
 )
-from facebook_monitor.webapp.scan_reason_presenters import format_scan_failure_reason
+from facebook_monitor.core.user_messages import format_failure_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_cycle_result_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_stop_reason
 from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
@@ -420,5 +420,5 @@ def test_sort_unconfirmed_skip_reason_is_user_readable() -> None:
 def test_content_unavailable_failure_reason_is_user_readable() -> None:
     """內容不可見的 failed scan reason 會顯示成連結已失效。"""
 
-    assert format_scan_failure_reason("content_unavailable") == "連結已失效"
+    assert format_failure_reason("content_unavailable") == "連結已失效"
     assert format_scan_stop_reason("sort_adjust_unconfirmed_skip") == "調整排序失敗，已跳過掃描"

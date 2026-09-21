@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from facebook_monitor.core.user_messages import format_failure_reason as _format_failure_reason
-
 
 def format_scan_stop_reason(value: str) -> str:
     """把 worker 內部停止原因轉成 UI 可讀文字。"""
@@ -27,12 +25,6 @@ def format_scan_stop_reason(value: str) -> str:
         "sort_adjust_unconfirmed_skip": "調整排序失敗，已跳過掃描",
     }
     return labels.get(value, value or "(未知)")
-
-
-def format_scan_failure_reason(value: str) -> str:
-    """把 failed scan reason 轉成 UI 可讀文字。"""
-
-    return _format_failure_reason(value)
 
 
 def format_scan_cycle_result_reason(value: str) -> str:

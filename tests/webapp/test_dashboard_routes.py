@@ -1567,8 +1567,8 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
 
     dashboard = get_dashboard_view(db_path)
     row = dashboard.rows[0]
-    latest_preview = row.latest_scan_preview_rows[0]
-    hit_preview = row.hit_record_preview_rows[0]
+    latest_preview = row.preview_presenter.latest_scan_preview_rows[0]
+    hit_preview = row.preview_presenter.hit_record_preview_rows[0]
 
     assert dashboard.sidebar_items[0].display_name == "測試社團"
     assert dashboard.sidebar_items[0].mode_label == "貼文"
@@ -1576,7 +1576,7 @@ def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(
     assert dashboard.sidebar_items[0].hit_count == 1
     assert "命中 1 筆" in dashboard.sidebar_items[0].status_summary
     assert row.hit_record_total_count == 1
-    assert row.hit_records_heading == "命中紀錄（1）"
+    assert row.preview_presenter.hit_records_heading == "命中紀錄（1）"
     assert row.settings_presenter.settings_summary.lines[0].icon_key == "refresh"
     assert row.settings_presenter.settings_summary.lines[0].label == "刷新"
     assert row.settings_presenter.settings_summary.lines[0].value == "浮動 25-35 秒"

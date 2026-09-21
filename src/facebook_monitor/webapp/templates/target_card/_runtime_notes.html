@@ -1,10 +1,10 @@
 <div
   class="runtime-error"
   data-runtime-error
-  {% if not row.runtime_error %}hidden{% endif %}
->{{ row.runtime_error }}</div>
+  {% if not row.error_presenter.runtime_error %}hidden{% endif %}
+>{{ row.error_presenter.runtime_error }}</div>
 <div
   class="runtime-note"
   data-runtime-skip-reason
-  {% if not row.runtime_skip_reason %}hidden{% endif %}
->{{ row.runtime_skip_reason }}</div>
+  {% if not row.error_presenter.runtime_skip_reason %}hidden{% endif %}
+>{{ row.error_presenter.runtime_skip_reason }}</div>

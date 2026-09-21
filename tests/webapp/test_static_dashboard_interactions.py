@@ -89,8 +89,12 @@ def test_target_header_status_and_mode_are_grouped_in_subtitle() -> None:
     assert "data-target-title" in title_line
     assert "data-card-status" not in title_line
     assert subtitle.index("data-card-status") < subtitle.index("data-target-mode")
-    assert 'class="status {{ row.status_class }}" data-card-status' in subtitle
-    assert 'class="target-mode-chip {{ row.mode_class }}" data-target-mode' in subtitle
+    assert (
+        'class="status {{ row.monitoring_presenter.status_presenter.css_class }}" data-card-status'
+    ) in subtitle
+    assert (
+        'class="target-mode-chip {{ row.header_presenter.mode_class }}" data-target-mode'
+    ) in subtitle
     assert "display: block;" in heading_rule
     assert "overflow-wrap: anywhere;" in heading_rule
     assert "display: inline-flex;" in status_rule

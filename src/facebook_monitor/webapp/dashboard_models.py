@@ -20,7 +20,6 @@ from facebook_monitor.webapp.dashboard_card_summary_presenters import (
 )
 from facebook_monitor.webapp.dashboard_identity_presenters import TargetIdentityPresenter
 from facebook_monitor.webapp.dashboard_settings_presenters import TargetSettingsPresenter
-from facebook_monitor.webapp.dashboard_status_presenters import TargetStatusPresenter
 from facebook_monitor.webapp.dashboard_target_diagnostics import TargetDiagnosticsPresenter
 from facebook_monitor.webapp.dashboard_target_errors import TargetErrorPresenter
 from facebook_monitor.webapp.dashboard_target_header import TargetHeaderPresenter
@@ -32,7 +31,6 @@ from facebook_monitor.webapp.dashboard_target_refresh import NextRefreshDisplay
 import facebook_monitor.webapp.dashboard_target_refresh as target_refresh
 from facebook_monitor.webapp.preview_models import HitRecordPreviewRow
 from facebook_monitor.webapp.preview_models import LatestScanItemRow
-from facebook_monitor.webapp.preview_models import TargetPreviewRow
 
 
 @dataclass(frozen=True)
@@ -89,6 +87,7 @@ class SidebarGroupSection:
         if self.template is None:
             return TargetSettingsPresenter(config=TargetConfig(target_id=""))
         return TargetSettingsPresenter(config=self.template.to_target_config(target_id=""))
+
 
 @dataclass(frozen=True)
 class TargetRow:
@@ -175,7 +174,7 @@ class TargetRow:
             latest_scan_run=self.latest_scan_run,
             next_refresh_label=self.next_refresh_label,
             latest_failed_scan_run=self.latest_failed_scan_run,
-            latest_error_indicator_label=self.latest_error_indicator_label,
+            latest_error_indicator_label=(self.error_presenter.latest_error_indicator_label),
         )
 
     @cached_property
@@ -185,61 +184,19 @@ class TargetRow:
         return TargetSidebarPresenter(
             target=self.target,
             target_id=self.target_id,
-            display_name=self.display_name,
+            display_name=self.identity_presenter.display_name,
             anchor_id=self.anchor_id,
-            status_label=self.status_label,
-            status_class=self.status_class,
-            mode_class=self.mode_class,
+            status_label=self.monitoring_presenter.status_presenter.label,
+            status_class=self.monitoring_presenter.status_presenter.css_class,
+            mode_class=self.header_presenter.mode_class,
             hit_record_total_count=self.hit_record_total_count,
             latest_scan_run=self.latest_scan_run,
             latest_failed_scan_run=self.latest_failed_scan_run,
-            latest_failed_scan_summary=self.latest_failed_scan_summary,
-            latest_error_indicator_label=self.latest_error_indicator_label,
-            content_unavailable_current=self.content_unavailable_current,
+            latest_failed_scan_summary=self.error_presenter.latest_failed_scan_summary,
+            latest_error_indicator_label=(self.error_presenter.latest_error_indicator_label),
+            content_unavailable_current=(self.error_presenter.content_unavailable_current),
             thumbnail_url=self.thumbnail_url,
         )
-
-    @property
-    def latest_items_heading(self) -> str:
-        """回傳右側最近掃描項目的標題。"""
-
-        return self.preview_presenter.latest_items_heading
-
-    @property
-    def latest_item_link_label(self) -> str:
-        """回傳右側項目 permalink 的連結文字。"""
-
-        return self.preview_presenter.latest_item_link_label
-
-    @property
-    def latest_scan_preview_rows(self) -> tuple[TargetPreviewRow, ...]:
-        """回傳最近掃描 preview rows。"""
-
-        return self.preview_presenter.latest_scan_preview_rows
-
-    @property
-    def hit_record_preview_rows(self) -> tuple[TargetPreviewRow, ...]:
-        """回傳命中紀錄 preview rows。"""
-
-        return self.preview_presenter.hit_record_preview_rows
-
-    @property
-    def hit_records_heading(self) -> str:
-        """回傳命中紀錄 preview 標題。"""
-
-        return self.preview_presenter.hit_records_heading
-
-    @property
-    def display_name(self) -> str:
-        """回傳 UI 顯示名稱。"""
-
-        return self.identity_presenter.display_name
-
-    @property
-    def rename_display_name(self) -> str:
-        """回傳更名 modal 的預填名稱。"""
-
-        return self.identity_presenter.rename_value
 
     @property
     def thumbnail_url(self) -> str:
@@ -249,30 +206,6 @@ class TargetRow:
             self.target.group_cover_image_url
         )
         return result.url if result.ok else ""
-
-    @property
-    def mode_label(self) -> str:
-        """回傳 target card header 使用的掃描模式文字。"""
-
-        return self.header_presenter.mode_label
-
-    @property
-    def mode_class(self) -> str:
-        """回傳掃描模式 chip 對應 CSS class。"""
-
-        return self.header_presenter.mode_class
-
-    @property
-    def scanning_supported(self) -> bool:
-        """回傳目前 target 是否已接上 worker 掃描流程。"""
-
-        return self.monitoring_presenter.scanning_supported
-
-    @property
-    def status_presenter(self) -> TargetStatusPresenter:
-        """回傳 target 狀態 presenter。"""
-
-        return self.monitoring_presenter.status_presenter
 
     @property
     def settings_presenter(self) -> TargetSettingsPresenter:
@@ -289,44 +222,8 @@ class TargetRow:
             latest_scan_run=self.latest_scan_run,
             latest_failed_scan_run=self.latest_failed_scan_run,
             hit_record_total_count=self.hit_record_total_count,
-            content_unavailable_current=self.content_unavailable_current,
+            content_unavailable_current=(self.error_presenter.content_unavailable_current),
         )
-
-    @property
-    def header_summary_label(self) -> str:
-        """回傳 target header 的低干擾摘要，避免主畫面顯示診斷 ID。"""
-
-        return self.header_presenter.header_summary_label
-
-    @property
-    def status_label(self) -> str:
-        """回傳 target 啟停狀態文字。"""
-
-        return self.monitoring_presenter.status_label
-
-    @property
-    def status_class(self) -> str:
-        """回傳 target 狀態對應 CSS class。"""
-
-        return self.monitoring_presenter.status_class
-
-    @property
-    def runtime_error(self) -> str:
-        """回傳 runtime error 顯示文字。"""
-
-        return self.error_presenter.runtime_error
-
-    @property
-    def runtime_skip_reason(self) -> str:
-        """回傳最近一次 scan guard skip 原因。"""
-
-        return self.error_presenter.runtime_skip_reason
-
-    @property
-    def latest_scan_header_time_label(self) -> str:
-        """回傳 target header 使用的最近掃描短時間。"""
-
-        return self.header_presenter.latest_scan_header_time_label
 
     @property
     def next_refresh_label(self) -> str:
@@ -345,81 +242,3 @@ class TargetRow:
         """一次產生下一次刷新顯示值，避免同一 row 重複計算倒數。"""
 
         return target_refresh.next_refresh_display(self)
-
-    @property
-    def scan_cycle_result_label(self) -> str:
-        """回傳右側結果 panel 使用的最近一輪結束原因。"""
-
-        return self.diagnostics_presenter.scan_cycle_result_label
-
-    @property
-    def latest_scan_diagnostics_summary(self) -> str:
-        """回傳最近成功掃描的診斷短摘要。"""
-
-        return self.diagnostics_presenter.latest_scan_diagnostics_summary
-
-    @property
-    def latest_scan_diagnostics_text(self) -> str:
-        """回傳可複製的 scan-level diagnostics。"""
-
-        return self.diagnostics_presenter.latest_scan_diagnostics_text
-
-    @property
-    def latest_error_label(self) -> str:
-        """回傳最近錯誤時間。"""
-
-        return self.error_presenter.latest_error_label
-
-    @property
-    def latest_failed_scan_summary(self) -> str:
-        """回傳最近失敗掃描摘要。"""
-
-        return self.error_presenter.latest_failed_scan_summary
-
-    @property
-    def latest_error_indicator_label(self) -> str:
-        """回傳 target header 的最近錯誤短標籤。"""
-
-        return self.error_presenter.latest_error_indicator_label
-
-    @property
-    def latest_error_indicator_title(self) -> str:
-        """回傳 target header 最近錯誤說明。"""
-
-        return self.error_presenter.latest_error_indicator_title
-
-    @property
-    def latest_error_indicator_kind(self) -> str:
-        """回傳最近錯誤 UI 類型。"""
-
-        return self.error_presenter.latest_error_indicator_kind
-
-    @property
-    def retrying_failure_current(self) -> bool:
-        """回傳最近 failed scan 是否仍代表等待下輪重試的目前狀態。"""
-
-        return self.error_presenter.retrying_failure_current
-
-    @property
-    def content_unavailable_current(self) -> bool:
-        """回傳連結失效是否仍代表目前狀態。"""
-
-        return self.error_presenter.content_unavailable_current
-
-    @property
-    def sidebar_item(self) -> SidebarTargetItem:
-        """回傳 sidebar 使用的 target 摘要。"""
-
-        return self.sidebar_presenter.item
-
-    @property
-    def monitoring_action(self) -> str:
-        """回傳主操作按鈕應提交的 monitoring action。"""
-
-        return self.monitoring_presenter.monitoring_action
-
-    @property
-    def monitoring_button_label(self) -> str:
-        """回傳主操作按鈕文字，維持開始 / 暫停語義。"""
-
-        return self.monitoring_presenter.monitoring_button_label

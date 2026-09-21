@@ -45,7 +45,7 @@ def serialize_sidebar_payload(dashboard: Any) -> dict[str, object]:
     return {
         "layout_signature": getattr(dashboard, "sidebar_layout_signature", ""),
         "template_signature": getattr(dashboard, "sidebar_template_signature", ""),
-        "items": [serialize_sidebar_item(row.sidebar_item) for row in dashboard.rows],
+        "items": [serialize_sidebar_item(row.sidebar_presenter.item) for row in dashboard.rows],
     }
 
 
@@ -91,42 +91,49 @@ def serialize_facebook_temporary_block_warning(
 def serialize_target_card(row: TargetRow, templates: Jinja2Templates) -> dict[str, object]:
     """序列化 target card partial update read model。"""
 
+    identity = row.identity_presenter
+    preview = row.preview_presenter
+    monitoring = row.monitoring_presenter
+    status = monitoring.status_presenter
+    errors = row.error_presenter
+    diagnostics = row.diagnostics_presenter
+    header = row.header_presenter
     return {
         "target_id": row.target_id,
         "anchor_id": row.anchor_id,
-        "display_name": row.display_name,
-        "rename_display_name": row.rename_display_name,
+        "display_name": identity.display_name,
+        "rename_display_name": identity.rename_value,
         "thumbnail_url": row.thumbnail_url,
-        "status_label": row.status_label,
-        "status_class": row.status_class,
-        "header_summary_label": row.header_summary_label,
-        "mode_label": row.mode_label,
-        "mode_class": row.mode_class,
-        "monitoring_action": row.monitoring_action,
-        "monitoring_button_label": row.monitoring_button_label,
-        "runtime_error": row.runtime_error,
-        "runtime_skip_reason": row.runtime_skip_reason,
+        "status_label": status.label,
+        "status_class": status.css_class,
+        "header_summary_label": header.header_summary_label,
+        "mode_label": header.mode_label,
+        "mode_class": header.mode_class,
+        "monitoring_action": monitoring.monitoring_action,
+        "monitoring_button_label": monitoring.monitoring_button_label,
+        "runtime_error": errors.runtime_error,
+        "runtime_skip_reason": errors.runtime_skip_reason,
         "has_latest_failed_scan": bool(row.latest_failed_scan_run),
-        "latest_error_indicator_label": row.latest_error_indicator_label,
-        "latest_error_indicator_title": row.latest_error_indicator_title,
-        "latest_error_indicator_kind": row.latest_error_indicator_kind,
-        "latest_scan_header_label": f"最近掃描 {row.latest_scan_header_time_label}",
+        "latest_error_indicator_label": errors.latest_error_indicator_label,
+        "latest_error_indicator_title": errors.latest_error_indicator_title,
+        "latest_error_indicator_kind": errors.latest_error_indicator_kind,
+        "latest_scan_header_label": f"最近掃描 {header.latest_scan_header_time_label}",
         "next_refresh_label": f"下次刷新：{row.next_refresh_label}",
         "next_refresh_seconds": row.next_refresh_seconds,
-        "scan_cycle_result_label": row.scan_cycle_result_label,
-        "latest_scan_diagnostics_summary": row.latest_scan_diagnostics_summary,
-        "latest_scan_diagnostics_text": row.latest_scan_diagnostics_text,
+        "scan_cycle_result_label": diagnostics.scan_cycle_result_label,
+        "latest_scan_diagnostics_summary": diagnostics.latest_scan_diagnostics_summary,
+        "latest_scan_diagnostics_text": diagnostics.latest_scan_diagnostics_text,
         "hit_record_total_count": row.hit_record_total_count,
         "card_summary_html": render_collapsed_summary_html(templates, row),
         "latest_scan_preview_html": render_preview_rows_html(
             templates,
-            row.latest_scan_preview_rows,
+            preview.latest_scan_preview_rows,
             "尚無掃描紀錄",
             "latest_scan",
         ),
         "hit_record_preview_html": render_preview_rows_html(
             templates,
-            row.hit_record_preview_rows,
+            preview.hit_record_preview_rows,
             "尚無命中紀錄",
             "hit_records",
         ),

@@ -9,12 +9,12 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
+from facebook_monitor.core.user_messages import format_failure_reason
 from facebook_monitor.webapp.scan_diagnostics_text import (
     ScanDiagnosticsTextContext,
     build_completed_scan_diagnostics_text,
     build_empty_scan_diagnostics_text,
 )
-from facebook_monitor.webapp.scan_reason_presenters import format_scan_failure_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_stop_reason
 
 
@@ -29,7 +29,7 @@ def build_scan_diagnostics_summary(
 
     metadata = latest_scan_run.metadata or {}
     if latest_scan_run.status == ScanStatus.FAILED:
-        failure_reason = format_scan_failure_reason(str(metadata.get("reason") or ""))
+        failure_reason = format_failure_reason(str(metadata.get("reason") or ""))
         return f"status=failed · reason={failure_reason}"
     round_count = metadata.get("round_count", 0)
     candidate_count = metadata.get("candidate_count", latest_scan_run.item_count)

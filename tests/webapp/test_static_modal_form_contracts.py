@@ -339,7 +339,8 @@ def test_button_variants_use_shared_button_modifier_classes() -> None:
     )
     assert re.search(
         r'<button[^>]*class="button button--toolbar"[^>]*type="submit"'
-        r"[^>]*data-monitoring-button[^>]*>\s*\{\{ row.monitoring_button_label \}\}",
+        r"[^>]*data-monitoring-button[^>]*>\s*"
+        r"\{\{ row.monitoring_presenter.monitoring_button_label \}\}",
         template_text,
     )
     assert re.search(

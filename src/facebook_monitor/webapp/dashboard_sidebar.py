@@ -35,7 +35,7 @@ def build_sidebar_groups(
                 group_id=group.id,
                 name=group.name,
                 collapsed=group.collapsed,
-                items=tuple(row.sidebar_item for row in rows_by_group.get(group.id, ())),
+                items=tuple(row.sidebar_presenter.item for row in rows_by_group.get(group.id, ())),
                 template=templates_by_group.get(group.id),
             )
         )
@@ -44,7 +44,7 @@ def build_sidebar_groups(
         SidebarGroupSection(
             group_id=None,
             name="未分組",
-            items=tuple(row.sidebar_item for row in ungrouped_rows),
+            items=tuple(row.sidebar_presenter.item for row in ungrouped_rows),
             is_system=True,
         )
     )

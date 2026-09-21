@@ -9,9 +9,9 @@ from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
+from facebook_monitor.core.notification_channels import format_notification_channel_label
 from facebook_monitor.webapp.form_refresh import FIXED_REFRESH_MODE
 from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
-from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
 
 
 EMPTY_INCLUDE_KEYWORDS_LABEL = "目前沒有關鍵字"

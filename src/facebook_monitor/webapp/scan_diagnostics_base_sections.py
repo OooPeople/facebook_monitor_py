@@ -13,8 +13,8 @@ from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.user_messages import format_failure_message_text
+from facebook_monitor.core.user_messages import format_failure_reason
 from facebook_monitor.core.user_messages import format_runtime_skip_message
-from facebook_monitor.webapp.scan_reason_presenters import format_scan_failure_reason
 from facebook_monitor.webapp.scan_reason_presenters import format_scan_stop_reason
 from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
 from facebook_monitor.webapp.time_presenters import format_optional_datetime_for_ui
@@ -121,7 +121,7 @@ def append_scan_result_lines(
     scan_failed = scan.status == ScanStatus.FAILED
     scan_lines = [
         f"scan_status={scan.status.value}",
-        f"failure_reason={format_scan_failure_reason(str(metadata.get('reason') or ''))}"
+        f"failure_reason={format_failure_reason(str(metadata.get('reason') or ''))}"
         if scan_failed
         else "",
         f"retryable={metadata.get('retryable', '(unknown)')}"
@@ -171,7 +171,7 @@ def append_latest_failed_scan_lines(
             "latest_failed_scan:",
             f"finished_at={format_datetime_for_ui(latest_failed_scan_run.finished_at)}",
             "reason="
-            + format_scan_failure_reason(
+            + format_failure_reason(
                 str((latest_failed_scan_run.metadata or {}).get("reason") or "")
             ),
             "error="

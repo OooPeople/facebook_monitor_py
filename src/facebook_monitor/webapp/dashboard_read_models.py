@@ -78,7 +78,7 @@ class DashboardViewModel:
     def sidebar_items(self) -> tuple[SidebarTargetItem, ...]:
         """回傳 sidebar 使用的 target 摘要。"""
 
-        return tuple(row.sidebar_item for row in self.rows)
+        return tuple(row.sidebar_presenter.item for row in self.rows)
 
     @property
     def sidebar_layout_signature(self) -> str:

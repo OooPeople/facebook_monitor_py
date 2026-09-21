@@ -34,18 +34,6 @@ class TargetMonitoringPresenter:
         )
 
     @property
-    def status_label(self) -> str:
-        """回傳 target 啟停狀態文字。"""
-
-        return self.status_presenter.label
-
-    @property
-    def status_class(self) -> str:
-        """回傳 target 狀態對應 CSS class。"""
-
-        return self.status_presenter.css_class
-
-    @property
     def monitoring_action(self) -> str:
         """回傳主操作按鈕應提交的 monitoring action。"""
 

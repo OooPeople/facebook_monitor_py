@@ -10,14 +10,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from facebook_monitor.core.facebook_access import FacebookAccessCircuitStatus
-from facebook_monitor.core.facebook_access import FacebookAccessEventKind
-from facebook_monitor.core.facebook_access import FacebookActionKind
-from facebook_monitor.core.facebook_access import FacebookProbeResult
-from facebook_monitor.core.facebook_access import FacebookProductOperationKind
-from facebook_monitor.core.facebook_access import FacebookRecoveryRecipeKind
-from facebook_monitor.core.facebook_access import FacebookWorkSourceKind
-from facebook_monitor.core.facebook_session_recovery import FacebookSessionRecoveryStatus
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import NotificationChannel
 from facebook_monitor.core.models import NotificationDedupeStatus
@@ -33,6 +25,84 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
+
+
+_LEGACY_CIRCUIT_STATUS_VALUES = frozenset({"closed", "open", "half_open"})
+_LEGACY_ACCESS_EVENT_KIND_VALUES = frozenset(
+    {
+        "opened",
+        "repeated_detection",
+        "probe_requested",
+        "half_open_acquired",
+        "probe_succeeded",
+        "probe_blocked",
+        "probe_inconclusive",
+        "probe_cancelled",
+        "lease_recovered",
+        "closed",
+    }
+)
+_LEGACY_WORK_SOURCE_VALUES = frozenset(
+    {"", "scan", "metadata", "cover", "sync_resolver", "probe"}
+)
+_LEGACY_OPERATION_VALUES = frozenset(
+    {
+        "",
+        "posts_access",
+        "comments_access",
+        "group_metadata_access",
+        "cover_metadata_access",
+        "unknown",
+    }
+)
+_LEGACY_ACTION_VALUES = frozenset(
+    {
+        "",
+        "group_feed_document",
+        "group_document",
+        "direct_document",
+        "reload",
+        "trusted_click",
+        "unknown",
+    }
+)
+_LEGACY_RECOVERY_RECIPE_VALUES = frozenset(
+    {
+        "",
+        "group_feed_document_guard_v1",
+        "comments_group_trusted_click_v1",
+        "group_document_guard_v1",
+        "group_cover_guard_v1",
+    }
+)
+_LEGACY_PROBE_RESULT_VALUES = frozenset(
+    {"", "success", "blocked", "inconclusive", "cancelled"}
+)
+_LEGACY_SESSION_RECOVERY_STATUS_VALUES = frozenset(
+    {"hold", "probe_pending", "probing", "recovered"}
+)
+_TEMPORARY_BLOCK_WARNING_SOURCE_VALUES = frozenset(
+    {"cover", "metadata", "scan", "sync_resolver"}
+)
+_TEMPORARY_BLOCK_WARNING_OPERATION_VALUES = frozenset(
+    {
+        "posts_access",
+        "comments_access",
+        "group_metadata_access",
+        "cover_metadata_access",
+        "unknown",
+    }
+)
+_TEMPORARY_BLOCK_WARNING_ACTION_VALUES = frozenset(
+    {
+        "group_feed_document",
+        "group_document",
+        "direct_document",
+        "reload",
+        "trusted_click",
+        "unknown",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -192,112 +262,130 @@ ENUM_CONTRACTS: tuple[SchemaEnumContract, ...] = (
         _enum_values(TargetCoverImageRefreshResult) | frozenset({""}),
     ),
     SchemaEnumContract(
+        "facebook_temporary_block_warning",
+        "id",
+        "source_kind",
+        _TEMPORARY_BLOCK_WARNING_SOURCE_VALUES,
+    ),
+    SchemaEnumContract(
+        "facebook_temporary_block_warning",
+        "id",
+        "operation_kind",
+        _TEMPORARY_BLOCK_WARNING_OPERATION_VALUES,
+    ),
+    SchemaEnumContract(
+        "facebook_temporary_block_warning",
+        "id",
+        "action_kind",
+        _TEMPORARY_BLOCK_WARNING_ACTION_VALUES,
+    ),
+    SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "state",
-        _enum_values(FacebookAccessCircuitStatus),
+        _LEGACY_CIRCUIT_STATUS_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "source_kind",
-        _enum_values(FacebookWorkSourceKind) | frozenset({""}),
+        _LEGACY_WORK_SOURCE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "operation_kind",
-        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+        _LEGACY_OPERATION_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "trigger_action_kind",
-        _enum_values(FacebookActionKind) | frozenset({""}),
+        _LEGACY_ACTION_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "recovery_recipe_kind",
-        _enum_values(FacebookRecoveryRecipeKind),
+        _LEGACY_RECOVERY_RECIPE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "requested_recipe_kind",
-        _enum_values(FacebookRecoveryRecipeKind),
+        _LEGACY_RECOVERY_RECIPE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_state",
         "'profile'",
         "last_probe_result",
-        _enum_values(FacebookProbeResult),
+        _LEGACY_PROBE_RESULT_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "event_kind",
-        _enum_values(FacebookAccessEventKind),
+        _LEGACY_ACCESS_EVENT_KIND_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "from_state",
-        _enum_values(FacebookAccessCircuitStatus),
+        _LEGACY_CIRCUIT_STATUS_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "to_state",
-        _enum_values(FacebookAccessCircuitStatus),
+        _LEGACY_CIRCUIT_STATUS_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "source_kind",
-        _enum_values(FacebookWorkSourceKind) | frozenset({""}),
+        _LEGACY_WORK_SOURCE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "operation_kind",
-        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+        _LEGACY_OPERATION_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "trigger_action_kind",
-        _enum_values(FacebookActionKind) | frozenset({""}),
+        _LEGACY_ACTION_VALUES,
     ),
     SchemaEnumContract(
         "facebook_access_circuit_events",
         "id",
         "recovery_recipe_kind",
-        _enum_values(FacebookRecoveryRecipeKind),
+        _LEGACY_RECOVERY_RECIPE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_session_recovery_state",
         "'profile'",
         "status",
-        _enum_values(FacebookSessionRecoveryStatus),
+        _LEGACY_SESSION_RECOVERY_STATUS_VALUES,
     ),
     SchemaEnumContract(
         "facebook_session_recovery_state",
         "'profile'",
         "requested_operation_kind",
-        _enum_values(FacebookProductOperationKind) | frozenset({""}),
+        _LEGACY_OPERATION_VALUES,
     ),
     SchemaEnumContract(
         "facebook_session_recovery_state",
         "'profile'",
         "requested_recipe_kind",
-        _enum_values(FacebookRecoveryRecipeKind),
+        _LEGACY_RECOVERY_RECIPE_VALUES,
     ),
     SchemaEnumContract(
         "facebook_session_recovery_state",
         "'profile'",
         "last_probe_result",
-        _enum_values(FacebookProbeResult),
+        _LEGACY_PROBE_RESULT_VALUES,
     ),
 )
 
@@ -420,6 +508,18 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         ),
     ),
     SchemaRangeContract(
+        "facebook_temporary_block_warning",
+        "id",
+        "generation",
+        "generation < 1",
+    ),
+    SchemaRangeContract(
+        "facebook_temporary_block_warning",
+        "id",
+        "warning_window",
+        "warning_until <= detected_at",
+    ),
+    SchemaRangeContract(
         "facebook_access_circuit_state",
         "'profile'",
         "circuit_counts",
@@ -509,6 +609,12 @@ DATETIME_CONTRACTS: tuple[SchemaDatetimeContract, ...] = (
             "updated_at",
         ),
         required_fields=("updated_at",),
+    ),
+    SchemaDatetimeContract(
+        "facebook_temporary_block_warning",
+        "id",
+        ("detected_at", "warning_until", "updated_at"),
+        required_fields=("detected_at", "warning_until", "updated_at"),
     ),
     SchemaDatetimeContract(
         "sidebar_groups",

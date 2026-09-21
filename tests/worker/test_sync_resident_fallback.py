@@ -15,27 +15,23 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
-from facebook_monitor.core.facebook_access import FacebookAccessBlockSignal
-from facebook_monitor.core.facebook_access import FacebookActionKind
-from facebook_monitor.core.facebook_access import FacebookProductOperationKind
-from facebook_monitor.core.facebook_access import FacebookWorkSourceKind
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
-from facebook_monitor.runtime.paths import FACEBOOK_AUTOMATION_SESSION_GUARDS_DIR_NAME
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
+from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_sync_and_finalize
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.fallback_automation_admission import GovernedFallbackPostsWork
-from facebook_monitor.worker.fallback_automation_admission import governed_fallback_posts_work
-from facebook_monitor.worker.facebook_automation_session_guard import (
-    FacebookAutomationSessionGuardStore,
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationTripSignal
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
-from facebook_monitor.worker.facebook_automation_session_guard import (
-    derive_facebook_automation_profile_alias,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
 )
+from facebook_monitor.worker.facebook_fallback_work import FacebookFallbackWork
 from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import should_reload_resident_page
@@ -45,6 +41,7 @@ from facebook_monitor.worker.sync_resident_fallback import prepare_sync_resident
 from facebook_monitor.worker.sync_resident_fallback import run_sync_resident_fallback_cycle
 from facebook_monitor.worker.sync_resident_fallback import run_sync_resident_fallback_loop
 from facebook_monitor.worker.sync_resident_fallback import select_sync_finalizing_scan_page
+from facebook_monitor.worker import sync_resident_fallback as sync_resident_fallback_module
 
 
 class FakeResidentPage:
@@ -110,12 +107,16 @@ class FakeContextManager(AbstractContextManager[FakeBrowserContext]):
         """結束 fake context，不需額外清理。"""
 
 
-class FakeGovernedWork:
-    """讓 cycle 單元測試保留正式的 application-context owner guard 形狀。"""
+class FakeFallbackWork:
+    """讓 cycle 單元測試保留正式的 application-context 形狀。"""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.context_closed = False
+        self.signal = FacebookAutomationTripSignal()
+
+    def ensure_io_allowed(self) -> None:
+        """Fake runtime 未 trip，允許執行 browser action。"""
 
     def application_context(self) -> SqliteApplicationContext:
         """回傳與正式 work 相同邊界的 SQLite application context。"""
@@ -133,22 +134,10 @@ class FakeGovernedWork:
         self.context_closed = True
 
 
-def _governed_work(db_path: Path) -> GovernedFallbackPostsWork:
+def _fallback_work(db_path: Path) -> FacebookFallbackWork:
     """將結構相容的 fake work 限縮在測試 helper 內。"""
 
-    return cast(GovernedFallbackPostsWork, FakeGovernedWork(db_path))
-
-
-def _guard_store(
-    data_dir: Path,
-    work: GovernedFallbackPostsWork,
-) -> FacebookAutomationSessionGuardStore:
-    """取得 production governed work 所使用的 session sentinel store。"""
-
-    return FacebookAutomationSessionGuardStore(
-        data_dir / FACEBOOK_AUTOMATION_SESSION_GUARDS_DIR_NAME,
-        profile_alias=derive_facebook_automation_profile_alias(work.profile_scope_key),
-    )
+    return cast(FacebookFallbackWork, FakeFallbackWork(db_path))
 
 
 def test_resident_page_reload_keeps_same_group_feed_sorting_url() -> None:
@@ -189,8 +178,8 @@ def test_resident_page_reload_keeps_same_comment_post_url() -> None:
     )
 
 
-def test_sync_finalizing_selector_rejects_comments_fallback() -> None:
-    """sync fallback selector 對 comments 必須明確拒絕，不可回 direct scanner。"""
+def test_sync_finalizing_selector_supports_posts_and_comments() -> None:
+    """sync fallback 應依 target kind 選擇原本的 posts/comments scanner。"""
 
     posts_target = TargetDescriptor.for_group_posts(
         group_id="111",
@@ -203,79 +192,24 @@ def test_sync_finalizing_selector_rejects_comments_fallback() -> None:
     )
 
     assert select_sync_finalizing_scan_page(posts_target) is scan_posts_page_sync_and_finalize
-    with pytest.raises(WorkerFailure) as exc_info:
+    assert (
         select_sync_finalizing_scan_page(comments_target)
-    assert exc_info.value.reason == "unsupported_in_fallback"
-
-
-def test_sync_resident_comments_fails_before_page_navigation_or_scanner(
-    tmp_path: Path,
-) -> None:
-    """comments sync attempt 在 page pool 前失敗，且保存 guarded diagnostics。"""
-
-    db_path = tmp_path / "app.db"
-    context = FakeBrowserContext()
-    page_pool = SyncResidentPagePool(context)
-    scan_calls = 0
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_comments_target(
-            UpsertCommentsTargetRequest(
-                group_id="222518561920110",
-                parent_post_id="2187454285426518",
-                canonical_url=(
-                    "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
-                ),
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-
-    def forbidden_scan(**kwargs: Any) -> PostsScanSummary:
-        nonlocal scan_calls
-        scan_calls += 1
-        raise AssertionError("comments sync fallback must not call scanner")
-
-    summary = run_sync_resident_fallback_cycle(
-        options=ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            interval_seconds=0,
-        ),
-        page_pool=page_pool,
-        scan_page=forbidden_scan,
-        cycle_index=1,
-        governed_work=_governed_work(db_path),
+        is scan_comments_target_page_sync_and_finalize
     )
-    with SqliteApplicationContext(db_path) as app:
-        scan = app.repositories.scan_runs.latest_by_target(target.id)
-
-    assert summary.selected_count == 1
-    assert summary.failure_count == 1
-    assert summary.opened_page_count == 0
-    assert summary.reused_page_count == 0
-    assert context.pages == []
-    assert scan_calls == 0
-    assert scan is not None
-    assert scan.metadata["reason"] == "unsupported_in_fallback"
-    assert scan.metadata["failure_diagnostics"]["fallback_guard"] == {
-        "detector": "fallback_capability_guard",
-        "detector_version": 1,
-        "classification": "unsupported_in_fallback",
-        "fallback_mode": "sync_resident_fallback",
-        "target_kind": "comments",
-        "browser_work_started": False,
-    }
 
 
-def test_comments_only_sync_resident_loop_does_not_launch_browser(
+def test_comments_only_sync_resident_loop_opens_direct_url_and_scans(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """comments-only sync loop 不得取得 profile lease 或建立 browser context。"""
+    """comments-only sync fallback 應開啟 canonical URL 並執行 comments scanner。"""
 
     db_path = tmp_path / "app.db"
     profile_dir = tmp_path / "profile"
     profile_dir.mkdir()
+    context = FakeBrowserContext()
     context_factory_calls = 0
-    scan_calls = 0
+    scan_calls: list[str] = []
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_comments_target(
             UpsertCommentsTargetRequest(
@@ -288,17 +222,38 @@ def test_comments_only_sync_resident_loop_does_not_launch_browser(
         )
         app.services.targets.restart_target_monitoring(target.id)
 
-    def forbidden_context_factory(
+    def context_factory(
         options: ResidentRuntimeOptions,
     ) -> AbstractContextManager[FakeBrowserContext]:
         nonlocal context_factory_calls
         context_factory_calls += 1
-        raise AssertionError("comments-only sync fallback must not launch browser")
+        return FakeContextManager(context)
 
-    def forbidden_scan(**kwargs: Any) -> PostsScanSummary:
-        nonlocal scan_calls
-        scan_calls += 1
-        raise AssertionError("comments-only sync fallback must not call scanner")
+    def fake_comments_scan(**kwargs: Any) -> PostsScanSummary:
+        """記錄 comments scanner 收到已導航 page。"""
+
+        scan_calls.append(kwargs["target"].id)
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    @contextmanager
+    def fake_work_factory(**_kwargs: Any) -> Iterator[FacebookFallbackWork]:
+        """提供 loop 測試所需的 transitional governed owner。"""
+
+        yield _fallback_work(db_path)
+
+    monkeypatch.setattr(
+        sync_resident_fallback_module,
+        "scan_comments_target_page_sync_and_finalize",
+        fake_comments_scan,
+    )
 
     summaries = run_sync_resident_fallback_loop(
         ResidentRuntimeOptions(
@@ -307,14 +262,17 @@ def test_comments_only_sync_resident_loop_does_not_launch_browser(
             interval_seconds=0,
             max_cycles=1,
         ),
-        context_factory=forbidden_context_factory,
-        scan_page=forbidden_scan,
+        context_factory=context_factory,
+        automation_work_factory=fake_work_factory,
     )
 
-    assert context_factory_calls == 0
-    assert scan_calls == 0
+    assert context_factory_calls == 1
+    assert scan_calls == [target.id]
     assert len(summaries) == 1
-    assert summaries[0].failure_count == 1
+    assert summaries[0].success_count == 1
+    assert summaries[0].opened_page_count == 1
+    assert len(context.pages) == 1
+    assert context.pages[0].goto_count == 1
 
 
 def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> None:
@@ -361,7 +319,7 @@ def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> 
         scan_page=fake_scan_page,
         schedule_planner=planner,
         cycle_index=1,
-        governed_work=_governed_work(db_path),
+        fallback_work=_fallback_work(db_path),
     )
     with SqliteApplicationContext(db_path) as app:
         app.services.targets.request_target_scan(target.id)
@@ -375,7 +333,7 @@ def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> 
         scan_page=fake_scan_page,
         schedule_planner=planner,
         cycle_index=2,
-        governed_work=_governed_work(db_path),
+        fallback_work=_fallback_work(db_path),
     )
 
     assert scan_calls == [target.id, target.id]
@@ -388,6 +346,85 @@ def test_resident_fallback_reuses_target_page_between_cycles(tmp_path: Path) -> 
         runtime_state = app.repositories.runtime_states.get(target.id)
     assert runtime_state is not None
     assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
+
+
+def test_sync_resident_loop_keeps_one_context_and_reuses_page_across_cycles(
+    tmp_path: Path,
+) -> None:
+    """正式 sync loop 不應為每個 cycle 重建 context，target page 應直接重用。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    context = FakeBrowserContext()
+    work = FakeFallbackWork(db_path)
+    context_factory_calls = 0
+
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="loop-reuse",
+                canonical_url="https://www.facebook.com/groups/loop-reuse",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def context_factory(
+        _options: ResidentRuntimeOptions,
+    ) -> AbstractContextManager[FakeBrowserContext]:
+        nonlocal context_factory_calls
+        context_factory_calls += 1
+        return FakeContextManager(context)
+
+    @contextmanager
+    def fake_work_factory(**_kwargs: Any) -> Iterator[FacebookFallbackWork]:
+        """提供 loop reuse 測試所需的 transitional governed owner。"""
+
+        yield cast(FacebookFallbackWork, work)
+
+    def fake_scan_page(**kwargs: Any) -> PostsScanSummary:
+        """回傳最小 summary，讓 interval=0 的 target 下一輪仍可再次 due。"""
+
+        return PostsScanSummary(
+            target_id=kwargs["target"].id,
+            url=kwargs["page"].url,
+            item_count=0,
+            new_count=0,
+            matched_count=0,
+            scan_run_id=1,
+            round_stats=(),
+        )
+
+    def request_second_cycle(summary: Any) -> None:
+        """第一輪完成後建立 manual scan request，確保第二輪立即 due。"""
+
+        if getattr(summary, "cycle_index", 0) != 1:
+            return
+        with SqliteApplicationContext(db_path) as app:
+            app.services.targets.request_target_scan(target.id)
+
+    summaries = run_sync_resident_fallback_loop(
+        ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=profile_dir,
+            interval_seconds=0,
+            scheduler_tick_seconds=0,
+            max_cycles=2,
+        ),
+        context_factory=context_factory,
+        scan_page=fake_scan_page,
+        on_cycle=request_second_cycle,
+        automation_work_factory=fake_work_factory,
+    )
+
+    assert context_factory_calls == 1
+    assert len(summaries) == 2
+    assert summaries[0].opened_page_count == 1
+    assert summaries[1].reused_page_count == 1
+    assert len(context.pages) == 1
+    assert context.pages[0].goto_count == 1
+    assert context.pages[0].reload_count == 1
+    assert context.pages[0].closed
 
 
 def test_sync_fallback_owner_guard_rejects_finalize_after_runtime_owner_changes(
@@ -431,7 +468,7 @@ def test_sync_fallback_owner_guard_rejects_finalize_after_runtime_owner_changes(
         page_pool=SyncResidentPagePool(context),
         scan_page=replace_runtime_owner,
         cycle_index=1,
-        governed_work=_governed_work(db_path),
+        fallback_work=_fallback_work(db_path),
     )
 
     assert summary.success_count == 0
@@ -477,7 +514,7 @@ def test_resident_main_fallback_retries_extractor_empty_until_third_failure(
             page_pool=page_pool,
             scan_page=failing_scan_page,
             cycle_index=attempt,
-            governed_work=_governed_work(db_path),
+            fallback_work=_fallback_work(db_path),
         )
 
         assert summary.failure_count == 1
@@ -509,7 +546,7 @@ def test_resident_main_fallback_retries_extractor_empty_until_third_failure(
             assert latest_scan.metadata["retryable"] is False
 
 
-def test_sync_resident_fallback_preserves_typed_failure_diagnostics(
+def test_sync_resident_fallback_records_temporary_block_incident(
     tmp_path: Path,
 ) -> None:
     """sync fallback 的 WorkerFailure diagnostics 應一路寫入 failed scan。"""
@@ -543,23 +580,118 @@ def test_sync_resident_fallback_preserves_typed_failure_diagnostics(
             diagnostics=diagnostics,
         )
 
-    summary = run_sync_resident_fallback_cycle(
-        options=ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            interval_seconds=0,
-        ),
-        page_pool=page_pool,
-        scan_page=failing_scan_page,
-        cycle_index=1,
-        governed_work=_governed_work(db_path),
-    )
+    signal = FacebookAutomationTripSignal()
+    with pytest.raises(FacebookTemporaryBlockIncidentRecorded):
+        run_sync_resident_fallback_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=page_pool,
+            scan_page=failing_scan_page,
+            cycle_index=1,
+            fallback_work=FacebookFallbackWork(db_path=db_path, signal=signal),
+        )
     with SqliteApplicationContext(db_path) as app:
         scan = app.repositories.scan_runs.latest_by_target(target.id)
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded = app.repositories.targets.get(target.id)
 
-    assert summary.failure_count == 1
+    assert signal.is_tripped()
     assert scan is not None
+    assert scan.metadata["worker"] == "facebook_access_incident"
     assert scan.metadata["failure_diagnostics"] == diagnostics.to_safe_mapping()
+    assert warning is not None
+    assert warning.operation_kind.value == "posts_access"
+    assert warning.action_kind.value == "group_feed_document"
+    assert loaded is not None and loaded.paused
+
+
+def test_sync_resident_fallback_pretripped_signal_opens_no_page(
+    tmp_path: Path,
+) -> None:
+    """Process-local trip 後不得再建立或準備 Facebook page。"""
+
+    db_path = tmp_path / "app.db"
+    context = FakeBrowserContext()
+    page_pool = SyncResidentPagePool(context)
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="pretripped",
+                canonical_url="https://www.facebook.com/groups/pretripped",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    signal = FacebookAutomationTripSignal()
+    assert signal.try_trip()
+    with pytest.raises(FacebookAutomationRuntimeTripped):
+        run_sync_resident_fallback_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=page_pool,
+            scan_page=scan_posts_page_sync_and_finalize,
+            cycle_index=1,
+            fallback_work=FacebookFallbackWork(db_path=db_path, signal=signal),
+        )
+
+    assert context.pages == []
+
+
+def test_sync_comments_block_records_comments_direct_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Comments fallback direct navigation 必須保存 comments operation/action。"""
+
+    db_path = tmp_path / "app.db"
+    context = FakeBrowserContext()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_comments_target(
+            UpsertCommentsTargetRequest(
+                group_id="222518561920110",
+                parent_post_id="2187454285426518",
+                canonical_url=(
+                    "https://www.facebook.com/groups/222518561920110/"
+                    "posts/2187454285426518"
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    def blocked_comments_scan(**_kwargs: Any) -> PostsScanSummary:
+        raise WorkerFailure("facebook_temporary_block", "blocked")
+
+    monkeypatch.setattr(
+        sync_resident_fallback_module,
+        "scan_comments_target_page_sync_and_finalize",
+        blocked_comments_scan,
+    )
+
+    signal = FacebookAutomationTripSignal()
+    with pytest.raises(FacebookTemporaryBlockIncidentRecorded):
+        run_sync_resident_fallback_cycle(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=0,
+            ),
+            page_pool=SyncResidentPagePool(context),
+            scan_page=blocked_comments_scan,
+            cycle_index=1,
+            fallback_work=FacebookFallbackWork(db_path=db_path, signal=signal),
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+    assert warning is not None
+    assert warning.operation_kind.value == "comments_access"
+    assert warning.action_kind.value == "direct_document"
 
 
 def test_sync_resident_fallback_escalates_sort_skip_after_three_skips(
@@ -614,7 +746,7 @@ def test_sync_resident_fallback_escalates_sort_skip_after_three_skips(
             page_pool=page_pool,
             scan_page=skipping_scan_page,
             cycle_index=attempt,
-            governed_work=_governed_work(db_path),
+            fallback_work=_fallback_work(db_path),
         )
         with SqliteApplicationContext(db_path) as app:
             state = app.repositories.runtime_states.get(target.id)
@@ -676,7 +808,7 @@ def test_resident_fallback_closes_page_after_target_stop(tmp_path: Path) -> None
         page_pool=page_pool,
         scan_page=fake_scan_page,
         cycle_index=1,
-        governed_work=_governed_work(db_path),
+        fallback_work=_fallback_work(db_path),
     )
     with SqliteApplicationContext(db_path) as app:
         app.services.targets.pause_target_monitoring(target.id)
@@ -689,7 +821,7 @@ def test_resident_fallback_closes_page_after_target_stop(tmp_path: Path) -> None
         page_pool=page_pool,
         scan_page=fake_scan_page,
         cycle_index=2,
-        governed_work=_governed_work(db_path),
+        fallback_work=_fallback_work(db_path),
     )
 
     assert first_summary.opened_page_count == 1
@@ -727,225 +859,3 @@ def test_resident_fallback_reports_profile_locked_before_playwright(tmp_path: Pa
             assert exc.reason == "profile_locked"
         else:
             raise AssertionError("resident main worker should report profile_locked")
-
-
-def test_production_governed_failure_finalize_uses_one_writer(
-    tmp_path: Path,
-) -> None:
-    """正式 fenced transaction 內的失敗寫回不可再開第二個 SQLite writer。"""
-
-    db_path = tmp_path / "app.db"
-    profile_dir = tmp_path / "profiles" / "automation"
-    profile_dir.mkdir(parents=True)
-    context = FakeBrowserContext()
-    captured_work: list[GovernedFallbackPostsWork] = []
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="production-failure-finalize",
-                canonical_url=(
-                    "https://www.facebook.com/groups/production-failure-finalize"
-                ),
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-
-    @contextmanager
-    def recording_work_factory(**kwargs: Any) -> Iterator[GovernedFallbackPostsWork]:
-        with governed_fallback_posts_work(**kwargs) as work:
-            captured_work.append(work)
-            yield work
-
-    def deterministic_failure(**_kwargs: Any) -> PostsScanSummary:
-        raise WorkerFailure(
-            SORT_ADJUST_UNCONFIRMED_REASON,
-            "deterministic production-style failure",
-        )
-
-    summaries = run_sync_resident_fallback_loop(
-        ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=profile_dir,
-            interval_seconds=0,
-            max_cycles=1,
-        ),
-        context_factory=lambda _options: FakeContextManager(context),
-        scan_page=deterministic_failure,
-        automation_work_factory=recording_work_factory,
-    )
-
-    assert summaries[0].failure_count == 1
-    assert captured_work[0].browser_context_closed
-    with SqliteApplicationContext(db_path) as app:
-        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        runtime_state = app.repositories.runtime_states.get(target.id)
-    assert latest_scan is not None
-    assert latest_scan.metadata["reason"] == SORT_ADJUST_UNCONFIRMED_REASON
-    assert "database is locked" not in latest_scan.error_message.casefold()
-    assert runtime_state is not None
-    assert runtime_state.runtime_status == TargetRuntimeStatus.IDLE
-
-
-def test_visible_write_rejection_still_acknowledges_successful_context_close(
-    tmp_path: Path,
-) -> None:
-    """外部 durable trip 拒絕 visible write 時，成功的 context exit 仍可清 marker。"""
-
-    db_path = tmp_path / "app.db"
-    profile_dir = tmp_path / "profiles" / "automation"
-    profile_dir.mkdir(parents=True)
-    captured_work: list[GovernedFallbackPostsWork] = []
-    context_launches = 0
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="external-trip",
-                canonical_url="https://www.facebook.com/groups/external-trip",
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-
-    @contextmanager
-    def recording_work_factory(**kwargs: Any) -> Iterator[GovernedFallbackPostsWork]:
-        with governed_fallback_posts_work(**kwargs) as work:
-            captured_work.append(work)
-            yield work
-
-    class TripBeforeVisibleWritePage(FakeResidentPage):
-        """在導航準備完成後由另一 DB owner 開啟 durable circuit。"""
-
-        tripped = False
-
-        def wait_for_timeout(self, milliseconds: int) -> None:
-            if self.tripped:
-                return
-            self.tripped = True
-            work = captured_work[-1]
-            with SqliteApplicationContext(db_path) as app:
-                result = app.services.facebook_access_circuit.trip(
-                    FacebookAccessBlockSignal(
-                        admission_token=work.lease.admission_token,
-                        source_kind=FacebookWorkSourceKind.SCAN,
-                        operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
-                        trigger_action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
-                        source_owner_token=work.lease.process_lease.operation_id,
-                        target_id=target.id,
-                        evidence_code="external_trip_test_v1",
-                    ),
-                    source_owner_is_valid=True,
-                )
-            assert result.state.status.value == "open"
-
-    class TripBeforeVisibleWriteContext(FakeBrowserContext):
-        def new_page(self) -> FakeResidentPage:
-            page = TripBeforeVisibleWritePage()
-            self.pages.append(page)
-            return page
-
-    def context_factory(
-        _options: ResidentRuntimeOptions,
-    ) -> AbstractContextManager[FakeBrowserContext]:
-        nonlocal context_launches
-        context_launches += 1
-        return FakeContextManager(TripBeforeVisibleWriteContext())
-
-    first = run_sync_resident_fallback_loop(
-        ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=profile_dir,
-            interval_seconds=0,
-            max_cycles=1,
-        ),
-        context_factory=context_factory,
-        automation_work_factory=recording_work_factory,
-    )
-    with SqliteApplicationContext(db_path) as app:
-        app.services.targets.pause_target_monitoring(target.id)
-        app.services.targets.restart_target_monitoring(target.id)
-    second = run_sync_resident_fallback_loop(
-        ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=profile_dir,
-            interval_seconds=0,
-            stale_running_after_seconds=0,
-            max_cycles=1,
-        ),
-        context_factory=context_factory,
-        automation_work_factory=recording_work_factory,
-    )
-
-    assert first[0].skipped_count == 1
-    assert second[0].skipped_count == 1
-    assert context_launches == 1
-    assert len(captured_work) == 1
-    assert captured_work[0].browser_context_closed
-    assert _guard_store(tmp_path, captured_work[0]).read() is None
-
-
-def test_context_close_failure_does_not_acknowledge_browser_context(
-    tmp_path: Path,
-) -> None:
-    """context exit 失敗時保留 normal marker，下一次啟動必須 fail closed。"""
-
-    db_path = tmp_path / "app.db"
-    profile_dir = tmp_path / "profiles" / "automation"
-    profile_dir.mkdir(parents=True)
-    captured_work: list[GovernedFallbackPostsWork] = []
-    restart_context_launches = 0
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="close-failure",
-                canonical_url="https://www.facebook.com/groups/close-failure",
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-
-    @contextmanager
-    def recording_work_factory(**kwargs: Any) -> Iterator[GovernedFallbackPostsWork]:
-        with governed_fallback_posts_work(**kwargs) as work:
-            captured_work.append(work)
-            yield work
-
-    class CloseFailureContextManager(FakeContextManager):
-        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-            raise RuntimeError("browser context close failed")
-
-    with pytest.raises(RuntimeError, match="browser context close failed"):
-        run_sync_resident_fallback_loop(
-            ResidentRuntimeOptions(
-                db_path=db_path,
-                profile_dir=profile_dir,
-                interval_seconds=0,
-                max_cycles=1,
-            ),
-            context_factory=lambda _options: CloseFailureContextManager(
-                FakeBrowserContext()
-            ),
-            automation_work_factory=recording_work_factory,
-        )
-
-    assert len(captured_work) == 1
-    assert not captured_work[0].browser_context_closed
-    assert _guard_store(tmp_path, captured_work[0]).read() is not None
-
-    def forbidden_restart_context(
-        _options: ResidentRuntimeOptions,
-    ) -> AbstractContextManager[FakeBrowserContext]:
-        nonlocal restart_context_launches
-        restart_context_launches += 1
-        raise AssertionError("stale normal marker must block browser relaunch")
-
-    restarted = run_sync_resident_fallback_loop(
-        ResidentRuntimeOptions(
-            db_path=db_path,
-            profile_dir=profile_dir,
-            interval_seconds=0,
-            max_cycles=1,
-        ),
-        context_factory=forbidden_restart_context,
-        automation_work_factory=recording_work_factory,
-    )
-
-    assert restarted[0].skipped_count == 1
-    assert restart_context_launches == 0

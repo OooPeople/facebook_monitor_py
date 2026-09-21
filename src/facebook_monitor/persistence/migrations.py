@@ -7,10 +7,34 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
+from datetime import timedelta
 import sqlite3
 
 
 Migration = Callable[[sqlite3.Connection], None]
+
+_WARNING_SOURCE_KINDS = frozenset({"cover", "metadata", "scan", "sync_resolver"})
+_WARNING_SOURCE_SQL = ", ".join(f"'{value}'" for value in sorted(_WARNING_SOURCE_KINDS))
+_WARNING_OPERATION_KINDS = frozenset(
+    {
+        "posts_access",
+        "comments_access",
+        "group_metadata_access",
+        "cover_metadata_access",
+        "unknown",
+    }
+)
+_WARNING_ACTION_KINDS = frozenset(
+    {
+        "group_feed_document",
+        "group_document",
+        "direct_document",
+        "reload",
+        "trusted_click",
+        "unknown",
+    }
+)
 
 
 TARGETS_V35_TO_V36_COLUMNS = (
@@ -329,6 +353,246 @@ def migrate_42_to_43(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_43_to_44(connection: sqlite3.Connection) -> None:
+    """把舊 temporary-block 強制鎖轉為可逐項確認的風險警告。"""
+
+    migrated_at = connection.execute(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+    ).fetchone()[0]
+    active_warning = connection.execute(
+        """
+        SELECT 1
+        FROM facebook_access_circuit_state
+        WHERE reason_code = 'facebook_temporary_block'
+          AND state IN ('open', 'half_open')
+        LIMIT 1
+        """
+    ).fetchone()
+    if active_warning is None:
+        return
+    connection.execute(
+        """
+        UPDATE target_runtime_state
+        SET desired_state = 'stopped',
+            runtime_status = 'idle',
+            scan_requested_at = '',
+            last_enqueued_at = '',
+            last_started_at = '',
+            last_finished_at = '',
+            last_heartbeat_at = '',
+            last_error = '',
+            last_skip_reason = '',
+            enqueue_reason = '',
+            active_worker_id = '',
+            active_page_id = '',
+            display_next_due_at = '',
+            consecutive_failure_reason = '',
+            consecutive_failure_count = 0,
+            consecutive_scan_skip_reason = '',
+            consecutive_scan_skip_count = 0,
+            updated_at = ?
+        WHERE target_id IN (
+            SELECT id FROM targets WHERE enabled = 1 AND paused = 0
+        )
+        """,
+        (migrated_at,),
+    )
+    connection.execute(
+        """
+        UPDATE targets
+        SET paused = 1,
+            updated_at = ?
+        WHERE enabled = 1 AND paused = 0
+        """,
+        (migrated_at,),
+    )
+    connection.execute(
+        """
+        INSERT INTO facebook_access_circuit_events (
+            profile_scope_key, episode_id, event_kind, from_state, to_state,
+            reason_code, source_kind, operation_kind, trigger_action_kind,
+            recovery_recipe_kind, target_id, policy_delay_seconds, occurred_at
+        )
+        SELECT profile_scope_key, episode_id, 'closed', state, 'closed',
+               reason_code, source_kind, operation_kind, trigger_action_kind,
+               '', trigger_target_id, 0, ?
+        FROM facebook_access_circuit_state
+        WHERE reason_code = 'facebook_temporary_block'
+          AND state IN ('open', 'half_open')
+        """,
+        (migrated_at,),
+    )
+    connection.execute(
+        """
+        UPDATE facebook_access_circuit_state
+        SET state = 'closed',
+            generation = generation + 1,
+            recovery_recipe_kind = '',
+            cooldown_until = strftime(
+                '%Y-%m-%dT%H:%M:%fZ',
+                CASE
+                    WHEN last_detected_at <> '' THEN last_detected_at
+                    ELSE opened_at
+                END,
+                '+12 hours'
+            ),
+            reopen_count = 0,
+            half_open_token = '',
+            half_open_started_at = '',
+            half_open_lease_expires_at = '',
+            probe_request_id = '',
+            probe_requested_at = '',
+            requested_recipe_kind = '',
+            requested_target_id = NULL,
+            last_probe_finished_at = '',
+            last_probe_result = '',
+            closed_at = ?,
+            updated_at = ?
+        WHERE reason_code = 'facebook_temporary_block'
+          AND state IN ('open', 'half_open')
+        """,
+        (migrated_at, migrated_at),
+    )
+
+
+def migrate_44_to_45(connection: sqlite3.Connection) -> None:
+    """建立最小 warning truth，僅匯入可信 legacy temporary-block evidence。"""
+
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS facebook_temporary_block_warning (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            generation INTEGER NOT NULL CHECK (generation >= 1),
+            detected_at TEXT NOT NULL,
+            warning_until TEXT NOT NULL,
+            source_kind TEXT NOT NULL CHECK (
+                source_kind IN ({_WARNING_SOURCE_SQL})
+            ),
+            operation_kind TEXT NOT NULL CHECK (
+                operation_kind IN (
+                    'posts_access', 'comments_access', 'group_metadata_access',
+                    'cover_metadata_access', 'unknown'
+                )
+            ),
+            action_kind TEXT NOT NULL CHECK (
+                action_kind IN (
+                    'group_feed_document', 'group_document', 'direct_document',
+                    'reload', 'trusted_click', 'unknown'
+                )
+            ),
+            updated_at TEXT NOT NULL,
+            CHECK (warning_until > detected_at)
+        )
+        """
+    )
+    rows = connection.execute(
+        """
+        SELECT profile_scope_key, generation, last_detected_at, opened_at,
+               source_kind, operation_kind, trigger_action_kind
+        FROM facebook_access_circuit_state
+        WHERE reason_code = 'facebook_temporary_block'
+        """
+    ).fetchall()
+    candidates: list[tuple[datetime, int, str, sqlite3.Row]] = []
+    for row in rows:
+        if str(row["source_kind"] or "") not in _WARNING_SOURCE_KINDS:
+            continue
+        detected_at = _trusted_legacy_detection_time(row)
+        if detected_at is None:
+            continue
+        try:
+            generation = int(row["generation"])
+        except (TypeError, ValueError):
+            continue
+        if generation < 0:
+            continue
+        candidates.append(
+            (
+                detected_at,
+                generation,
+                str(row["profile_scope_key"]),
+                row,
+            )
+        )
+    if not candidates:
+        return
+    detected_at, _, _, selected = max(
+        candidates,
+        key=lambda candidate: (candidate[0], candidate[1], candidate[2]),
+    )
+    generation = max(candidate[1] for candidate in candidates) + 1
+    warning_until = detected_at + timedelta(hours=12)
+    detected_text = detected_at.isoformat()
+    warning_until_text = warning_until.isoformat()
+    connection.execute(
+        """
+        INSERT INTO facebook_temporary_block_warning (
+            id, generation, detected_at, warning_until,
+            source_kind, operation_kind, action_kind, updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            generation = excluded.generation,
+            detected_at = excluded.detected_at,
+            warning_until = excluded.warning_until,
+            source_kind = excluded.source_kind,
+            operation_kind = excluded.operation_kind,
+            action_kind = excluded.action_kind,
+            updated_at = excluded.updated_at
+        WHERE facebook_temporary_block_warning.generation <= excluded.generation
+        """,
+        (
+            generation,
+            detected_text,
+            warning_until_text,
+            _bounded_legacy_value(
+                selected["source_kind"],
+                allowed=_WARNING_SOURCE_KINDS,
+                fallback="scan",
+            ),
+            _bounded_legacy_value(
+                selected["operation_kind"],
+                allowed=_WARNING_OPERATION_KINDS,
+                fallback="unknown",
+            ),
+            _bounded_legacy_value(
+                selected["trigger_action_kind"],
+                allowed=_WARNING_ACTION_KINDS,
+                fallback="unknown",
+            ),
+            detected_text,
+        ),
+    )
+
+
+def _trusted_legacy_detection_time(row: sqlite3.Row) -> datetime | None:
+    """解析 legacy detection time；無效或非 UTC evidence 不匯入。"""
+
+    for field in ("last_detected_at", "opened_at"):
+        raw_value = str(row[field] or "")
+        if not raw_value:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw_value)
+        except ValueError:
+            continue
+        if parsed.utcoffset() == timedelta(0):
+            return parsed
+    return None
+
+
+def _bounded_legacy_value(
+    value: object,
+    *,
+    allowed: frozenset[str],
+    fallback: str,
+) -> str:
+    """只把 legacy bounded enum 投影到新 warning，異常值降為固定 fallback。"""
+
+    normalized = str(value or "")
+    return normalized if normalized in allowed else fallback
+
+
 MIGRATIONS: dict[int, Migration] = {
     35: migrate_35_to_36,
     36: migrate_36_to_37,
@@ -338,6 +602,8 @@ MIGRATIONS: dict[int, Migration] = {
     40: migrate_40_to_41,
     41: migrate_41_to_42,
     42: migrate_42_to_43,
+    43: migrate_43_to_44,
+    44: migrate_44_to_45,
 }
 
 
@@ -524,6 +790,8 @@ __all__ = [
     "migrate_39_to_40",
     "migrate_41_to_42",
     "migrate_42_to_43",
+    "migrate_43_to_44",
+    "migrate_44_to_45",
     "rebuild_targets_table_with_check_constraints",
     "run_known_migrations",
     "table_exists",

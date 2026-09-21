@@ -189,8 +189,26 @@ class TargetMonitoringCommands:
 
         targets = self.targets.list_enabled()
         self._ensure_startup_reset_runtime_rows_are_decodable(targets)
+        self._pause_targets(targets, normalize_names=True)
+
+    def pause_all_target_monitoring(self) -> int:
+        """停止所有 active target，保留設定、去重、通知與歷史資料。"""
+
+        targets = self.targets.list_enabled()
+        self._pause_targets(targets, normalize_names=False)
+        return len(targets)
+
+    def _pause_targets(
+        self,
+        targets: list[TargetDescriptor],
+        *,
+        normalize_names: bool,
+    ) -> None:
+        """停止指定 targets；只有 startup caller 需先執行 invariant preflight。"""
+
         for target in targets:
-            target = self.registry.normalize_target_names(target)
+            if normalize_names:
+                target = self.registry.normalize_target_names(target)
             self.pause_target_monitoring(target.id)
 
     def _ensure_startup_reset_runtime_rows_are_decodable(

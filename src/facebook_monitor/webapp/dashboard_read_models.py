@@ -6,8 +6,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-from facebook_monitor.application.facebook_access_observability import (
-    FacebookAccessSafeSnapshot,
+from facebook_monitor.core.facebook_temporary_block import (
+    TemporaryBlockWarningSnapshot,
 )
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionStatus
 from facebook_monitor.webapp.dashboard_models import SidebarGroupSection
@@ -51,23 +51,14 @@ class DatabaseInvariantWarning:
 
 
 @dataclass(frozen=True)
-class FacebookAccessCircuitBanner:
-    """保存 profile-wide Facebook automation 安全暫停 banner。"""
+class FacebookTemporaryBlockWarningBanner:
+    """保存首頁 temporary-block advisory warning。"""
 
-    visible: bool = False
+    active: bool = False
     title: str = ""
     message: str = ""
-    profile_scope: str = ""
-    state: str = "unknown"
-    reason: str = ""
-    cooldown_active: bool = False
-    cooldown_until: str = ""
-    probe_pending: bool = False
-    last_probe_result: str = ""
-    last_probe_result_label: str = ""
-    recovery_enabled: bool = False
-    recovery_disabled_reason: str = ""
-    recovery_status_message: str = ""
+    warning_until: str = ""
+    generation: int = -1
 
 
 @dataclass(frozen=True)
@@ -77,8 +68,8 @@ class DashboardViewModel:
     rows: tuple[TargetRow, ...]
     sidebar_groups: tuple[SidebarGroupSection, ...] = ()
     profile_session_warning: ProfileSessionWarning = ProfileSessionWarning()
-    facebook_access_circuit_banner: FacebookAccessCircuitBanner = (
-        FacebookAccessCircuitBanner()
+    facebook_temporary_block_warning: FacebookTemporaryBlockWarningBanner = (
+        FacebookTemporaryBlockWarningBanner()
     )
     database_invariant_warning: DatabaseInvariantWarning = DatabaseInvariantWarning()
     dashboard_degraded: bool = False
@@ -129,5 +120,5 @@ class DashboardReadResult:
     sidebar_groups: tuple[SidebarGroupSection, ...]
     profile_session_status: ProfileSessionStatus
     database_invariant_warning: DatabaseInvariantWarning
-    facebook_access_safe_snapshot: FacebookAccessSafeSnapshot = FacebookAccessSafeSnapshot()
+    temporary_block_warning_snapshot: TemporaryBlockWarningSnapshot | None = None
     dashboard_degraded: bool = False

@@ -259,7 +259,7 @@ def test_revision_client_teardown_closes_sse_and_clears_timers() -> None:
     assert "clearFallbackTimer(runtime);" in teardown
     assert "stopPollingFallback(runtime);" in teardown
     assert "window.clearInterval(runtime.pendingRefreshIntervalId);" in teardown
-    assert "window.clearInterval(runtime.safetyPollIntervalId);" in teardown
+    assert "window.clearInterval(runtime.boundedRefreshPollIntervalId);" in teardown
     assert "runtime.source.close();" in teardown
     assert "state.revisionTransportState = transportStates.closed;" in teardown
     assert 'window.addEventListener("pagehide", teardown, { once: true });' in (
@@ -270,18 +270,18 @@ def test_revision_client_teardown_closes_sse_and_clears_timers() -> None:
     )
 
 
-def test_dashboard_safety_poll_refreshes_even_while_sse_is_open() -> None:
-    """Filesystem hold 與 cooldown 到期不得依賴 SQLite revision 或 SSE event。"""
+def test_dashboard_bounded_refresh_runs_even_while_sse_is_open() -> None:
+    """Temporary-block warning 到期不得依賴 SQLite revision 或 SSE event。"""
 
     revision_client_js = Path(
         "src/facebook_monitor/webapp/static/dashboard/revision_client.js"
     ).read_text(encoding="utf-8")
-    safety_poll = revision_client_js.split(
-        "runtime.safetyPollIntervalId = window.setInterval", 1
-    )[1].split("}, safetyPollIntervalMs);", 1)[0]
+    bounded_refresh_poll = revision_client_js.split(
+        "runtime.boundedRefreshPollIntervalId = window.setInterval", 1
+    )[1].split("}, boundedRefreshPollIntervalMs);", 1)[0]
 
-    assert "state.revisionTransport" not in safety_poll
-    assert "void updateWhenSafe(state);" in safety_poll
+    assert "state.revisionTransport" not in bounded_refresh_poll
+    assert "void updateWhenSafe(state);" in bounded_refresh_poll
 
 
 def test_revision_client_supports_polling_only_internal_transport_switch() -> None:
@@ -337,33 +337,30 @@ def test_dashboard_partial_update_toggles_database_invariant_warning_safely() ->
     assert "innerHTML" not in warning_update
 
 
-def test_dashboard_partial_update_toggles_global_circuit_banner_safely() -> None:
-    """Global circuit banner partial update 只用 textContent helper 與 hidden toggle。"""
+def test_dashboard_partial_update_toggles_temporary_block_warning_safely() -> None:
+    """Temporary-block warning partial update 只用 textContent 與 hidden toggle。"""
 
     index_template = Path("src/facebook_monitor/webapp/templates/index.html").read_text(
         encoding="utf-8"
     )
-    partial_updates_js = Path(
-        "src/facebook_monitor/webapp/static/dashboard/partial_updates.js"
+    warning_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/temporary_block_start_warning.js"
     ).read_text(encoding="utf-8")
 
-    banner_update = partial_updates_js.split(
-        "const updateFacebookAccessCircuitBanner = (circuitPayload) => {",
+    banner_update = warning_js.split(
+        "export const applyTemporaryBlockWarningPayload = (payload) => {",
         1,
     )[1].split("};", 1)[0]
-    assert "data-facebook-access-circuit-banner" in index_template
-    assert index_template.index("data-facebook-access-circuit-banner") < index_template.index(
+    assert "data-temporary-block-warning" in index_template
+    assert index_template.index("data-temporary-block-warning") < index_template.index(
         'class="dashboard-layout"'
     )
-    assert "[data-facebook-access-circuit-banner]" in banner_update
-    assert "Boolean(circuitPayload?.visible)" in banner_update
-    assert 'updateText(banner, "[data-circuit-title]"' in banner_update
-    assert 'updateText(banner, "[data-circuit-message]"' in banner_update
-    assert "[data-circuit-last-probe-result]" in banner_update
-    assert "[data-circuit-recovery-status]" in banner_update
-    assert "[data-circuit-recovery-button]" in banner_update
-    assert "recoveryButton.disabled" in banner_update
-    assert 'banner.toggleAttribute("hidden", !visible);' in banner_update
+    assert "[data-temporary-block-warning]" in banner_update
+    assert "banner.hidden = !currentWarning.active;" in banner_update
+    assert "[data-temporary-block-warning-title]" in banner_update
+    assert "[data-temporary-block-warning-message]" in banner_update
+    assert "title.textContent" in banner_update
+    assert "message.textContent" in banner_update
     assert "innerHTML" not in banner_update
 
 

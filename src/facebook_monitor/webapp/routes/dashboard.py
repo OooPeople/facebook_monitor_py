@@ -59,16 +59,12 @@ def _load_dashboard_view(
     db_path: Path,
     *,
     session_started_at: datetime | None = None,
-    profile_dir: Path | None = None,
-    browser_session_active: bool = False,
 ) -> DashboardViewModel:
     """透過 module global 載入 dashboard view，保留 dashboard monkeypatch seam。"""
 
     return get_dashboard_view(
         db_path,
         session_started_at=session_started_at,
-        profile_dir=profile_dir,
-        browser_session_active=browser_session_active,
     )
 
 

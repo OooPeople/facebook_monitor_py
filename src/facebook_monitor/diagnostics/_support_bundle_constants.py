@@ -8,7 +8,7 @@ from __future__ import annotations
 
 SUPPORT_BUNDLE_FILENAME_PREFIX = "facebook-monitor-support-"
 SUPPORT_BUNDLE_FILENAME_SUFFIX = ".zip"
-SUPPORT_BUNDLE_SCHEMA_VERSION = 5
+SUPPORT_BUNDLE_SCHEMA_VERSION = 6
 LOG_TAIL_FILE_NAMES = ("app.log", "error.log", "startup.log", "updater.log")
 LOG_TAIL_MAX_BYTES = 64 * 1024
 LOG_TAIL_MAX_LINES = 200

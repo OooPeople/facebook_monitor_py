@@ -202,13 +202,10 @@
               </svg>
             {% endif %}
           </span>
-          <span class="settings-summary-copy">
-            <span class="settings-summary-label">{{ summary_line.label }}：</span>
-            <span class="settings-summary-value">{{ summary_line.value }}</span>
-            {% for detail in summary_line.details %}
-              <span class="settings-summary-detail">{{ detail }}</span>
-            {% endfor %}
-          </span>
+            <span class="settings-summary-copy">
+              <span class="settings-summary-label">{{ summary_line.label }}：</span>
+              <span class="settings-summary-value">{{ summary_line.value }}</span>
+            </span>
         </div>
       {% endfor %}
     </div>

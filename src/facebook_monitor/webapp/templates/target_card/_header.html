@@ -47,10 +47,26 @@
         method="post"
         action="/targets/{{ row.target.id }}/{{ row.monitoring_action }}"
         data-action-anchor="{{ row.anchor_id }}"
+        data-target-id="{{ row.target.id }}"
         data-monitoring-form
+        {% if row.monitoring_action == "start" and facebook_temporary_block_warning.active %}
+          data-temporary-block-confirm-submit
+        {% endif %}
       >
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="return_to" value="">
+        <input
+          type="hidden"
+          name="temporary_block_warning_confirmed"
+          value="0"
+          data-temporary-block-warning-confirmed
+        >
+        <input
+          type="hidden"
+          name="warning_generation"
+          value="{{ facebook_temporary_block_warning.generation }}"
+          data-temporary-block-warning-generation
+        >
         <button
           class="button button--toolbar"
           type="submit"

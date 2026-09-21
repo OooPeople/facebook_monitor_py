@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import facebook_monitor.runtime.startup_diagnostics as startup_diagnostics
+from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.runtime.logging_setup import configure_app_logging
 from facebook_monitor.runtime.logging_setup import LOG_BACKUP_COUNT
 from facebook_monitor.runtime.logging_setup import LOG_MAX_BYTES
@@ -82,7 +83,10 @@ def test_startup_diagnostics_append_startup_log(tmp_path) -> None:
     assert f"Data dir: {paths.data_dir}" in text
     assert "Browser mode: playwright_chromium" in text
     assert "Scheduler tick seconds: 2" in text
-    assert "Scheduler max concurrent scans: 1" in text
+    assert (
+        "Scheduler max concurrent scans: "
+        f"{PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans}"
+    ) in text
     assert "Reset targets on startup: true" in text
     assert "Resume active targets on startup: false" in text
     assert "Reset runtime data on startup: true" in text

@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class FacebookPageCloseError(RuntimeError):
@@ -25,6 +30,48 @@ def open_context_pages(context: Any) -> tuple[Any, ...]:
 
     pages = getattr(context, "pages", ())
     return tuple(page for page in pages if not is_page_closed(page))
+
+
+async def close_async_browser_resource_preserving_primary(
+    resource: Any,
+    *,
+    description: str,
+) -> None:
+    """關閉 async browser resource；cleanup 失敗不得蓋掉原始產品例外。"""
+
+    primary_error = sys.exception()
+    try:
+        await resource.close()
+    except Exception:
+        if primary_error is None:
+            raise
+        logger.warning(
+            "%s close failed while preserving primary %s",
+            description,
+            type(primary_error).__name__,
+            exc_info=True,
+        )
+
+
+def close_sync_browser_resource_preserving_primary(
+    resource: Any,
+    *,
+    description: str,
+) -> None:
+    """關閉 sync browser resource；cleanup 失敗不得蓋掉原始產品例外。"""
+
+    primary_error = sys.exception()
+    try:
+        resource.close()
+    except Exception:
+        if primary_error is None:
+            raise
+        logger.warning(
+            "%s close failed while preserving primary %s",
+            description,
+            type(primary_error).__name__,
+            exc_info=True,
+        )
 
 
 async def close_page_checked_async(page: Any | None) -> None:
@@ -80,10 +127,12 @@ def close_existing_context_pages_sync(context: Any) -> None:
 
 __all__ = [
     "FacebookPageCloseError",
+    "close_async_browser_resource_preserving_primary",
     "close_existing_context_pages_async",
     "close_existing_context_pages_sync",
     "close_page_checked_async",
     "close_page_checked_sync",
+    "close_sync_browser_resource_preserving_primary",
     "is_page_closed",
     "open_context_pages",
 ]

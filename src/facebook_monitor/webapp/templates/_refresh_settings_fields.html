@@ -84,10 +84,3 @@
     >
   </label>
 </div>
-{% if refresh_source and refresh_source.effective_refresh_reason_label %}
-  <div class="field-caption" data-effective-refresh-policy>
-    要求間隔：{{ refresh_source.requested_refresh_interval_label }}；
-    有效間隔：{{ refresh_source.effective_refresh_interval_label }}；
-    原因：{{ refresh_source.effective_refresh_reason_label }}。
-  </div>
-{% endif %}

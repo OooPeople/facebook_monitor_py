@@ -5,15 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
-from facebook_monitor.core.defaults import PYTHON_FACEBOOK_AUTOMATION_DEFAULTS
 from facebook_monitor.core.keyword_groups import legacy_include_keyword_groups
 from facebook_monitor.core.keyword_groups import normalize_include_keyword_groups
 from facebook_monitor.core.models import TargetConfig
-from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.notification_channels import NOTIFICATION_CHANNEL_DEFINITIONS
-from facebook_monitor.core.refresh_policy import COMMENTS_EFFECTIVE_REFRESH_FLOOR_REASON
-from facebook_monitor.core.refresh_policy import RefreshIntervalBounds
-from facebook_monitor.core.refresh_policy import resolve_refresh_interval_bounds
 from facebook_monitor.webapp.form_refresh import FIXED_REFRESH_MODE
 from facebook_monitor.webapp.form_refresh import FLOATING_REFRESH_MODE
 from facebook_monitor.webapp.notification_presenters import format_notification_channel_label
@@ -29,7 +24,6 @@ class SettingsSummaryLine:
     icon_key: str
     label: str
     value: str
-    details: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,7 +47,6 @@ class TargetSettingsPresenter:
     """整理 target 設定值的表單文字與摘要。"""
 
     config: TargetConfig
-    target_kind: TargetKind | None = None
 
     @property
     def include_text(self) -> str:
@@ -155,71 +148,6 @@ class TargetSettingsPresenter:
         return f"固定 {self.fixed_refresh_value} 秒"
 
     @property
-    def refresh_interval_bounds(self) -> RefreshIntervalBounds:
-        """回傳使用者要求與 target safety policy 的 refresh 範圍。"""
-
-        return resolve_refresh_interval_bounds(
-            config=self.config,
-            default_interval_seconds=PYTHON_TARGET_CONFIG_DEFAULTS.default_fixed_refresh_sec,
-            target_kind=self.target_kind,
-        )
-
-    @staticmethod
-    def _format_interval_bounds(min_seconds: int, max_seconds: int) -> str:
-        """將單值或範圍 refresh 秒數格式化成 UI 文案。"""
-
-        if min_seconds == max_seconds:
-            return f"固定 {min_seconds} 秒"
-        return f"浮動 {min_seconds}-{max_seconds} 秒"
-
-    @property
-    def requested_refresh_interval_label(self) -> str:
-        """回傳使用者保存的 requested refresh 間隔。"""
-
-        bounds = self.refresh_interval_bounds
-        return self._format_interval_bounds(
-            bounds.requested_min_seconds,
-            bounds.requested_max_seconds,
-        )
-
-    @property
-    def effective_refresh_interval_label(self) -> str:
-        """回傳 scheduler 實際採用的 effective refresh 間隔。"""
-
-        bounds = self.refresh_interval_bounds
-        return self._format_interval_bounds(
-            bounds.effective_min_seconds,
-            bounds.effective_max_seconds,
-        )
-
-    @property
-    def effective_refresh_reason_label(self) -> str:
-        """回傳 comments effective interval 的安全 policy 理由。"""
-
-        if self.target_kind != TargetKind.COMMENTS:
-            return ""
-        floor_seconds = (
-            PYTHON_FACEBOOK_AUTOMATION_DEFAULTS.comments_effective_refresh_floor_seconds
-        )
-        if (
-            self.refresh_interval_bounds.adjustment_reason
-            == COMMENTS_EFFECTIVE_REFRESH_FLOOR_REASON
-        ):
-            return f"套用留言模式安全下限 {floor_seconds} 秒"
-        return f"設定已符合留言模式安全下限 {floor_seconds} 秒"
-
-    @property
-    def refresh_summary_label(self) -> str:
-        """回傳 target card 同時呈現 requested/effective 的 refresh 摘要。"""
-
-        if self.target_kind != TargetKind.COMMENTS:
-            return self.requested_refresh_interval_label
-        return (
-            f"要求 {self.requested_refresh_interval_label} · "
-            f"有效 {self.effective_refresh_interval_label}"
-        )
-
-    @property
     def notification_summary_label(self) -> str:
         """回傳設定摘要用的通知通道列表。"""
 
@@ -236,16 +164,7 @@ class TargetSettingsPresenter:
 
         return SettingsSummary(
             lines=(
-                SettingsSummaryLine(
-                    "refresh",
-                    "刷新",
-                    self.refresh_summary_label,
-                    details=(
-                        (f"原因：{self.effective_refresh_reason_label}",)
-                        if self.effective_refresh_reason_label
-                        else ()
-                    ),
-                ),
+                SettingsSummaryLine("refresh", "刷新", self.refresh_mode_label),
                 SettingsSummaryLine(
                     "target",
                     "目標掃描",

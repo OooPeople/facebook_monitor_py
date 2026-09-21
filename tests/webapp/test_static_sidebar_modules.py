@@ -349,6 +349,25 @@ def test_sidebar_group_monitoring_sync_preserves_pending_button() -> None:
     )
 
 
+def test_sidebar_group_start_reprompts_for_new_warning_generation() -> None:
+    """批次 Start 收到較新 warning generation 時須再次確認，不得沿用舊確認。"""
+
+    sidebar_groups_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/sidebar_groups_ui.js"
+    ).read_text(encoding="utf-8")
+    warning_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/temporary_block_start_warning.js"
+    ).read_text(encoding="utf-8")
+
+    assert "confirmationPayloadForBatchStart" in sidebar_groups_js
+    assert "while (true)" in sidebar_groups_js
+    assert "data.confirmation_required" in sidebar_groups_js
+    assert "confirmationPayloadForBatchStart(data)" in sidebar_groups_js
+    assert "outcome.warning_generation" in warning_js
+    assert "temporary_block_warning_confirmed: true" in warning_js
+    assert "warning_generation: Number(generation)" in warning_js
+
+
 def test_sidebar_group_operation_icons_are_slightly_larger() -> None:
     """群組收合、⋯ 與展開操作 icon 使用 SVG，避免文字 glyph 視覺偏移。"""
 

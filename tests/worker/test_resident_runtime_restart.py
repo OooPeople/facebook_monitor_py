@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import nullcontext
-from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +16,6 @@ from facebook_monitor.application.target_requests import UpsertCommentsTargetReq
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
-from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -32,25 +29,7 @@ from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
-class _AdvancingAutomationClock:
-    """以虛擬 UTC 推進安全 pacing，不讓 runtime 測試真的等待。"""
-
-    def __init__(self) -> None:
-        self.current = utc_now()
-
-    def now(self) -> datetime:
-        """回傳目前虛擬時間。"""
-
-        return self.current
-
-    async def sleep(self, seconds: float) -> None:
-        """推進 wall clock 並讓出 event loop。"""
-
-        self.current += timedelta(seconds=max(float(seconds), 0.0))
-        await asyncio.sleep(0)
-
-
-def test_resident_main_loop_does_not_schedule_comments_or_navigate(
+def test_resident_main_loop_schedules_comments_with_comments_scanner(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -124,7 +103,6 @@ def test_resident_main_loop_does_not_schedule_comments_or_navigate(
     )
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -136,8 +114,6 @@ def test_resident_main_loop_does_not_schedule_comments_or_navigate(
                 ),
                 scan_page=as_async_scan_callable(fake_post_scan_page),
                 comments_commit_ready_scan_page=as_async_scan_callable(fake_comment_scan_page),
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -146,9 +122,10 @@ def test_resident_main_loop_does_not_schedule_comments_or_navigate(
 
     assert len(contexts) == 1
     assert contexts[0].closed is True
-    assert contexts[0].pages == []
+    assert len(contexts[0].pages) == 1
+    assert contexts[0].pages[0].closed is True
     assert post_calls == []
-    assert comment_calls == []
+    assert comment_calls == [target.id]
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
     assert state is not None
@@ -227,7 +204,6 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
             stop_event.set()
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -240,8 +216,6 @@ def test_resident_main_loop_restarts_browser_context_on_scheduler_runtime(
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
                 sleep_fn=lambda _seconds: asyncio.sleep(0),
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -334,7 +308,6 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
         stop_event.set()
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -346,8 +319,6 @@ def test_resident_main_loop_runtime_restart_is_not_worker_pool_unhealthy(
                 scan_page=as_async_scan_callable(unused_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_cycle,
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -462,7 +433,6 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
             stop_event.set()
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -475,8 +445,6 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
                 scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_second_runtime,
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -491,10 +459,15 @@ def test_resident_main_loop_rebuilds_full_pool_after_worker_task_death(
     assert contexts[0].closed is True
     assert contexts[1].closed is True
     assert second_runtime_summary.worker_health_ok is True
-    assert set(second_runtime_summary.worker_statuses) == {"resident-slot-1:running"}
+    assert set(second_runtime_summary.worker_statuses) == {
+        "resident-slot-1:running",
+        "resident-slot-2:running",
+        "resident-slot-3:running",
+        "resident-slot-4:running",
+    }
     assert caplog.text.count(
         "resident_executor_start configured_max_concurrent_scans=4 "
-        "effective_max_concurrent_scans=1"
+        "effective_max_concurrent_scans=4"
     ) == 2
     assert "resident_executor_worker_stopped worker_id=resident-slot-" in caplog.text
     assert "reason=exception exception_class=RuntimeError" in caplog.text
@@ -594,7 +567,6 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
         allow_scan_finish.set()
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -607,8 +579,6 @@ def test_resident_main_loop_final_drain_exits_on_worker_task_death(
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
                 on_cycle=release_after_first_summary,
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=2,
         )
@@ -716,7 +686,6 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
     )
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -727,8 +696,6 @@ def test_resident_main_loop_runtime_restart_wakes_scheduler_sleep(
                 ),
                 scan_page=as_async_scan_callable(fake_scan_page),
                 sleep_fn=fake_sleep,
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_success,
             ),
@@ -829,7 +796,6 @@ def test_resident_main_loop_retries_other_queued_targets_after_runtime_restart(
     )
 
     async def run_test() -> None:
-        clock = _AdvancingAutomationClock()
         await asyncio.wait_for(
             run_resident_main_loop(
                 ResidentRuntimeOptions(
@@ -842,8 +808,6 @@ def test_resident_main_loop_retries_other_queued_targets_after_runtime_restart(
                 scan_page=as_async_scan_callable(fake_scan_page),
                 should_stop=lambda: stop_event.is_set(),
                 on_cycle=stop_after_both_succeed,
-                automation_sleep_fn=clock.sleep,
-                automation_clock=clock.now,
             ),
             timeout=3,
         )

@@ -40,6 +40,7 @@ DASHBOARD_MODULE_FILENAMES = (
     "sidebar_templates_ui.js",
     "state.js",
     "tabs.js",
+    "temporary_block_start_warning.js",
     "theme.js",
     "theme_bootstrap.js",
     "utils.js",

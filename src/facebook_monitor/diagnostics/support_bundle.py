@@ -42,13 +42,7 @@ from facebook_monitor.diagnostics._support_bundle_redaction import _sanitize_app
 from facebook_monitor.diagnostics._support_bundle_retention import prune_old_support_bundles as _prune_old_support_bundles
 from facebook_monitor.diagnostics._support_bundle_runtime_collectors import _log_tail_payload
 from facebook_monitor.diagnostics._support_bundle_runtime_collectors import (
-    _facebook_access_circuit_payload,
-)
-from facebook_monitor.diagnostics._support_bundle_runtime_collectors import (
-    _facebook_automation_pacing_payload,
-)
-from facebook_monitor.diagnostics._support_bundle_runtime_collectors import (
-    _facebook_session_recovery_payload,
+    _facebook_temporary_block_warning_payload,
 )
 from facebook_monitor.diagnostics._support_bundle_runtime_collectors import _maintenance_update_summary_payload
 from facebook_monitor.diagnostics._support_bundle_runtime_collectors import _profile_session_payload
@@ -189,28 +183,13 @@ _SUPPORT_BUNDLE_SECTIONS: tuple[_SupportBundleSection, ...] = (
         collect=lambda context: _profile_session_payload(context.paths),
     ),
     _SupportBundleSection(
-        name="facebook_access_circuit",
-        filename="facebook_access_circuit.json",
+        name="facebook_temporary_block_warning",
+        filename="facebook_temporary_block_warning.json",
         kind="json",
-        collect=lambda context: _facebook_access_circuit_payload(
+        collect=lambda context: _facebook_temporary_block_warning_payload(
             context.paths,
-            context.aliases,
+            now=context.generated_at,
         ),
-    ),
-    _SupportBundleSection(
-        name="facebook_automation_pacing",
-        filename="facebook_automation_pacing.json",
-        kind="json",
-        collect=lambda context: _facebook_automation_pacing_payload(
-            context.paths,
-            context.aliases,
-        ),
-    ),
-    _SupportBundleSection(
-        name="facebook_session_recovery",
-        filename="facebook_session_recovery.json",
-        kind="json",
-        collect=lambda context: _facebook_session_recovery_payload(context.paths),
     ),
     _SupportBundleSection(
         name="maintenance_update_summary",
@@ -284,7 +263,7 @@ def create_support_bundle(
                             "cookies, secrets, full logs, and full post/comment text.",
                             "It includes bounded redacted log tails, runtime snapshots, "
                             "scan summaries, notification summaries, cover image host "
-                            "histograms, Facebook access circuit/pacing/recovery state, and "
+                            "histograms, the current temporary-block warning, and "
                             "database health checks.",
                             "Paths, URLs, IDs, errors, and secret-like values are redacted "
                             "or aliased before writing on a best-effort basis.",

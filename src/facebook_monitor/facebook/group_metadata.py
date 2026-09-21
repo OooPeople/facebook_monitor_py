@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from collections.abc import Awaitable
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from typing import Protocol
 
 from playwright.async_api import Error as AsyncPlaywrightError
@@ -33,6 +34,12 @@ from facebook_monitor.facebook.group_metadata_validation import final_url_matche
 from facebook_monitor.facebook.group_metadata_validation import is_invalid_facebook_group_name
 from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.facebook_page_lifecycle import (
+    close_async_browser_resource_preserving_primary,
+)
+from facebook_monitor.worker.facebook_page_lifecycle import (
+    close_sync_browser_resource_preserving_primary,
+)
 
 
 GROUP_METADATA_WAIT_MS = PYTHON_BROWSER_RUNTIME_DEFAULTS.group_metadata_wait_ms
@@ -86,6 +93,7 @@ class AsyncBrowserContextLike(Protocol):
 
 
 AsyncPageGuard = Callable[[AsyncPageLike], Awaitable[None]]
+SyncPageGuard = Callable[[Any], None]
 
 
 async def _run_metadata_page_guard(
@@ -98,6 +106,26 @@ async def _run_metadata_page_guard(
         return
     try:
         await page_guard(page)
+    except WorkerFailure as exc:
+        if exc.reason == FACEBOOK_TEMPORARY_BLOCK_REASON:
+            raise
+        if exc.reason == LOGIN_REQUIRED_REASON:
+            raise GroupMetadataError(
+                "Facebook 尚未登入，請先到設定頁開啟登入視窗完成登入"
+            ) from exc
+        raise GroupMetadataError(format_failure_message_text(f"{exc.reason}: {exc}")) from exc
+
+
+def _run_metadata_page_guard_sync(
+    page_guard: SyncPageGuard | None,
+    page: object,
+) -> None:
+    """同步 resolver 保留 temporary-block typed signal，其餘維持 metadata 契約。"""
+
+    if page_guard is None:
+        return
+    try:
+        page_guard(page)
     except WorkerFailure as exc:
         if exc.reason == FACEBOOK_TEMPORARY_BLOCK_REASON:
             raise
@@ -154,7 +182,10 @@ async def resolve_group_metadata_with_context(
             )
             cover_image_url = await _extract_cover_image_url_async(page)
         finally:
-            await page.close()
+            await close_async_browser_resource_preserving_primary(
+                page,
+                description="group metadata page",
+            )
     except GroupMetadataError:
         raise
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
@@ -198,7 +229,10 @@ async def resolve_group_cover_image_with_context(
             )
             cover_image_url = await _extract_cover_image_url_async(page)
         finally:
-            await page.close()
+            await close_async_browser_resource_preserving_primary(
+                page,
+                description="group cover page",
+            )
     except GroupMetadataError:
         raise
     except (AsyncPlaywrightTimeoutError, AsyncPlaywrightError) as exc:
@@ -230,6 +264,7 @@ def resolve_group_metadata_with_profile(
     profile_dir: Path,
     canonical_url: str,
     wait_ms: int = GROUP_METADATA_WAIT_MS,
+    page_guard: SyncPageGuard | None = None,
 ) -> GroupMetadata:
     """使用 automation profile 開啟 group URL 並回傳社團名稱與 cover image URL。"""
 
@@ -249,6 +284,7 @@ def resolve_group_metadata_with_profile(
                     page = get_start_page(context)
                     page.goto(canonical_url, wait_until="domcontentloaded")
                     page.wait_for_timeout(wait_ms)
+                    _run_metadata_page_guard_sync(page_guard, page)
                     body_text = page.locator("body").inner_text(timeout=10000)
                     if (
                         "log into facebook" in body_text.lower()
@@ -268,7 +304,10 @@ def resolve_group_metadata_with_profile(
                     )
                     cover_image_url = _extract_cover_image_url_sync(page)
                 finally:
-                    context.close()
+                    close_sync_browser_resource_preserving_primary(
+                        context,
+                        description="group metadata context",
+                    )
     except GroupMetadataError:
         raise
     except ProfileLeaseError as exc:

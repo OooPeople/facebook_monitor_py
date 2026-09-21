@@ -10,7 +10,7 @@ from facebook_monitor.persistence.current_schema import ensure_dashboard_revisio
 from facebook_monitor.persistence.sqlite_codec import read_schema_version
 from facebook_monitor.persistence.sqlite_codec import write_schema_version
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 45
 MIN_SUPPORTED_SCHEMA_VERSION = 35
 CURRENT_SCHEMA_TABLES = (
     "schema_metadata",
@@ -31,6 +31,7 @@ CURRENT_SCHEMA_TABLES = (
     "notification_outbox",
     "target_runtime_state",
     "target_cover_image_refresh_state",
+    "facebook_temporary_block_warning",
     "facebook_access_circuit_state",
     "facebook_access_circuit_events",
     "facebook_automation_pacing_state",
@@ -194,6 +195,17 @@ def _missing_current_schema_constraints(connection: sqlite3.Connection) -> list[
         f"facebook_access_circuit_state.{index}"
         for index, constraint in enumerate(required_circuit_constraints, start=1)
         if constraint not in circuit_sql
+    )
+    warning_sql = _table_sql(connection, "facebook_temporary_block_warning")
+    required_warning_constraints = (
+        "CHECK (id = 1)",
+        "CHECK (generation >= 1)",
+        "CHECK (warning_until > detected_at)",
+    )
+    missing.extend(
+        f"facebook_temporary_block_warning.{index}"
+        for index, constraint in enumerate(required_warning_constraints, start=1)
+        if constraint not in warning_sql
     )
     pacing_sql = _table_sql(connection, "facebook_automation_pacing_state")
     required_pacing_constraints = (

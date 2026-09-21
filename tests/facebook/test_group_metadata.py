@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from facebook_monitor.facebook import group_metadata as group_metadata_module
 from facebook_monitor.facebook.group_metadata import GroupMetadataError
 from facebook_monitor.facebook.group_metadata import resolve_group_cover_image_with_context
 from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_context
+from facebook_monitor.facebook.group_metadata import resolve_group_metadata_with_profile
+from facebook_monitor.worker.errors import WorkerFailure
 
 
 CANONICAL_URL = "https://www.facebook.com/groups/222518561920110"
@@ -105,6 +111,79 @@ def test_resolve_group_cover_image_does_not_require_group_name() -> None:
     assert page.closed
 
 
+@pytest.mark.parametrize(
+    "resolver",
+    (resolve_group_metadata_with_context, resolve_group_cover_image_with_context),
+)
+def test_temporary_block_guard_error_survives_page_close_failure(
+    resolver: Any,
+) -> None:
+    """Page cleanup 失敗不得蓋掉已辨識的 temporary-block signal。"""
+
+    page = _FakeMetadataPage(
+        final_url=CANONICAL_URL,
+        title="Test Group | Facebook",
+        body_text="你暫時遭到封鎖",
+        cover_url="",
+        close_error=RuntimeError("close failed"),
+    )
+
+    async def blocked_guard(_page: _FakeMetadataPage) -> None:
+        raise WorkerFailure("facebook_temporary_block", "blocked")
+
+    with pytest.raises(WorkerFailure, match="blocked") as exc_info:
+        asyncio.run(
+            resolver(
+                _FakeMetadataContext(page),
+                canonical_url=CANONICAL_URL,
+                wait_ms=0,
+                page_guard=blocked_guard,
+            )
+        )
+
+    assert exc_info.value.reason == "facebook_temporary_block"
+
+
+def test_sync_temporary_block_survives_context_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sync resolver 也必須保留 page guard 的 temporary-block signal。"""
+
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    page = _FakeSyncMetadataPage()
+    context = _FakeSyncMetadataContext(page)
+    monkeypatch.setattr(
+        group_metadata_module,
+        "acquire_profile_lease",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        group_metadata_module,
+        "sync_playwright",
+        lambda: _FakeSyncPlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        group_metadata_module,
+        "launch_persistent_context_sync",
+        lambda *_args, **_kwargs: context,
+    )
+
+    def blocked_guard(_page: object) -> None:
+        raise WorkerFailure("facebook_temporary_block", "blocked")
+
+    with pytest.raises(WorkerFailure, match="blocked") as exc_info:
+        resolve_group_metadata_with_profile(
+            profile_dir=profile_dir,
+            canonical_url=CANONICAL_URL,
+            wait_ms=0,
+            page_guard=blocked_guard,
+        )
+
+    assert exc_info.value.reason == "facebook_temporary_block"
+
+
 class _FakeMetadataLocator:
     """測試用 locator。"""
 
@@ -128,11 +207,13 @@ class _FakeMetadataPage:
         title: str,
         body_text: str,
         cover_url: str,
+        close_error: Exception | None = None,
     ) -> None:
         self.url = final_url
         self._title = title
         self._body_text = body_text
         self._cover_url = cover_url
+        self._close_error = close_error
         self.goto_calls: list[tuple[str, str]] = []
         self.wait_calls: list[int] = []
         self.closed = False
@@ -167,6 +248,8 @@ class _FakeMetadataPage:
     async def close(self) -> None:
         """標記 page 已關閉。"""
 
+        if self._close_error is not None:
+            raise self._close_error
         self.closed = True
 
 
@@ -180,3 +263,56 @@ class _FakeMetadataContext:
         """回傳 fake page。"""
 
         return self.page
+
+
+class _FakeSyncMetadataLocator:
+    """測試 sync resolver 的 body locator。"""
+
+    def inner_text(self, *, timeout: int) -> str:
+        assert timeout == 10000
+        return "你暫時遭到封鎖"
+
+
+class _FakeSyncMetadataPage:
+    """提供 sync metadata resolver 在 page guard 前需要的介面。"""
+
+    url = CANONICAL_URL
+
+    def is_closed(self) -> bool:
+        return False
+
+    def goto(self, _url: str, *, wait_until: str) -> None:
+        assert wait_until == "domcontentloaded"
+
+    def wait_for_timeout(self, timeout: int) -> None:
+        assert timeout == 0
+
+    def locator(self, selector: str) -> _FakeSyncMetadataLocator:
+        assert selector == "body"
+        return _FakeSyncMetadataLocator()
+
+    def title(self) -> str:
+        return "Test Group | Facebook"
+
+
+class _FakeSyncMetadataContext:
+    """關閉失敗的 sync browser context。"""
+
+    def __init__(self, page: _FakeSyncMetadataPage) -> None:
+        self.pages = [page]
+
+    def new_page(self) -> _FakeSyncMetadataPage:
+        return self.pages[0]
+
+    def close(self) -> None:
+        raise RuntimeError("close failed")
+
+
+class _FakeSyncPlaywrightManager:
+    """測試用 sync_playwright context manager。"""
+
+    def __enter__(self) -> object:
+        return object()
+
+    def __exit__(self, *_args: object) -> None:
+        return None

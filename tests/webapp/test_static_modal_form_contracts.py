@@ -477,9 +477,16 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     dashboard_payloads = Path("src/facebook_monitor/webapp/dashboard_payloads.py").read_text(
         encoding="utf-8"
     )
+    warning_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/temporary_block_start_warning.js"
+    ).read_text(encoding="utf-8")
 
     assert "data-monitoring-form" in card_template
+    assert "data-target-id" in card_template
     assert "data-monitoring-button" in card_template
+    assert "data-temporary-block-warning-confirmed" in card_template
+    assert "data-temporary-block-warning-generation" in card_template
+    assert "data-temporary-block-confirm-submit" in card_template
     assert "data-runtime-error" in card_template
     assert "data-runtime-skip-reason" in card_template
     assert "data-latest-error-indicator" in card_template
@@ -496,6 +503,10 @@ def test_partial_update_syncs_runtime_action_and_guard_messages() -> None:
     assert "const updateMonitoringAction" in partial_updates_js
     assert "payload.monitoring_action" in partial_updates_js
     assert "payload.monitoring_button_label" in partial_updates_js
+    assert "applyTemporaryBlockWarningPayload" in partial_updates_js
+    assert 'form.toggleAttribute("data-temporary-block-confirm-submit"' in warning_js
+    assert "currentWarning.generation" in warning_js
+    assert 'form.dataset.temporaryBlockConfirmationInFlight = "1";' in warning_js
     assert "const updateRuntimeMessages" in partial_updates_js
     assert "payload.runtime_error" in partial_updates_js
     assert "payload.runtime_skip_reason" in partial_updates_js

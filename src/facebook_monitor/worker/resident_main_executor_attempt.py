@@ -13,10 +13,10 @@ from typing import TypeVar
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.facebook_access import FacebookAccessBlockSignal
-from facebook_monitor.core.facebook_access import FacebookActionKind
-from facebook_monitor.core.facebook_access import FacebookProductOperationKind
-from facebook_monitor.core.facebook_access import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
+from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
@@ -36,14 +36,9 @@ from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalT
 from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.facebook_access_incident import (
-    record_facebook_access_incident_for_db_async,
-)
-from facebook_monitor.worker.facebook_automation_admission import (
-    FacebookAutomationAdmissionController,
-)
-from facebook_monitor.worker.facebook_automation_session_guard import (
-    FacebookAutomationSessionGuardError,
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_main_executor_types import (
@@ -81,7 +76,6 @@ from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcome
 from facebook_monitor.worker.scan_commit_outcomes import ScanCommitOutcomeKind
 from facebook_monitor.worker.scan_commit_requests import FailureScanCommitRequest
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
-from facebook_monitor.worker.scan_commit_guard import begin_scan_commit_transaction
 from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
@@ -99,7 +93,7 @@ class ResidentExecutorAttemptHost(Protocol):
     page_pool: AsyncResidentPagePool
     target_queue: TargetQueue
     schedule_planner: TargetSchedulePlanner
-    automation_admission_controller: FacebookAutomationAdmissionController | None
+    facebook_runtime: FacebookAutomationRuntime
 
     async def _run_db_operation_with_retry(
         self,
@@ -164,6 +158,9 @@ class ResidentQueueAttemptState:
     planner_dispatch_id: str = ""
     commit_guard: ScanCommitGuard | None = None
     facebook_action_kind: FacebookActionKind = FacebookActionKind.UNKNOWN
+    facebook_operation_kind: FacebookProductOperationKind = (
+        FacebookProductOperationKind.UNKNOWN
+    )
 
     def cleanup_plan(self) -> ResidentAttemptCleanupPlan:
         """依目前取得的 resources 推導 cleanup plan。"""
@@ -239,6 +236,11 @@ async def _load_and_admit_target_attempt(
         )
         return None
     state.commit_guard = scan_commit_guard_from_runtime_state(locked_state)
+    state.facebook_operation_kind = (
+        FacebookProductOperationKind.COMMENTS_ACCESS
+        if resident_target.target.target_kind == TargetKind.COMMENTS
+        else FacebookProductOperationKind.POSTS_ACCESS
+    )
     state.owner_key = build_recovery_owner_key(
         worker_id=state.commit_guard.worker_id,
         started_at=state.commit_guard.started_at,
@@ -291,31 +293,6 @@ async def _prepare_attempt_page(
         )
         * 1000,
     )
-    if not prepare_outcome.prepared:
-        logger.info(
-            "resident_target_deferred target_id=%s worker_id=%s page_id=%s reason=%s",
-            state.target_id,
-            worker_id,
-            state.page_id,
-            prepare_outcome.deferred_reason,
-        )
-
-        def mark_deferred_idle_operation() -> TargetRuntimeState | None:
-            """以本輪 owner guard 將安全導覽 deferred target 恢復 idle。"""
-
-            with SqliteApplicationContext(pool.options.db_path) as app:
-                return app.services.targets.guarded_mark_target_idle(
-                    state.target_id,
-                    worker_id=commit_guard.worker_id,
-                    started_at=commit_guard.started_at,
-                    page_id=state.page_id,
-                )
-
-        await pool._run_db_operation_with_retry(
-            "guarded_mark_comments_navigation_deferred_idle",
-            mark_deferred_idle_operation,
-        )
-        return None
     state.facebook_action_kind = prepare_outcome.action_kind
     reloaded_at = await pool.page_pool.mark_reloaded_if_page_id(
         state.target_id,
@@ -377,34 +354,14 @@ async def _run_guarded_scan_and_commit_idle(
         )
         commit_ready_result = _require_formal_async_scan_result(scan_result)
 
-    controller = pool.automation_admission_controller
-    token = item.facebook_admission_token
-    if controller is None or token is None:
-        with SqliteApplicationContext(pool.options.db_path) as commit_app:
-            set_resident_scan_db_busy_timeout(commit_app, RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
-            return _commit_formal_scan_result(
-                app=commit_app,
-                resident_target=resident_target,
-                result=commit_ready_result,
-                commit_guard=commit_guard,
-            )
-
-    with controller.normal_visible_write_fence(token) as process_current:
-        if not process_current:
-            pool.request_runtime_restart()
-            return _facebook_admission_stale_outcome(resident_target.target.id)
-        with SqliteApplicationContext(pool.options.db_path) as commit_app:
-            set_resident_scan_db_busy_timeout(commit_app, RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
-            begin_scan_commit_transaction(commit_app)
-            if not controller.db_admission_is_current(commit_app, token):
-                pool.request_runtime_restart()
-                return _facebook_admission_stale_outcome(resident_target.target.id)
-            return _commit_formal_scan_result(
-                app=commit_app,
-                resident_target=resident_target,
-                result=commit_ready_result,
-                commit_guard=commit_guard,
-            )
+    with SqliteApplicationContext(pool.options.db_path) as commit_app:
+        set_resident_scan_db_busy_timeout(commit_app, RESIDENT_SCAN_DB_BUSY_TIMEOUT_MS)
+        return _commit_formal_scan_result(
+            app=commit_app,
+            resident_target=resident_target,
+            result=commit_ready_result,
+            commit_guard=commit_guard,
+        )
 
 
 def _commit_formal_scan_result(
@@ -429,16 +386,6 @@ def _commit_formal_scan_result(
         config=resident_target.config,
         result=result,
         commit_guard=commit_guard,
-    )
-
-
-def _facebook_admission_stale_outcome(target_id: str) -> ScanCommitOutcome:
-    """Circuit generation/epoch 已變更時拒絕任何 stale product write。"""
-
-    return ScanCommitOutcome(
-        kind=ScanCommitOutcomeKind.GUARD_MISMATCH,
-        target_id=target_id,
-        reason="facebook_access_admission_stale",
     )
 
 
@@ -472,34 +419,39 @@ async def run_queue_item(
     state = ResidentQueueAttemptState(target_id=target_id)
     cleanup_plan: ResidentAttemptCleanupPlan | None = None
     try:
-        resident_target = await _load_and_admit_target_attempt(
-            pool,
-            worker_id,
-            item,
-            state,
-        )
-        if resident_target is None:
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
+        with pool.facebook_runtime.facebook_work():
+            resident_target = await _load_and_admit_target_attempt(
+                pool,
+                worker_id,
+                item,
+                state,
+            )
+            if resident_target is None:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
 
-        page = await _prepare_attempt_page(pool, worker_id, resident_target, state)
-        if page is None:
-            return AsyncTargetScanResult(target_id=target_id, skipped=True)
-        commit_outcome = await _run_guarded_scan_and_commit_idle(
-            pool,
-            worker_id,
-            item,
-            resident_target,
-            page,
-            state,
-        )
-        transition = _finish_scan_commit_outcome(
-            worker_id=worker_id,
-            state=state,
-            commit_outcome=commit_outcome,
-        )
-        cleanup_plan = transition.cleanup_plan
-        return transition.outcome.to_scan_result()
+            page = await _prepare_attempt_page(pool, worker_id, resident_target, state)
+            if page is None:
+                return AsyncTargetScanResult(target_id=target_id, skipped=True)
+            commit_outcome = await _run_guarded_scan_and_commit_idle(
+                pool,
+                worker_id,
+                item,
+                resident_target,
+                page,
+                state,
+            )
+            transition = _finish_scan_commit_outcome(
+                worker_id=worker_id,
+                state=state,
+                commit_outcome=commit_outcome,
+            )
+            cleanup_plan = transition.cleanup_plan
+            return transition.outcome.to_scan_result()
+    except FacebookAutomationRuntimeTripped:
+        return AsyncTargetScanResult(target_id=target_id, skipped=True)
     except asyncio.CancelledError as exc:
+        if pool.facebook_runtime.signal.is_tripped():
+            raise
         completion = await _finish_attempt_exception(
             pool=pool,
             worker_id=worker_id,
@@ -516,7 +468,6 @@ async def run_queue_item(
     except Exception as exc:
         if await _try_record_facebook_access_incident(
             pool=pool,
-            item=item,
             state=state,
             exc=exc,
         ):
@@ -540,19 +491,15 @@ async def run_queue_item(
             raise RuntimeError("resident attempt exception finished without transition")
         return completion.transition.outcome.to_scan_result()
     finally:
-        try:
-            await run_resident_attempt_cleanup(
-                pool,
-                cleanup_plan or state.cleanup_plan(),
-            )
-        finally:
-            await item.release_automation_lease()
+        await run_resident_attempt_cleanup(
+            pool,
+            cleanup_plan or state.cleanup_plan(),
+        )
 
 
 async def _try_record_facebook_access_incident(
     *,
     pool: ResidentExecutorAttemptHost,
-    item: QueueItem,
     state: ResidentQueueAttemptState,
     exc: BaseException,
 ) -> bool:
@@ -560,51 +507,24 @@ async def _try_record_facebook_access_incident(
 
     if not isinstance(exc, WorkerFailure) or exc.reason != FACEBOOK_TEMPORARY_BLOCK_REASON:
         return False
-    controller = pool.automation_admission_controller
-    token = item.facebook_admission_token
-    source_owner_token = item.facebook_source_owner_token
     commit_guard = state.commit_guard
-    if controller is None or token is None or not source_owner_token or commit_guard is None:
+    if commit_guard is None:
         return False
-    if not controller.runtime_gate.request_trip(token):
-        return False
-    operation_kind = item.facebook_operation_kind or FacebookProductOperationKind.UNKNOWN
     try:
-        controller.mark_session_guard_trip_pending(
-            operation_kind=operation_kind,
-            trigger_action_kind=state.facebook_action_kind,
-        )
-    except FacebookAutomationSessionGuardError:
-        logger.exception("facebook_access_session_guard_trip_pending_failed source=scan")
-        pool.request_runtime_restart()
-        return True
-    try:
-        outcome = await record_facebook_access_incident_for_db_async(
+        await pool.facebook_runtime.record_temporary_block(
             db_path=pool.options.db_path,
-            signal=FacebookAccessBlockSignal(
-                admission_token=token,
+            finding=TemporaryBlockFinding(
                 source_kind=FacebookWorkSourceKind.SCAN,
-                operation_kind=operation_kind,
-                trigger_action_kind=state.facebook_action_kind,
-                source_owner_token=source_owner_token,
+                operation_kind=state.facebook_operation_kind,
+                action_kind=state.facebook_action_kind,
                 target_id=state.target_id,
                 evidence_code="facebook_page_guard_v1",
             ),
-            source_owner_token=source_owner_token,
             scan_commit_guard=commit_guard,
             diagnostics=exc.diagnostics,
         )
     finally:
         pool.request_runtime_restart()
-    if outcome.committed:
-        controller.note_session_guard_incident_committed()
-    if not outcome.committed:
-        logger.error(
-            "facebook_access_incident_rejected target_id=%s reason=%s kind=%s",
-            state.target_id,
-            outcome.reason,
-            outcome.kind.value,
-        )
     return True
 
 

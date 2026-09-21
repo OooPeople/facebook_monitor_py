@@ -27,6 +27,8 @@ from facebook_monitor.automation.browser_runtime import launch_persistent_contex
 from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
@@ -36,6 +38,7 @@ from facebook_monitor.core.scan_failures import PROFILE_MISSING_REASON
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_ARGUMENT_CONFLICT_REASON
 from facebook_monitor.core.scan_failures import TARGET_INVALID_REASON
+from facebook_monitor.core.scan_failures import TARGET_KIND_UNSUPPORTED_REASON
 from facebook_monitor.core.scan_failures import TARGET_MISSING_REASON
 from facebook_monitor.core.scan_failure_policy import ScanFailureSource
 from facebook_monitor.worker.errors import WorkerFailure
@@ -44,22 +47,14 @@ from facebook_monitor.worker.errors import classify_playwright_exception
 from facebook_monitor.worker.facebook_page_lifecycle import (
     close_existing_context_pages_sync,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackIncidentRecorded,
+from facebook_monitor.worker.facebook_page_lifecycle import (
+    close_sync_browser_resource_preserving_primary,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackIncidentPersistenceDeferred,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackWorkDeferred,
-)
-from facebook_monitor.worker.fallback_automation_admission import (
-    GovernedFallbackPostsWork,
-)
-from facebook_monitor.worker.fallback_automation_admission import (
-    governed_fallback_posts_work,
-)
-from facebook_monitor.worker.fallback_safety import ensure_target_supported_in_fallback
+from facebook_monitor.worker.facebook_fallback_work import FacebookFallbackWork
+from facebook_monitor.worker.facebook_fallback_work import facebook_fallback_work
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
@@ -89,7 +84,7 @@ class OneShotScanOptions:
     scan_worker_id: str = ""
     scan_started_at: datetime | None = None
     scan_page_id: str = ""
-    governed_automation_work: GovernedFallbackPostsWork | None = None
+    fallback_work: FacebookFallbackWork | None = None
 
     @property
     def commit_guard(self) -> ScanCommitGuard | None:
@@ -119,7 +114,11 @@ def select_one_shot_target(
         target = app.repositories.targets.get(target_id)
         if target is None:
             raise WorkerFailure(TARGET_MISSING_REASON, f"Target not found: {target_id}")
-        ensure_target_supported_in_fallback(target, fallback_mode="one_shot")
+        if target.target_kind != TargetKind.POSTS:
+            raise WorkerFailure(
+                TARGET_KIND_UNSUPPORTED_REASON,
+                "Only group posts targets are supported.",
+            )
         validate_posts_target_route(target)
         return target
 
@@ -172,9 +171,7 @@ def record_failure(
 
     if target is None:
         return
-    worker_path = (
-        "one_shot_fallback" if target.target_kind == TargetKind.COMMENTS else "one_shot_posts_scan"
-    )
+    worker_path = "one_shot_posts_scan"
     recorded = record_guarded_scan_failure_decision_for_db(
         db_path=db_path,
         target_id=target.id,
@@ -246,45 +243,34 @@ def run_one_shot_scan(options: OneShotScanOptions) -> PostsScanSummary:
         return max(remaining_ms, 1000)
 
     try:
-        if options.target_id:
-            with SqliteApplicationContext(options.db_path) as app:
-                candidate = app.repositories.targets.get(options.target_id)
-            if candidate is not None and candidate.target_kind == TargetKind.COMMENTS:
-                target = candidate
-                ensure_target_supported_in_fallback(target, fallback_mode="one_shot")
         if not options.profile_dir.exists():
             raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
         with SqliteApplicationContext(options.db_path) as app:
             target = select_one_shot_target(app, options.target_id, options.group_id)
             config = app.services.targets.get_config_for_target(target)
-        if options.governed_automation_work is not None:
-            return _run_governed_one_shot_posts_target(
+        if options.fallback_work is not None:
+            return _run_one_shot_posts_target(
                 options=options,
                 target=target,
                 config=config,
-                work=options.governed_automation_work,
+                work=options.fallback_work,
                 remaining_timeout_ms=remaining_timeout_ms,
             )
-        with governed_fallback_posts_work(
+        with facebook_fallback_work(
             db_path=options.db_path,
             profile_dir=options.profile_dir,
             profile_lease_factory=acquire_profile_lease,
             profile_lease_owner="one-shot worker",
-            owner_alias="one-shot-scan",
         ) as work:
-            return _run_governed_one_shot_posts_target(
+            return _run_one_shot_posts_target(
                 options=options,
                 target=target,
                 config=config,
                 work=work,
                 remaining_timeout_ms=remaining_timeout_ms,
             )
-    except (
-        FacebookFallbackIncidentPersistenceDeferred,
-        FacebookFallbackIncidentRecorded,
-        FacebookFallbackWorkDeferred,
-    ):
-        # 正常 safety defer 不得寫成 target scan failure。
+    except FacebookTemporaryBlockIncidentRecorded:
+        # Incident transaction 已完整處理 blocked scan 與 pause-all，不可再一般 finalize。
         raise
     except ProfileLeaseError as error:
         if options.record_failures:
@@ -330,12 +316,13 @@ def _scan_selected_one_shot_posts_target(
     options: OneShotScanOptions,
     target: TargetDescriptor,
     config: TargetConfig,
-    work: GovernedFallbackPostsWork,
+    work: FacebookFallbackWork,
     finish_runtime_owner: bool,
     remaining_timeout_ms: Callable[[], float],
 ) -> PostsScanSummary:
-    """在 caller 已持有 governed profile work 時執行 one-shot browser lifetime。"""
+    """在 caller 已持有 profile work 時執行 one-shot browser lifetime。"""
 
+    work.ensure_io_allowed()
     with sync_playwright() as playwright:
         context = launch_persistent_context_sync(
             playwright,
@@ -383,16 +370,18 @@ def _scan_selected_one_shot_posts_target(
                     )
             return summary
         finally:
-            context.close()
-            work.note_browser_context_closed()
+            close_sync_browser_resource_preserving_primary(
+                context,
+                description="one-shot browser context",
+            )
 
 
-def _run_governed_one_shot_posts_target(
+def _run_one_shot_posts_target(
     *,
     options: OneShotScanOptions,
     target: TargetDescriptor,
     config: TargetConfig,
-    work: GovernedFallbackPostsWork,
+    work: FacebookFallbackWork,
     remaining_timeout_ms: Callable[[], float],
 ) -> PostsScanSummary:
     """確保 one-shot 有 scan owner，並將 temporary block 導入 profile incident。"""
@@ -416,7 +405,7 @@ def _run_governed_one_shot_posts_target(
             scan_worker_id=worker_id,
             scan_started_at=locked_state.last_started_at,
             scan_page_id=locked_state.active_page_id,
-            governed_automation_work=work,
+            fallback_work=work,
         )
     commit_guard = effective_options.commit_guard
     if commit_guard is None:
@@ -438,6 +427,8 @@ def _run_governed_one_shot_posts_target(
             worker_mode=(
                 WorkerMode.HEADED_COMPAT if options.headed_compat else WorkerMode.HEADLESS
             ),
+            operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+            action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
         ):
-            raise FacebookFallbackIncidentRecorded(error.reason, str(error)) from error
+            raise AssertionError("temporary-block incident must stop one-shot runtime")
         raise

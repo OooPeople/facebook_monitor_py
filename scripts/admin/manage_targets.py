@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.application.target_actions import restart_target_monitoring_action
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpdateTargetConfigRequest
 from facebook_monitor.core.keyword_text import parse_keywords_text
@@ -163,15 +164,43 @@ def choose_target_action() -> str:
     return input("選擇操作> ").strip().lower()
 
 
-def run_target_action(app: ApplicationContext, target: TargetDescriptor, action: str) -> None:
+def run_target_action(
+    app: ApplicationContext,
+    target: TargetDescriptor,
+    action: str,
+    *,
+    db_path: Path,
+) -> None:
     """執行單一 target 的互動操作。"""
 
     if action == "1":
         edit_target_config(app, target)
         return
     if action == "2":
-        updated_target = app.services.targets.restart_target_monitoring(target.id)
-        print(f"已啟動: {updated_target.group_name or updated_target.name}")
+        outcome = restart_target_monitoring_action(
+            db_path,
+            target.id,
+        )
+        while outcome.confirmation_required:
+            confirmed = parse_yes_no(
+                input(
+                    "Facebook 曾顯示暫時封鎖；繼續可能無法取得內容，也可能遭到更久封鎖。"
+                    "仍要開始？ [y/N]> "
+                ),
+                False,
+            )
+            if not confirmed:
+                print("已取消啟動。")
+                return
+            outcome = restart_target_monitoring_action(
+                db_path,
+                target.id,
+                temporary_block_warning_confirmed=True,
+                warning_generation=outcome.warning_generation,
+            )
+        if not outcome.ok:
+            raise ValueError(outcome.message)
+        print(f"已啟動: {target.group_name or target.name}")
         return
     if action == "3":
         updated_target = app.services.targets.pause_target_monitoring(target.id)
@@ -238,20 +267,30 @@ def edit_target_config(app: ApplicationContext, target: TargetDescriptor) -> Tar
 def run_manager(db_path: Path) -> int:
     """執行互動式設定管理 loop。"""
 
-    with SqliteApplicationContext(db_path) as app:
-        while True:
+    while True:
+        with SqliteApplicationContext(db_path) as app:
             targets = app.repositories.targets.list_all()
             if not targets:
                 print("目前沒有 target。請先使用 Web UI 或 debug/capture_posts_target.py 新增社團。")
                 return 0
             print_targets(targets, app)
-            try:
-                target = choose_target(targets)
-                if target is None:
-                    return 0
-                run_target_action(app, target, choose_target_action())
-            except ValueError as exc:
-                print(f"ERROR: {exc}")
+        try:
+            target = choose_target(targets)
+            if target is None:
+                return 0
+            action = choose_target_action()
+            with SqliteApplicationContext(db_path) as app:
+                current_target = app.repositories.targets.get(target.id)
+                if current_target is None:
+                    raise ValueError("target 已不存在，請重新選擇")
+                run_target_action(
+                    app,
+                    current_target,
+                    action,
+                    db_path=db_path,
+                )
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
 
 
 def main() -> int:

@@ -22,6 +22,9 @@ from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import WorkerMode
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.one_shot_loop import SchedulerOptions
@@ -32,10 +35,8 @@ from facebook_monitor.scheduler.runtime_recovery import recover_stale_running_ta
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.fallback_automation_admission import (
-    GovernedFallbackPostsWork,
-)
-from facebook_monitor.worker.facebook_visible_write import FacebookVisibleWriteRejected
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationTripSignal
+from facebook_monitor.worker.facebook_fallback_work import FacebookFallbackWork
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
@@ -53,32 +54,14 @@ class _AdmittedTestAutomationWork:
         return SqliteApplicationContext(self.db_path)
 
 
-class _RejectingFinalizeAutomationWork(_AdmittedTestAutomationWork):
-    """允許 claim，但模擬跨 process trip 後拒絕 visible finalize。"""
-
-    def __init__(self, db_path: Path) -> None:
-        super().__init__(db_path)
-        self.context_count = 0
-
-    @contextmanager
-    def application_context(self) -> Iterator[ApplicationContext]:
-        """第一次提供 claim transaction，後續 generation fence 一律拒絕。"""
-
-        self.context_count += 1
-        if self.context_count > 1:
-            raise FacebookVisibleWriteRejected("facebook circuit generation changed")
-        with SqliteApplicationContext(self.db_path) as app:
-            yield app
-
-
 @contextmanager
 def _admitted_test_automation_work(
     **kwargs: object,
-) -> Iterator[GovernedFallbackPostsWork]:
+) -> Iterator[FacebookFallbackWork]:
     """讓 scheduler state tests 不等待正式 persistent quiet gap。"""
 
     yield cast(
-        GovernedFallbackPostsWork,
+        FacebookFallbackWork,
         _AdmittedTestAutomationWork(cast(Path, kwargs["db_path"])),
     )
 
@@ -86,22 +69,20 @@ def _admitted_test_automation_work(
 @contextmanager
 def _raising_test_automation_work(
     **_kwargs: object,
-) -> Iterator[GovernedFallbackPostsWork]:
+) -> Iterator[FacebookFallbackWork]:
     """模擬 governed work 在 DB claim 前無法取得 profile。"""
 
     raise WorkerFailure("profile_locked", "managed profile is busy")
-    yield cast(GovernedFallbackPostsWork, object())
+    yield cast(FacebookFallbackWork, object())
 
 
 @contextmanager
-def _rejecting_finalize_automation_work(
-    **kwargs: object,
-) -> Iterator[GovernedFallbackPostsWork]:
-    """模擬 admission 後由其他 process 推進 circuit generation。"""
+def _minimal_fallback_work(**kwargs: object) -> Iterator[FacebookFallbackWork]:
+    """建立共用 scheduler trip signal 的最小 fallback work。"""
 
-    yield cast(
-        GovernedFallbackPostsWork,
-        _RejectingFinalizeAutomationWork(cast(Path, kwargs["db_path"])),
+    yield FacebookFallbackWork(
+        db_path=cast(Path, kwargs["db_path"]),
+        signal=cast(FacebookAutomationTripSignal, kwargs["signal"]),
     )
 
 
@@ -128,11 +109,11 @@ def test_list_schedulable_target_ids_respects_target_stop(tmp_path: Path) -> Non
     assert list_schedulable_target_ids(db_path) == (first.id,)
 
 
-def test_one_shot_scheduler_records_comments_unsupported_without_browser_work(
+def test_one_shot_scheduler_excludes_comments_without_failure_shell(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """scheduler 應選到 comments 並保存明確 fallback failure，不能靜默忽略。"""
+    """one-shot 維持 posts-only，comments 不入選也不建立 failure shell。"""
 
     db_path = tmp_path / "app.db"
     profile_dir = tmp_path / "profile"
@@ -173,14 +154,11 @@ def test_one_shot_scheduler_records_comments_unsupported_without_browser_work(
 
     assert browser_calls == 0
     assert list_schedulable_target_ids(db_path) == ()
-    assert summaries[0].selected_count == 1
-    assert summaries[0].failure_count == 1
-    assert scan is not None
+    assert summaries[0].selected_count == 0
+    assert summaries[0].failure_count == 0
+    assert scan is None
     assert state is not None
     assert state.last_started_at is None
-    assert scan.metadata["reason"] == "unsupported_in_fallback"
-    assert scan.metadata["worker"] == "one_shot_fallback"
-    assert scan.metadata["failure_diagnostics"]["fallback_guard"]["fallback_mode"] == ("one_shot")
 
 
 def test_list_schedulable_target_ids_skips_currently_running_target(tmp_path: Path) -> None:
@@ -402,40 +380,6 @@ def test_target_schedule_planner_publishes_display_due_only_when_changed(
     assert published[-1] == (target.id, None)
 
 
-def test_target_schedule_planner_applies_comments_effective_refresh_floor(
-    tmp_path: Path,
-) -> None:
-    """planner 對 comments 使用安全有效下限，但不覆寫使用者要求值。"""
-
-    db_path = tmp_path / "app.db"
-    now = utc_now()
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_comments_target(
-            UpsertCommentsTargetRequest(
-                group_id="111",
-                parent_post_id="222",
-                canonical_url="https://www.facebook.com/groups/111/posts/222",
-                config=TargetConfigPatch(fixed_refresh_sec=60),
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-        app.services.targets.clear_target_scan_request(target.id)
-
-    planner = TargetSchedulePlanner()
-    due_targets = planner.list_due_targets(
-        db_path,
-        default_interval_seconds=60,
-        now=now,
-    )
-
-    assert len(due_targets) == 1
-    assert due_targets[0].target_id == target.id
-    assert due_targets[0].interval_seconds == 180
-    with SqliteApplicationContext(db_path) as app:
-        config = app.services.targets.get_config_for_target(target)
-    assert config.fixed_refresh_sec == 60
-
-
 def test_target_schedule_planner_skips_error_target(tmp_path: Path) -> None:
     """resident planner 不自動排程已進入 error 的 target。"""
 
@@ -593,10 +537,10 @@ def test_recover_stale_runtime_targets_requeues_stale_queued_target(tmp_path: Pa
     ) == (target.id,)
 
 
-def test_scheduler_loop_default_hard_limit_scans_one_target_per_cycle(
+def test_scheduler_loop_default_capacity_scans_all_due_targets_within_limit(
     tmp_path: Path,
 ) -> None:
-    """正式 default hard limit 每輪只掃一個 target，其他 target 維持 idle/due。"""
+    """正式 default capacity 應沿設定掃描可容納的所有 due targets。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -644,9 +588,9 @@ def test_scheduler_loop_default_hard_limit_scans_one_target_per_cycle(
         automation_work_factory=_admitted_test_automation_work,
     )
 
-    assert scanned_target_ids == [first.id]
-    assert summaries[0].selected_count == 1
-    assert summaries[0].success_count == 1
+    assert scanned_target_ids == [first.id, second.id]
+    assert summaries[0].selected_count == 2
+    assert summaries[0].success_count == 2
     with SqliteApplicationContext(db_path) as app:
         first_state = app.repositories.runtime_states.get(first.id)
         second_state = app.repositories.runtime_states.get(second.id)
@@ -654,6 +598,65 @@ def test_scheduler_loop_default_hard_limit_scans_one_target_per_cycle(
     assert second_state is not None
     assert first_state.runtime_status == TargetRuntimeStatus.IDLE
     assert second_state.runtime_status == TargetRuntimeStatus.IDLE
+
+
+def test_one_shot_scheduler_stops_remaining_targets_after_block(tmp_path: Path) -> None:
+    """第一個 one-shot finding trip 後，本輪與後續 cycle 不得再做 Facebook I/O。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    with SqliteApplicationContext(db_path) as app:
+        targets = tuple(
+            app.services.targets.upsert_group_posts_target(
+                UpsertGroupPostsTargetRequest(
+                    group_id=group_id,
+                    canonical_url=f"https://www.facebook.com/groups/{group_id}",
+                )
+            )
+            for group_id in ("one-shot-a", "one-shot-b")
+        )
+        for target in targets:
+            app.services.targets.restart_target_monitoring(target.id)
+
+    calls: list[str] = []
+
+    def blocked_first(options: OneShotScanOptions) -> PostsScanSummary:
+        calls.append(options.target_id)
+        work = options.fallback_work
+        commit_guard = options.commit_guard
+        assert work is not None and commit_guard is not None
+        work.record_temporary_block_incident(
+            error=WorkerFailure("facebook_temporary_block", "blocked"),
+            target_id=options.target_id,
+            commit_guard=commit_guard,
+            worker_mode=WorkerMode.HEADLESS,
+            operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+            action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+        )
+        raise AssertionError("incident writer must stop one-shot scheduler")
+
+    summaries = run_one_shot_scheduler_loop(
+        SchedulerOptions(
+            db_path=db_path,
+            profile_dir=profile_dir,
+            interval_seconds=0,
+            max_concurrent_scans=2,
+            max_cycles=2,
+        ),
+        scan_once=blocked_first,
+        sleep_fn=lambda _seconds: None,
+        automation_work_factory=_minimal_fallback_work,
+    )
+
+    assert len(calls) == 1
+    assert len(summaries) == 1
+    assert summaries[0].failure_count == 1
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded_targets = tuple(app.repositories.targets.get(target.id) for target in targets)
+    assert warning is not None
+    assert all(target is not None and target.paused for target in loaded_targets)
 
 
 def test_scheduler_loop_uses_bounded_selection_without_losing_due_targets(
@@ -749,54 +752,6 @@ def test_scheduler_work_enter_failure_does_not_read_unassigned_commit_guard(
     assert summaries[0].failure_count == 1
     assert summaries[0].skipped_count == 0
     assert state is not None and state.runtime_status == TargetRuntimeStatus.IDLE
-    assert latest_scan is None
-
-
-def test_scheduler_rejects_success_finalize_after_generation_fence_changes(
-    tmp_path: Path,
-) -> None:
-    """claim 後 circuit generation 改變時不得寫入 success/idle visible state。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app:
-        target = app.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="generation-fence",
-                canonical_url="https://www.facebook.com/groups/generation-fence",
-            )
-        )
-        app.services.targets.restart_target_monitoring(target.id)
-
-    def fake_scan_once(options: OneShotScanOptions) -> PostsScanSummary:
-        """回傳成功，讓 scheduler 的 fenced finalize 成為唯一寫入點。"""
-
-        return PostsScanSummary(
-            target_id=options.target_id,
-            url="https://www.facebook.com/groups/generation-fence",
-            item_count=0,
-            new_count=0,
-            matched_count=0,
-            scan_run_id=0,
-            round_stats=(),
-        )
-
-    summaries = run_one_shot_scheduler_loop(
-        SchedulerOptions(
-            db_path=db_path,
-            profile_dir=tmp_path / "profile",
-            max_cycles=1,
-        ),
-        scan_once=fake_scan_once,
-        sleep_fn=lambda _seconds: None,
-        automation_work_factory=_rejecting_finalize_automation_work,
-    )
-
-    with SqliteApplicationContext(db_path) as app:
-        state = app.repositories.runtime_states.get(target.id)
-        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-    assert summaries[0].success_count == 0
-    assert summaries[0].skipped_count == 1
-    assert state is not None and state.runtime_status == TargetRuntimeStatus.RUNNING
     assert latest_scan is None
 
 

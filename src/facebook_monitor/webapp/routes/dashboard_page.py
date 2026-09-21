@@ -15,19 +15,14 @@ from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
 from facebook_monitor.webapp.dependencies import get_db_path
-from facebook_monitor.webapp.dependencies import get_profile_dir
 from facebook_monitor.webapp.dependencies import get_scheduler_manager
 from facebook_monitor.webapp.dependencies import get_session_started_at
 from facebook_monitor.webapp.dependencies import load_app_theme
 from facebook_monitor.webapp.dependencies import run_web_read_operation
-from facebook_monitor.webapp.dependencies import run_web_app_context_operation
 from facebook_monitor.webapp.dashboard_read_models import DashboardReadUnavailable
 from facebook_monitor.webapp.dashboard_read_models import DashboardRevision
 from facebook_monitor.webapp.dashboard_read_models import DashboardRevisionUnavailable
 from facebook_monitor.webapp.dashboard_read_models import DashboardViewModel
-from facebook_monitor.webapp.facebook_access_recovery import (
-    list_facebook_access_recovery_candidates,
-)
 
 
 DashboardViewLoader = Callable[..., DashboardViewModel]
@@ -52,17 +47,12 @@ def register_dashboard_page_routes(
         error = request.query_params.get("error", "")
         db_path = get_db_path(request)
         session_started_at = get_session_started_at(request)
-        profile_dir = get_profile_dir(request)
         scheduler_state = get_scheduler_manager(request).state()
         try:
             dashboard = await run_web_read_operation(
                 lambda: get_dashboard_view(
                     db_path,
                     session_started_at=session_started_at,
-                    profile_dir=profile_dir,
-                    browser_session_active=bool(
-                        scheduler_state.resident_browser_alive
-                    ),
                 ),
                 operation_name="dashboard.view",
             )
@@ -75,14 +65,6 @@ def register_dashboard_page_routes(
             )
         except DashboardRevisionUnavailable:
             dashboard_revision = DashboardRevision(revision="0", last_changed_at="")
-        recovery_candidates = await run_web_app_context_operation(
-            request,
-            lambda app_context: list_facebook_access_recovery_candidates(
-                app_context,
-                profile_dir=profile_dir,
-            ),
-            operation_name="facebook_access.list_recovery_candidates",
-        )
         initial_theme = await load_app_theme(request)
         return templates.TemplateResponse(
             request,
@@ -95,10 +77,9 @@ def register_dashboard_page_routes(
                 "error": error,
                 "scheduler_state": scheduler_state,
                 "profile_session_warning": dashboard.profile_session_warning,
-                "facebook_access_circuit_banner": (
-                    dashboard.facebook_access_circuit_banner
+                "facebook_temporary_block_warning": (
+                    dashboard.facebook_temporary_block_warning
                 ),
-                "facebook_access_recovery_candidates": recovery_candidates,
                 "database_invariant_warning": dashboard.database_invariant_warning,
                 "dashboard_revision": dashboard_revision,
                 "target_defaults": PYTHON_TARGET_CONFIG_DEFAULTS,

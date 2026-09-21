@@ -676,6 +676,52 @@ def test_manual_scan_does_not_restart_scheduler_while_profile_window_is_active(
     assert app.state.scheduler_paused_for_profile is False
 
 
+def test_manual_scan_clears_stale_profile_resume_after_confirmed_block(
+    tmp_path: Path,
+) -> None:
+    """Incident 後的 manual start 必須清掉舊 on-close resume，避免日後誤啟動。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="temporary-block-resume",
+                canonical_url="https://www.facebook.com/groups/temporary-block-resume",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+
+    profile_manager = FakeProfileManager()
+    scheduler_manager = FakeSchedulerManager()
+    scheduler_manager.running = True
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        profile_manager=profile_manager,
+        scheduler_manager=scheduler_manager,
+    )
+    client = TestClient(app)
+
+    assert client.post("/settings/facebook/open", follow_redirects=False).status_code == 303
+    assert profile_manager.options is not None
+    stale_on_close = profile_manager.options.on_close
+    assert stale_on_close is not None
+
+    # 模擬 resolver confirmed block：profile 已關閉，但 scheduler 保持停止且 resume flag 留存。
+    profile_manager.active = False
+    scan_response = client.post(f"/targets/{target.id}/scan-once", follow_redirects=False)
+
+    assert scan_response.status_code == 303
+    assert scheduler_manager.started_count == 1
+    assert scheduler_manager.woken_count == 1
+    assert app.state.scheduler_paused_for_profile is False
+    assert app.state.scheduler_resume_options is None
+
+    scheduler_manager.stop()
+    stale_on_close()
+    assert scheduler_manager.started_count == 1
+
+
 def test_webui_shutdown_closes_active_profile_window(tmp_path: Path) -> None:
     """Web UI 關閉時會先收掉設定頁開出的 profile 視窗。"""
 

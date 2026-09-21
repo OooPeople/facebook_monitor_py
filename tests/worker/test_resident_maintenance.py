@@ -25,6 +25,7 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import PAGE_LOAD_TIMEOUT_REASON
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.notifications.outbox_dispatch_models import (
     PendingNotificationOutboxDispatchResult,
 )
@@ -52,6 +53,8 @@ from facebook_monitor.worker.resident_metadata_refresh import (
 )
 from facebook_monitor.worker.resident_main import run_bounded_retention_maintenance_if_due
 from facebook_monitor.worker.resident_main import run_resident_main_scheduler_tick
+from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
@@ -199,6 +202,57 @@ def test_resident_scheduler_tick_refreshes_requested_target_metadata(tmp_path: P
     assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert updated.metadata_status == TargetMetadataStatus.RESOLVED
     assert updated.metadata_error == ""
+
+
+def test_metadata_temporary_block_records_incident_and_requests_restart(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Metadata high-confidence finding 必須停止全部 targets 並 trip runtime。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="metadata-block",
+                canonical_url="https://www.facebook.com/groups/metadata-block",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def blocked_guard(_page: object) -> None:
+        raise WorkerFailure(FACEBOOK_TEMPORARY_BLOCK_REASON, "blocked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_metadata_refresh.ensure_async_page_scannable",
+        blocked_guard,
+    )
+    runtime = FacebookAutomationRuntime()
+    restart_requests: list[bool] = []
+    refreshed_count = asyncio.run(
+        refresh_requested_target_metadata(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                metadata_refresh_provider=lambda: (target.id,),
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+            request_runtime_restart=lambda: restart_requests.append(True),
+            facebook_runtime=runtime,
+        )
+    )
+
+    assert refreshed_count == 0
+    assert runtime.signal.is_tripped()
+    assert restart_requests == [True]
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded = app.repositories.targets.get(target.id)
+    assert warning is not None
+    assert warning.source_kind.value == "metadata"
+    assert warning.operation_kind.value == "group_metadata_access"
+    assert warning.action_kind.value == "group_document"
+    assert loaded is not None and loaded.paused
 
 
 def test_resident_scheduler_tick_repairs_polluted_metadata_during_maintenance(
@@ -604,6 +658,59 @@ def test_cover_only_generic_logo_is_queued_for_image_refresh(
     assert updated.group_cover_image_url == "https://scontent.xx.fbcdn.net/group-cover.jpg"
     assert state is not None
     assert state.status == TargetCoverImageRefreshStatus.IDLE
+
+
+def test_cover_temporary_block_records_incident_and_requests_restart(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Cover high-confidence finding 使用 cover operation，且不得落入一般 failure。"""
+
+    db_path = tmp_path / "app.db"
+    generic_logo = "https://static.facebook.com/images/logos/facebook_2x.png"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="cover-block",
+                canonical_url="https://www.facebook.com/groups/cover-block",
+                group_name="測試社團",
+            )
+        )
+        app.repositories.targets.save(replace(target, group_cover_image_url=generic_logo))
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def blocked_guard(_page: object) -> None:
+        raise WorkerFailure(FACEBOOK_TEMPORARY_BLOCK_REASON, "blocked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.resident_cover_image_attempt.ensure_async_page_scannable",
+        blocked_guard,
+    )
+    runtime = FacebookAutomationRuntime()
+    restart_requests: list[bool] = []
+    refreshed_count = asyncio.run(
+        refresh_pending_target_cover_images(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+            ),
+            browser_context=FakeMetadataBrowserContext(),
+            request_runtime_restart=lambda: restart_requests.append(True),
+            facebook_runtime=runtime,
+        )
+    )
+
+    assert refreshed_count == 0
+    assert runtime.signal.is_tripped()
+    assert restart_requests == [True]
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded = app.repositories.targets.get(target.id)
+    assert warning is not None
+    assert warning.source_kind.value == "cover"
+    assert warning.operation_kind.value == "cover_metadata_access"
+    assert warning.action_kind.value == "group_document"
+    assert loaded is not None and loaded.paused
 
 
 def test_cover_only_generic_logo_is_cleared_when_no_new_cover_is_found(

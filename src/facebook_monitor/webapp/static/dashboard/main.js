@@ -21,6 +21,9 @@ import {
   restoreScrollPosition,
 } from "/static/dashboard/state.js";
 import { setupKeywordTabs, setupPreviewTabs } from "/static/dashboard/tabs.js";
+import {
+  setupTemporaryBlockStartWarning,
+} from "/static/dashboard/temporary_block_start_warning.js";
 import { setupThemeToggle } from "/static/dashboard/theme.js";
 import { clearFeedbackParams, readJsonScript, showInlineStatus, showToast } from "/static/dashboard/utils.js";
 
@@ -97,6 +100,7 @@ setupHitRecords({
   refreshDashboard: () => applyDashboardPartialUpdate(state),
 });
 setupSettingsModals();
+setupTemporaryBlockStartWarning();
 setupConfirmSubmitForms();
 setupFormSubmitTracking();
 setupRevisionClient(state);

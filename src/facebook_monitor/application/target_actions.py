@@ -7,9 +7,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from facebook_monitor.application.context import SqliteApplicationContext
+from facebook_monitor.core.facebook_temporary_block import (
+    TemporaryBlockWarningSnapshot,
+)
+from facebook_monitor.core.models import utc_now
 
 
 @dataclass(frozen=True)
@@ -22,12 +27,34 @@ class TargetActionOutcome:
     wake_scheduler: bool = False
     start_scheduler: bool = False
     updated_count: int = 0
+    confirmation_required: bool = False
+    warning_generation: int = -1
 
 
-def restart_target_monitoring_action(db_path: Path, target_id: str) -> TargetActionOutcome:
-    """開始 target，保留 seen/outbox 並要求下一輪掃描。"""
+def restart_target_monitoring_action(
+    db_path: Path,
+    target_id: str,
+    *,
+    temporary_block_warning_confirmed: bool = False,
+    warning_generation: int = -1,
+    now: datetime | None = None,
+) -> TargetActionOutcome:
+    """開始 target；temporary-block 警告期內重驗使用者確認的 generation。"""
 
     with SqliteApplicationContext(db_path) as app_context:
+        connection = app_context.repositories.targets.connection
+        if connection.in_transaction:
+            connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        observed_at = now or utc_now()
+        policy_outcome = _temporary_block_start_policy(
+            app_context.services.facebook_temporary_block_warning.get(),
+            confirmed=temporary_block_warning_confirmed,
+            submitted_generation=warning_generation,
+            observed_at=observed_at,
+        )
+        if policy_outcome is not None:
+            return policy_outcome
         app_context.services.targets.restart_target_monitoring(target_id)
     return TargetActionOutcome(
         ok=True,
@@ -118,13 +145,31 @@ def request_target_scan_once_action(db_path: Path, target_id: str) -> TargetActi
 def restart_sidebar_group_monitoring_action(
     db_path: Path,
     group_id: str,
+    *,
+    temporary_block_warning_confirmed: bool = False,
+    warning_generation: int = -1,
+    now: datetime | None = None,
 ) -> TargetActionOutcome:
-    """開始 sidebar group 內所有 targets，沿用單 target 開始語義。"""
+    """開始 sidebar group；temporary-block 警告期間要求整批明確確認。"""
 
     with SqliteApplicationContext(db_path) as app_context:
+        connection = app_context.repositories.targets.connection
+        if connection.in_transaction:
+            connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
         if app_context.repositories.sidebar_layout.get_group(group_id) is None:
             raise ValueError("找不到指定的 sidebar 群組")
         target_ids = app_context.repositories.sidebar_layout.list_target_ids_for_group(group_id)
+        if target_ids:
+            observed_at = now or utc_now()
+            policy_outcome = _temporary_block_start_policy(
+                app_context.services.facebook_temporary_block_warning.get(),
+                confirmed=temporary_block_warning_confirmed,
+                submitted_generation=warning_generation,
+                observed_at=observed_at,
+            )
+            if policy_outcome is not None:
+                return policy_outcome
         for target_id in target_ids:
             app_context.services.targets.restart_target_monitoring(target_id)
     count = len(target_ids)
@@ -134,6 +179,30 @@ def restart_sidebar_group_monitoring_action(
         feedback="sidebar_group_started",
         start_scheduler=count > 0,
         updated_count=count,
+    )
+
+
+def _temporary_block_start_policy(
+    warning: TemporaryBlockWarningSnapshot | None,
+    *,
+    confirmed: bool,
+    submitted_generation: int,
+    observed_at: datetime,
+) -> TargetActionOutcome | None:
+    """回傳應拒絕／要求確認的結果；None 表示可套用正常開始語義。"""
+
+    if warning is None or not warning.is_active(observed_at):
+        return None
+    if confirmed and submitted_generation == warning.generation:
+        return None
+    return TargetActionOutcome(
+        ok=False,
+        message=(
+            "Facebook 曾顯示「你暫時遭到封鎖」。繼續執行可能無法取得內容，"
+            "也可能造成更久的限制；請重新按「開始」並確認後再繼續。"
+        ),
+        confirmation_required=True,
+        warning_generation=warning.generation,
     )
 
 

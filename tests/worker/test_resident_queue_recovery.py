@@ -1411,11 +1411,11 @@ def test_resident_success_result_is_committed_by_coordinator(
     assert executor.page_pool.pages[target.id].in_use_by_worker == ""
 
 
-def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
+def test_resident_comments_navigate_and_commit_through_comments_scanner(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """group-first 尚未接通前，comments 不得執行 scanner 或 visible write。"""
+    """comments 應直接導航 canonical URL 並完成正式 visible write。"""
 
     parent_post_id = "2187454285426518"
     db_path = tmp_path / "app.db"
@@ -1434,10 +1434,13 @@ def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
 
     scan_calls = 0
 
-    async def forbidden_comments_scan(**_kwargs: Any) -> SuccessScanResult:
+    async def comments_scan(**kwargs: Any) -> SuccessScanResult:
         nonlocal scan_calls
         scan_calls += 1
-        raise AssertionError("comments scanner must remain deferred")
+        return build_success_scan_result_for_test(
+            target=kwargs["target"],
+            page_url=kwargs["page"].url,
+        )
 
     async def run_test() -> tuple[RecordingSchedulePlanner, ExecutorWorkerPool]:
         target_queue = TargetQueue()
@@ -1451,8 +1454,8 @@ def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
             page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
             target_queue=target_queue,
             schedule_planner=planner,
-            scan_page=as_async_scan_callable(forbidden_comments_scan),
-            comments_commit_ready_scan_page=forbidden_comments_scan,
+            scan_page=as_async_scan_callable(comments_scan),
+            comments_commit_ready_scan_page=comments_scan,
         )
         assert (
             await executor.enqueue_due_targets(
@@ -1470,10 +1473,10 @@ def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
         assert item is not None
         result = await executor._run_queue_item("worker-1", item)  # noqa: SLF001
         await asyncio.wait_for(target_queue.join(), timeout=1)
-        assert not result.success
+        assert result.success
         assert not result.failure
-        assert result.skipped
-        assert not result.opened_page
+        assert not result.skipped
+        assert result.opened_page
         assert await target_queue.snapshot() == (0, 0, ())
         return planner, executor
 
@@ -1488,8 +1491,9 @@ def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
-    assert scan_calls == 0
-    assert latest_scan is None
+    assert scan_calls == 1
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
     assert latest_items == []
     assert history == []
     assert pending_outbox == []
@@ -1500,7 +1504,7 @@ def test_resident_comments_stay_deferred_before_scanner_or_visible_write(
     assert executor._active_scan_tasks == {}  # noqa: SLF001
     pooled_page = executor.page_pool.pages[target.id]
     assert pooled_page.in_use_by_worker == ""
-    assert pooled_page.current_url == "about:blank"
+    assert pooled_page.current_url == target.canonical_url
 
 
 def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(

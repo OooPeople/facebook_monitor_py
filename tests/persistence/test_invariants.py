@@ -7,6 +7,11 @@ import sqlite3
 
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.facebook_temporary_block import (
+    FACEBOOK_TEMPORARY_BLOCK_FORMAL_SOURCE_KINDS,
+)
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
 from facebook_monitor.persistence.invariants import validate_database_invariants
 from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
 from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
@@ -41,6 +46,9 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("target_runtime_state", "runtime_status"),
     ("target_cover_image_refresh_state", "status"),
     ("target_cover_image_refresh_state", "last_result"),
+    ("facebook_temporary_block_warning", "source_kind"),
+    ("facebook_temporary_block_warning", "operation_kind"),
+    ("facebook_temporary_block_warning", "action_kind"),
     ("facebook_access_circuit_state", "state"),
     ("facebook_access_circuit_state", "source_kind"),
     ("facebook_access_circuit_state", "operation_kind"),
@@ -60,6 +68,24 @@ EXPECTED_ENUM_CONTRACT_KEYS = {
     ("facebook_session_recovery_state", "requested_recipe_kind"),
     ("facebook_session_recovery_state", "last_probe_result"),
 }
+
+
+def test_temporary_block_warning_schema_literals_match_domain() -> None:
+    """Domain 擴充不得靜默改寫既有 v45 CHECK constraint。"""
+
+    warning_contracts = {
+        contract.field: contract.allowed_values
+        for contract in ENUM_CONTRACTS
+        if contract.table == "facebook_temporary_block_warning"
+    }
+
+    assert warning_contracts == {
+        "source_kind": frozenset(
+            source.value for source in FACEBOOK_TEMPORARY_BLOCK_FORMAL_SOURCE_KINDS
+        ),
+        "operation_kind": frozenset(value.value for value in FacebookProductOperationKind),
+        "action_kind": frozenset(value.value for value in FacebookActionKind),
+    }
 
 EXPECTED_BOOLEAN_CONTRACT_KEYS = {
     ("targets", "enabled"),
@@ -96,6 +122,8 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("notification_dedupe", "dedupe_epoch"),
     ("notification_dedupe", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
+    ("facebook_temporary_block_warning", "generation"),
+    ("facebook_temporary_block_warning", "warning_window"),
     ("facebook_access_circuit_state", "circuit_counts"),
     ("facebook_access_circuit_events", "policy_delay_seconds"),
     ("facebook_automation_pacing_state", "lease_generation"),
@@ -126,6 +154,9 @@ EXPECTED_DATETIME_CONTRACT_KEYS = {
     ("target_cover_image_refresh_state", "last_succeeded_at"),
     ("target_cover_image_refresh_state", "last_failed_at"),
     ("target_cover_image_refresh_state", "updated_at"),
+    ("facebook_temporary_block_warning", "detected_at"),
+    ("facebook_temporary_block_warning", "warning_until"),
+    ("facebook_temporary_block_warning", "updated_at"),
     ("sidebar_groups", "created_at"),
     ("sidebar_groups", "updated_at"),
     ("sidebar_target_placements", "updated_at"),
@@ -272,8 +303,10 @@ def test_database_invariants_report_required_runtime_updated_at(
     assert "datetime value is required" in formatted
 
 
-def test_circuit_invariant_output_redacts_profile_scope_key(tmp_path: Path) -> None:
-    """Invariant diagnostics 不得輸出 opaque profile scope key。"""
+def test_legacy_circuit_rows_are_inert_to_active_semantic_invariants(
+    tmp_path: Path,
+) -> None:
+    """Legacy circuit內容不再被 active product invariant 投影成限制。"""
 
     db_path = tmp_path / "app.db"
     raw_scope_key = "private-profile-scope-key"
@@ -301,8 +334,7 @@ def test_circuit_invariant_output_redacts_profile_scope_key(tmp_path: Path) -> N
         violations = validate_database_invariants(connection)
 
     formatted = "\n".join(violation.format() for violation in violations)
-    assert "facebook_access_circuit_state[profile].state" in formatted
-    assert "datetime value must use UTC offset" in formatted
+    assert "facebook_access_circuit_state" not in formatted
     assert raw_scope_key not in formatted
 
 

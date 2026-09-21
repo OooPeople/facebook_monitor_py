@@ -80,9 +80,6 @@ class ResidentCycleSummary:
     cover_image_refresh_count: int = 0
     notification_dispatch_count: int = 0
     worker_health_ok: bool = True
-    automation_coordinator_active: bool = False
-    automation_coordinator_work_kind: str = ""
-    automation_coordinator_waiter_count: int = 0
 
 
 @dataclass(frozen=True)

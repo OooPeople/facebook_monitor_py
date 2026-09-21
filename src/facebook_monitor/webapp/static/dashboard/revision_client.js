@@ -1,9 +1,12 @@
 import { applyDashboardPartialUpdate } from "/static/dashboard/partial_updates.js";
 import { saveScrollPosition, shouldDelayRefresh } from "/static/dashboard/state.js";
+import {
+  setupTemporaryBlockWarningExpiryRefresh,
+} from "/static/dashboard/temporary_block_start_warning.js";
 
 const pollingIntervalMs = 3000;
 const pendingRefreshCheckMs = 1000;
-const safetyPollIntervalMs = 15000;
+const boundedRefreshPollIntervalMs = 15000;
 const sseFallbackDelayMs = 2500;
 
 const transportStates = {
@@ -54,7 +57,7 @@ const createRevisionRuntime = () => ({
   pollingIntervalId: 0,
   fallbackTimerId: 0,
   pendingRefreshIntervalId: 0,
-  safetyPollIntervalId: 0,
+  boundedRefreshPollIntervalId: 0,
   closed: false,
 });
 
@@ -162,20 +165,26 @@ const teardownRevisionClient = (state, runtime) => {
     window.clearInterval(runtime.pendingRefreshIntervalId);
     runtime.pendingRefreshIntervalId = 0;
   }
-  if (runtime.safetyPollIntervalId) {
-    window.clearInterval(runtime.safetyPollIntervalId);
-    runtime.safetyPollIntervalId = 0;
+  if (runtime.boundedRefreshPollIntervalId) {
+    window.clearInterval(runtime.boundedRefreshPollIntervalId);
+    runtime.boundedRefreshPollIntervalId = 0;
   }
   if (runtime.source) {
     runtime.source.close();
     runtime.source = null;
   }
+  runtime.teardownWarningExpiryRefresh?.();
+  runtime.teardownWarningExpiryRefresh = null;
   state.sseConnected = false;
   state.revisionTransportState = transportStates.closed;
 };
 
 export const setupRevisionClient = (state) => {
   const runtime = createRevisionRuntime();
+
+  runtime.teardownWarningExpiryRefresh = setupTemporaryBlockWarningExpiryRefresh(
+    () => updateWhenSafe(state),
+  );
 
   setupSseRevisionEvents(state, runtime);
 
@@ -185,14 +194,14 @@ export const setupRevisionClient = (state) => {
       void updateWhenSafe(state);
     }
   }, pendingRefreshCheckMs);
-  runtime.safetyPollIntervalId = window.setInterval(() => {
+  runtime.boundedRefreshPollIntervalId = window.setInterval(() => {
     if (
       !shouldDelayRefresh(state)
       && !state.pendingRefresh
     ) {
       void updateWhenSafe(state);
     }
-  }, safetyPollIntervalMs);
+  }, boundedRefreshPollIntervalMs);
 
   const teardown = () => teardownRevisionClient(state, runtime);
   window.addEventListener("pagehide", teardown, { once: true });

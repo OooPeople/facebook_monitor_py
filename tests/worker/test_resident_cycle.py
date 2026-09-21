@@ -9,12 +9,12 @@ from typing import Any
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import TargetDesiredState
-from facebook_monitor.core.scan_failures import COMMENTS_SAFE_NAVIGATION_PENDING_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -57,16 +57,15 @@ def test_resident_main_page_reload_keeps_same_group_feed_sorting_url() -> None:
             timeout_ms=1000,
         )
 
-        assert outcome.prepared
-        assert outcome.deferred_reason == ""
+        assert outcome.action_kind == FacebookActionKind.RELOAD
         assert page.reload_count == 1
         assert page.goto_count == 0
 
     asyncio.run(run_test())
 
 
-def test_resident_main_page_defers_comments_before_reload_or_goto() -> None:
-    """feature 未開時 comments prepare 必須在任何 reload/goto 前 deferred。"""
+def test_resident_main_page_opens_comments_directly_and_reloads_same_route() -> None:
+    """comments canonical URL 可直接 goto，同一貼文 route 則 reload。"""
 
     async def run_test() -> None:
         """建立 comments target fake page 並檢查 reload 判斷。"""
@@ -79,9 +78,12 @@ def test_resident_main_page_defers_comments_before_reload_or_goto() -> None:
             ),
             config=TargetConfig(target_id="target-1"),
         )
-        for current_url in (
-            "about:blank",
-            "https://www.facebook.com/groups/11111111/posts/99999999?comment_id=12345678",
+        for current_url, expected_action in (
+            ("about:blank", FacebookActionKind.DIRECT_DOCUMENT),
+            (
+                "https://www.facebook.com/groups/11111111/posts/99999999?comment_id=12345678",
+                FacebookActionKind.RELOAD,
+            ),
         ):
             page = FakeAsyncPage()
             page.url = current_url
@@ -92,16 +94,15 @@ def test_resident_main_page_defers_comments_before_reload_or_goto() -> None:
                 timeout_ms=1000,
             )
 
-            assert not outcome.prepared
-            assert outcome.deferred_reason == COMMENTS_SAFE_NAVIGATION_PENDING_REASON
-            assert page.reload_count == 0
-            assert page.goto_count == 0
+            assert outcome.action_kind == expected_action
+            assert page.reload_count == int(expected_action == FacebookActionKind.RELOAD)
+            assert page.goto_count == int(expected_action == FacebookActionKind.DIRECT_DOCUMENT)
 
     asyncio.run(run_test())
 
 
-def test_resident_main_cycle_bounds_due_target_admission_to_one(tmp_path: Path) -> None:
-    """worker slot override 不得突破 profile 級單一 Facebook admission。"""
+def test_resident_main_cycle_uses_configured_worker_slots(tmp_path: Path) -> None:
+    """正式 resident 不應再把設定的 worker slots 強制壓成單一 admission。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -144,31 +145,27 @@ def test_resident_main_cycle_bounds_due_target_admission_to_one(tmp_path: Path) 
             schedule_planner=TargetSchedulePlanner(),
             cycle_index=1,
         )
-        assert summary.selected_count == 1
-        assert summary.success_count == 1
+        assert summary.selected_count == 2
+        assert summary.success_count == 2
 
     asyncio.run(run_test())
 
-    assert len(scanned_target_ids) == 1
-    assert scanned_target_ids[0] in {first.id, second.id}
+    assert set(scanned_target_ids) == {first.id, second.id}
     with SqliteApplicationContext(db_path) as app:
         first_state = app.repositories.runtime_states.get(first.id)
         second_state = app.repositories.runtime_states.get(second.id)
     assert first_state is not None
     assert second_state is not None
-    states = {first.id: first_state, second.id: second_state}
-    scanned_state = states[scanned_target_ids[0]]
-    waiting_state = states[second.id if scanned_target_ids[0] == first.id else first.id]
-    assert scanned_state.runtime_status == TargetRuntimeStatus.IDLE
-    assert waiting_state.runtime_status == TargetRuntimeStatus.IDLE
-    assert scanned_state.last_page_reloaded_at is not None
-    assert waiting_state.last_page_reloaded_at is None
+    assert first_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert second_state.runtime_status == TargetRuntimeStatus.IDLE
+    assert first_state.last_page_reloaded_at is not None
+    assert second_state.last_page_reloaded_at is not None
 
 
-def test_resident_main_cycle_defers_comments_without_losing_active_intent(
+def test_resident_main_cycle_scans_comments_through_direct_canonical_url(
     tmp_path: Path,
 ) -> None:
-    """防禦性入隊的 comments target 不導航、不掃描，並保留 active intent。"""
+    """comments target 應直接開 canonical URL 並交給 comments scanner。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -185,13 +182,13 @@ def test_resident_main_cycle_defers_comments_without_losing_active_intent(
     comment_calls: list[str] = []
 
     async def fake_post_scan_page(**kwargs: Any) -> PostsScanSummary:
-        """comments safe defer 應發生在選擇 scanner 前。"""
+        """comments target 不應誤用 posts scanner。"""
 
         post_calls.append(kwargs["target"].id)
         raise AssertionError("comments target should not use posts scan callable")
 
     async def fake_comment_scan_page(**kwargs: Any) -> SuccessScanResult:
-        """comments safe defer 應發生在呼叫 comments scanner 前。"""
+        """記錄 comments scanner 已收到直接導航完成的 page。"""
 
         comment_calls.append(kwargs["target"].id)
         return build_success_scan_result_for_test(
@@ -215,17 +212,17 @@ def test_resident_main_cycle_defers_comments_without_losing_active_intent(
             cycle_index=1,
         )
         assert summary.selected_count == 1
-        assert summary.success_count == 0
+        assert summary.success_count == 1
         assert summary.failure_count == 0
-        assert summary.skipped_count == 1
+        assert summary.skipped_count == 0
         assert len(context.pages) == 1
-        assert context.pages[0].goto_count == 0
+        assert context.pages[0].goto_count == 1
         assert context.pages[0].reload_count == 0
 
     asyncio.run(run_test())
 
     assert post_calls == []
-    assert comment_calls == []
+    assert comment_calls == [target.id]
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
@@ -233,8 +230,9 @@ def test_resident_main_cycle_defers_comments_without_losing_active_intent(
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.desired_state == TargetDesiredState.ACTIVE
     assert state.last_error == ""
-    assert state.last_page_reloaded_at is None
-    assert latest_scan is None
+    assert state.last_page_reloaded_at is not None
+    assert latest_scan is not None
+    assert latest_scan.status == ScanStatus.SUCCESS
 
 
 def test_resident_main_cycle_commits_posts_protective_skip_result(

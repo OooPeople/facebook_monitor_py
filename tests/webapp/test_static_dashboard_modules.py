@@ -650,7 +650,7 @@ def test_confirm_dialog_renders_message_once_in_body() -> None:
 
 
 def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_tracking() -> None:
-    """共用動態 dialog 必須處理 Esc/close，確認送出攔截要早於表單追蹤。"""
+    """共用 dialog 與 temporary-block Start 攔截都要早於表單追蹤。"""
 
     dialogs_js = Path("src/facebook_monitor/webapp/static/dashboard/dialogs.js").read_text(
         encoding="utf-8"
@@ -661,6 +661,9 @@ def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_trac
     settings_js = Path("src/facebook_monitor/webapp/static/dashboard/settings.js").read_text(
         encoding="utf-8"
     )
+    warning_js = Path(
+        "src/facebook_monitor/webapp/static/dashboard/temporary_block_start_warning.js"
+    ).read_text(encoding="utf-8")
 
     assert 'dialog.addEventListener("cancel", () => finish(false), { once: true });' in dialogs_js
     assert 'dialog.addEventListener("close", () => finish(false), { once: true });' in dialogs_js
@@ -668,8 +671,197 @@ def test_dynamic_dialogs_resolve_native_close_and_confirm_submit_intercepts_trac
     assert 'dialog.addEventListener("close", () => finish(null), { once: true });' in dialogs_js
     assert "let settled = false;" in dialogs_js
     assert "event.stopImmediatePropagation();" in dialogs_js
-    assert main_js.index("setupConfirmSubmitForms();") < main_js.index("setupFormSubmitTracking();")
+    assert '"[data-confirm-submit]"' in dialogs_js
+    assert "const actionAtPrompt = form.action;" in warning_js
+    assert 'const generationAtPrompt = generationInput?.value ?? "";' in warning_js
+    assert 'form.dataset.temporaryBlockConfirmationInFlight = "1";' in warning_js
+    assert "while (form.isConnected" in warning_js
+    assert "continue;" in warning_js
+    assert "form.action !== actionAtPrompt" in warning_js
+    assert '(generationInput?.value ?? "") !== generationAtPrompt' in warning_js
+    assert 'searchParams.get("temporary_block_reprompt_target")' in warning_js
+    assert "repromptRedirectedTarget();" in warning_js
+    assert "focusCancel: true" in warning_js
+    assert main_js.index("setupTemporaryBlockStartWarning();") < main_js.index(
+        "setupFormSubmitTracking();"
+    )
+    assert main_js.index("setupConfirmSubmitForms();") < main_js.index(
+        "setupFormSubmitTracking();"
+    )
     assert "setupConfirmSubmitForms();" in settings_js
+
+
+def test_temporary_block_single_start_reprompt_behavior(tmp_path: Path) -> None:
+    """執行 single Start JS，驗證 stale generation、redirect 與退出路徑。"""
+
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        pytest.skip("node is required to execute temporary-block warning behavior tests")
+    source = Path(
+        "src/facebook_monitor/webapp/static/dashboard/temporary_block_start_warning.js"
+    ).read_text(encoding="utf-8")
+    source = source.replace(
+        'from "/static/dashboard/dialogs.js";',
+        'from "./dialogs.mjs";',
+    )
+    module_path = tmp_path / "temporary_block_start_warning.mjs"
+    module_path.write_text(source, encoding="utf-8")
+    (tmp_path / "dialogs.mjs").write_text(
+        "export const confirmDialog = (...args) => globalThis.runConfirmDialog(...args);\n",
+        encoding="utf-8",
+    )
+    script = textwrap.dedent(
+        """
+        import assert from "node:assert/strict";
+        import { pathToFileURL } from "node:url";
+
+        const confirmedInput = { value: "0" };
+        const generationInput = { value: "1" };
+        const attributes = new Set(["data-temporary-block-confirm-submit"]);
+        const submitPromises = [];
+        let requestSubmitCount = 0;
+        let submitHandler = null;
+        const form = {
+          action: "http://localhost/targets/t1/start",
+          dataset: { targetId: "t1" },
+          isConnected: true,
+          addEventListener(type, handler) {
+            assert.equal(type, "submit");
+            submitHandler = handler;
+          },
+          hasAttribute(name) {
+            return attributes.has(name);
+          },
+          querySelector(selector) {
+            if (selector === "[data-temporary-block-warning-confirmed]") {
+              return confirmedInput;
+            }
+            if (selector === "[data-temporary-block-warning-generation]") {
+              return generationInput;
+            }
+            return null;
+          },
+          requestSubmit() {
+            requestSubmitCount += 1;
+            const event = {
+              preventDefault() {},
+              stopImmediatePropagation() {},
+            };
+            submitPromises.push(Promise.resolve(submitHandler(event)));
+          },
+          toggleAttribute(name, force) {
+            if (force) attributes.add(name);
+            else attributes.delete(name);
+          },
+        };
+        const banner = {
+          dataset: {
+            warningGeneration: "1",
+            warningUntil: "2099-01-01T00:00:00Z",
+          },
+          hidden: false,
+          querySelector() {
+            return { textContent: "" };
+          },
+        };
+        globalThis.document = {
+          querySelector(selector) {
+            assert.equal(selector, "[data-temporary-block-warning]");
+            return banner;
+          },
+          querySelectorAll(selector) {
+            assert.equal(selector, "[data-monitoring-form]");
+            return [form];
+          },
+        };
+        let historyReplaceCount = 0;
+        globalThis.window = {
+          location: {
+            href: "http://localhost/?temporary_block_reprompt_target=t1",
+          },
+          history: {
+            replaceState(_state, _title, value) {
+              historyReplaceCount += 1;
+              window.location.href = new URL(value, window.location.href).href;
+            },
+          },
+          clearTimeout() {},
+          setTimeout() {
+            return 1;
+          },
+        };
+        let confirmCalls = 0;
+        let confirmBehavior = () => true;
+        globalThis.runConfirmDialog = async () => {
+          confirmCalls += 1;
+          return confirmBehavior(confirmCalls);
+        };
+        const flush = async () => {
+          for (let index = 0; index < 8; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          await Promise.all(submitPromises.splice(0));
+        };
+
+        const { setupTemporaryBlockStartWarning } = await import(
+          pathToFileURL(process.argv[1]).href
+        );
+        confirmBehavior = (call) => {
+          if (call === 1) generationInput.value = "2";
+          return true;
+        };
+        setupTemporaryBlockStartWarning();
+        await flush();
+        assert.equal(confirmCalls, 2);
+        assert.equal(requestSubmitCount, 2);
+        assert.equal(confirmedInput.value, "1");
+        assert.equal(generationInput.value, "2");
+        assert.equal(historyReplaceCount, 1);
+        assert.equal(window.location.href.includes("temporary_block_reprompt_target"), false);
+
+        confirmedInput.value = "0";
+        attributes.add("data-temporary-block-confirm-submit");
+        const submitsBeforeCancel = requestSubmitCount;
+        const confirmsBeforeCancel = confirmCalls;
+        confirmBehavior = () => false;
+        form.requestSubmit();
+        await flush();
+        assert.equal(requestSubmitCount, submitsBeforeCancel + 1);
+        assert.equal(confirmCalls, confirmsBeforeCancel + 1);
+        assert.equal(confirmedInput.value, "0");
+
+        form.action = "http://localhost/targets/t1/start";
+        attributes.add("data-temporary-block-confirm-submit");
+        const submitsBeforeStop = requestSubmitCount;
+        confirmBehavior = () => {
+          form.action = "http://localhost/targets/t1/stop";
+          return true;
+        };
+        form.requestSubmit();
+        await flush();
+        assert.equal(requestSubmitCount, submitsBeforeStop + 1);
+        assert.equal(confirmedInput.value, "0");
+
+        form.action = "http://localhost/targets/t1/start";
+        attributes.add("data-temporary-block-confirm-submit");
+        const submitsBeforeExpiry = requestSubmitCount;
+        confirmBehavior = () => {
+          attributes.delete("data-temporary-block-confirm-submit");
+          return true;
+        };
+        form.requestSubmit();
+        await flush();
+        assert.equal(requestSubmitCount, submitsBeforeExpiry + 1);
+        assert.equal(confirmedInput.value, "0");
+        """
+    )
+
+    subprocess.run(
+        [node_bin, "--input-type=module", "-e", script, str(module_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_settings_failed_outbox_clear_requires_dynamic_confirmation() -> None:

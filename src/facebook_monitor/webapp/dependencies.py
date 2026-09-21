@@ -38,6 +38,10 @@ from facebook_monitor.webapp.scheduler_session import SchedulerManagerLike
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
 from facebook_monitor.webapp.scheduler_session import SchedulerLifecycleState
 from facebook_monitor.webapp.dashboard_revision_notifier import DashboardRevisionNotifier
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
+)
+from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
@@ -209,10 +213,14 @@ async def run_with_temporary_profile_access(
 
     was_running = get_scheduler_manager(request).is_running()
     pause_scheduler_for_profile_use(request)
+    incident_recorded = False
     try:
         return await run_in_threadpool(action)
+    except FacebookTemporaryBlockIncidentRecorded:
+        incident_recorded = True
+        raise
     finally:
-        if was_running:
+        if was_running and not incident_recorded:
             request.app.state.scheduler_paused_for_profile = True
             resume_scheduler_after_profile_use(request)
 
@@ -267,6 +275,7 @@ def default_group_name_resolver(profile_dir: Path, canonical_url: str) -> GroupM
     return resolve_group_metadata_with_profile(
         profile_dir=profile_dir,
         canonical_url=canonical_url,
+        page_guard=ensure_sync_page_scannable,
     )
 
 
@@ -331,11 +340,18 @@ def redirect_with_message(
     )
 
 
-def redirect_with_error(error: str, *, return_to: str = "") -> RedirectResponse:
+def redirect_with_error(
+    error: str,
+    *,
+    return_to: str = "",
+    extra_query: dict[str, str] | None = None,
+) -> RedirectResponse:
     """回到首頁並帶上錯誤訊息。"""
 
+    query = dict(extra_query or {})
+    query["error"] = redact_sensitive_text(error)
     return RedirectResponse(
-        f"/?{urlencode({'error': redact_sensitive_text(error)})}"
+        f"/?{urlencode(query)}"
         f"{normalize_return_fragment(return_to)}",
         status_code=303,
     )
@@ -430,4 +446,6 @@ def start_resident_scheduler_if_needed(request: Request) -> None:
         return
     if not scheduler.is_running():
         scheduler.start(build_scheduler_options(request))
+    request.app.state.scheduler_paused_for_profile = False
+    request.app.state.scheduler_resume_options = None
     scheduler.wake()

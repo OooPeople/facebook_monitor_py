@@ -14,8 +14,11 @@ from facebook_monitor.application.target_metadata_policy import InvalidTargetMet
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.core.facebook_access import FacebookProductOperationKind
-from facebook_monitor.core.facebook_access import FacebookAdmissionToken
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
+from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
 from facebook_monitor.facebook.group_metadata import (
     AsyncBrowserContextLike as GroupMetadataBrowserContextLike,
 )
@@ -26,9 +29,6 @@ from facebook_monitor.worker.resident_maintenance_eligibility import (
     filter_maintenance_refresh_target_ids,
 )
 from facebook_monitor.worker.resident_maintenance_errors import (
-    handle_governed_maintenance_refresh_exception,
-)
-from facebook_monitor.worker.resident_maintenance_errors import (
     handle_maintenance_refresh_exception,
 )
 from facebook_monitor.worker.resident_maintenance_errors import (
@@ -36,25 +36,11 @@ from facebook_monitor.worker.resident_maintenance_errors import (
 )
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
-from facebook_monitor.worker.facebook_access_runtime_incidents import (
-    trip_non_scan_facebook_access_incident,
+from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
-from facebook_monitor.core.facebook_access import FacebookWorkSourceKind
-from facebook_monitor.worker.facebook_automation_coordinator import (
-    FacebookAutomationCoordinator,
-)
-from facebook_monitor.worker.facebook_automation_coordinator import (
-    FacebookAutomationWorkKind,
-)
-from facebook_monitor.worker.facebook_automation_admission import (
-    FacebookAutomationAdmissionController,
-)
-from facebook_monitor.worker.facebook_automation_admission import (
-    FacebookGovernedAutomationLease,
-)
-from facebook_monitor.worker.facebook_automation_coordinator import FacebookAutomationLease
-from facebook_monitor.worker.facebook_visible_write import FacebookVisibleWriteRejected
-from facebook_monitor.worker.facebook_visible_write import fenced_facebook_application_context
 
 
 logger = logging.getLogger(__name__)
@@ -77,125 +63,69 @@ async def refresh_requested_target_metadata(
     browser_context: GroupMetadataBrowserContextLike | None,
     should_stop: StopCheckCallable | None = None,
     request_runtime_restart: Callable[[], None] | None = None,
-    automation_coordinator: FacebookAutomationCoordinator | None = None,
-    automation_admission_controller: FacebookAutomationAdmissionController | None = None,
+    facebook_runtime: FacebookAutomationRuntime | None = None,
 ) -> int:
     """消化 Web UI request 與 DB pending metadata refresh job。"""
 
     stop_requested = should_stop or (lambda: False)
     if browser_context is None or stop_requested():
         return 0
+    runtime = facebook_runtime or FacebookAutomationRuntime()
     refreshed_count = 0
     for candidate in list_metadata_refresh_candidates(options):
         if stop_requested():
             break
         target_id = candidate.target_id
-        automation_lease: FacebookGovernedAutomationLease | FacebookAutomationLease | None = None
         try:
-            if automation_admission_controller is not None:
-                admission = await automation_admission_controller.acquire(
-                    work_kind=FacebookAutomationWorkKind.METADATA_REFRESH,
-                    operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
-                    owner_alias="metadata-refresh",
-                )
-                if not admission.admitted or admission.lease is None:
-                    continue
-                automation_lease = admission.lease
-            elif automation_coordinator is not None:
-                automation_lease = await automation_coordinator.acquire(
-                    FacebookAutomationWorkKind.METADATA_REFRESH,
-                    owner_alias="metadata-refresh",
-                )
-            if stop_requested():
-                break
-            if await refresh_target_group_name_from_context(
-                options=options,
-                browser_context=browser_context,
-                target_id=target_id,
-                overwrite_name=candidate.overwrite_name,
-                automation_admission_controller=automation_admission_controller,
-                facebook_admission_token=(
-                    automation_lease.admission_token
-                    if isinstance(automation_lease, FacebookGovernedAutomationLease)
-                    else None
-                ),
-            ):
-                refreshed_count += 1
-        except FacebookVisibleWriteRejected:
-            if request_runtime_restart is not None:
-                request_runtime_restart()
+            with runtime.facebook_work():
+                if stop_requested():
+                    break
+                if await refresh_target_group_name_from_context(
+                    options=options,
+                    browser_context=browser_context,
+                    target_id=target_id,
+                    overwrite_name=candidate.overwrite_name,
+                ):
+                    refreshed_count += 1
+        except FacebookAutomationRuntimeTripped:
             break
         except Exception as exc:
-            governed_lease = (
-                automation_lease
-                if isinstance(automation_lease, FacebookGovernedAutomationLease)
-                else None
-            )
-            if await trip_non_scan_facebook_access_incident(
-                db_path=options.db_path,
-                controller=automation_admission_controller,
-                lease=governed_lease,
-                error=exc,
-                source_kind=FacebookWorkSourceKind.METADATA,
-                operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
-                target_id=target_id,
-            ):
+            if isinstance(exc, WorkerFailure) and exc.reason == FACEBOOK_TEMPORARY_BLOCK_REASON:
+                await runtime.record_temporary_block(
+                    db_path=options.db_path,
+                    finding=TemporaryBlockFinding(
+                        source_kind=FacebookWorkSourceKind.METADATA,
+                        operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
+                        action_kind=FacebookActionKind.GROUP_DOCUMENT,
+                        target_id=target_id,
+                        evidence_code="facebook_page_guard_v1",
+                    ),
+                    diagnostics=exc.diagnostics,
+                )
                 if request_runtime_restart is not None:
                     request_runtime_restart()
                 break
-            if automation_admission_controller is not None and governed_lease is not None:
-                with fenced_facebook_application_context(
-                    db_path=options.db_path,
-                    controller=automation_admission_controller,
-                    token=governed_lease.admission_token,
-                ) as app:
-                    should_break = handle_governed_maintenance_refresh_exception(
-                        app=app,
-                        options=options,
-                        target_id=target_id,
-                        exc=exc,
-                        stop_requested=stop_requested,
-                        request_runtime_restart=request_runtime_restart,
-                        shutdown_log_message=(
-                            "metadata refresh skipped because scheduler is stopping"
-                        ),
-                        runtime_restart_log_message=(
-                            "metadata refresh requested browser runtime restart"
-                        ),
-                        failure_log_message="metadata refresh failed",
-                        mark_failed=lambda guarded_app: (
-                            mark_target_metadata_refresh_failed_in_app(
-                                guarded_app,
-                                target_id,
-                                "metadata refresh failed",
-                            )
-                        ),
-                    )
-            else:
-                should_break = handle_maintenance_refresh_exception(
-                    options=options,
-                    target_id=target_id,
-                    exc=exc,
-                    stop_requested=stop_requested,
-                    request_runtime_restart=request_runtime_restart,
-                    shutdown_log_message=(
-                        "metadata refresh skipped because scheduler is stopping"
-                    ),
-                    runtime_restart_log_message=(
-                        "metadata refresh requested browser runtime restart"
-                    ),
-                    failure_log_message="metadata refresh failed",
-                    mark_failed=lambda: mark_target_metadata_refresh_failed(
-                        options,
-                        target_id,
-                        "metadata refresh failed",
-                    ),
-                )
+            should_break = handle_maintenance_refresh_exception(
+                options=options,
+                target_id=target_id,
+                exc=exc,
+                stop_requested=stop_requested,
+                request_runtime_restart=request_runtime_restart,
+                shutdown_log_message=(
+                    "metadata refresh skipped because scheduler is stopping"
+                ),
+                runtime_restart_log_message=(
+                    "metadata refresh requested browser runtime restart"
+                ),
+                failure_log_message="metadata refresh failed",
+                mark_failed=lambda: mark_target_metadata_refresh_failed(
+                    options,
+                    target_id,
+                    "metadata refresh failed",
+                ),
+            )
             if should_break:
                 break
-        finally:
-            if automation_lease is not None:
-                await automation_lease.release()
     return refreshed_count
 
 
@@ -369,8 +299,6 @@ async def refresh_target_group_name_from_context(
     browser_context: GroupMetadataBrowserContextLike,
     target_id: str,
     overwrite_name: bool = True,
-    automation_admission_controller: FacebookAutomationAdmissionController | None = None,
-    facebook_admission_token: FacebookAdmissionToken | None = None,
 ) -> bool:
     """用 resident browser context 補齊 target group name。"""
 
@@ -395,19 +323,11 @@ async def refresh_target_group_name_from_context(
             "metadata refresh skipped",
             extra={"target_id": target_id},
         )
-        with fenced_facebook_application_context(
-            db_path=options.db_path,
-            controller=automation_admission_controller,
-            token=facebook_admission_token,
-        ) as app:
+        with SqliteApplicationContext(options.db_path) as app:
             if app.repositories.targets.get(target_id) is not None:
                 app.services.targets.mark_target_metadata_refresh_failed(target_id, str(exc))
         return False
-    with fenced_facebook_application_context(
-        db_path=options.db_path,
-        controller=automation_admission_controller,
-        token=facebook_admission_token,
-    ) as app:
+    with SqliteApplicationContext(options.db_path) as app:
         if app.repositories.targets.get(target_id) is None:
             return False
         try:

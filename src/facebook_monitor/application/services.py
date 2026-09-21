@@ -803,6 +803,11 @@ class TargetApplicationService:
 
         return self.monitoring_commands.pause_target_monitoring(target_id)
 
+    def pause_all_target_monitoring(self) -> int:
+        """停止所有 active target，供 profile 級存取事件原子收斂。"""
+
+        return self.monitoring_commands.pause_all_target_monitoring()
+
     def pause_all_targets_for_webui_startup(
         self,
         *,

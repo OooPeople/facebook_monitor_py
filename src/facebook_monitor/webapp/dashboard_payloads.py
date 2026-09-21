@@ -12,7 +12,9 @@ from fastapi.templating import Jinja2Templates
 
 from facebook_monitor.webapp.dashboard_models import TargetRow
 from facebook_monitor.webapp.dashboard_read_models import DatabaseInvariantWarning
-from facebook_monitor.webapp.dashboard_read_models import FacebookAccessCircuitBanner
+from facebook_monitor.webapp.dashboard_read_models import (
+    FacebookTemporaryBlockWarningBanner,
+)
 from facebook_monitor.webapp.dashboard_read_models import ProfileSessionWarning
 from facebook_monitor.webapp.dashboard_target_sidebar import SidebarTargetItem
 
@@ -72,26 +74,17 @@ def serialize_database_invariant_warning(
     }
 
 
-def serialize_facebook_access_circuit_banner(
-    banner: FacebookAccessCircuitBanner,
+def serialize_facebook_temporary_block_warning(
+    warning: FacebookTemporaryBlockWarningBanner,
 ) -> dict[str, object]:
-    """序列化 profile-wide Facebook access circuit 安全摘要。"""
+    """序列化首頁與 Start 共用的最小 temporary-block warning。"""
 
     return {
-        "visible": banner.visible,
-        "title": banner.title,
-        "message": banner.message,
-        "profile_scope": banner.profile_scope,
-        "state": banner.state,
-        "reason": banner.reason,
-        "cooldown_active": banner.cooldown_active,
-        "cooldown_until": banner.cooldown_until,
-        "probe_pending": banner.probe_pending,
-        "last_probe_result": banner.last_probe_result,
-        "last_probe_result_label": banner.last_probe_result_label,
-        "recovery_enabled": banner.recovery_enabled,
-        "recovery_disabled_reason": banner.recovery_disabled_reason,
-        "recovery_status_message": banner.recovery_status_message,
+        "active": warning.active,
+        "title": warning.title,
+        "message": warning.message,
+        "warning_until": warning.warning_until,
+        "generation": warning.generation,
     }
 
 

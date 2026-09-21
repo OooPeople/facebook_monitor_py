@@ -526,45 +526,6 @@ def test_bounded_retention_prunes_terminal_state_but_keeps_recent_failed_outbox(
     assert remaining_outbox_statuses == {"failed"}
 
 
-def test_bounded_retention_prunes_old_facebook_access_events(tmp_path: Path) -> None:
-    """circuit state 長期保留，但 transition event 只保留最近 90 天。"""
-
-    db_path = tmp_path / "app.db"
-    now = utc_now()
-    old = encode_datetime(now - timedelta(days=91))
-    recent = encode_datetime(now - timedelta(days=89))
-    with SqliteConnection(db_path) as sqlite:
-        connection = sqlite.require_connection()
-        initialize_schema(connection)
-        connection.execute(
-            """
-            INSERT INTO facebook_access_circuit_state (
-                profile_scope_key, state, updated_at
-            ) VALUES ('profile', 'closed', ?)
-            """,
-            (recent,),
-        )
-        connection.executemany(
-            """
-            INSERT INTO facebook_access_circuit_events (
-                profile_scope_key, episode_id, event_kind, from_state, to_state,
-                occurred_at
-            ) VALUES ('profile', 'episode-1', 'closed', 'half_open', 'closed', ?)
-            """,
-            ((old,), (recent,)),
-        )
-
-        result = RuntimeDataMaintenanceRepository(connection).prune_bounded_retention(
-            now=now,
-        )
-        remaining_events = table_count(connection, "facebook_access_circuit_events")
-        remaining_state = table_count(connection, "facebook_access_circuit_state")
-
-    assert result.facebook_access_circuit_events == 1
-    assert remaining_events == 1
-    assert remaining_state == 1
-
-
 def test_bounded_retention_outbox_status_matrix(tmp_path: Path) -> None:
     """bounded retention 依狀態保護 active rows，並套用 terminal TTL。"""
 

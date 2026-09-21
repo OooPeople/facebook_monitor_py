@@ -41,7 +41,6 @@ from facebook_monitor.webapp.dashboard_revision_wake import (
 )
 from facebook_monitor.webapp.profile_session import ProfileManagerLike
 from facebook_monitor.webapp.routes.dashboard import register_dashboard_routes
-from facebook_monitor.webapp.routes.facebook_access import register_facebook_access_routes
 from facebook_monitor.webapp.routes.hit_records import register_hit_record_routes
 from facebook_monitor.webapp.routes.settings import register_settings_routes
 from facebook_monitor.webapp.routes.sidebar import register_sidebar_routes
@@ -125,7 +124,6 @@ def create_app(
         }
 
     register_dashboard_routes(app, route_templates)
-    register_facebook_access_routes(app)
     register_hit_record_routes(app)
     register_sidebar_routes(app)
     register_target_routes(app, route_templates)

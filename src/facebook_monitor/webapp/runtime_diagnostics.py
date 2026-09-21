@@ -11,23 +11,9 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
-from facebook_monitor.application.facebook_access_observability import (
-    build_facebook_access_safe_snapshot,
-)
-from facebook_monitor.application.facebook_access_observability import (
-    read_existing_facebook_access_observation,
-)
-from facebook_monitor.application.facebook_automation_runtime_observability import (
-    read_facebook_automation_runtime_hold,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    build_facebook_automation_pacing_safe_snapshot,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    read_existing_facebook_automation_pacing,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    safe_facebook_automation_work_kind,
+from facebook_monitor.core.models import utc_now
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    FacebookTemporaryBlockWarningRepository,
 )
 from facebook_monitor.runtime.build_metadata import collect_build_metadata
 from facebook_monitor.runtime.paths import RuntimePaths
@@ -70,14 +56,7 @@ def build_runtime_diagnostics_view(app_state: Any) -> RuntimeDiagnosticsView:
         getattr(app_state, "reset_runtime_data_on_startup", False)
     )
     scheduler_state = _scheduler_state_text(getattr(app_state, "scheduler_manager", None))
-    facebook_access_circuit = _facebook_access_circuit_text(
-        db_path=db_path,
-        profile_dir=profile_dir,
-    )
-    facebook_automation_pacing = _facebook_automation_pacing_text(
-        db_path=db_path,
-        profile_dir=profile_dir,
-    )
+    temporary_block_warning = _facebook_temporary_block_warning_text(db_path)
     fields = (
         RuntimeDiagnosticField("App", metadata.app_name),
         RuntimeDiagnosticField("Version", metadata.app_version),
@@ -110,8 +89,10 @@ def build_runtime_diagnostics_view(app_state: Any) -> RuntimeDiagnosticsView:
             str(reset_runtime_data_on_startup).lower(),
         ),
         RuntimeDiagnosticField("Scheduler", scheduler_state),
-        RuntimeDiagnosticField("Facebook access circuit", facebook_access_circuit),
-        RuntimeDiagnosticField("Facebook automation pacing", facebook_automation_pacing),
+        RuntimeDiagnosticField(
+            "Facebook temporary block warning",
+            temporary_block_warning,
+        ),
     )
     return RuntimeDiagnosticsView(
         fields=fields,
@@ -132,79 +113,42 @@ def _scheduler_state_text(scheduler_manager: Any) -> str:
     queued = getattr(state, "current_queued_count", 0)
     active = getattr(state, "current_running_count", 0)
     slots = getattr(state, "max_concurrent_scans", 0)
-    coordinator_active = bool(
-        getattr(state, "automation_coordinator_active", False)
-    )
-    coordinator_work = safe_facebook_automation_work_kind(
-        str(getattr(state, "automation_coordinator_work_kind", ""))
-    )
-    coordinator_waiters = max(
-        int(getattr(state, "automation_coordinator_waiter_count", 0)),
-        0,
-    )
+    page_pool_size = getattr(state, "page_pool_size", 0)
+    opened_pages = getattr(state, "last_opened_page_count", 0)
+    reused_pages = getattr(state, "last_reused_page_count", 0)
+    closed_pages = getattr(state, "last_closed_page_count", 0)
+    browser_alive = bool(getattr(state, "resident_browser_alive", False))
     return (
         f"{running}; running={active}; queued={queued}; slots={slots}; "
-        f"coordinator_active={str(coordinator_active).lower()}; "
-        f"coordinator_work={coordinator_work or 'none'}; "
-        f"coordinator_waiters={coordinator_waiters}"
+        f"page_pool_size={page_pool_size}; opened_pages={opened_pages}; "
+        f"reused_pages={reused_pages}; closed_pages={closed_pages}; "
+        f"browser_alive={str(browser_alive).lower()}"
     )
 
 
-def _facebook_access_circuit_text(*, db_path: Path, profile_dir: Path) -> str:
-    """整理不含 raw profile key 或 target identity 的 circuit diagnostics。"""
+def _facebook_temporary_block_warning_text(db_path: Path) -> str:
+    """整理不含 target、profile 或 evidence 的 advisory warning。"""
 
+    if not db_path.is_file():
+        return "available=false"
     try:
-        observation = read_existing_facebook_access_observation(
-            db_path=db_path,
-            profile_dir=profile_dir,
-        )
-        runtime_hold = read_facebook_automation_runtime_hold(
-            db_path=db_path,
-            profile_dir=profile_dir,
-            browser_session_active=False,
-        )
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=0.5)
+        connection.row_factory = sqlite3.Row
+        try:
+            warning = FacebookTemporaryBlockWarningRepository(connection).get()
+        finally:
+            connection.close()
     except (OSError, sqlite3.Error, ValueError):
         return "unavailable"
-    snapshot = build_facebook_access_safe_snapshot(
-        observation.circuit,
-        profile_scope="managed_profile",
-        probe_request_outcome=observation.probe_request_outcome,
-        runtime_hold=runtime_hold,
-    )
-    if not snapshot.available:
-        return "unavailable"
-    cooldown = "active" if snapshot.cooldown_active else "inactive"
+    if warning is None:
+        return "available=true; active=false; generation=none"
     return (
-        f"profile_scope={snapshot.profile_scope}; state={snapshot.state}; "
-        f"reason={snapshot.reason}; cooldown={cooldown}; "
-        f"cooldown_until={snapshot.cooldown_until or 'none'}"
-    )
-
-
-def _facebook_automation_pacing_text(*, db_path: Path, profile_dir: Path) -> str:
-    """整理不含 operation/session/profile key 的 persistent pacing 狀態。"""
-
-    try:
-        pacing = read_existing_facebook_automation_pacing(
-            db_path=db_path,
-            profile_dir=profile_dir,
-        )
-    except (OSError, sqlite3.Error, ValueError):
-        return "unavailable"
-    snapshot = build_facebook_automation_pacing_safe_snapshot(
-        pacing,
-        profile_scope="managed_profile",
-    )
-    if not snapshot.available:
-        return "unavailable"
-    return (
-        f"profile_scope={snapshot.profile_scope}; active={str(snapshot.active).lower()}; "
-        f"work_kind={snapshot.active_work_kind or 'none'}; "
-        f"lease_expires_at={snapshot.active_lease_expires_at or 'none'}; "
-        f"lease_expired={str(snapshot.active_lease_expired).lower()}; "
-        f"quiet_period_active={str(snapshot.quiet_period_active).lower()}; "
-        f"next_not_before={snapshot.next_automation_not_before or 'none'}; "
-        f"last_started_at={snapshot.last_automation_started_at or 'none'}; "
-        f"last_finished_at={snapshot.last_automation_finished_at or 'none'}; "
-        f"last_outcome={snapshot.last_outcome or 'none'}"
+        f"available=true; active={str(warning.is_active(utc_now())).lower()}; "
+        f"generation={warning.generation}; "
+        f"detected_at={warning.detected_at.isoformat()}; "
+        f"warning_until={warning.warning_until.isoformat()}; "
+        f"source={warning.source_kind.value}; "
+        f"operation={warning.operation_kind.value}; "
+        f"action={warning.action_kind.value}"
     )

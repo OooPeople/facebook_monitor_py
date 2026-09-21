@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 
-
 CURRENT_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_metadata (
     key TEXT PRIMARY KEY,
@@ -275,6 +274,30 @@ CREATE TABLE IF NOT EXISTS target_cover_image_refresh_state (
     changed INTEGER NOT NULL DEFAULT 0 CHECK (changed IN (0, 1)),
     error TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facebook_temporary_block_warning (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    detected_at TEXT NOT NULL,
+    warning_until TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK (
+        source_kind IN ('cover', 'metadata', 'scan', 'sync_resolver')
+    ),
+    operation_kind TEXT NOT NULL CHECK (
+        operation_kind IN (
+            'posts_access', 'comments_access', 'group_metadata_access',
+            'cover_metadata_access', 'unknown'
+        )
+    ),
+    action_kind TEXT NOT NULL CHECK (
+        action_kind IN (
+            'group_feed_document', 'group_document', 'direct_document',
+            'reload', 'trusted_click', 'unknown'
+        )
+    ),
+    updated_at TEXT NOT NULL,
+    CHECK (warning_until > detected_at)
 );
 
 CREATE TABLE IF NOT EXISTS facebook_access_circuit_state (
@@ -562,9 +585,7 @@ DASHBOARD_REVISION_TABLES = (
     "targets",
     "target_configs",
     "target_runtime_state",
-    "facebook_access_circuit_state",
-    "managed_profile_identity_binding",
-    "facebook_session_recovery_state",
+    "facebook_temporary_block_warning",
     "scan_runs",
     "notification_events",
     "notification_outbox",
@@ -574,30 +595,6 @@ DASHBOARD_REVISION_TABLES = (
     "sidebar_groups",
     "sidebar_target_placements",
     "sidebar_group_config_templates",
-)
-FACEBOOK_ACCESS_CIRCUIT_REVISION_UPDATE_COLUMNS = (
-    "state",
-    "episode_id",
-    "generation",
-    "reason_code",
-    "source_kind",
-    "operation_kind",
-    "trigger_action_kind",
-    "recovery_recipe_kind",
-    "trigger_target_id",
-    "opened_at",
-    "cooldown_until",
-    "reopen_count",
-    "half_open_token",
-    "half_open_started_at",
-    "half_open_lease_expires_at",
-    "probe_request_id",
-    "probe_requested_at",
-    "requested_recipe_kind",
-    "requested_target_id",
-    "last_probe_finished_at",
-    "last_probe_result",
-    "closed_at",
 )
 
 
@@ -626,14 +623,10 @@ def ensure_dashboard_revision_triggers(connection: sqlite3.Connection) -> None:
     for table_name in DASHBOARD_REVISION_TABLES:
         for operation in ("INSERT", "UPDATE", "DELETE"):
             trigger_name = f"trg_dashboard_revision_{table_name}_{operation.lower()}"
-            trigger_operation = operation
-            if table_name == "facebook_access_circuit_state" and operation == "UPDATE":
-                columns = ", ".join(FACEBOOK_ACCESS_CIRCUIT_REVISION_UPDATE_COLUMNS)
-                trigger_operation = f"UPDATE OF {columns}"
             connection.execute(
                 f"""
                 CREATE TRIGGER {trigger_name}
-                AFTER {trigger_operation} ON {table_name}
+                AFTER {operation} ON {table_name}
                 BEGIN
                     UPDATE dashboard_revision
                     SET revision = revision + 1,

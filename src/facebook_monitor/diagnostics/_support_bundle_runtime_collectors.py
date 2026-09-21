@@ -7,27 +7,13 @@ paths 與 bounded log tail；log/freeform 只輸出 redacted summary。
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
 
-from facebook_monitor.application.facebook_access_observability import (
-    build_facebook_access_safe_snapshot,
-)
-from facebook_monitor.application.facebook_access_observability import (
-    read_existing_facebook_access_observation,
-)
-from facebook_monitor.application.facebook_access_observability import (
-    read_existing_facebook_session_recovery_safe_diagnostics,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    build_facebook_automation_pacing_safe_snapshot,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    read_existing_facebook_automation_pacing,
-)
-from facebook_monitor.application.facebook_automation_pacing_observability import (
-    safe_facebook_automation_work_kind,
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    FacebookTemporaryBlockWarningRepository,
 )
 from facebook_monitor.runtime.paths import RuntimePaths
 from facebook_monitor.updates.validation import is_reparse_or_symlink
@@ -45,9 +31,6 @@ from facebook_monitor.diagnostics._support_bundle_utils import _number_or_zero
 from facebook_monitor.diagnostics._support_bundle_utils import _readonly_connection
 from facebook_monitor.diagnostics._support_bundle_utils import _table_names
 from facebook_monitor.diagnostics._support_bundle_utils import _tupleish
-from facebook_monitor.application.facebook_automation_runtime_observability import (
-    read_facebook_automation_runtime_hold,
-)
 from facebook_monitor.updates.release_check import DEFAULT_UPDATE_REPOSITORY
 
 
@@ -91,97 +74,40 @@ def _profile_session_payload(paths: RuntimePaths) -> dict[str, object]:
     return payload | {"database_available": True}
 
 
-def _facebook_access_circuit_payload(
+def _facebook_temporary_block_warning_payload(
     paths: RuntimePaths,
-    aliases: _SupportBundleAliases,
+    *,
+    now: datetime,
 ) -> dict[str, object]:
-    """建立目前 managed profile circuit 的 privacy-safe snapshot。"""
+    """建立唯一現行 temporary-block warning 的 bounded snapshot。"""
 
-    observation = read_existing_facebook_access_observation(
-        db_path=paths.db_path,
-        profile_dir=paths.profile_dir,
-    )
-    circuit = observation.circuit
-    profile_scope = (
-        aliases.alias("profile", circuit.profile_scope_key) if circuit is not None else ""
-    )
-    runtime_hold = read_facebook_automation_runtime_hold(
-        db_path=paths.db_path,
-        profile_dir=paths.profile_dir,
-        browser_session_active=False,
-    )
-    snapshot = build_facebook_access_safe_snapshot(
-        circuit,
-        profile_scope=profile_scope,
-        probe_request_outcome=observation.probe_request_outcome,
-        runtime_hold=runtime_hold,
-    )
-    return {
-        "available": snapshot.available,
-        "identity_status": observation.identity_status,
-        "runtime_hold": runtime_hold,
-        "profile_scope": snapshot.profile_scope,
-        "state": snapshot.state,
-        "reason": snapshot.reason,
-        "cooldown": {
-            "active": snapshot.cooldown_active,
-            "until": snapshot.cooldown_until,
-        },
+    empty_payload: dict[str, object] = {
+        "available": False,
+        "active": False,
+        "generation": None,
+        "detected_at": "",
+        "warning_until": "",
+        "source": "",
+        "operation": "",
+        "action": "",
     }
-
-
-def _facebook_session_recovery_payload(paths: RuntimePaths) -> dict[str, object]:
-    """建立不含scope、UUID、target、path與session owner的recovery摘要。"""
-
-    snapshot = read_existing_facebook_session_recovery_safe_diagnostics(
-        db_path=paths.db_path,
-        profile_dir=paths.profile_dir,
-    )
+    if not paths.db_path.is_file():
+        return empty_payload
+    with _readonly_connection(paths.db_path) as connection:
+        if "facebook_temporary_block_warning" not in _table_names(connection):
+            return empty_payload
+        warning = FacebookTemporaryBlockWarningRepository(connection).get()
+    if warning is None:
+        return empty_payload | {"available": True}
     return {
-        "available": snapshot.available,
-        "status": snapshot.status,
-        "earliest_readiness_at": snapshot.earliest_readiness_at,
-        "quiet_period_active": snapshot.quiet_period_active,
-        "probe_state": snapshot.probe_state,
-        "last_result": snapshot.last_result,
-    }
-
-
-def _facebook_automation_pacing_payload(
-    paths: RuntimePaths,
-    aliases: _SupportBundleAliases,
-) -> dict[str, object]:
-    """建立不含 persistent owner identity 的 pacing snapshot。"""
-
-    pacing = read_existing_facebook_automation_pacing(
-        db_path=paths.db_path,
-        profile_dir=paths.profile_dir,
-    )
-    profile_scope = (
-        aliases.alias("profile", pacing.profile_scope_key) if pacing is not None else ""
-    )
-    snapshot = build_facebook_automation_pacing_safe_snapshot(
-        pacing,
-        profile_scope=profile_scope,
-    )
-    return {
-        "available": snapshot.available,
-        "profile_scope": snapshot.profile_scope,
-        "active": snapshot.active,
-        "active_work_kind": snapshot.active_work_kind,
-        "active_lease": {
-            "expires_at": snapshot.active_lease_expires_at,
-            "expired": snapshot.active_lease_expired,
-        },
-        "quiet_period": {
-            "active": snapshot.quiet_period_active,
-            "next_not_before": snapshot.next_automation_not_before,
-        },
-        "last_automation": {
-            "started_at": snapshot.last_automation_started_at,
-            "finished_at": snapshot.last_automation_finished_at,
-            "outcome": snapshot.last_outcome,
-        },
+        "available": True,
+        "active": warning.is_active(now),
+        "generation": warning.generation,
+        "detected_at": warning.detected_at.isoformat(),
+        "warning_until": warning.warning_until.isoformat(),
+        "source": warning.source_kind.value,
+        "operation": warning.operation_kind.value,
+        "action": warning.action_kind.value,
     }
 
 
@@ -284,16 +210,6 @@ def _scheduler_state_payload(
         "last_reused_page_count": int(_number_or_zero(state.get("last_reused_page_count"))),
         "last_closed_page_count": int(_number_or_zero(state.get("last_closed_page_count"))),
         "resident_browser_alive": bool(state.get("resident_browser_alive", False)),
-        "automation_coordinator": {
-            "active": bool(state.get("automation_coordinator_active", False)),
-            "work_kind": safe_facebook_automation_work_kind(
-                str(state.get("automation_coordinator_work_kind") or "")
-            ),
-            "waiter_count": max(
-                int(_number_or_zero(state.get("automation_coordinator_waiter_count"))),
-                0,
-            ),
-        },
         "recovered_runtime_count": int(_number_or_zero(state.get("recovered_runtime_count"))),
         "notification_dispatch_count": int(
             _number_or_zero(state.get("notification_dispatch_count"))

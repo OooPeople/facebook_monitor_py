@@ -47,6 +47,13 @@ async def _run_target_action_redirect(
             lambda: action(db_path, target_id),
             operation_name=f"target_action.{action.__name__}",
         )
+        if outcome.confirmation_required:
+            # Redirect 後從 DB 重讀最新 generation，並自動重開同一 target 的警告。
+            return redirect_with_error(
+                outcome.message,
+                return_to=return_to,
+                extra_query={"temporary_block_reprompt_target": target_id},
+            )
         if not outcome.ok:
             return redirect_with_error(outcome.message, return_to=return_to)
         if outcome.start_scheduler:
@@ -75,14 +82,27 @@ def register_target_action_routes(app: FastAPI) -> None:
         request: Request,
         target_id: str,
         return_to: Annotated[str, Form()] = "",
+        temporary_block_warning_confirmed: Annotated[str, Form()] = "",
+        warning_generation: Annotated[str, Form()] = "",
     ) -> RedirectResponse:
         """開始單一 target，保留 seen/outbox 並要求立即掃描。"""
 
+        try:
+            parsed_warning_generation = int(warning_generation or "-1")
+        except ValueError:
+            parsed_warning_generation = -1
         return await _run_target_action_redirect(
             request,
             target_id=target_id,
             return_to=return_to,
-            action=restart_target_monitoring_action,
+            action=lambda db_path, selected_target_id: restart_target_monitoring_action(
+                db_path,
+                selected_target_id,
+                temporary_block_warning_confirmed=(
+                    temporary_block_warning_confirmed == "1"
+                ),
+                warning_generation=parsed_warning_generation,
+            ),
             failure_prefix="啟動失敗：",
         )
 

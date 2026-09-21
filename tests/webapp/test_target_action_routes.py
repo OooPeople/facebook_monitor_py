@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 import sqlite3
 from pathlib import Path
+from threading import Event
+from urllib.parse import unquote
 
 from pytest import MonkeyPatch
 from fastapi.testclient import TestClient
@@ -13,6 +20,14 @@ from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertCommentsTargetRequest
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.application.target_actions import (
+    restart_sidebar_group_monitoring_action,
+)
+from facebook_monitor.application.services import TargetApplicationService
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
+from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import NotificationChannel
@@ -22,11 +37,27 @@ from facebook_monitor.core.models import NotificationStatus
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import SeenItem
 from facebook_monitor.webapp.routes import target_actions as target_action_routes
+from facebook_monitor.worker import facebook_access_incident
+from facebook_monitor.worker.facebook_access_incident import (
+    FacebookAccessIncidentOutcomeKind,
+)
 from tests.helpers.webapp import FakeSchedulerManager
 
 
 from tests.webapp.app_test_helpers import create_app
 from tests.webapp.app_test_helpers import page_feedback
+
+
+@dataclass(frozen=True)
+class _TargetStartIncidentRace:
+    """保存Start／incident writer race的durable fixture。"""
+
+    db_path: Path
+    profile_dir: Path
+    target_id: str
+    warning_generation: int
+    finding: TemporaryBlockFinding
+    incident_at: datetime
 
 
 def test_scheduler_routes_are_not_public_daily_controls(tmp_path: Path) -> None:
@@ -294,6 +325,370 @@ def test_start_and_stop_routes_update_target_status(tmp_path: Path) -> None:
     assert outbox_entry is not None
     assert scheduler_manager.started_count == 1
     assert scheduler_manager.woken_count == 2
+
+
+def test_temporary_block_warning_requires_current_target_confirmation(
+    tmp_path: Path,
+) -> None:
+    """警告期內只允許帶目前 generation 的單 target 明確確認。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profiles" / "automation"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="warning-group",
+                canonical_url="https://www.facebook.com/groups/warning-group",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("警告期批次操作")
+        app_context.services.sidebar_layout.save_placements(
+            [(group.id, [target.id])]
+        )
+        observed_at = datetime.now(UTC)
+        warning = app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=observed_at,
+        )
+        app_context.services.targets.pause_all_target_monitoring()
+
+    scheduler_manager = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=profile_dir,
+            scheduler_manager=scheduler_manager,
+        )
+    )
+
+    page = client.get("/")
+    unconfirmed = client.post(
+        f"/targets/{target.id}/start",
+        follow_redirects=False,
+    )
+    stale = client.post(
+        f"/targets/{target.id}/start",
+        data={
+            "temporary_block_warning_confirmed": "1",
+            "warning_generation": str(warning.generation - 1),
+        },
+        follow_redirects=False,
+    )
+    blocked_group = restart_sidebar_group_monitoring_action(
+        db_path,
+        group.id,
+    )
+    group_start = client.post(f"/api/sidebar/groups/{group.id}/start")
+
+    assert "Facebook 暫時限制存取警告" in page.text
+    assert "data-temporary-block-confirm-submit" in page.text
+    assert unconfirmed.status_code == 303
+    assert "繼續執行可能無法取得內容" in unquote(
+        unconfirmed.headers["location"]
+    )
+    assert stale.status_code == 303
+    assert not blocked_group.ok
+    assert blocked_group.confirmation_required
+    assert blocked_group.warning_generation == warning.generation
+    assert group_start.status_code == 200
+    assert group_start.json()["confirmation_required"] is True
+    assert group_start.json()["warning_generation"] == warning.generation
+    assert scheduler_manager.started_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        before_confirm = app_context.repositories.targets.get(target.id)
+    assert before_confirm is not None and before_confirm.paused
+
+    confirmed = client.post(
+        f"/targets/{target.id}/start",
+        data={
+            "temporary_block_warning_confirmed": "1",
+            "warning_generation": str(warning.generation),
+        },
+        follow_redirects=False,
+    )
+
+    assert confirmed.status_code == 303
+    assert "target_started" in confirmed.headers["location"]
+    assert scheduler_manager.started_count == 1
+    with SqliteApplicationContext(db_path) as app_context:
+        started = app_context.repositories.targets.get(target.id)
+    assert started is not None and not started.paused
+
+    client.post(f"/targets/{target.id}/stop", follow_redirects=False)
+    second_unconfirmed = client.post(
+        f"/targets/{target.id}/start",
+        follow_redirects=False,
+    )
+    assert "繼續執行可能無法取得內容" in unquote(
+        second_unconfirmed.headers["location"]
+    )
+    confirmed_group = client.post(
+        f"/api/sidebar/groups/{group.id}/start",
+        json={
+            "temporary_block_warning_confirmed": True,
+            "warning_generation": warning.generation,
+        },
+    )
+    assert confirmed_group.status_code == 200
+    assert confirmed_group.json()["confirmation_required"] is False
+    assert confirmed_group.json()["updated_count"] == 1
+
+
+def test_expired_temporary_block_warning_uses_normal_start_flow(tmp_path: Path) -> None:
+    """已過期 warning 不可繼續攔截 Start，也不需要 confirmation payload。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="expired-start-warning",
+                canonical_url="https://www.facebook.com/groups/expired-start-warning",
+            )
+        )
+        app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        app_context.services.targets.pause_target_monitoring(target.id)
+    scheduler = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler,
+        )
+    )
+
+    response = client.post(f"/targets/{target.id}/start", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "target_started" in response.headers["location"]
+    assert scheduler.started_count == 1
+    with SqliteApplicationContext(db_path) as app_context:
+        started = app_context.repositories.targets.get(target.id)
+    assert started is not None and not started.paused
+
+
+def test_batch_start_rejects_confirmation_for_superseded_warning_generation(
+    tmp_path: Path,
+) -> None:
+    """批次 Start 在送出前 warning 更新時回傳新 generation，且保持零 target mutation。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="batch-warning-race",
+                canonical_url="https://www.facebook.com/groups/batch-warning-race",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("批次 warning race")
+        app_context.services.sidebar_layout.save_placements([(group.id, [target.id])])
+        first = app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=datetime.now(UTC),
+        )
+        second = app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.METADATA,
+                operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
+                action_kind=FacebookActionKind.GROUP_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=datetime.now(UTC) + timedelta(microseconds=1),
+        )
+        app_context.services.targets.pause_target_monitoring(target.id)
+    scheduler = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler,
+        )
+    )
+
+    stale = client.post(
+        f"/api/sidebar/groups/{group.id}/start",
+        json={
+            "temporary_block_warning_confirmed": True,
+            "warning_generation": first.generation,
+        },
+    )
+
+    assert stale.status_code == 200
+    assert stale.json()["confirmation_required"] is True
+    assert stale.json()["warning_generation"] == second.generation
+    assert stale.json()["updated_count"] == 0
+    assert scheduler.started_count == 0
+    assert scheduler.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        unchanged = app_context.repositories.targets.get(target.id)
+        runtime = app_context.repositories.runtime_states.get(target.id)
+    assert unchanged is not None and unchanged.paused
+    assert runtime is not None and runtime.desired_state.value == "stopped"
+    assert runtime.scan_requested_at is None
+
+    confirmed = client.post(
+        f"/api/sidebar/groups/{group.id}/start",
+        json={
+            "temporary_block_warning_confirmed": True,
+            "warning_generation": second.generation,
+        },
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["confirmation_required"] is False
+    assert confirmed.json()["updated_count"] == 1
+    assert scheduler.started_count == 1
+
+
+def test_incident_committing_before_confirmed_start_rejects_stale_confirmation(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Incident先線性化時，舊generation確認不得啟動target或scheduler。"""
+
+    fixture = _seed_target_start_incident_race(tmp_path)
+    scheduler = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=fixture.db_path,
+            profile_dir=fixture.profile_dir,
+            scheduler_manager=scheduler,
+        )
+    )
+    incident_locked = Event()
+    release_incident = Event()
+    original = facebook_access_incident._record_facebook_access_incident
+
+    def hold_incident_writer(*args, **kwargs):
+        incident_locked.set()
+        assert release_incident.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        facebook_access_incident,
+        "_record_facebook_access_incident",
+        hold_incident_writer,
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        incident_future = pool.submit(
+            facebook_access_incident.record_facebook_access_incident_for_db,
+            db_path=fixture.db_path,
+            finding=fixture.finding,
+            occurred_at=fixture.incident_at,
+        )
+        assert incident_locked.wait(timeout=5)
+        start_future = pool.submit(
+            client.post,
+            f"/targets/{fixture.target_id}/start",
+            data={
+                "temporary_block_warning_confirmed": "1",
+                "warning_generation": str(fixture.warning_generation),
+            },
+            follow_redirects=False,
+        )
+        release_incident.set()
+        incident = incident_future.result(timeout=10)
+        response = start_future.result(timeout=10)
+
+    assert incident.kind == FacebookAccessIncidentOutcomeKind.RECORDED
+    assert response.status_code == 303
+    assert "繼續執行可能無法取得內容" in unquote(response.headers["location"])
+    assert (
+        f"temporary_block_reprompt_target={fixture.target_id}"
+        in response.headers["location"]
+    )
+    assert scheduler.started_count == 0
+    assert scheduler.woken_count == 0
+    with SqliteApplicationContext(fixture.db_path) as app_context:
+        target = app_context.repositories.targets.get(fixture.target_id)
+        runtime = app_context.repositories.runtime_states.get(fixture.target_id)
+        current_warning = app_context.services.facebook_temporary_block_warning.get()
+    assert target is not None and target.paused
+    assert runtime is not None and runtime.desired_state.value == "stopped"
+    assert runtime.scan_requested_at is None
+    assert current_warning is not None
+    refreshed_page = client.get(response.headers["location"])
+    assert "data-temporary-block-confirm-submit" in refreshed_page.text
+    assert f'data-target-id="{fixture.target_id}"' in refreshed_page.text
+    assert f'value="{current_warning.generation}"' in refreshed_page.text
+
+
+def test_confirmed_start_committing_before_incident_is_stopped_by_incident(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Start先線性化時可啟動scheduler，但隨後incident仍停止來源target。"""
+
+    fixture = _seed_target_start_incident_race(tmp_path)
+    scheduler = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=fixture.db_path,
+            profile_dir=fixture.profile_dir,
+            scheduler_manager=scheduler,
+        )
+    )
+    start_locked = Event()
+    release_start = Event()
+    original = TargetApplicationService.restart_target_monitoring
+
+    def hold_start_writer(self, target_id: str):
+        start_locked.set()
+        assert release_start.wait(timeout=5)
+        return original(self, target_id)
+
+    monkeypatch.setattr(
+        TargetApplicationService,
+        "restart_target_monitoring",
+        hold_start_writer,
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        start_future = pool.submit(
+            client.post,
+            f"/targets/{fixture.target_id}/start",
+            data={
+                "temporary_block_warning_confirmed": "1",
+                "warning_generation": str(fixture.warning_generation),
+            },
+            follow_redirects=False,
+        )
+        assert start_locked.wait(timeout=5)
+        incident_future = pool.submit(
+            facebook_access_incident.record_facebook_access_incident_for_db,
+            db_path=fixture.db_path,
+            finding=fixture.finding,
+            occurred_at=fixture.incident_at,
+        )
+        release_start.set()
+        response = start_future.result(timeout=10)
+        incident = incident_future.result(timeout=10)
+
+    assert response.status_code == 303
+    assert "target_started" in response.headers["location"]
+    assert incident.kind == FacebookAccessIncidentOutcomeKind.RECORDED
+    assert scheduler.started_count == 1
+    with SqliteApplicationContext(fixture.db_path) as app_context:
+        target = app_context.repositories.targets.get(fixture.target_id)
+        runtime = app_context.repositories.runtime_states.get(fixture.target_id)
+    assert target is not None and target.paused
+    assert runtime is not None and runtime.desired_state.value == "stopped"
+    assert runtime.scan_requested_at is None
 
 
 def test_reset_target_notification_state_route_clears_outbox_and_seen(
@@ -683,3 +1078,42 @@ def test_target_action_db_failure_does_not_trigger_scheduler_side_effect(
     assert "error=" in response.headers["location"]
     assert scheduler_manager.started_count == 0
     assert scheduler_manager.woken_count == 0
+
+
+def _seed_target_start_incident_race(tmp_path: Path) -> _TargetStartIncidentRace:
+    """建立警告期Start確認與新incident共用generation的race fixture。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profiles" / "automation"
+    warning_at = datetime.now(UTC)
+    incident_at = warning_at + timedelta(microseconds=1)
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="start-incident-race",
+                canonical_url="https://www.facebook.com/groups/start-incident-race",
+            )
+        )
+        warning = app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.METADATA,
+                operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
+                action_kind=FacebookActionKind.GROUP_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=warning_at,
+        )
+        app_context.services.targets.pause_all_target_monitoring()
+    return _TargetStartIncidentRace(
+        db_path=db_path,
+        profile_dir=profile_dir,
+        target_id=target.id,
+        warning_generation=warning.generation,
+        finding=TemporaryBlockFinding(
+            source_kind=FacebookWorkSourceKind.METADATA,
+            operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
+            action_kind=FacebookActionKind.GROUP_DOCUMENT,
+            target_id=target.id,
+        ),
+        incident_at=incident_at,
+    )

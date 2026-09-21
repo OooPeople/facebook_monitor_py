@@ -1,4 +1,7 @@
 import { requestJson } from "/static/dashboard/api.js";
+import {
+  confirmationPayloadForBatchStart,
+} from "/static/dashboard/temporary_block_start_warning.js";
 import { confirmDialog, promptDialog } from "/static/dashboard/dialogs.js";
 import { syncSidebarGroupMonitoringButtons } from "/static/dashboard/sidebar_status.js";
 import { saveScrollPosition } from "/static/dashboard/state.js";
@@ -194,12 +197,27 @@ export const setupGroupControls = (showToast) => {
       const groupId = group?.dataset.groupId || "";
       const action = button.dataset.sidebarGroupMonitoring || "start";
       if (!groupId) return;
+      let confirmationPayload = action === "start"
+        ? await confirmationPayloadForBatchStart()
+        : {};
+      if (confirmationPayload === null) return;
       button.dataset.sidebarGroupMonitoringPending = "1";
       button.disabled = true;
       try {
-        const data = await requestJson(
-          `/api/sidebar/groups/${encodeURIComponent(groupId)}/${encodeURIComponent(action)}`,
-        );
+        let data;
+        while (true) {
+          data = await requestJson(
+            `/api/sidebar/groups/${encodeURIComponent(groupId)}/${encodeURIComponent(action)}`,
+            { payload: confirmationPayload },
+          );
+          if (action !== "start" || !data.confirmation_required) break;
+          confirmationPayload = await confirmationPayloadForBatchStart(data);
+          if (confirmationPayload === null) {
+            delete button.dataset.sidebarGroupMonitoringPending;
+            if (group) syncSidebarGroupMonitoringButtons(group);
+            return;
+          }
+        }
         showToast?.(data.message || "群組狀態已更新", "success");
         reloadDashboardPreservingScroll();
       } catch (error) {

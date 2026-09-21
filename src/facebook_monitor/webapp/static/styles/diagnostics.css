@@ -126,10 +126,3 @@
   font-weight: 400;
   white-space: normal;
 }
-
-.settings-summary-detail {
-  color: var(--muted);
-  display: block;
-  font-size: 12px;
-  white-space: normal;
-}

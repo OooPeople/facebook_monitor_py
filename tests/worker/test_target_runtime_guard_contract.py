@@ -98,6 +98,11 @@ ALLOWED_FORCE_RUNTIME_CALLS = {
     ),
     (
         "src/facebook_monitor/worker/resident_main_executor.py",
+        "ExecutorWorkerPool._worker_loop",
+        "force_mark_resident_target_idle",
+    ),
+    (
+        "src/facebook_monitor/worker/resident_main_executor.py",
         "ExecutorWorkerPool._write_target_retry_after_runtime_restart",
         "force_request_target_retry_after_runtime_restart",
     ),

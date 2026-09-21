@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from facebook_monitor.core.models import TargetConfig
-from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import utc_now
-from facebook_monitor.core.refresh_policy import COMMENTS_EFFECTIVE_REFRESH_FLOOR_REASON
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
 from facebook_monitor.core.refresh_policy import normalize_refresh_range
-from facebook_monitor.core.refresh_policy import resolve_refresh_interval_bounds
 from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
 
 
@@ -82,72 +79,3 @@ def test_normalize_refresh_range_swaps_bounds_and_clamps_minimum() -> None:
         MIN_REFRESH_SECONDS,
         MIN_REFRESH_SECONDS,
     )
-
-
-def test_comments_fixed_refresh_uses_effective_safety_floor() -> None:
-    """comments 固定 requested 值低於安全 floor 時，scheduler 與 UI policy 應一致。"""
-
-    config = TargetConfig(
-        target_id="comments-target",
-        fixed_refresh_sec=60,
-        jitter_enabled=False,
-    )
-    bounds = resolve_refresh_interval_bounds(
-        config=config,
-        default_interval_seconds=60,
-        target_kind=TargetKind.COMMENTS,
-    )
-
-    assert bounds.requested_min_seconds == 60
-    assert bounds.requested_max_seconds == 60
-    assert bounds.effective_min_seconds == 180
-    assert bounds.effective_max_seconds == 180
-    assert bounds.adjustment_reason == COMMENTS_EFFECTIVE_REFRESH_FLOOR_REASON
-    assert bounds.adjusted
-    assert resolve_refresh_interval_seconds(
-        config=config,
-        default_interval_seconds=60,
-        target_id="comments-target",
-        target_kind=TargetKind.COMMENTS,
-    ) == 180
-
-
-def test_comments_floating_refresh_floor_preserves_upper_bound() -> None:
-    """comments floating 範圍只抬高低於 floor 的部分，不覆蓋較保守上限。"""
-
-    config = TargetConfig(
-        target_id="comments-target",
-        fixed_refresh_sec=None,
-        min_refresh_sec=120,
-        max_refresh_sec=240,
-        jitter_enabled=True,
-    )
-    bounds = resolve_refresh_interval_bounds(
-        config=config,
-        default_interval_seconds=60,
-        target_kind=TargetKind.COMMENTS,
-    )
-
-    assert (bounds.requested_min_seconds, bounds.requested_max_seconds) == (120, 240)
-    assert (bounds.effective_min_seconds, bounds.effective_max_seconds) == (180, 240)
-    assert bounds.adjustment_reason == COMMENTS_EFFECTIVE_REFRESH_FLOOR_REASON
-
-
-def test_posts_refresh_bounds_are_not_affected_by_comments_floor() -> None:
-    """comments floor 不可改變 posts requested/effective refresh 契約。"""
-
-    config = TargetConfig(
-        target_id="posts-target",
-        fixed_refresh_sec=60,
-        jitter_enabled=False,
-    )
-    bounds = resolve_refresh_interval_bounds(
-        config=config,
-        default_interval_seconds=60,
-        target_kind=TargetKind.POSTS,
-    )
-
-    assert (bounds.requested_min_seconds, bounds.requested_max_seconds) == (60, 60)
-    assert (bounds.effective_min_seconds, bounds.effective_max_seconds) == (60, 60)
-    assert bounds.adjustment_reason == ""
-    assert not bounds.adjusted

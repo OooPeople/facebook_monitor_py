@@ -53,10 +53,10 @@ def test_index_renders_target_identity_status_and_actions(tmp_path: Path) -> Non
     assert "停止自動掃描" not in text
 
 
-def test_active_comments_target_renders_safe_navigation_waiting_state(
+def test_active_comments_target_renders_normal_active_state(
     tmp_path: Path,
 ) -> None:
-    """active comments target 應顯示安全導覽等待，不冒充錯誤或排程中。"""
+    """active comments target 應沿用一般 target 的狀態與排程呈現。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -92,21 +92,16 @@ def test_active_comments_target_renders_safe_navigation_waiting_state(
     cards_response = client.get("/api/dashboard-cards")
 
     assert response.status_code == 200
-    assert "等待安全站內導覽" in response.text
-    assert "下次刷新：等待安全站內導覽" in response.text
+    assert "等待安全站內導覽" not in response.text
+    assert "下次刷新：即將刷新" in response.text
     assert cards_response.status_code == 200
     card = cards_response.json()["cards"][0]
-    assert card["status_label"] == "等待安全站內導覽"
-    assert card["status_class"] == "queued"
-    assert card["next_refresh_label"] == "下次刷新：等待安全站內導覽"
+    assert card["status_label"] == "已啟用"
+    assert card["status_class"] == "enabled"
+    assert card["next_refresh_label"] == "下次刷新：即將刷新"
     assert card["monitoring_action"] == "stop"
     assert card["runtime_error"] == ""
     assert "排序失敗" not in response.text
-    assert "要求 固定 60 秒 · 有效 固定 180 秒" in response.text
-    assert "原因：套用留言模式安全下限 180 秒" in response.text
-    assert "要求間隔：固定 60 秒" in response.text
-    assert "有效間隔：固定 180 秒" in response.text
-    assert "原因：套用留言模式安全下限 180 秒。" in response.text
 
 
 def test_index_renders_latest_preview_hits_and_highlights(tmp_path: Path) -> None:

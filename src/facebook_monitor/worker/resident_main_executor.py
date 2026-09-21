@@ -17,8 +17,6 @@ from typing import TypeVar
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
-from facebook_monitor.core.defaults import PYTHON_FACEBOOK_AUTOMATION_DEFAULTS
-from facebook_monitor.core.facebook_access import FacebookProductOperationKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetDesiredState
@@ -37,19 +35,10 @@ from facebook_monitor.worker.comments_pipeline import (
     scan_comments_target_page_async_commit_ready,
 )
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.facebook_automation_coordinator import (
-    FacebookAutomationCoordinator,
+from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
-from facebook_monitor.worker.facebook_automation_coordinator import (
-    FacebookAutomationWorkKind,
-)
-from facebook_monitor.worker.facebook_automation_admission import (
-    FacebookAutomationAdmissionController,
-)
-from facebook_monitor.worker.facebook_automation_admission import (
-    FacebookGovernedAutomationLease,
-)
-from facebook_monitor.worker.facebook_automation_coordinator import FacebookAutomationLease
 from facebook_monitor.worker.resident_main_executor_attempt import run_queue_item
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_main_executor_types import (
@@ -84,8 +73,7 @@ class ExecutorWorkerPool:
         target_queue: TargetQueue,
         schedule_planner: TargetSchedulePlanner,
         scan_page: AsyncCommitReadyScanCallable,
-        automation_coordinator: FacebookAutomationCoordinator | None = None,
-        automation_admission_controller: FacebookAutomationAdmissionController | None = None,
+        facebook_runtime: FacebookAutomationRuntime | None = None,
         comments_commit_ready_scan_page: AsyncCommitReadyScanCallable = (
             scan_comments_target_page_async_commit_ready
         ),
@@ -96,12 +84,8 @@ class ExecutorWorkerPool:
         self.schedule_planner = schedule_planner
         self.scan_page = scan_page
         self.comments_commit_ready_scan_page = comments_commit_ready_scan_page
-        self.automation_coordinator = automation_coordinator
-        self.automation_admission_controller = automation_admission_controller
-        self.effective_max_concurrent_scans = min(
-            max(int(options.max_concurrent_scans), 1),
-            PYTHON_FACEBOOK_AUTOMATION_DEFAULTS.max_concurrency,
-        )
+        self.facebook_runtime = facebook_runtime or FacebookAutomationRuntime()
+        self.effective_max_concurrent_scans = max(int(options.max_concurrent_scans), 1)
         self.worker_ids = tuple(
             f"resident-slot-{index + 1}" for index in range(self.effective_max_concurrent_scans)
         )
@@ -235,8 +219,6 @@ class ExecutorWorkerPool:
         """要求外層 resident loop 關閉並重建 browser runtime。"""
 
         self._runtime_restart_requested.set()
-        if self.automation_coordinator is not None:
-            self.automation_coordinator.cancel_pending_waiters()
 
     async def wait_runtime_restart_requested(self) -> None:
         """等待 browser runtime restart request 被觸發。"""
@@ -354,46 +336,16 @@ class ExecutorWorkerPool:
 
         enqueued_count = 0
         for due_target in due_targets:
+            if self.facebook_runtime.signal.is_tripped():
+                break
             reason = "manual" if due_target.scan_requested else "due"
-            automation_lease: FacebookGovernedAutomationLease | FacebookAutomationLease | None = (
-                None
-            )
-            facebook_admission_token = None
-            facebook_source_owner_token = ""
-            facebook_operation_kind = self._operation_kind_for_target(due_target.target_id)
-            if self.automation_admission_controller is not None:
-                admission = await self.automation_admission_controller.acquire(
-                    work_kind=FacebookAutomationWorkKind.TARGET_SCAN,
-                    operation_kind=facebook_operation_kind,
-                    owner_alias="target-scan",
-                )
-                if not admission.admitted or admission.lease is None:
-                    logger.info(
-                        "resident_target_enqueue_deferred target_id=%s reason=%s",
-                        due_target.target_id,
-                        admission.reason or "deferred_breaker",
-                    )
-                    continue
-                automation_lease = admission.lease
-                facebook_admission_token = admission.lease.admission_token
-                facebook_source_owner_token = admission.lease.process_lease.operation_id
-            elif self.automation_coordinator is not None:
-                automation_lease = await self.automation_coordinator.acquire(
-                    FacebookAutomationWorkKind.TARGET_SCAN,
-                    owner_alias="target-scan",
-                )
             queue_item = QueueItem(
                 due_target=due_target,
                 enqueue_reason=reason,
                 enqueued_at=datetime.now().astimezone(),
-                automation_lease=automation_lease,
-                facebook_admission_token=facebook_admission_token,
-                facebook_operation_kind=facebook_operation_kind,
-                facebook_source_owner_token=facebook_source_owner_token,
             )
             reserved = await self.target_queue.reserve(queue_item)
             if not reserved:
-                await queue_item.release_automation_lease()
                 logger.info(
                     "resident_target_enqueue_skipped target_id=%s reason=%s "
                     "due_at=%s scan_requested=%s",
@@ -444,7 +396,6 @@ class ExecutorWorkerPool:
                     )
                     await self._add_counters(ExecutorCounters(skipped_count=1))
                     await self.target_queue.release_reserved(due_target.target_id)
-                    await queue_item.release_automation_lease()
                     continue
                 if not await self.target_queue.publish_reserved(queue_item):
                     raise RuntimeError(
@@ -453,7 +404,6 @@ class ExecutorWorkerPool:
                     )
             except Exception:
                 await self.target_queue.release_reserved(due_target.target_id)
-                await queue_item.release_automation_lease()
                 raise
             logger.info(
                 "resident_target_enqueued target_id=%s reason=%s due_at=%s "
@@ -473,18 +423,6 @@ class ExecutorWorkerPool:
             )
             enqueued_count += 1
         return enqueued_count
-
-    def _operation_kind_for_target(
-        self,
-        target_id: str,
-    ) -> FacebookProductOperationKind:
-        """在 queue claim 前讀取 target kind，供 circuit admission 綁定產品意圖。"""
-
-        with SqliteApplicationContext(self.options.db_path) as app:
-            target = app.repositories.targets.get(target_id)
-        if target is not None and target.target_kind == TargetKind.COMMENTS:
-            return FacebookProductOperationKind.COMMENTS_ACCESS
-        return FacebookProductOperationKind.POSTS_ACCESS
 
     async def take_counters(self) -> ExecutorCounters:
         """取出自上次讀取後累積的 worker 結果。"""
@@ -525,12 +463,24 @@ class ExecutorWorkerPool:
             item = await self.target_queue.get()
             if item is None:
                 return
+            if self.facebook_runtime.signal.is_tripped():
+                force_mark_resident_target_idle(
+                    self.options.db_path,
+                    item.due_target.target_id,
+                )
+                await self.target_queue.complete(item.due_target.target_id)
+                continue
             attempt_task: asyncio.Task[AsyncTargetScanResult] = asyncio.create_task(
                 self._run_queue_item(worker_id, item),
                 name=f"{worker_id}:{item.due_target.target_id}",
             )
             try:
                 result = await attempt_task
+            except FacebookAutomationRuntimeTripped:
+                result = AsyncTargetScanResult(
+                    target_id=item.due_target.target_id,
+                    skipped=True,
+                )
             except asyncio.CancelledError:
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
@@ -644,6 +594,12 @@ class ExecutorWorkerPool:
                 f"scan exceeded {timeout_seconds:g} seconds",
             ) from exc
         except asyncio.CancelledError:
+            if self.facebook_runtime.signal.is_tripped():
+                raise
+            if scan_task.done() and not scan_task.cancelled():
+                # Scanner 已產生正式結果時保留該結果（或原始例外）；runtime
+                # restart 的同時取消不得把 commit-ready 結果降級成重掃。
+                return scan_task.result()
             guard_matches = await self._run_db_operation_with_retry(
                 "target_matches_commit_guard",
                 lambda: self._target_matches_commit_guard(target_id, commit_guard),

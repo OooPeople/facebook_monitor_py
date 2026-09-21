@@ -1,12 +1,13 @@
 """Target create application use case。
 
 職責：集中「Facebook URL -> posts/comments target」的產品流程，讓 Web route
-只負責 HTTP/form adapter 與 redirect；Facebook metadata 一律交給 resident 補齊。
+只負責 HTTP/form/profile adapter 與 redirect。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from facebook_monitor.application.services import TargetApplicationService
 from facebook_monitor.application.target_requests import TargetConfigPatch
@@ -22,17 +23,62 @@ from facebook_monitor.facebook.route_detection import clean_facebook_page_title
 
 
 @dataclass(frozen=True)
+class TargetCreateMetadata:
+    """保存新增 target 時已解析的 Facebook metadata。"""
+
+    group_name: str = ""
+    group_cover_image_url: str = ""
+
+
+MetadataSkipReason = Literal[
+    "none",
+    "scheduler_running",
+    "profile_unavailable",
+    "resolution_failed",
+]
+
+
+@dataclass(frozen=True)
+class MetadataResolutionOutcome:
+    """保存同步 metadata resolver 的實際結果與補償排程需求。"""
+
+    metadata: TargetCreateMetadata = TargetCreateMetadata()
+    skipped_reason: MetadataSkipReason = "none"
+
+    @property
+    def requires_deferred_refresh(self) -> bool:
+        """回傳是否需要 commit 後排 resident metadata refresh 補償。"""
+
+        return self.skipped_reason != "none"
+
+
+@dataclass(frozen=True)
 class CreateTargetPlan:
-    """保存 target create 的 route detection 與 deferred metadata 決策。"""
+    """保存 target create 的 route detection 與 metadata 決策。"""
 
     route: DetectedCommentsTargetRoute | DetectedPostsTargetRoute
     custom_name: str
+    scheduler_running: bool
+
+    @property
+    def metadata_canonical_url(self) -> str:
+        """回傳 profile resolver 應開啟的 Facebook canonical URL。"""
+
+        if isinstance(self.route, DetectedCommentsTargetRoute):
+            return self.route.group_canonical_url
+        return self.route.canonical_url
+
+    @property
+    def should_resolve_metadata(self) -> bool:
+        """回傳 Web adapter 是否應同步解析 group metadata。"""
+
+        return not self.custom_name and not self.scheduler_running
 
     @property
     def should_request_metadata_refresh(self) -> bool:
-        """回傳 commit 後是否應要求 resident 背景補 metadata。"""
+        """回傳 commit 後是否應要求 scheduler 背景補 metadata。"""
 
-        return not self.custom_name
+        return not self.custom_name and self.scheduler_running
 
 
 @dataclass(frozen=True)
@@ -53,12 +99,14 @@ def build_create_target_plan(
     *,
     group_url: str,
     display_name: str,
+    scheduler_running: bool,
 ) -> CreateTargetPlan:
     """從使用者輸入建立 target create plan。"""
 
     return CreateTargetPlan(
         route=detect_target_route_from_url(normalize_target_url(group_url)),
         custom_name=clean_facebook_page_title(normalize_display_name(display_name)),
+        scheduler_running=scheduler_running,
     )
 
 
@@ -67,8 +115,10 @@ def create_or_update_target_from_plan(
     *,
     plan: CreateTargetPlan,
     config: TargetConfigPatch,
+    metadata: TargetCreateMetadata = TargetCreateMetadata(),
+    metadata_refresh_required: bool = False,
 ) -> CreateTargetResult:
-    """先依 create plan upsert target，缺名稱時再標記 metadata pending。"""
+    """依 create plan 建立或更新 posts/comments target。"""
 
     if isinstance(plan.route, DetectedCommentsTargetRoute):
         target = targets.upsert_comments_target(
@@ -77,6 +127,8 @@ def create_or_update_target_from_plan(
                 parent_post_id=plan.route.parent_post_id,
                 canonical_url=plan.route.canonical_url,
                 name=plan.custom_name,
+                group_name=metadata.group_name,
+                group_cover_image_url=metadata.group_cover_image_url,
                 config=config,
             )
         )
@@ -86,10 +138,12 @@ def create_or_update_target_from_plan(
                 group_id=plan.route.group_id,
                 canonical_url=plan.route.canonical_url,
                 name=plan.custom_name,
+                group_name=metadata.group_name,
+                group_cover_image_url=metadata.group_cover_image_url,
                 config=config,
             )
         )
-    if not plan.should_request_metadata_refresh:
+    if not (plan.should_request_metadata_refresh or metadata_refresh_required):
         return CreateTargetResult(target=target)
     refreshed_target = targets.mark_target_metadata_refresh_pending(target.id)
     return CreateTargetResult(
@@ -101,6 +155,8 @@ def create_or_update_target_from_plan(
 __all__ = [
     "CreateTargetPlan",
     "CreateTargetResult",
+    "MetadataResolutionOutcome",
+    "TargetCreateMetadata",
     "build_create_target_plan",
     "create_or_update_target_from_plan",
 ]

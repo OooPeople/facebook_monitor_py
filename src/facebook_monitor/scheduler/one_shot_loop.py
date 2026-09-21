@@ -1,8 +1,7 @@
 """One-shot fallback scheduler loop。
 
-職責：供 fallback/debug mode 依 target-level schedule 觸發 one-shot posts scan，
-comments 則只進入 fail-closed capability guard。正式產品主路徑由 resident main
-queue/executor 負責。
+職責：供 fallback/debug mode 依 target-level schedule 觸發 one-shot posts scan。
+正式產品主路徑由 resident main queue/executor 負責。
 """
 
 from __future__ import annotations
@@ -26,24 +25,19 @@ from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackIncidentRecorded,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackIncidentPersistenceDeferred,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationTripSignal,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackWorkDeferred,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    GovernedFallbackPostsWork,
-)
-from facebook_monitor.worker.fallback_automation_admission import (
-    governed_fallback_posts_work,
-)
+from facebook_monitor.worker.facebook_fallback_work import FacebookFallbackWork
+from facebook_monitor.worker.facebook_fallback_work import facebook_fallback_work
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
-from facebook_monitor.worker.facebook_visible_write import FacebookVisibleWriteRejected
 from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
@@ -55,7 +49,7 @@ from facebook_monitor.worker.scan_failure_finalize import (
 
 ScanCallable = Callable[[OneShotScanOptions], PostsScanSummary]
 SleepCallable = Callable[[float], None]
-AutomationWorkFactory = Callable[..., AbstractContextManager[GovernedFallbackPostsWork]]
+AutomationWorkFactory = Callable[..., AbstractContextManager[FacebookFallbackWork]]
 
 
 @dataclass(frozen=True)
@@ -94,6 +88,7 @@ class _SchedulerTargetResult:
     success_count: int = 0
     failure_count: int = 0
     skipped_count: int = 0
+    stop_runtime: bool = False
 
 
 def list_schedulable_target_ids(
@@ -102,11 +97,9 @@ def list_schedulable_target_ids(
     default_interval_seconds: float = (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.one_shot_interval_seconds),
     now: datetime | None = None,
 ) -> tuple[str, ...]:
-    """列出 posts 掃描與 comments fail-closed guard 應處理的 target ids。"""
+    """列出目前 one-shot fallback scheduler 應該掃描的 posts target ids。"""
 
-    planner = TargetSchedulePlanner(
-        scannable_target_kinds=frozenset({TargetKind.POSTS, TargetKind.COMMENTS})
-    )
+    planner = TargetSchedulePlanner(scannable_target_kinds=frozenset({TargetKind.POSTS}))
     return tuple(
         due_target.target_id
         for due_target in planner.list_due_targets(
@@ -122,15 +115,14 @@ def run_one_shot_scheduler_loop(
     *,
     scan_once: ScanCallable = run_one_shot_scan,
     sleep_fn: SleepCallable = sleep,
-    automation_work_factory: AutomationWorkFactory = governed_fallback_posts_work,
+    automation_work_factory: AutomationWorkFactory = facebook_fallback_work,
 ) -> list[SchedulerCycleSummary]:
     """執行 one-shot fallback scheduler loop；max_cycles 為 None 時會持續執行。"""
 
     summaries: list[SchedulerCycleSummary] = []
     cycle_index = 0
-    schedule_planner = TargetSchedulePlanner(
-        scannable_target_kinds=frozenset({TargetKind.POSTS, TargetKind.COMMENTS})
-    )
+    trip_signal = FacebookAutomationTripSignal()
+    schedule_planner = TargetSchedulePlanner(scannable_target_kinds=frozenset({TargetKind.POSTS}))
     while options.max_cycles is None or cycle_index < options.max_cycles:
         cycle_index += 1
         recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
@@ -152,10 +144,13 @@ def run_one_shot_scheduler_loop(
                 schedule_planner=schedule_planner,
                 scan_once=scan_once,
                 automation_work_factory=automation_work_factory,
+                trip_signal=trip_signal,
             )
             success_count += result.success_count
             failure_count += result.failure_count
             skipped_count += result.skipped_count
+            if result.stop_runtime:
+                break
 
         summaries.append(
             SchedulerCycleSummary(
@@ -166,6 +161,9 @@ def run_one_shot_scheduler_loop(
                 skipped_count=skipped_count,
             )
         )
+
+        if trip_signal.is_tripped():
+            break
 
         if options.max_cycles is not None and cycle_index >= options.max_cycles:
             break
@@ -182,6 +180,7 @@ def _run_due_target(
     schedule_planner: TargetSchedulePlanner,
     scan_once: ScanCallable,
     automation_work_factory: AutomationWorkFactory,
+    trip_signal: FacebookAutomationTripSignal,
 ) -> _SchedulerTargetResult:
     """在同一 governed lease 內完成 claim、scan result 與 runtime finalize。"""
 
@@ -190,34 +189,19 @@ def _run_due_target(
         target = app.repositories.targets.get(target_id)
     if target is None:
         return _SchedulerTargetResult(skipped_count=1)
-    if target.target_kind == TargetKind.COMMENTS:
-        # comments 在 managed profile admission 與 DB running claim 前明確拒絕。
-        try:
-            scan_once(
-                OneShotScanOptions(
-                    profile_dir=options.profile_dir,
-                    db_path=options.db_path,
-                    target_id=target_id,
-                    record_failures=True,
-                )
-            )
-        except WorkerFailure:
-            return _SchedulerTargetResult(failure_count=1)
-        return _SchedulerTargetResult(skipped_count=1)
-
-    work_context: AbstractContextManager[GovernedFallbackPostsWork]
+    work_context: AbstractContextManager[FacebookFallbackWork]
     work_context = automation_work_factory(
         db_path=options.db_path,
         profile_dir=options.profile_dir,
         profile_lease_factory=acquire_profile_lease,
         profile_lease_owner="one-shot scheduler",
-        owner_alias="one-shot-scheduler-scan",
+        signal=trip_signal,
     )
     dispatched = False
     commit_guard: ScanCommitGuard | None = None
     try:
-        with work_context as governed_work:
-            with governed_work.application_context() as app:
+        with work_context as fallback_work:
+            with fallback_work.application_context() as app:
                 locked_state = app.services.targets.try_claim_target_running(
                     target_id,
                     worker_id,
@@ -245,18 +229,14 @@ def _run_due_target(
                         scan_worker_id=commit_guard.worker_id,
                         scan_started_at=commit_guard.started_at,
                         scan_page_id=commit_guard.page_id,
-                        governed_automation_work=governed_work,
+                        fallback_work=fallback_work,
                     )
                 )
-            except (
-                FacebookFallbackIncidentPersistenceDeferred,
-                FacebookFallbackIncidentRecorded,
-                FacebookFallbackWorkDeferred,
-            ):
-                raise
+            except FacebookTemporaryBlockIncidentRecorded:
+                return _SchedulerTargetResult(failure_count=1, stop_runtime=True)
             except WorkerFailure as exc:
                 return _record_due_target_failure(
-                    governed_work=governed_work,
+                    fallback_work=fallback_work,
                     target_id=target_id,
                     commit_guard=commit_guard,
                     reason=exc.reason,
@@ -267,7 +247,7 @@ def _run_due_target(
                 )
             except Exception as exc:
                 return _record_due_target_failure(
-                    governed_work=governed_work,
+                    fallback_work=fallback_work,
                     target_id=target_id,
                     commit_guard=commit_guard,
                     reason=UNKNOWN_REASON,
@@ -275,7 +255,7 @@ def _run_due_target(
                     source="unknown_exception",
                     exception_class=exc.__class__.__name__,
                 )
-            with governed_work.application_context() as app:
+            with fallback_work.application_context() as app:
                 committed = mark_target_idle_for_scan_commit(
                     app=app,
                     target_id=target_id,
@@ -285,14 +265,8 @@ def _run_due_target(
                 success_count=int(committed),
                 skipped_count=int(not committed),
             )
-    except (
-        FacebookFallbackIncidentPersistenceDeferred,
-        FacebookFallbackWorkDeferred,
-        FacebookVisibleWriteRejected,
-    ):
+    except FacebookAutomationRuntimeTripped:
         return _SchedulerTargetResult(skipped_count=1)
-    except FacebookFallbackIncidentRecorded:
-        return _SchedulerTargetResult(failure_count=1)
     except WorkerFailure:
         # governed context 進入前尚未 claim，不能對 target 寫入 failure。
         return _SchedulerTargetResult(failure_count=1)
@@ -303,7 +277,7 @@ def _run_due_target(
 
 def _record_due_target_failure(
     *,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
     target_id: str,
     commit_guard: ScanCommitGuard,
     reason: str,
@@ -314,7 +288,7 @@ def _record_due_target_failure(
 ) -> _SchedulerTargetResult:
     """在同一 admission fence 內記錄 one-shot scheduler failure。"""
 
-    with governed_work.application_context() as app:
+    with fallback_work.application_context() as app:
         decision = record_guarded_scan_failure_decision(
             app=app,
             target_id=target_id,

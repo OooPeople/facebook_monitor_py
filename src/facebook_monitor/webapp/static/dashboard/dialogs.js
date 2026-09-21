@@ -83,6 +83,7 @@ export const confirmDialog = ({
   confirmLabel = "確認",
   cancelLabel = "取消",
   danger = false,
+  focusCancel = false,
 } = {}) => new Promise((resolve) => {
   const { dialog, body, actions } = createDialogShell({ title, danger });
   if (message) {
@@ -124,7 +125,7 @@ export const confirmDialog = ({
   dialog.addEventListener("close", () => finish(false), { once: true });
   dialog.addEventListener("app-dialog-cancel", () => finish(false), { once: true });
   openDialog(dialog);
-  confirmButton.focus();
+  (focusCancel ? cancelButton : confirmButton).focus();
 });
 
 export const promptDialog = ({
@@ -186,19 +187,31 @@ export const promptDialog = ({
 export const setupConfirmSubmitForms = () => {
   document.querySelectorAll("[data-confirm-submit]").forEach((form) => {
     form.addEventListener("submit", async (event) => {
+      if (!form.hasAttribute("data-confirm-submit")) return;
       if (form.dataset.confirmedSubmit === "1") {
         delete form.dataset.confirmedSubmit;
         return;
       }
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (form.dataset.confirmationInFlight === "1") return;
+      const actionAtPrompt = form.action;
+      form.dataset.confirmationInFlight = "1";
       const confirmed = await confirmDialog({
         title: form.dataset.confirmTitle || "確認操作",
         message: form.dataset.confirmMessage || "",
         confirmLabel: form.dataset.confirmLabel || "確認",
         danger: form.dataset.confirmDanger === "1",
+        focusCancel: form.dataset.confirmFocusCancel === "1",
       });
+      delete form.dataset.confirmationInFlight;
       if (!confirmed) return;
+      if (
+        !form.isConnected
+        ||
+        !form.hasAttribute("data-confirm-submit")
+        || form.action !== actionAtPrompt
+      ) return;
       form.dataset.confirmedSubmit = "1";
       form.requestSubmit();
     });

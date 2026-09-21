@@ -21,11 +21,12 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.automation.browser_runtime import BrowserRuntimeOptions
 from facebook_monitor.automation.browser_runtime import launch_persistent_context_sync
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetKind
@@ -38,25 +39,19 @@ from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.scheduler.runtime_recovery import recover_stale_runtime_targets
 from facebook_monitor.worker.comments_pipeline import CommentsScanSummary
+from facebook_monitor.worker.comments_pipeline import scan_comments_target_page_sync_and_finalize
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackIncidentPersistenceDeferred,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookAutomationRuntimeTripped,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    FacebookFallbackWorkDeferred,
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
 )
-from facebook_monitor.worker.fallback_automation_admission import (
-    GovernedFallbackPostsWork,
-)
-from facebook_monitor.worker.fallback_automation_admission import (
-    governed_fallback_posts_work,
-)
+from facebook_monitor.worker.facebook_fallback_work import FacebookFallbackWork
+from facebook_monitor.worker.facebook_fallback_work import facebook_fallback_work
 from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 from facebook_monitor.worker.errors import classify_playwright_exception
-from facebook_monitor.worker.fallback_safety import ensure_target_supported_in_fallback
-from facebook_monitor.worker.facebook_page_lifecycle import close_existing_context_pages_sync
 from facebook_monitor.worker.facebook_page_lifecycle import close_page_checked_sync
-from facebook_monitor.worker.facebook_visible_write import FacebookVisibleWriteRejected
 from facebook_monitor.worker.page_timing import RESIDENT_PAGE_READY_WAIT_MS
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
@@ -71,7 +66,6 @@ from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 from facebook_monitor.worker.scan_finalize import mark_target_idle_for_scan_commit
 from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 from facebook_monitor.worker.scan_failure_finalize import format_scan_failure_message
-from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_failure_decision
 
 
@@ -79,7 +73,7 @@ SleepCallable = Callable[[float], None]
 StopCheckCallable = Callable[[], bool]
 ContextFactory = Callable[[ResidentRuntimeOptions], AbstractContextManager[Any]]
 CycleObserver = Callable[[ResidentCycleSummary], None]
-AutomationWorkFactory = Callable[..., AbstractContextManager[GovernedFallbackPostsWork]]
+AutomationWorkFactory = Callable[..., AbstractContextManager[FacebookFallbackWork]]
 
 
 @dataclass(frozen=True)
@@ -166,21 +160,29 @@ def prepare_sync_resident_page(
     page: Any,
     target: TargetDescriptor,
     timeout_ms: float,
-) -> None:
+) -> FacebookActionKind:
     """讓 sync fallback page 停在 target route；同一 route 只 reload。"""
 
     current_url = str(getattr(page, "url", "") or "")
     if should_reload_resident_page(current_url, target.canonical_url):
         page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+        action_kind = FacebookActionKind.RELOAD
     else:
         page.goto(target.canonical_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        action_kind = (
+            FacebookActionKind.DIRECT_DOCUMENT
+            if target.target_kind == TargetKind.COMMENTS
+            else FacebookActionKind.GROUP_FEED_DOCUMENT
+        )
     page.wait_for_timeout(RESIDENT_PAGE_READY_WAIT_MS)
+    return action_kind
 
 
 def select_sync_finalizing_scan_page(target: TargetDescriptor) -> SyncFinalizingScanCallable:
     """依 target kind 選擇 sync fallback finalizing 掃描函式。"""
 
-    ensure_target_supported_in_fallback(target, fallback_mode="sync_resident_fallback")
+    if target.target_kind == TargetKind.COMMENTS:
+        return scan_comments_target_page_sync_and_finalize
     return scan_posts_page_sync_and_finalize
 
 
@@ -192,7 +194,7 @@ def run_sync_resident_fallback_loop(
     sleep_fn: SleepCallable = sleep,
     should_stop: StopCheckCallable | None = None,
     on_cycle: CycleObserver | None = None,
-    automation_work_factory: AutomationWorkFactory = governed_fallback_posts_work,
+    automation_work_factory: AutomationWorkFactory = facebook_fallback_work,
 ) -> list[ResidentCycleSummary]:
     """執行 sync fallback 常駐 loop；max_cycles 為 None 時會持續執行。"""
 
@@ -200,18 +202,45 @@ def run_sync_resident_fallback_loop(
         raise WorkerFailure(PROFILE_MISSING_REASON, str(options.profile_dir))
 
     selected_context_factory = context_factory or _open_sync_fallback_browser_context
-    return _run_governed_sync_resident_fallback_cycles(
-        options=options,
-        context_factory=selected_context_factory,
-        scan_page=scan_page,
-        sleep_fn=sleep_fn,
-        should_stop=should_stop,
-        on_cycle=on_cycle,
-        automation_work_factory=automation_work_factory,
-    )
+    try:
+        return _run_sync_resident_fallback_cycles(
+            options=options,
+            context_factory=selected_context_factory,
+            scan_page=scan_page,
+            sleep_fn=sleep_fn,
+            should_stop=should_stop,
+            on_cycle=on_cycle,
+            automation_work_factory=automation_work_factory,
+        )
+    except FacebookTemporaryBlockIncidentRecorded:
+        return [
+            ResidentCycleSummary(
+                cycle_index=1,
+                selected_count=1,
+                success_count=0,
+                failure_count=1,
+                skipped_count=0,
+                opened_page_count=0,
+                reused_page_count=0,
+                closed_page_count=0,
+            )
+        ]
+    except FacebookAutomationRuntimeTripped:
+        return [
+            ResidentCycleSummary(
+                cycle_index=1,
+                selected_count=0,
+                success_count=0,
+                failure_count=0,
+                skipped_count=1,
+                opened_page_count=0,
+                reused_page_count=0,
+                closed_page_count=0,
+            )
+        ]
 
 
-def _run_governed_sync_resident_fallback_cycles(
+def _run_sync_resident_fallback_cycles(
     *,
     options: ResidentRuntimeOptions,
     context_factory: ContextFactory,
@@ -221,200 +250,54 @@ def _run_governed_sync_resident_fallback_cycles(
     on_cycle: CycleObserver | None,
     automation_work_factory: AutomationWorkFactory,
 ) -> list[ResidentCycleSummary]:
-    """逐一 governed work 建立/關閉 context，禁止 page 存活到 lease 外。"""
+    """在單一 OS profile lease 內重用 browser context 與 target pages。"""
 
     summaries: list[ResidentCycleSummary] = []
     cycle_index = 0
     planner = TargetSchedulePlanner()
     stop_requested = should_stop or _never_stop
-    while not stop_requested() and (
-        options.max_cycles is None or cycle_index < options.max_cycles
-    ):
-        cycle_index += 1
-        summary = _run_governed_sync_resident_fallback_cycle(
-            options=options,
-            context_factory=context_factory,
-            scan_page=scan_page,
-            cycle_index=cycle_index,
-            schedule_planner=planner,
-            automation_work_factory=automation_work_factory,
-        )
-        summaries.append(summary)
-        if on_cycle:
-            on_cycle(summary)
-        if options.max_cycles is not None and cycle_index >= options.max_cycles:
-            break
-        sleep_fn(max(options.scheduler_tick_seconds, 0))
-    return summaries
-
-
-def _run_governed_sync_resident_fallback_cycle(
-    *,
-    options: ResidentRuntimeOptions,
-    context_factory: ContextFactory,
-    scan_page: SyncFinalizingScanCallable,
-    cycle_index: int,
-    schedule_planner: TargetSchedulePlanner,
-    automation_work_factory: AutomationWorkFactory,
-) -> ResidentCycleSummary:
-    """在 admission 前只保存 due candidate，POSTS claim 與 page work 均在 lease 內。"""
-
-    recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
-    due_targets = schedule_planner.list_due_targets(
-        options.db_path,
-        default_interval_seconds=options.interval_seconds,
-        max_count=options.max_concurrent_scans,
-    )
-    worker_id = f"resident-{uuid4()}"
-    success_count = 0
-    failure_count = 0
-    skipped_count = 0
-    opened_page_count = 0
-    reused_page_count = 0
-    closed_page_count = 0
-
-    for due_target in due_targets:
-        with SqliteApplicationContext(options.db_path) as app:
-            target = app.repositories.targets.get(due_target.target_id)
-        if target is None:
-            skipped_count += 1
-            continue
-        if target.target_kind == TargetKind.COMMENTS:
-            result = _reject_sync_comments_before_claim(
-                options=options,
-                target=target,
-            )
-        else:
-            try:
-                with automation_work_factory(
-                    db_path=options.db_path,
-                    profile_dir=options.profile_dir,
-                    profile_lease_factory=acquire_profile_lease,
-                    profile_lease_owner="sync resident fallback worker",
-                    owner_alias="sync-fallback-scan",
-                ) as governed_work:
-                    result, closed_pages = _run_sync_resident_browser_context(
-                        options=options,
-                        context_factory=context_factory,
-                        scan_page=scan_page,
-                        due_target=due_target,
-                        worker_id=worker_id,
-                        planner=schedule_planner,
-                        governed_work=governed_work,
-                    )
-                    closed_page_count += closed_pages
-            except (
-                FacebookFallbackIncidentPersistenceDeferred,
-                FacebookFallbackWorkDeferred,
-                FacebookVisibleWriteRejected,
-            ):
-                skipped_count += 1
-                continue
-        success_count += result.success_count
-        failure_count += result.failure_count
-        skipped_count += result.skipped_count
-        opened_page_count += result.opened_page_count
-        reused_page_count += result.reused_page_count
-
-    return ResidentCycleSummary(
-        cycle_index=cycle_index,
-        selected_count=len(due_targets),
-        success_count=success_count,
-        failure_count=failure_count,
-        skipped_count=skipped_count,
-        opened_page_count=opened_page_count,
-        reused_page_count=reused_page_count,
-        closed_page_count=closed_page_count,
-    )
-
-
-def _run_sync_resident_browser_context(
-    *,
-    options: ResidentRuntimeOptions,
-    context_factory: ContextFactory,
-    scan_page: SyncFinalizingScanCallable,
-    due_target: DueTarget,
-    worker_id: str,
-    planner: TargetSchedulePlanner,
-    governed_work: GovernedFallbackPostsWork,
-) -> tuple[_SyncFallbackAttemptResult, int]:
-    """執行單一 browser context，僅在其 exit 成功後確認 durable marker 可清除。"""
-
-    context_manager = context_factory(options)
-    browser_context = context_manager.__enter__()
-    closed_page_count = 0
-    try:
-        page_pool = SyncResidentPagePool(browser_context)
+    with automation_work_factory(
+        db_path=options.db_path,
+        profile_dir=options.profile_dir,
+        profile_lease_factory=acquire_profile_lease,
+        profile_lease_owner="sync resident fallback worker",
+    ) as fallback_work:
+        fallback_work.ensure_io_allowed()
+        context_manager = context_factory(options)
+        browser_context = context_manager.__enter__()
         try:
-            result = _run_sync_resident_target_attempt(
-                options=options,
-                page_pool=page_pool,
-                scan_page=scan_page,
-                due_target=due_target,
-                worker_id=worker_id,
-                planner=planner,
-                governed_work=governed_work,
-            )
-        finally:
-            closed_page_count = len(page_pool.pages)
-            page_pool.close_all()
-    except BaseException as exc:
-        suppressed = context_manager.__exit__(type(exc), exc, exc.__traceback__)
-        governed_work.note_browser_context_closed()
-        if suppressed:
-            raise RuntimeError(
-                "sync fallback browser context must not suppress work exceptions"
-            ) from exc
-        raise
-    else:
-        context_manager.__exit__(None, None, None)
-        governed_work.note_browser_context_closed()
-        return result, closed_page_count
-
-
-def _reject_sync_comments_before_claim(
-    *,
-    options: ResidentRuntimeOptions,
-    target: TargetDescriptor,
-) -> _SyncFallbackAttemptResult:
-    """在 profile admission、browser 與 DB running claim 前記錄 comments unsupported。"""
-
-    try:
-        ensure_target_supported_in_fallback(
-            target,
-            fallback_mode="sync_resident_fallback",
-        )
-    except WorkerFailure as exc:
-        with SqliteApplicationContext(options.db_path) as app:
-            record_scan_failure(
-                app=app,
-                target=target,
-                reason=exc.reason,
-                message=str(exc),
-                worker_path="sync_resident_fallback",
-                exception_class=exc.__class__.__name__,
-                failure_diagnostics=exc.diagnostics,
-            )
-        return _SyncFallbackAttemptResult(failure_count=1)
-    raise RuntimeError("comments fallback capability guard unexpectedly admitted target")
-
-
-class _NoBrowserSyncFallbackContext:
-    """comments-only fallback 的 fail-closed context，不可建立 page。"""
-
-    def new_page(self) -> Any:
-        """若 guard 漏接，立即讓測試與 runtime 明確失敗。"""
-
-        raise RuntimeError("comments-only sync fallback must not create a browser page")
-
-
-def _sync_fallback_has_posts_target(options: ResidentRuntimeOptions) -> bool:
-    """判斷是否存在 posts target；保留既有 posts fallback 啟動語義。"""
-
-    with SqliteApplicationContext(options.db_path) as app:
-        return any(
-            target.target_kind == TargetKind.POSTS for target in app.repositories.targets.list_all()
-        )
+            page_pool = SyncResidentPagePool(browser_context)
+            try:
+                while not stop_requested() and (
+                    options.max_cycles is None or cycle_index < options.max_cycles
+                ):
+                    cycle_index += 1
+                    summary = run_sync_resident_fallback_cycle(
+                        options=options,
+                        page_pool=page_pool,
+                        scan_page=scan_page,
+                        cycle_index=cycle_index,
+                        fallback_work=fallback_work,
+                        schedule_planner=planner,
+                    )
+                    summaries.append(summary)
+                    if on_cycle:
+                        on_cycle(summary)
+                    if options.max_cycles is not None and cycle_index >= options.max_cycles:
+                        break
+                    sleep_fn(max(options.scheduler_tick_seconds, 0))
+            finally:
+                page_pool.close_all()
+        except BaseException as exc:
+            suppressed = context_manager.__exit__(type(exc), exc, exc.__traceback__)
+            if suppressed:
+                raise RuntimeError(
+                    "sync fallback browser context must not suppress work exceptions"
+                ) from exc
+            raise
+        else:
+            context_manager.__exit__(None, None, None)
+    return summaries
 
 
 def run_sync_resident_fallback_cycle(
@@ -423,10 +306,10 @@ def run_sync_resident_fallback_cycle(
     page_pool: SyncResidentPagePool,
     scan_page: SyncFinalizingScanCallable,
     cycle_index: int,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
     schedule_planner: TargetSchedulePlanner | None = None,
 ) -> ResidentCycleSummary:
-    """執行已有 governed owner 的 sync fallback 單輪掃描。"""
+    """執行已有 profile work owner 的 sync fallback 單輪掃描。"""
 
     planner = schedule_planner or TargetSchedulePlanner()
     recover_stale_runtime_targets(options.db_path, options.stale_running_after_seconds)
@@ -452,7 +335,7 @@ def run_sync_resident_fallback_cycle(
             due_target=due_target,
             worker_id=worker_id,
             planner=planner,
-            governed_work=governed_work,
+            fallback_work=fallback_work,
         )
         success_count += attempt_result.success_count
         failure_count += attempt_result.failure_count
@@ -480,10 +363,11 @@ def _run_sync_resident_target_attempt(
     due_target: DueTarget,
     worker_id: str,
     planner: TargetSchedulePlanner,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
 ) -> _SyncFallbackAttemptResult:
     """執行 sync fallback 單一 target attempt，保留既有 guarded 寫回語義。"""
 
+    fallback_work.ensure_io_allowed()
     target_id = due_target.target_id
     load_result = _load_sync_resident_target_attempt(
         options=options,
@@ -499,7 +383,7 @@ def _run_sync_resident_target_attempt(
         options=options,
         due_target=due_target,
         worker_id=worker_id,
-        governed_work=governed_work,
+        fallback_work=fallback_work,
     )
     if locked_state is None:
         return _SyncFallbackAttemptResult(skipped_count=1)
@@ -508,13 +392,21 @@ def _run_sync_resident_target_attempt(
     planner.mark_dispatched(due_target)
     page_acquired = False
     opened = False
+    action_kind = FacebookActionKind.UNKNOWN
     try:
-        ensure_target_supported_in_fallback(
-            resident_target.target,
-            fallback_mode="sync_resident_fallback",
-        )
+        fallback_work.ensure_io_allowed()
         page, opened = page_pool.get(resident_target.target)
         page_acquired = True
+        fallback_work.ensure_io_allowed()
+        action_kind = prepare_sync_resident_page(
+            page=page,
+            target=resident_target.target,
+            timeout_ms=max(
+                options.scan_timeout_seconds,
+                PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
+            )
+            * 1000,
+        )
         return _scan_sync_resident_target_attempt(
             options=options,
             scan_page=scan_page,
@@ -523,16 +415,22 @@ def _run_sync_resident_target_attempt(
             page=page,
             opened=opened,
             commit_guard=commit_guard,
-            governed_work=governed_work,
+            fallback_work=fallback_work,
         )
     except (WorkerFailure, PlaywrightTimeoutError, PlaywrightError) as exc:
-        if governed_work.record_temporary_block_incident(
+        if fallback_work.record_temporary_block_incident(
             error=exc,
             target_id=target_id,
             commit_guard=commit_guard,
             worker_mode=(
                 WorkerMode.HEADED_COMPAT if options.headed_compat else WorkerMode.HEADLESS
             ),
+            operation_kind=(
+                FacebookProductOperationKind.COMMENTS_ACCESS
+                if resident_target.target.target_kind == TargetKind.COMMENTS
+                else FacebookProductOperationKind.POSTS_ACCESS
+            ),
+            action_kind=action_kind,
         ):
             return _with_sync_fallback_page_counts(
                 _SyncFallbackAttemptResult(failure_count=1),
@@ -546,7 +444,7 @@ def _run_sync_resident_target_attempt(
             commit_guard=commit_guard,
             page_acquired=page_acquired,
             opened=opened,
-            governed_work=governed_work,
+            fallback_work=fallback_work,
         )
     except Exception as exc:
         return _sync_resident_failure_result_for_exception(
@@ -556,7 +454,7 @@ def _run_sync_resident_target_attempt(
             commit_guard=commit_guard,
             page_acquired=page_acquired,
             opened=opened,
-            governed_work=governed_work,
+            fallback_work=fallback_work,
         )
     finally:
         planner.mark_finished(target_id)
@@ -588,12 +486,12 @@ def _claim_sync_resident_target(
     options: ResidentRuntimeOptions,
     due_target: DueTarget,
     worker_id: str,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
 ) -> TargetRuntimeState | None:
     """以 owner guard claim target running，並清除本次 manual scan request。"""
 
     target_id = due_target.target_id
-    with governed_work.application_context() as app:
+    with fallback_work.application_context() as app:
         locked_state = app.services.targets.try_claim_target_running(
             target_id,
             worker_id,
@@ -614,7 +512,7 @@ def _sync_resident_failure_result_for_exception(
     commit_guard: ScanCommitGuard,
     page_acquired: bool,
     opened: bool,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
 ) -> _SyncFallbackAttemptResult:
     """將 sync fallback exception 映射成 failure finalize 與 attempt counters。"""
 
@@ -637,7 +535,7 @@ def _sync_resident_failure_result_for_exception(
             commit_guard=commit_guard,
             exception_class=exc.__class__.__name__,
             failure_diagnostics=(exc.diagnostics if isinstance(exc, WorkerFailure) else None),
-            governed_work=governed_work,
+            fallback_work=fallback_work,
         ),
         page_acquired=page_acquired,
         opened=opened,
@@ -670,20 +568,12 @@ def _scan_sync_resident_target_attempt(
     page: Any,
     opened: bool,
     commit_guard: ScanCommitGuard,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
 ) -> _SyncFallbackAttemptResult:
     """準備 page、執行 sync scanner，並把 target guarded 標回 idle。"""
 
-    prepare_sync_resident_page(
-        page=page,
-        target=resident_target.target,
-        timeout_ms=max(
-            options.scan_timeout_seconds,
-            PYTHON_SCHEDULER_RUNTIME_DEFAULTS.min_browser_scan_timeout_seconds,
-        )
-        * 1000,
-    )
-    with governed_work.application_context() as app:
+    fallback_work.ensure_io_allowed()
+    with fallback_work.application_context() as app:
         selected_scan_page = (
             scan_page
             if resident_target.target.target_kind == TargetKind.POSTS
@@ -720,12 +610,12 @@ def _record_sync_resident_attempt_failure(
     source: ScanFailureSource,
     commit_guard: ScanCommitGuard,
     exception_class: str,
-    governed_work: GovernedFallbackPostsWork,
+    fallback_work: FacebookFallbackWork,
     failure_diagnostics: WorkerFailureDiagnostics | None = None,
 ) -> _SyncFallbackAttemptResult:
     """記錄 sync fallback 單一 target failure，並依 decision 處理 page discard。"""
 
-    with governed_work.application_context() as app:
+    with fallback_work.application_context() as app:
         decision = record_guarded_scan_failure_decision(
             app=app,
             target_id=target_id,
@@ -748,7 +638,7 @@ def _record_sync_resident_attempt_failure(
 def _open_sync_fallback_browser_context(
     options: ResidentRuntimeOptions,
 ) -> Iterator[Any]:
-    """在 caller 已持有 governed profile lease 時開啟單次 Playwright context。"""
+    """在 caller 已持有 OS profile lease 時開啟單次 Playwright context。"""
 
     with sync_playwright() as playwright:
         context = launch_persistent_context_sync(
@@ -777,7 +667,6 @@ def _open_sync_fallback_browser_context(
                 )
                 * 1000
             )
-            close_existing_context_pages_sync(context)
             yield context
         finally:
             context.close()

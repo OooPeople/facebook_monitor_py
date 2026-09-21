@@ -16,6 +16,9 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
 from facebook_monitor.core.scan_failures import UNKNOWN_REASON
 from facebook_monitor.worker.errors import WorkerFailure
+from facebook_monitor.worker.facebook_automation_runtime import (
+    FacebookTemporaryBlockIncidentRecorded,
+)
 from facebook_monitor.worker.one_shot_dispatch import OneShotScanOptions
 from facebook_monitor.worker.one_shot_dispatch import record_failure
 from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
@@ -58,9 +61,10 @@ class FakeOneShotPage:
 class FakeOneShotContext:
     """提供 one-shot 測試所需的同步 browser context API。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, close_error: Exception | None = None) -> None:
         self.page = FakeOneShotPage()
         self.closed = False
+        self.close_error = close_error
 
     def set_default_timeout(self, timeout: float) -> None:
         """接受 timeout 設定。"""
@@ -76,7 +80,121 @@ class FakeOneShotContext:
     def close(self) -> None:
         """記錄 context 已關閉。"""
 
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
+
+
+def test_one_shot_temporary_block_records_incident_and_pauses_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Posts-only one-shot high-confidence finding 必須走同一 incident writer。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="one-shot-block",
+                canonical_url="https://www.facebook.com/groups/one-shot-block",
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    context = FakeOneShotContext()
+
+    def blocked_scan(**_kwargs: Any) -> PostsScanSummary:
+        raise WorkerFailure("facebook_temporary_block", "blocked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.sync_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.launch_persistent_context_sync",
+        lambda *_args, **_kwargs: context,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        blocked_scan,
+    )
+
+    with pytest.raises(FacebookTemporaryBlockIncidentRecorded):
+        run_one_shot_scan(
+            OneShotScanOptions(
+                profile_dir=profile_dir,
+                db_path=db_path,
+                target_id=target.id,
+            )
+        )
+
+    assert context.closed
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded = app.repositories.targets.get(target.id)
+        scan = app.repositories.scan_runs.latest_by_target(target.id)
+    assert warning is not None
+    assert warning.source_kind.value == "scan"
+    assert warning.operation_kind.value == "posts_access"
+    assert warning.action_kind.value == "group_feed_document"
+    assert loaded is not None and loaded.paused
+    assert scan is not None and scan.metadata["worker"] == "facebook_access_incident"
+
+
+def test_one_shot_temporary_block_survives_context_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Context cleanup 失敗不得把 temporary-block incident 降級成一般錯誤。"""
+
+    db_path = tmp_path / "app.db"
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="one-shot-block-close-failure",
+                canonical_url=(
+                    "https://www.facebook.com/groups/one-shot-block-close-failure"
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    context = FakeOneShotContext(close_error=RuntimeError("close failed"))
+
+    def blocked_scan(**_kwargs: Any) -> PostsScanSummary:
+        raise WorkerFailure("facebook_temporary_block", "blocked")
+
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.sync_playwright",
+        lambda: FakePlaywrightManager(),
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.launch_persistent_context_sync",
+        lambda *_args, **_kwargs: context,
+    )
+    monkeypatch.setattr(
+        "facebook_monitor.worker.one_shot_dispatch.scan_posts_page_sync_and_finalize",
+        blocked_scan,
+    )
+
+    with pytest.raises(FacebookTemporaryBlockIncidentRecorded):
+        run_one_shot_scan(
+            OneShotScanOptions(
+                profile_dir=profile_dir,
+                db_path=db_path,
+                target_id=target.id,
+            )
+        )
+
+    with SqliteApplicationContext(db_path) as app:
+        warning = app.services.facebook_temporary_block_warning.get()
+        loaded = app.repositories.targets.get(target.id)
+    assert warning is not None
+    assert loaded is not None and loaded.paused
 
 
 def test_select_one_shot_target_by_group_id_when_multiple_targets_exist(tmp_path: Path) -> None:
@@ -158,19 +276,9 @@ def test_one_shot_comments_fails_before_profile_lease_or_browser_work(
     with SqliteApplicationContext(db_path) as app:
         scan = app.repositories.scan_runs.latest_by_target(target.id)
 
-    assert exc_info.value.reason == "unsupported_in_fallback"
+    assert exc_info.value.reason == "target_kind_unsupported"
     assert calls == {"profile_lease": 0, "playwright": 0, "launch": 0, "scanner": 0}
-    assert scan is not None
-    assert scan.metadata["reason"] == "unsupported_in_fallback"
-    assert scan.metadata["worker"] == "one_shot_fallback"
-    assert scan.metadata["failure_diagnostics"]["fallback_guard"] == {
-        "detector": "fallback_capability_guard",
-        "detector_version": 1,
-        "classification": "unsupported_in_fallback",
-        "fallback_mode": "one_shot",
-        "target_kind": "comments",
-        "browser_work_started": False,
-    }
+    assert scan is None
 
 
 def test_run_one_shot_scan_records_sort_skip_escalation_after_context_rollback(

@@ -29,11 +29,11 @@ from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 
 
-def test_resident_main_scheduler_claims_only_one_due_target_before_pacing(
+def test_resident_main_scheduler_preserves_configured_worker_slots_before_pacing(
     tmp_path: Path,
     caplog: Any,
 ) -> None:
-    """即使 worker slots 較高，單一 tick 也只能先 claim 一個 due target。"""
+    """executor 不得把設定的 worker slots 偷偷降為單一 page budget。"""
 
     caplog.set_level(logging.INFO, logger="facebook_monitor.worker")
     db_path = tmp_path / "app.db"
@@ -55,11 +55,11 @@ def test_resident_main_scheduler_claims_only_one_due_target_before_pacing(
     active_count = 0
 
     async def blocking_scan_page(**kwargs: Any) -> object:
-        """讓唯一 admitted target 保持 running，方便檢查 DB owner 數。"""
+        """讓設定數量的 targets 保持 running，方便檢查 DB owner 數。"""
 
         nonlocal active_count
         active_count += 1
-        if active_count == 1:
+        if active_count == 2:
             started.set()
         await release.wait()
         active_count -= 1
@@ -97,14 +97,14 @@ def test_resident_main_scheduler_claims_only_one_due_target_before_pacing(
             await asyncio.wait_for(started.wait(), timeout=1)
             with SqliteApplicationContext(db_path) as app:
                 states = [app.repositories.runtime_states.get(target.id) for target in targets]
-            assert summary.selected_count == 1
+            assert summary.selected_count == 2
             assert (
                 sum(
                     1
                     for state in states
                     if state is not None and state.runtime_status == TargetRuntimeStatus.RUNNING
                 )
-                == 1
+                == 2
             )
             assert (
                 sum(
@@ -123,11 +123,11 @@ def test_resident_main_scheduler_claims_only_one_due_target_before_pacing(
     log_text = caplog.text
     assert (
         "resident_executor_start configured_max_concurrent_scans=2 "
-        "effective_max_concurrent_scans=1"
+        "effective_max_concurrent_scans=2"
     ) in log_text
     assert "resident_target_enqueued target_id=" in log_text
     assert "resident_target_running target_id=" in log_text
-    assert "resident_scheduler_tick cycle=1 selected=1" in log_text
+    assert "resident_scheduler_tick cycle=1 selected=2" in log_text
 
 
 def test_resident_enqueue_publishes_item_after_runtime_queued(

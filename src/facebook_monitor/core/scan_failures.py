@@ -5,7 +5,6 @@
 """
 
 CONTENT_UNAVAILABLE_REASON = "content_unavailable"
-COMMENTS_SAFE_NAVIGATION_PENDING_REASON = "comments_safe_navigation_pending"
 FACEBOOK_TEMPORARY_BLOCK_REASON = "facebook_temporary_block"
 FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON = "facebook_page_guard_inconclusive"
 LOGIN_REQUIRED_REASON = "login_required"

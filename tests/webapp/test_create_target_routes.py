@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import unquote_plus
 
 from fastapi.testclient import TestClient
 
@@ -18,6 +17,10 @@ from facebook_monitor.core.input_limits import MAX_NTFY_TOPIC_LENGTH
 from facebook_monitor.core.input_limits import MAX_TARGET_URL_LENGTH
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetMetadataStatus
+from facebook_monitor.core.scan_failures import FACEBOOK_TEMPORARY_BLOCK_REASON
+from facebook_monitor.facebook.group_metadata import GroupMetadata
+from facebook_monitor.facebook.group_metadata import GroupMetadataError
+from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.webapp.app import create_app as create_production_app
 from facebook_monitor.webapp.scheduler_session import BackgroundSchedulerManager
 from facebook_monitor.webapp.scheduler_session import SchedulerSessionOptions
@@ -88,25 +91,29 @@ def test_create_target_route_uses_saved_keyword_defaults_when_fields_are_omitted
     assert config.exclude_ignore_phrases == ("全收", "回收")
 
 
-def test_create_target_route_defers_name_and_cover_when_scheduler_stopped(
+def test_create_target_route_stores_and_renders_group_cover_thumbnail(
     tmp_path: Path,
 ) -> None:
-    """scheduler stopped 時 Web request 也不開 resolver，名稱與封面交給 resident。"""
+    """scheduler stopped 時 metadata resolver 會保存名稱與安全封面 URL。"""
 
     db_path = tmp_path / "app.db"
     scheduler_manager = FakeSchedulerManager()
     resolver_calls: list[str] = []
+    cover_url = "https://scontent.xx.fbcdn.net/group-cover.jpg"
 
-    def resolver_must_not_run(_profile_dir: Path, url: str) -> str:
+    def fake_resolver(_profile_dir: Path, url: str) -> GroupMetadata:
         resolver_calls.append(url)
-        raise AssertionError("target create Web request must not start metadata resolver")
+        return GroupMetadata(
+            group_name="測試社團",
+            group_cover_image_url=cover_url,
+        )
 
     client = TestClient(
         create_app(
             db_path=db_path,
             profile_dir=tmp_path / "profile",
             scheduler_manager=scheduler_manager,
-            group_name_resolver=resolver_must_not_run,
+            group_name_resolver=fake_resolver,
         )
     )
 
@@ -122,24 +129,22 @@ def test_create_target_route_defers_name_and_cover_when_scheduler_stopped(
     index_response = client.get("/")
 
     assert response.status_code == 303
-    assert resolver_calls == []
+    assert resolver_calls == ["https://www.facebook.com/groups/222518561920110"]
     assert scheduler_manager.stopped_count == 0
     assert scheduler_manager.started_count == 0
-    assert "名稱與封面將由背景服務稍後補齊" in unquote_plus(
-        response.headers["location"]
-    )
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.repositories.targets.find_by_kind_scope(
             target_kind=TargetKind.POSTS,
             scope_id="222518561920110",
         )
     assert target is not None
-    assert target.group_name == ""
-    assert target.group_cover_image_url == ""
-    assert target.metadata_status == TargetMetadataStatus.PENDING
-    assert scheduler_manager.metadata_refresh_target_ids == [target.id]
+    assert target.group_name == "測試社團"
+    assert target.group_cover_image_url == cover_url
+    assert target.metadata_status == TargetMetadataStatus.RESOLVED
+    assert scheduler_manager.metadata_refresh_target_ids == []
     assert index_response.status_code == 200
-    assert "抓取社團名稱中，請稍後" in index_response.text
+    assert f'<img src="{cover_url}" alt=""' in index_response.text
+    assert 'referrerpolicy="no-referrer"' in index_response.text
 
 
 def test_dashboard_does_not_render_unsafe_group_cover_thumbnail(tmp_path: Path) -> None:
@@ -309,9 +314,9 @@ def test_create_target_route_adds_group_posts_target(tmp_path: Path) -> None:
         )
         assert target is not None
         config = app_context.repositories.configs.get_for_target(target)
-    assert target.group_name == ""
-    assert target.name == "group:222518561920110:posts"
-    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert target.group_name == "測試社團"
+    assert target.name == "測試社團"
+    assert target.metadata_status == TargetMetadataStatus.RESOLVED
     assert config is not None
     assert config.include_keywords == ("票",)
     assert config.exclude_keywords == ("售完",)
@@ -747,23 +752,23 @@ def test_create_permalink_comments_target_while_scheduler_running(tmp_path: Path
     assert scheduler_manager.take_metadata_refresh_requests() == (target.id,)
 
 
-def test_create_target_route_adds_comments_target_with_deferred_group_metadata(
+def test_create_target_route_adds_comments_target_and_resolves_group_name(
     tmp_path: Path,
 ) -> None:
-    """Web UI 先建立 comments target，再由 resident 補社團 metadata。"""
+    """Web UI 會依單篇貼文 URL 建立 comments target 並補社團名稱。"""
 
     db_path = tmp_path / "app.db"
     resolver_calls: list[str] = []
 
-    def resolver_must_not_run(_profile_dir: Path, url: str) -> str:
+    def fake_resolver(_profile_dir: Path, url: str) -> str:
         resolver_calls.append(url)
-        raise AssertionError("comments target create must not run metadata resolver")
+        return "留言測試社團"
 
     client = TestClient(
         create_app(
             db_path=db_path,
             profile_dir=tmp_path / "profile",
-            group_name_resolver=resolver_must_not_run,
+            group_name_resolver=fake_resolver,
         )
     )
 
@@ -785,7 +790,7 @@ def test_create_target_route_adds_comments_target_with_deferred_group_metadata(
     assert form_response.status_code == 200
     assert "Target kind" not in form_response.text
     assert create_response.status_code == 303
-    assert resolver_calls == []
+    assert resolver_calls == ["https://www.facebook.com/groups/222518561920110"]
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.repositories.targets.find_by_kind_scope(
             target_kind=TargetKind.COMMENTS,
@@ -800,9 +805,9 @@ def test_create_target_route_adds_comments_target_with_deferred_group_metadata(
     assert target.canonical_url == (
         "https://www.facebook.com/groups/222518561920110/posts/2187454285426518"
     )
-    assert target.name == "group:222518561920110:post:2187454285426518:comments"
-    assert target.group_name == ""
-    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert target.name == "留言測試社團 / post:2187454285426518"
+    assert target.group_name == "留言測試社團"
+    assert target.metadata_status == TargetMetadataStatus.RESOLVED
     assert target.paused
     assert config is not None
     assert config.exclude_keywords == PYTHON_TARGET_CONFIG_DEFAULTS.exclude_keywords
@@ -810,7 +815,7 @@ def test_create_target_route_adds_comments_target_with_deferred_group_metadata(
 
     index_response = client.get("/")
     assert index_response.status_code == 200
-    assert "抓取社團名稱中，請稍後" in index_response.text
+    assert "留言測試社團" in index_response.text
     assert "留言模式" in index_response.text
     assert "下次刷新：未排程" in index_response.text
     assert "comments · group=222518561920110" not in index_response.text
@@ -911,17 +916,23 @@ def test_create_target_uses_fallback_name_when_scheduler_running(
     assert scheduler_manager.metadata_refresh_target_ids == [target.id]
 
 
-def test_create_target_does_not_inspect_scheduler_state_before_deferred_refresh(
+def test_create_target_defer_metadata_refresh_when_scheduler_starts_mid_flow(
     tmp_path: Path,
 ) -> None:
-    """建立流程不以 scheduler snapshot 決定是否啟動 Web metadata resolver。"""
+    """plan 後 scheduler 若開始執行，resolver skip 仍需補排 metadata refresh。"""
 
-    class StateMustNotBeReadSchedulerManager(FakeSchedulerManager):
+    class RacingSchedulerManager(FakeSchedulerManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.state_calls = 0
+
         def state(self) -> SchedulerSessionState:
-            raise AssertionError("target create must not read scheduler state")
+            self.state_calls += 1
+            self.running = self.state_calls >= 2
+            return super().state()
 
     db_path = tmp_path / "app.db"
-    scheduler_manager = StateMustNotBeReadSchedulerManager()
+    scheduler_manager = RacingSchedulerManager()
     resolver_calls: list[str] = []
 
     def fake_resolver(_profile_dir: Path, url: str) -> str:
@@ -956,5 +967,142 @@ def test_create_target_does_not_inspect_scheduler_state_before_deferred_refresh(
         )
     assert target is not None
     assert target.name == "group:222518561920110:posts"
+    assert target.metadata_status == TargetMetadataStatus.PENDING
+    assert scheduler_manager.metadata_refresh_target_ids == [target.id]
+
+
+def test_create_target_does_not_defer_typed_temporary_block_finding(
+    tmp_path: Path,
+) -> None:
+    """同步 resolver 的 typed temporary block 不得被當成一般 metadata failure。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        existing = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="existing-target",
+                canonical_url="https://www.facebook.com/groups/existing-target",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(existing.id)
+
+    def blocked_resolver(_profile_dir: Path, _url: str) -> str:
+        raise WorkerFailure(FACEBOOK_TEMPORARY_BLOCK_REASON, "high-confidence block")
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            group_name_resolver=blocked_resolver,
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+        warning = app_context.services.facebook_temporary_block_warning.get()
+        paused_existing = app_context.repositories.targets.get(existing.id)
+    assert target is None
+    assert warning is not None
+    assert warning.source_kind.value == "sync_resolver"
+    assert warning.operation_kind.value == "group_metadata_access"
+    assert warning.action_kind.value == "group_document"
+    assert paused_existing is not None and paused_existing.paused
+
+
+def test_create_target_block_does_not_resume_temporarily_paused_scheduler(
+    tmp_path: Path,
+) -> None:
+    """Incident 完成後 temporary-profile finally 不得立刻重啟 resident。"""
+
+    class ResolverRaceScheduler(FakeSchedulerManager):
+        """模擬 plan 後、temporary profile acquire 前 scheduler 剛啟動。"""
+
+        def state(self) -> SchedulerSessionState:
+            return replace(super().state(), running=False)
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = ResolverRaceScheduler()
+    scheduler_manager.running = True
+
+    def blocked_resolver(_profile_dir: Path, _url: str) -> str:
+        raise WorkerFailure(FACEBOOK_TEMPORARY_BLOCK_REASON, "high-confidence block")
+
+    app = create_app(
+        db_path=db_path,
+        profile_dir=tmp_path / "profile",
+        scheduler_manager=scheduler_manager,
+        group_name_resolver=blocked_resolver,
+    )
+    response = TestClient(app).post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/resolver-block/",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    assert scheduler_manager.stopped_count == 1
+    assert scheduler_manager.started_count == 0
+    assert not scheduler_manager.running
+    assert app.state.scheduler_paused_for_profile is True
+
+
+def test_create_target_defers_ordinary_metadata_resolution_failure(
+    tmp_path: Path,
+) -> None:
+    """一般 metadata 解析失敗仍建立 target，並要求 resident 後續補齊。"""
+
+    db_path = tmp_path / "app.db"
+    scheduler_manager = FakeSchedulerManager()
+
+    def failing_resolver(_profile_dir: Path, _url: str) -> str:
+        raise GroupMetadataError("Facebook 尚未登入，請稍後重試")
+
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler_manager,
+            group_name_resolver=failing_resolver,
+        )
+    )
+
+    response = client.post(
+        "/targets",
+        data={
+            "group_url": "https://www.facebook.com/groups/222518561920110/",
+            "fixed_refresh_sec": "60",
+            "max_items_per_scan": "5",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" not in response.headers["location"]
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.repositories.targets.find_by_kind_scope(
+            target_kind=TargetKind.POSTS,
+            scope_id="222518561920110",
+        )
+    assert target is not None
     assert target.metadata_status == TargetMetadataStatus.PENDING
     assert scheduler_manager.metadata_refresh_target_ids == [target.id]

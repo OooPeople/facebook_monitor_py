@@ -269,12 +269,6 @@ class TargetRow:
         return self.monitoring_presenter.scanning_supported
 
     @property
-    def deferred_reason(self) -> str:
-        """回傳 formal resident 目前 deferred 此 target 的 typed reason。"""
-
-        return self.monitoring_presenter.deferred_reason
-
-    @property
     def status_presenter(self) -> TargetStatusPresenter:
         """回傳 target 狀態 presenter。"""
 
@@ -284,10 +278,7 @@ class TargetRow:
     def settings_presenter(self) -> TargetSettingsPresenter:
         """回傳 target 設定 presenter。"""
 
-        return TargetSettingsPresenter(
-            config=self.config,
-            target_kind=self.target.target_kind,
-        )
+        return TargetSettingsPresenter(config=self.config)
 
     @property
     def card_summary_presenter(self) -> TargetCardSummaryPresenter:

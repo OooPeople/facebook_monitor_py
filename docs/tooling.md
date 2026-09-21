@@ -29,7 +29,7 @@ manifest 與 frozen smoke 細節看 `packaging/README.md`。
 | Web UI | `facebook-monitor` | Start | 日常 target 管理、設定與背景掃描 | 是 |
 | Setup Login | `facebook-monitor-login` | Start | 開啟專用 automation profile，供登入與檢查 session | 是，維運入口 |
 | Admin Console | `scripts/admin/console.py` | Admin | 互動式管理 target、設定與一次性掃描 | 否 |
-| Manage Targets | `scripts/admin/manage_targets.py` | Admin | 只編輯 target 設定與啟停狀態 | 否 |
+| Manage Targets | `scripts/admin/manage_targets.py` | Admin | 編輯 target 設定與啟停；temporary-block 警告期間的開始會要求等價確認 | 否 |
 | Release Validation | `scripts/admin/release_validation.py` | Admin | 本機 release 驗證與 audit | 否 |
 | Windows Release Builder | `scripts/admin/build_windows_release.py` | Admin packaging | Windows 平台 build pipeline | 否 |
 | macOS Release Builder | `scripts/admin/build_macos_release.py` | Admin packaging | macOS Apple Silicon build pipeline | 否 |
@@ -118,11 +118,10 @@ Get-ChildItem -Path src\facebook_monitor\webapp\static -Filter *.js -Recurse | F
 git diff --check
 ```
 
-Facebook safety stack 變更至少要覆蓋 identity continuity、schema/migration、
-circuit/session-recovery CAS、session guard、coordinator/page budget、Web full/partial
-banner 與 support bundle redaction。Comments 尚未通過 group-first live gate 前，
-測試必須明確驗證 direct post `goto` / `reload` 次數為 0；不得用 direct permalink
-作人工恢復 probe。
+Facebook temporary-block 變更至少要覆蓋 schema/migration、incident transaction
+rollback、process-local trip/cancel、single/batch Start generation race、Web full/partial
+warning 與 support bundle redaction。Comments direct URL／same-route reload 必須各有
+正式 resident 與 sync fallback regression，且 detector 要在後續 Facebook action 前執行。
 
 CI 使用固定的 `uv==0.9.0` 搭配 locked sync，並維持 report-only complexity
 summary、Playwright Chromium 安裝、lint、type check、static JS syntax check、

@@ -2,14 +2,14 @@
 
 Facebook Monitor Py 是一個本機優先的 Facebook 社團監視工具，使用
 Python、Playwright、FastAPI 與 SQLite 實作。它透過獨立 automation profile
-監視社團貼文，並以本機 Web UI 管理 target、掃描狀態與通知。單篇貼文留言
-target 的建立與設定已支援，但正式自動掃描目前維持安全延後，等待站內導覽流程完成。
+監視社團貼文與單篇貼文留言，並以本機 Web UI 管理 target、掃描狀態與通知。
+正式 resident 與 sync fallback 都支援 comments 掃描；one-shot fallback 維持 posts-only。
 
 這個專案不只是「能跑的爬蟲」。它重點放在 target-scoped state、安全的本機操作、可恢復的通知發送、清楚的診斷資訊，以及可長期維護的 Python 應用邊界。
 
 ## 專案用途
 
-- 監視 Facebook 社團貼文列表；留言 target 目前可建立與設定，但掃描會安全延後。
+- 監視 Facebook 社團貼文列表與單篇貼文留言。
 - 使用者貼上 Facebook URL 後，系統自動建立 posts 或 comments target。
 - 透過本機 Web UI 操作，Playwright 使用專用 automation profile 執行瀏覽器。
 - 每個 target 都有自己的關鍵字、排除規則、刷新策略、runtime state、seen、latest scan、match history 與通知設定。
@@ -116,6 +116,6 @@ macOS zip 內也會附 `README.txt` 說明首次開啟步驟。
   Authenticode、macOS Developer ID signing 與 notarization 目前未做，可能仍會
   看到 SmartScreen、Defender、Gatekeeper 或 macOS quarantine 提示。
 - Facebook 可能因登入失效、checkpoint、權限變更、版面改版或自動化偵測而讓掃描暫停或失敗；本工具會保留診斷與失敗 reason，但不能保證 Facebook DOM 長期穩定。
-- 偵測到 temporary block、profile identity 不連續或前次 automation session 未正常
-  結束時，正式 worker 會 fail closed；請依 Web UI 的全域 safety banner 等待冷卻並
-  提出受控恢復檢查，不要手動刪除 profile identity/session marker。
+- 偵測到 temporary block 時，正式 worker 會立即停止當下所有 Facebook work，並停止
+  所有正在監視的 targets。其後 12 小時是風險警告，不是強制鎖；使用者可在單一或
+  批次「開始」時確認風險後沿用原設定繼續。再次命中時會重複相同的全停處理。

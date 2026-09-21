@@ -94,7 +94,10 @@ review resident worker / scan commit state machine 時，需區分長期防禦�
   idempotency、support bundle redaction。
 - 過渡相容邊界：sync / one-shot finalizing scanner summary、尚未遷移為 commit-ready result 的 debug / fallback path。
 
-正式 async resident path 不應為過渡相容保留 catch-all result fallback；scanner 應產生 commit-ready result，coordinator 應是 visible scan state 的 write owner。
+正式 async resident path 不應為過渡相容保留 catch-all result fallback；scanner 應產生
+commit-ready result，既有 `ScanCommitGuard` 與 target runtime owner 必須持續保護
+visible scan state。Temporary-block 的 process-local trip/cancel 不取代這些持久化 guard，
+也不得重新引入 profile-level coordinator 或 visible-write fence。
 
 ### 9. 可觀測性與診斷
 

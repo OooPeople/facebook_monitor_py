@@ -101,21 +101,21 @@ Python 版預設值，通知預設為關閉。
 
 target 卡片 header 會顯示模式、最近掃描與下次刷新；右側 panel 會顯示最近一輪掃描結果摘要。最近通知摘要不放在 target header，避免和掃描排程資訊混在一起。
 
-目前 comments target 採安全停用預設：在安全站內導覽完成 live gate 前，啟用中的
-comments target 會顯示「等待安全站內導覽」，不會直接開啟單篇貼文 URL，也不會把
-這個等待狀態算成掃描錯誤或排序失敗。one-shot 與 sync fallback 同樣不會執行
-comments Facebook navigation。
+comments target 會直接開啟 canonical post URL；同一 page 後續掃描會重新整理同一路徑。
+正式 resident 與 sync resident fallback 都支援這條流程，one-shot fallback 維持
+posts-only。Comments 與 posts 使用相同刷新設定，不會因 temporary-block 警告自動加長
+間隔或改寫設定。
 
-comments 的刷新欄位仍保存使用者要求的 requested interval；實際排程另套用至少
-180 秒的 effective safety floor。target 設定摘要與刷新設定區會同時顯示要求間隔、
-有效間隔及套用安全下限的理由，安全下限不會靜默改寫原設定。
+若偵測到 Facebook 顯示「你暫時遭到封鎖」，系統會立即停止當下全部 Facebook
+自動化工作並停止所有當下正在監視的 targets。接下來 12 小時 dashboard 會顯示風險
+警告，但這不是強制鎖。使用者可在單一 target 或 sidebar 群組／批次按「開始」，閱讀
+「可能無法取得內容、也可能造成更久限制」後自行確認繼續。
 
-若偵測到 Facebook 暫時封鎖或上次 automation browser 未正常結束，dashboard
-會顯示全域安全暫停。系統在這段期間不會繼續一般 Facebook navigation；完成 quiet
-gap 後，使用者可在 banner 選擇同 operation 的 active target，要求一次安全恢復
-檢查。這個操作只排程單次 zero-product-write probe，不等同「開始 target」或
-「立即掃描」。Probe 成功且 browser 已正常關閉後才會恢復；仍被封鎖、無法判定或
-關閉失敗都會繼續暫停。Login/checkpoint/session-invalid 則會要求重新登入。
+確認後完全沿用各 target 原本的設定與正常掃描流程。若又看到相同封鎖頁，程式會再次
+停止當下全部 Facebook work 與所有正在監視的 targets，並顯示
+`facebook_temporary_block`。之後再按「開始」仍會顯示相同警告；程式不計算失敗次數、
+不升級等待時間，也不新增限速或恢復檢查。警告到期不會自動重新開始任何 target。
+Login、checkpoint 或 session-invalid 仍依既有契約要求重新登入。
 
 target 社團縮圖是顯示輔助，不影響掃描與通知。若縮圖 URL 過期，
 dashboard 會先退回文字 avatar，並在背景排一次只更新封面 URL 的
@@ -307,12 +307,9 @@ table counts / invariant 檢查結果。
 
 - `profile_locked`：另一個 process 正持有同一個 automation profile。
 - login / checkpoint failure：Web UI 會顯示需要重新登入；關閉並重新啟動 `facebook-monitor` 後會先開登入視窗。也可用 `facebook-monitor-login` 手動完成 Facebook 驗證。
-- Facebook safety banner 顯示暫時封鎖：等待 cooldown 結束，再選擇可用 target
-  提出一次恢復檢查；不要反覆啟動 target 或直接開被封鎖的 permalink。
-- Facebook safety banner 顯示非預期中斷：先讓程式完成 quiet gap，再提出一次
-  healthcheck。不要手動刪除 session marker；這會破壞 durable recovery 證據。
-- Facebook safety banner 顯示儲存狀態異常：停止 Facebook automation，保留 data
-  directory，下載 redacted support bundle 後再排查；不要自行更換 identity marker。
+- Facebook temporary-block warning：12 小時是風險警告期限。若要繼續，可在單一或
+  批次「開始」時確認風險；再次命中會重新停止全部當下 active targets。
+- Facebook 狀態無法讀寫：保留 data directory，下載 redacted support bundle 後再排查。
 - empty extractor：確認 Facebook 是否變更 layout，或內容是否被 login/checkpoint 擋住。
 - notification failure：查看安全化後的 notification result 與 channel config；Discord webhook 格式錯誤時，系統不會送出 HTTP request。
 - 社團縮圖沒有恢復：先確認 dashboard 是否重新整理過；自動修復只在瀏覽器

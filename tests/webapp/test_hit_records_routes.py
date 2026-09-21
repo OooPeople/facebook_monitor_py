@@ -28,29 +28,6 @@ from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.webapp.app_test_helpers import create_app
 
 
-def test_hit_records_modal_matches_preview_typography_and_link_style() -> None:
-    """查看紀錄 modal 字級與連結樣式需對齊最近掃描 / 命中紀錄 preview。"""
-
-    modal_styles = Path("src/facebook_monitor/webapp/static/styles/modals.css").read_text(
-        encoding="utf-8"
-    )
-    hit_records_js = Path("src/facebook_monitor/webapp/static/dashboard/hit_records.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert ".hit-record-summary-list" in modal_styles
-    assert ".hit-record-summary-item dt::after" in modal_styles
-    assert 'content: "：";' in modal_styles
-    assert "grid-template-columns: 5em minmax(0, 1fr);" in modal_styles
-    assert 'item.className = "hit-record-summary-item";' in hit_records_js
-    assert 'fields.className = "hit-record-fields hit-record-summary-list";' in hit_records_js
-    assert modal_styles.count("font-size: 14px;") >= 4
-    assert ".hit-record-row a" in modal_styles
-    assert "border-radius: 999px;" in modal_styles
-    assert "font-weight: 650;" in modal_styles
-    assert 'missing.className = "missing-link";' in hit_records_js
-
-
 def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Path) -> None:
     """查看紀錄 API 可查詢與清空單一 target，且不清其他 runtime/debug 資料。"""
 

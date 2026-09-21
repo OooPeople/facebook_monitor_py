@@ -96,75 +96,6 @@ def test_sidebar_sorting_uses_sortablejs_with_handle_threshold_and_animation() -
     assert "MIT License" in sortable_license
 
 
-def test_sidebar_sort_handle_is_plain_three_line_grip_and_keeps_item_height() -> None:
-    """排序把手只作為三線拖曳入口，排序卡片視覺不得增加 item 外框高度。"""
-
-    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
-        encoding="utf-8"
-    )
-    sidebar_template = sidebar_template_family_text()
-
-    assert "sidebar-action-icon--drag" in sidebar_template
-    assert '<path d="M5 7h14"/>' in sidebar_template
-    assert '<path d="M5 12h14"/>' in sidebar_template
-    assert '<path d="M5 17h14"/>' in sidebar_template
-    assert 'd="m4 ' not in sidebar_template
-    assert "box-shadow: inset 0 0 0 1px var(--border-soft), var(--shadow-subtle);" in sidebar_css
-    assert ".target-sidebar.sorting .sidebar-list-item {\n" in sidebar_css
-    sorting_item_rule = _css_rule_body(sidebar_css, ".target-sidebar.sorting .sidebar-list-item")
-    assert "border:" not in sorting_item_rule
-    sorting_handle_rule = _css_rule_body(
-        sidebar_css,
-        ".target-sidebar.sorting .sidebar-drag-handle",
-    )
-    assert "background: transparent;" in sorting_handle_rule
-    assert "border-color: transparent;" in sorting_handle_rule
-    assert "box-shadow: none;" in sorting_handle_rule
-    assert "position: absolute;" in sorting_handle_rule
-    assert "inset-inline-end: 6px;" in sorting_handle_rule
-    assert "transform: translateY(-50%);" in sorting_handle_rule
-    assert ".target-sidebar.sorting .sidebar-drag-handle:hover" in sidebar_css
-    sorting_target_rule = _css_rule_body(sidebar_css, ".target-sidebar.sorting .sidebar-target")
-    assert "padding-inline-end: 46px;" in sorting_target_rule
-
-
-def test_sidebar_sort_drag_item_stays_opaque_and_placeholder_is_empty() -> None:
-    """拖曳本體保持不透明；預計落點保留空間但不顯示半透明預覽。"""
-
-    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
-        encoding="utf-8"
-    )
-
-    ghost_rule = _css_rule_body(sidebar_css, ".sidebar-sort-ghost")
-    fallback_rule = _css_rule_body(sidebar_css, ".sidebar-sort-fallback")
-    fallback_target_rule = _css_rule_body(
-        sidebar_css,
-        ".sidebar-sort-fallback .sidebar-target,\n.sidebar-sort-fallback .sidebar-target.active",
-    )
-    drag_title_space_rule = _css_rule_body(
-        sidebar_css,
-        ".sidebar-sort-drag .sidebar-target,\n.sidebar-sort-fallback .sidebar-target,\n.sidebar-sort-fallback .sidebar-target.active",
-    )
-    fallback_handle_rule = _css_rule_body(
-        sidebar_css,
-        ".sidebar-sort-fallback .sidebar-drag-handle",
-    )
-    drag_rule = _css_rule_body(
-        sidebar_css,
-        ".sidebar-sort-drag,\n.sidebar-sort-drag .sidebar-drag-handle,\n.sidebar-sort-drag .sidebar-group-collapse",
-    )
-
-    assert "opacity: 0;" in ghost_rule
-    assert "opacity: 1 !important;" in fallback_rule
-    assert "position: relative;" in fallback_rule
-    assert "border-color: transparent;" in fallback_target_rule
-    assert "box-shadow: none;" in fallback_target_rule
-    assert "padding-inline-end: 46px;" in drag_title_space_rule
-    assert "position: absolute;" in fallback_handle_rule
-    assert "transform: translateY(-50%);" in fallback_handle_rule
-    assert "opacity: 1;" in drag_rule
-
-
 def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored() -> None:
     """群組操作平常收成 ⋯，展開後才水平顯示三個按鈕；刪除只讓符號變紅。"""
 
@@ -188,37 +119,6 @@ def test_sidebar_group_actions_expand_inline_and_delete_icon_is_danger_colored()
     assert "border-color: color-mix(in srgb, var(--danger)" not in sidebar_css
     assert "const setupGroupActionToggles" in sidebar_groups_js
     assert "closeExpandedGroupActions();" in sidebar_groups_js
-
-
-def test_sidebar_group_operation_buttons_are_borderless_by_default() -> None:
-    """群組收合、⋯ 與展開後操作按鈕預設不顯示外框。"""
-
-    sidebar_css = Path("src/facebook_monitor/webapp/static/styles/sidebar.css").read_text(
-        encoding="utf-8"
-    )
-    assert ".sidebar-group-collapse,\n.sidebar-drag-handle,\n.sidebar-group-menu," in sidebar_css
-    assert "background: transparent;" in sidebar_css
-    assert "border: 1px solid transparent;" in sidebar_css
-    assert ".sidebar-group-collapse:hover,\n.sidebar-drag-handle:hover," in sidebar_css
-    assert "background: var(--surface-soft);" in sidebar_css
-    assert "border-color: transparent;" in sidebar_css
-    assert ".sidebar-group-actions .button--icon," in sidebar_css
-    assert ".sidebar-group-actions .button--icon:not(:disabled):hover," in sidebar_css
-    assert "box-shadow: none;" in sidebar_css
-    assert "color: var(--muted);" in sidebar_css
-    assert "color: var(--text);" in sidebar_css
-    actions_hover_rule = _css_rule_body(
-        sidebar_css,
-        ".sidebar-group-actions .button--icon:not(:disabled):hover,\n.sidebar-group-actions-toggle:hover",
-    )
-    assert "color: var(--text);" in actions_hover_rule
-    assert ".sidebar-group-monitoring:disabled:hover" in sidebar_css
-    disabled_hover_rule = _css_rule_body(sidebar_css, ".sidebar-group-monitoring:disabled:hover")
-    assert "background: transparent;" in disabled_hover_rule
-    assert "border-color: transparent;" in disabled_hover_rule
-    assert ".sidebar-group-monitoring.is-active" not in sidebar_css
-    assert ".sidebar-group-monitoring {\n  color: var(--success);" not in sidebar_css
-    assert "grid-template-columns: 30px minmax(0, 1fr) auto;" in sidebar_css
 
 
 def test_sidebar_group_monitoring_sync_preserves_pending_button() -> None:

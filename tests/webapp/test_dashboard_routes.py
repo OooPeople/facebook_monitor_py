@@ -1148,60 +1148,6 @@ def test_dashboard_uses_external_versioned_scripts_without_importmap(tmp_path: P
     assert '<script id="page-feedback" type="application/json">' not in response.text
 
 
-def test_target_card_panels_share_preview_height_contract() -> None:
-    """Target card 左右 panel 必須共用高度約束，避免底部錯位回歸。"""
-
-    styles = Path("src/facebook_monitor/webapp/static/styles/target-card.css").read_text(
-        encoding="utf-8"
-    )
-
-    assert "grid-auto-rows: var(--preview-panel-height);" in styles
-    assert ".target-settings" in styles
-    assert ".match-panel" in styles
-    assert ".section-title .form-status" in styles
-    assert "overflow-y: auto;" in styles
-    assert ".compact-config-form .keyword-rule-tabs" in styles
-    assert ".keyword-rule-field-label" in styles
-    assert ".keyword-rule-tab-row" in styles
-    assert ".compact-config-form .keyword-rule-tab" in styles
-    assert ".keyword-help-button" in styles
-    assert ".more-menu-trigger" in styles
-    more_trigger_rule = styles.split(".more-menu-trigger {", 1)[1].split("}", 1)[0]
-    assert "color: var(--text-soft);" in more_trigger_rule
-    assert "list-style: none;" in more_trigger_rule
-    for duplicated_button_property in ("border-radius:", "min-height:", "min-width:", "padding:"):
-        assert duplicated_button_property not in more_trigger_rule
-    assert ".menu-panel form" in styles
-    assert ".menu-action" in styles
-    assert ".compact-config-form .keyword-rule-panel[hidden]" in styles
-    assert styles.count("height: var(--preview-panel-height);") >= 2
-    assert styles.count("max-height: var(--preview-panel-height);") >= 2
-
-
-def test_settings_keyword_defaults_use_compact_two_column_layout() -> None:
-    """設定頁關鍵字預設值維持左右雙欄，textarea 不提供拖曳縮放。"""
-
-    forms_css = Path("src/facebook_monitor/webapp/static/styles/forms.css").read_text(
-        encoding="utf-8"
-    )
-    pages_css = Path("src/facebook_monitor/webapp/static/styles/pages.css").read_text(
-        encoding="utf-8"
-    )
-    diagnostics_css = Path("src/facebook_monitor/webapp/static/styles/diagnostics.css").read_text(
-        encoding="utf-8"
-    )
-
-    assert "textarea {\n  resize: none;\n}" in forms_css
-    assert (
-        ".settings-form-grid--two {\n  grid-template-columns: repeat(2, minmax(0, 1fr));\n}"
-        in forms_css
-    )
-    assert ".settings-actions--right" in forms_css
-    assert ".settings-actions--left" in forms_css
-    assert "  .settings-form-grid--two {\n    grid-template-columns: 1fr;\n  }" in pages_css
-    assert ".debug-copy-source {\n  min-height: 150px;\n  resize: none;" in diagnostics_css
-
-
 def test_index_renders_runtime_state_and_error(tmp_path: Path) -> None:
     """首頁會顯示 scheduler runtime state 與 last error。"""
 

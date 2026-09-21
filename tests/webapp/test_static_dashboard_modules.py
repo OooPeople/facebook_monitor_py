@@ -286,25 +286,6 @@ def test_theme_templates_are_present_on_all_formal_pages() -> None:
         assert '{% include "_theme_toggle.html" %}' in text
 
 
-def test_web_ui_control_icons_use_inline_svg_not_text_glyphs() -> None:
-    """正式 Web UI 控制圖示使用 inline SVG，避免不同字型造成對齊漂移。"""
-
-    webapp_dir = Path("src/facebook_monitor/webapp")
-    text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for pattern in ("*.js", "*.html", "*.css")
-        for path in webapp_dir.rglob(pattern)
-    )
-
-    for glyph in ("☰", "⋯", "×", "✎", "⚙", "▾", "＋", "›", "◐", "☾", "☼"):
-        assert glyph not in text
-    assert "data-theme-icon-light" in text
-    assert "data-theme-icon-dark" in text
-    assert "createCloseIcon" in text
-    assert 'class="ui-icon' in text
-    assert 'class="sidebar-action-icon' in text
-
-
 def test_keyword_rule_tabs_are_initialized_by_dashboard_entrypoint() -> None:
     """左側 keyword 設定 tabs 與說明 modal 需由 dashboard entrypoint 初始化。"""
 

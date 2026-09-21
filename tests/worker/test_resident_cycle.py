@@ -26,6 +26,8 @@ from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResu
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
+from tests.helpers.repository_reads import list_notification_events_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
@@ -122,6 +124,7 @@ def test_resident_main_cycle_uses_configured_worker_slots(tmp_path: Path) -> Non
         app.services.targets.restart_target_monitoring(second.id)
 
     scanned_target_ids: list[str] = []
+
     async def fake_scan_page(**kwargs: Any) -> SuccessScanResult:
         """記錄本輪唯一獲准執行的 target。"""
 
@@ -287,8 +290,12 @@ def test_resident_main_cycle_commits_posts_protective_skip_result(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
@@ -357,7 +364,9 @@ def test_resident_main_cycle_rejects_legacy_finalized_summary_result(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE

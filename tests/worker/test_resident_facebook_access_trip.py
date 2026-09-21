@@ -30,6 +30,7 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
@@ -133,7 +134,9 @@ def test_resident_temporary_block_pauses_all_and_cancels_peer_io(tmp_path: Path)
         loaded_targets = tuple(app.repositories.targets.get(target.id) for target in targets)
         blocked_scan = app.repositories.scan_runs.latest_by_target(blocked_target_id)
         peer_scan = app.repositories.scan_runs.latest_by_target(targets[1].id)
-        outbox = app.repositories.notification_outbox.list_pending()
+        outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert warning is not None
     assert all(target is not None and target.paused for target in loaded_targets)
     assert blocked_scan is not None

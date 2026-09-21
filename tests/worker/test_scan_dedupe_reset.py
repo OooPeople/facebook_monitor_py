@@ -19,6 +19,7 @@ from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 from facebook_monitor.worker.scan_failure_finalize import record_scan_failure
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.scan_finalize_test_helpers import finalize_scan_items
 from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
@@ -73,7 +74,9 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
         assert first_result.new_count == 1
         assert first_result.matched_count == 1
         assert not first_result.baseline_mode
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         assert len(pending_outbox) == 1
         assert pending_outbox[0].dedupe_id is not None
         dedupe_count = app.repositories.notification_outbox.connection.execute(
@@ -124,7 +127,14 @@ def test_restart_monitoring_preserves_previously_seen_match_notification_state(
             is False
         )
         assert second_result.notification_payloads == ()
-        assert len(app.repositories.notification_outbox.list_pending()) == 0
+        assert (
+            len(
+                list_pending_notification_outbox(
+                    app.repositories.notification_outbox,
+                )
+            )
+            == 0
+        )
         assert len(app.repositories.match_history.list_by_target(reloaded_target.id)) == 1
 
     assert sent_ntfy == ["phase0test"]
@@ -174,7 +184,9 @@ def test_finalize_keeps_dedupe_after_terminal_outbox_retention(
             item_count=1,
             metadata={"worker": "test_worker"},
         )
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         assert len(pending_outbox) == 1
         assert pending_outbox[0].id is not None
         claimed = app.repositories.notification_outbox.claim_pending()[0]
@@ -616,7 +628,12 @@ def test_empty_baseline_scan_does_not_initialize_scope(tmp_path: Path) -> None:
             baseline_result.latest_items[0].debug_metadata["classification"]["eligible_for_notify"]
             is False
         )
-        assert app.repositories.notification_outbox.list_pending() == []
+        assert (
+            list_pending_notification_outbox(
+                app.repositories.notification_outbox,
+            )
+            == []
+        )
         assert app.repositories.scan_scope_state.is_initialized(target.scope_id)
 
     assert sent_ntfy == []

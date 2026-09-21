@@ -24,7 +24,7 @@ from facebook_monitor.webapp.hit_record_queries import (
     _raise_if_hit_record_count_is_invariant_unsafe,
 )
 
-
+from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.webapp.app_test_helpers import create_app
 
 
@@ -259,7 +259,9 @@ def test_hit_record_api_lists_counts_and_clears_only_target_history(tmp_path: Pa
         assert app_context.repositories.latest_scan_items.list_by_target(first_target.id)
         assert app_context.repositories.scan_runs.latest_by_target(first_target.id) is not None
         assert app_context.repositories.seen_items.has_seen(first_target.scope_id, "seen-1")
-        assert app_context.repositories.notification_events.list_by_target(first_target.id)
+        assert list_notification_events_by_target(
+            app_context.repositories.notification_events, first_target.id
+        )
         assert (
             app_context.repositories.notification_outbox.get_by_idempotency_key(
                 f"{first_target.id}:first-1:ntfy"

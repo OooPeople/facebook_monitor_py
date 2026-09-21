@@ -38,6 +38,7 @@ from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.target_runtime_state import TargetRuntimeStateRepository
 from facebook_monitor.persistence.schema import initialize_schema
 
+from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.persistence.sqlite_test_helpers import save_target_config_for_test
 from tests.persistence.sqlite_test_helpers import get_target_config_for_test
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
@@ -289,7 +290,10 @@ def test_target_config_seen_scan_and_notification_roundtrip(tmp_path: Path) -> N
             )
         )
         assert event_id > 0
-        events = NotificationEventRepository(connection).list_by_target(target.id)
+        events = list_notification_events_by_target(
+            NotificationEventRepository(connection),
+            target.id,
+        )
         assert len(events) == 1
         assert events[0].status == NotificationStatus.SENT
         assert events[0].channel == NotificationChannel.NTFY

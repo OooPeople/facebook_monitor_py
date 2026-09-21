@@ -50,6 +50,8 @@ from facebook_monitor.worker.scan_failure_finalize import (
 )
 from facebook_monitor.worker.errors import WorkerFailure
 
+from tests.helpers.repository_reads import list_notification_events_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.scan_finalize_test_helpers import finalize_scan_items
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
@@ -198,13 +200,18 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
         assert history[0].include_rule == "票券"
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         assert len(latest_items) == 1
-        outbox_entries = app.repositories.notification_outbox.list_pending()
+        outbox_entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         assert {entry.channel for entry in outbox_entries} == {
             NotificationChannel.DESKTOP,
             NotificationChannel.NTFY,
             NotificationChannel.DISCORD,
         }
-        assert app.repositories.notification_events.list_by_target(target.id) == []
+        assert (
+            list_notification_events_by_target(app.repositories.notification_events, target.id)
+            == []
+        )
 
         second_result = finalize_scan_items(
             app=app,
@@ -240,14 +247,19 @@ def test_finalize_scan_items_records_shared_postprocess_state(tmp_path: Path) ->
 
     assert sent_ntfy
     with SqliteApplicationContext(db_path) as app:
-        events = app.repositories.notification_events.list_by_target(target.id)
+        events = list_notification_events_by_target(app.repositories.notification_events, target.id)
         assert {event.channel for event in events} == {
             NotificationChannel.DESKTOP,
             NotificationChannel.NTFY,
             NotificationChannel.DISCORD,
         }
         assert all(event.status == NotificationStatus.SENT for event in events)
-        assert app.repositories.notification_outbox.list_pending() == []
+        assert (
+            list_pending_notification_outbox(
+                app.repositories.notification_outbox,
+            )
+            == []
+        )
 
 
 def test_finalize_scan_items_records_success_metadata_profile_ok_and_empty_latest(
@@ -604,7 +616,9 @@ def test_finalize_scan_items_preserves_comments_identity_contract(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
-        outbox_entries = app.repositories.notification_outbox.list_pending()
+        outbox_entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         seen_rows = app.repositories.seen_items.connection.execute(
             """
             SELECT item_key, item_kind, parent_post_id, comment_id
@@ -756,7 +770,9 @@ def test_finalize_scan_items_comments_baseline_uses_comments_scope(
         )
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
-        outbox_entries = app.repositories.notification_outbox.list_pending()
+        outbox_entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         scope_initialized_after_item = app.repositories.scan_scope_state.is_initialized(
             target.scope_id
         )
@@ -858,7 +874,9 @@ def test_finalize_scan_items_comments_guard_mismatch_writes_no_visible_state(
         ).fetchone()[0]
         history = app.repositories.match_history.list_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending(limit=10)
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox, limit=10
+        )
 
     assert excinfo.value.reason == "target_stopped"
     assert scan_count == 0
@@ -1053,7 +1071,9 @@ def test_finalize_scan_items_counts_only_actual_notification_outbox_rows(
             item_count=1,
             metadata={"worker": "test_worker"},
         )
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert len(result.notification_payloads) == 1
     assert result.match_notification_outbox_count == 0
@@ -1240,7 +1260,9 @@ def test_finalize_scan_items_refuses_stopped_target_commit(tmp_path: Path) -> No
         assert excinfo.value.reason == "target_stopped"
         assert app.repositories.match_history.list_by_target(target.id) == []
         assert app.repositories.latest_scan_items.list_by_target(target.id) == []
-        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+        assert (
+            list_pending_notification_outbox(app.repositories.notification_outbox, limit=10) == []
+        )
 
 
 def test_finalize_scan_items_refuses_paused_descriptor_commit(tmp_path: Path) -> None:
@@ -1282,7 +1304,9 @@ def test_finalize_scan_items_refuses_paused_descriptor_commit(tmp_path: Path) ->
         assert excinfo.value.reason == "target_stopped"
         assert app.repositories.match_history.list_by_target(target.id) == []
         assert app.repositories.latest_scan_items.list_by_target(target.id) == []
-        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+        assert (
+            list_pending_notification_outbox(app.repositories.notification_outbox, limit=10) == []
+        )
 
 
 def test_finalize_scan_items_refuses_restarted_attempt_commit(tmp_path: Path) -> None:
@@ -1321,7 +1345,9 @@ def test_finalize_scan_items_refuses_restarted_attempt_commit(tmp_path: Path) ->
         assert excinfo.value.reason == "target_stopped"
         assert app.repositories.match_history.list_by_target(fixture.target.id) == []
         assert app.repositories.latest_scan_items.list_by_target(fixture.target.id) == []
-        assert app.repositories.notification_outbox.list_pending(limit=10) == []
+        assert (
+            list_pending_notification_outbox(app.repositories.notification_outbox, limit=10) == []
+        )
 
 
 def test_guarded_protective_skip_refuses_restarted_attempt_commit(tmp_path: Path) -> None:

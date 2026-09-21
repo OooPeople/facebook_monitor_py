@@ -123,26 +123,6 @@ class NotificationOutboxRepository:
         )
         return int(cursor.rowcount or 0)
 
-    def list_pending(
-        self,
-        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
-    ) -> list[NotificationOutboxEntry]:
-        """列出尚未 claim 的 pending events，僅供檢視與測試。"""
-
-        rows = self.connection.execute(
-            """
-            SELECT * FROM notification_outbox
-            WHERE status = ?
-            ORDER BY id
-            LIMIT ?
-            """,
-            (
-                NotificationOutboxStatus.PENDING.value,
-                limit,
-            ),
-        ).fetchall()
-        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
-
     def claim_pending(
         self,
         limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
@@ -166,23 +146,6 @@ class NotificationOutboxRepository:
             processing_status=NotificationOutboxStatus.PROCESSING_FAILED,
             limit=limit,
         )
-
-    def list_failed(
-        self,
-        limit: int = PYTHON_PERSISTENCE_QUERY_DEFAULTS.list_limit,
-    ) -> list[NotificationOutboxEntry]:
-        """列出 failed outbox events，供明確 retry command 使用。"""
-
-        rows = self.connection.execute(
-            """
-            SELECT * FROM notification_outbox
-            WHERE status = ?
-            ORDER BY updated_at, id
-            LIMIT ?
-            """,
-            (NotificationOutboxStatus.FAILED.value, limit),
-        ).fetchall()
-        return [self._decrypt_entry(notification_outbox_from_row(row)) for row in rows]
 
     def clear_failed(self) -> int:
         """清除全域 failed rows；pending / processing / sent rows 不受影響。"""

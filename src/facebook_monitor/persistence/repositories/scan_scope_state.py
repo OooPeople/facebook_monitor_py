@@ -64,17 +64,3 @@ class ScanScopeStateRepository:
             (normalized_scope_id, now),
         )
         return 1
-
-    def clear_all(self) -> int:
-        """將所有已知 scan scope 重置為 baseline 抑制狀態。"""
-
-        now = encode_datetime(utc_now())
-        cursor = self.connection.execute(
-            """
-            UPDATE scan_scope_state
-            SET initialized = 0,
-                updated_at = ?
-            """,
-            (now,),
-        )
-        return int(cursor.rowcount or 0)

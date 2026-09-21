@@ -21,6 +21,9 @@ from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
+from tests.helpers.repository_reads import list_notification_events_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
+
 
 class AsyncFakeLocator:
     """提供 async comments worker 測試需要的 body inner_text。"""
@@ -219,7 +222,9 @@ def test_async_comments_returns_protective_skip_without_db_write(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
 
     assert page.sort_adjusted
     assert isinstance(result, ProtectiveSkipScanResult)
@@ -269,8 +274,12 @@ def test_async_comments_returns_success_result_without_db_write(tmp_path: Path) 
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert page.sort_adjusted
     assert isinstance(result, SuccessScanResult)

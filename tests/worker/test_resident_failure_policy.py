@@ -26,6 +26,7 @@ from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import as_async_scan_callable
 from tests.worker.resident_main_test_helpers import build_success_scan_result_for_test
@@ -463,7 +464,9 @@ def test_resident_inconclusive_page_guard_retries_twice_then_stops(
             with SqliteApplicationContext(db_path) as app:
                 state = app.repositories.runtime_states.get(target.id)
                 latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-                pending_outbox = app.repositories.notification_outbox.list_pending()
+                pending_outbox = list_pending_notification_outbox(
+                    app.repositories.notification_outbox,
+                )
             assert state is not None
             assert latest_scan is not None
             assert state.consecutive_failure_count == attempt

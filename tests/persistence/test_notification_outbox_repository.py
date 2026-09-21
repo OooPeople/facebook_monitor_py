@@ -19,6 +19,7 @@ from facebook_monitor.persistence.sqlite_connection import SqliteConnection
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.schema import initialize_schema
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.persistence.sqlite_test_helpers import notification_outbox_repository
 
 
@@ -209,7 +210,7 @@ def test_notification_outbox_enqueue_reports_duplicate_created_flag(
 
         first = repo.enqueue(entry)
         duplicate = repo.enqueue(entry)
-        pending = repo.list_pending()
+        pending = list_pending_notification_outbox(repo)
 
     assert first.created
     assert not duplicate.created

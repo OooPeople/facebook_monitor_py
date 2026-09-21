@@ -29,6 +29,7 @@ from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import RuntimeRefreshMetadataBrowserContext
 from tests.worker.resident_main_test_helpers import RuntimeClosedOnPausedBrowserContext
@@ -317,7 +318,9 @@ def test_active_metadata_runtime_failure_notifies_after_scan_retries(
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        entries = app.repositories.notification_outbox.list_pending()
+        entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         run_count = app.repositories.scan_runs.connection.execute(
             "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
             (target.id,),

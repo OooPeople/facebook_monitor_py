@@ -187,9 +187,7 @@ ALLOWED_TARGET_RUNTIME_STATE_SQL_WRITES = {
 }
 READ_ONLY_RUNTIME_STATE_REPOSITORY_METHODS = {
     "get",
-    "list_all",
     "list_by_targets",
-    "list_desired_active",
 }
 MUTATING_RUNTIME_STATE_REPOSITORY_METHODS = {
     name

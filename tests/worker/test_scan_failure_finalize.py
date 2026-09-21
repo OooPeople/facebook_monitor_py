@@ -41,6 +41,8 @@ from facebook_monitor.worker.scan_failure_finalize import (
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
 
+from tests.helpers.repository_reads import latest_notification_event_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 from tests.worker.scan_finalize_test_helpers import _activate_target
 from tests.worker.scan_finalize_test_helpers import _stub_outbox_dispatch
@@ -75,7 +77,9 @@ def test_record_guarded_scan_failure_ignores_stale_running_owner(
 
         latest_scan = app.repositories.scan_runs.latest_by_target(fixture.target.id)
         state = app.repositories.runtime_states.get(fixture.target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert decision is None
     assert latest_scan is None
@@ -210,7 +214,9 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
             )
         )
         first_state = app.repositories.runtime_states.get(active.id)
-        first_entries = app.repositories.notification_outbox.list_pending()
+        first_entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
         second_count = (
             scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
@@ -222,7 +228,9 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
             )
         )
         second_state = app.repositories.runtime_states.get(active.id)
-        second_entries = app.repositories.notification_outbox.list_pending()
+        second_entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
         third_count = (
             scan_failure_finalize_module.record_active_targets_runtime_failure_notifications(
@@ -234,7 +242,9 @@ def test_active_targets_runtime_failure_notifies_after_retry_limit(
             )
         )
         third_state = app.repositories.runtime_states.get(active.id)
-        entries = app.repositories.notification_outbox.list_pending()
+        entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         active_run = app.repositories.scan_runs.latest_by_target(active.id)
         stopped_run = app.repositories.scan_runs.latest_by_target(stopped.id)
         paused_run = app.repositories.scan_runs.latest_by_target(paused.id)
@@ -327,7 +337,9 @@ def test_active_targets_unknown_runtime_failure_uses_default_retry_limit(
             )
             state = app.repositories.runtime_states.get(active.id)
             latest_scan = app.repositories.scan_runs.latest_by_target(active.id)
-            entries = app.repositories.notification_outbox.list_pending()
+            entries = list_pending_notification_outbox(
+                app.repositories.notification_outbox,
+            )
 
             assert count == 1
             assert state is not None
@@ -389,7 +401,9 @@ def test_active_targets_runtime_failure_immediate_notify_for_non_retryable_reaso
         )
         active_run = app.repositories.scan_runs.latest_by_target(active.id)
         active_state = app.repositories.runtime_states.get(active.id)
-        entries = app.repositories.notification_outbox.list_pending()
+        entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert count == 1
     assert active_run is not None
@@ -478,7 +492,9 @@ def test_immediate_terminal_failure_records_again_after_manual_restart(
             "SELECT COUNT(*) FROM scan_runs WHERE target_id = ?",
             (target.id,),
         ).fetchone()[0]
-        entries = app.repositories.notification_outbox.list_pending()
+        entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert second_decision is not None
     assert second_run is not None
@@ -540,7 +556,7 @@ def test_runtime_failure_outbox_dispatch_preserves_event_kind(tmp_path: Path) ->
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
-        event = app.repositories.notification_events.latest_by_target(target.id)
+        event = latest_notification_event_by_target(app.repositories.notification_events, target.id)
         assert entries[0].dedupe_id is not None
         dedupe_row = app.repositories.notification_outbox.connection.execute(
             """
@@ -650,7 +666,9 @@ def test_runtime_failure_after_commit_queue_blocks_preterminal_unknown(
             error_message="未分類錯誤",
         )
 
-        pending = app.repositories.notification_outbox.list_pending()
+        pending = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         after_commit_hooks = list(app.after_commit_hooks)
 
     assert entries == ()

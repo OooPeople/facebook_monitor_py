@@ -49,6 +49,9 @@ from facebook_monitor.notifications.outbox_match_enqueue import (
 )
 from facebook_monitor.worker.scan_finalize import NormalizedScanItem
 
+from tests.helpers.repository_reads import latest_notification_event_by_target
+from tests.helpers.repository_reads import list_notification_events_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.scan_finalize_test_helpers import finalize_scan_items
 from tests.worker.scan_finalize_test_helpers import _activate_target
 
@@ -136,7 +139,9 @@ def test_queue_match_notifications_reports_no_entries_for_duplicate_dedupe(
                 item_kind=ItemKind.POST,
             ),
         )
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
         dedupe_count = app.repositories.notification_outbox.connection.execute(
             "SELECT COUNT(*) FROM notification_dedupe WHERE target_id = ?",
             (target.id,),
@@ -363,7 +368,9 @@ def test_outbox_keeps_retryable_failed_notification_after_commit(
         assert outbox_entry.attempts == 1
         assert outbox_entry.last_error == "ntfy_dispatch_failed:RuntimeError"
         assert "phase0test" not in outbox_entry.last_error
-        events = app.repositories.notification_events.list_by_target(stored_target.id)
+        events = list_notification_events_by_target(
+            app.repositories.notification_events, stored_target.id
+        )
         assert len(events) == 1
         assert events[0].status == NotificationStatus.FAILED
         assert events[0].message == "ntfy_dispatch_failed:RuntimeError"
@@ -449,7 +456,9 @@ def test_outbox_after_commit_dispatch_runs_once_for_multiple_matches(
             )
             for item_key in ("post:a", "post:b")
         ]
-        events = app.repositories.notification_events.list_by_target(stored_target.id)
+        events = list_notification_events_by_target(
+            app.repositories.notification_events, stored_target.id
+        )
 
     assert len(calls) == 2
     assert all(entry is not None for entry in entries)
@@ -517,7 +526,9 @@ def test_outbox_failed_result_records_one_event_per_entry(
     with SqliteApplicationContext(db_path) as app:
         stored_target = app.repositories.targets.find_by_kind_scope(TargetKind.POSTS, "123")
         assert stored_target is not None
-        events = app.repositories.notification_events.list_by_target(stored_target.id)
+        events = list_notification_events_by_target(
+            app.repositories.notification_events, stored_target.id
+        )
         entries = [
             app.repositories.notification_outbox.get_by_idempotency_key(
                 build_notification_idempotency_key(
@@ -1399,7 +1410,7 @@ def test_outbox_dispatch_skips_preterminal_runtime_failure_pending_row(
             ntfy_sender=fake_ntfy_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(idempotency_key)
-        event = app.repositories.notification_events.latest_by_target(target.id)
+        event = latest_notification_event_by_target(app.repositories.notification_events, target.id)
 
     assert result.dispatched_count == 1
     assert sent_topics == []
@@ -1464,7 +1475,7 @@ def test_outbox_dispatch_skips_scheduler_stopping_runtime_failure_pending_row(
             ntfy_sender=fake_ntfy_sender,
         )
         entry = app.repositories.notification_outbox.get_by_idempotency_key(idempotency_key)
-        event = app.repositories.notification_events.latest_by_target(target.id)
+        event = latest_notification_event_by_target(app.repositories.notification_events, target.id)
 
     assert result.dispatched_count == 1
     assert sent_topics == []
@@ -1635,7 +1646,7 @@ def test_outbox_pending_dispatch_drains_all_default_batches(tmp_path: Path) -> N
             app=app,
             ntfy_sender=fake_ntfy_sender,
         )
-        pending = app.repositories.notification_outbox.list_pending(limit=20)
+        pending = list_pending_notification_outbox(app.repositories.notification_outbox, limit=20)
 
     assert result.dispatched_count == 11
     assert len(sent_topics) == 11
@@ -1682,7 +1693,7 @@ def test_outbox_pending_dispatch_stops_before_claiming_next_batch(
             batch_limit=5,
             should_stop=lambda: len(sent_topics) >= 5,
         )
-        pending = app.repositories.notification_outbox.list_pending(limit=20)
+        pending = list_pending_notification_outbox(app.repositories.notification_outbox, limit=20)
 
     assert result.dispatched_count == 5
     assert len(sent_topics) == 5
@@ -1729,7 +1740,7 @@ def test_outbox_pending_dispatch_respects_max_batches(
             batch_limit=5,
             max_batches=1,
         )
-        pending = app.repositories.notification_outbox.list_pending(limit=20)
+        pending = list_pending_notification_outbox(app.repositories.notification_outbox, limit=20)
 
     assert result.dispatched_count == 5
     assert len(sent_topics) == 5
@@ -1778,7 +1789,7 @@ def test_outbox_pending_dispatch_result_counts_claimed_failed_batch(
             batch_limit=5,
             max_batches=1,
         )
-        pending = app.repositories.notification_outbox.list_pending(limit=20)
+        pending = list_pending_notification_outbox(app.repositories.notification_outbox, limit=20)
         failed_count = app.repositories.notification_outbox.connection.execute(
             """
             SELECT COUNT(*)

@@ -41,6 +41,7 @@ from facebook_monitor.worker import facebook_access_incident
 from facebook_monitor.worker.facebook_access_incident import (
     FacebookAccessIncidentOutcomeKind,
 )
+from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.helpers.webapp import FakeSchedulerManager
 
 
@@ -226,7 +227,9 @@ def test_webui_startup_can_clear_runtime_debug_data(tmp_path: Path) -> None:
         config = app_context.repositories.configs.get_for_target(target)
         latest_scan = app_context.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app_context.repositories.latest_scan_items.list_by_target(target.id)
-        notifications = app_context.repositories.notification_events.list_by_target(target.id)
+        notifications = list_notification_events_by_target(
+            app_context.repositories.notification_events, target.id
+        )
         has_seen = app_context.repositories.seen_items.has_seen(
             target.scope_id,
             "seen-before-startup",

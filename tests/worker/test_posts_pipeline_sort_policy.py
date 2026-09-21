@@ -19,6 +19,8 @@ from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_fina
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_async_commit_ready
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
+from tests.helpers.repository_reads import list_notification_events_by_target
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
 from tests.worker.posts_pipeline_test_helpers import MissingSortControlFakePage
@@ -323,7 +325,9 @@ def test_scan_posts_page_sync_and_finalize_skips_when_sort_adjust_is_unconfirmed
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
 
     assert page.sort_adjusted
     assert summary.item_count == 0
@@ -380,7 +384,9 @@ def test_scan_posts_page_async_commit_ready_returns_protective_skip_without_db_w
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
 
     assert page.sort_adjusted
     assert isinstance(result, ProtectiveSkipScanResult)
@@ -469,8 +475,12 @@ def test_scan_posts_page_async_commit_ready_returns_success_result_without_db_wr
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        notifications = app.repositories.notification_events.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        notifications = list_notification_events_by_target(
+            app.repositories.notification_events, target.id
+        )
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert page.sort_adjusted
     assert isinstance(result, SuccessScanResult)

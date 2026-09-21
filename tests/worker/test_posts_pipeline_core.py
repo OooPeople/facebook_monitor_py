@@ -12,6 +12,7 @@ from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
+from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import ContentUnavailablePostsPage
 from tests.worker.posts_pipeline_test_helpers import TemporaryBlockPostsPage
@@ -86,7 +87,10 @@ def test_scan_posts_page_sync_and_finalize_records_seen_match_and_scan(
                 "scroll_height": 1200,
             }
         ]
-        assert app.repositories.notification_events.list_by_target(target.id) == []
+        assert (
+            list_notification_events_by_target(app.repositories.notification_events, target.id)
+            == []
+        )
 
 
 def test_scan_posts_page_sync_and_finalize_records_all_matched_keywords(

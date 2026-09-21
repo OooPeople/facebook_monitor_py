@@ -16,6 +16,7 @@ from facebook_monitor.notifications.discord import DiscordResult
 from facebook_monitor.notifications.ntfy import NtfyConfig
 from facebook_monitor.notifications.ntfy import NtfyResult
 from facebook_monitor.worker.posts_pipeline import scan_posts_page_sync_and_finalize
+from tests.helpers.repository_reads import list_notification_events_by_target
 from tests.worker.posts_pipeline_test_helpers import _activate_target
 from tests.worker.posts_pipeline_test_helpers import FakePage
 from tests.worker.scan_finalize_test_helpers import dispatch_pending_notifications_for_test
@@ -71,11 +72,14 @@ def test_scan_posts_page_sync_and_finalize_sends_ntfy_for_new_match(
 
         assert first_summary.new_count == 2
         assert second_summary.new_count == 0
-        assert app.repositories.notification_events.list_by_target(target.id) == []
+        assert (
+            list_notification_events_by_target(app.repositories.notification_events, target.id)
+            == []
+        )
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
-        events = app.repositories.notification_events.list_by_target(target.id)
+        events = list_notification_events_by_target(app.repositories.notification_events, target.id)
 
         assert len(sent_payloads) == 1
         assert sent_payloads[0][0].topic == "phase0test"
@@ -131,7 +135,7 @@ def test_scan_posts_page_sync_and_finalize_records_failed_ntfy_event(
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
-        events = app.repositories.notification_events.list_by_target(target.id)
+        events = list_notification_events_by_target(app.repositories.notification_events, target.id)
         assert len(events) == 1
         assert events[0].status == NotificationStatus.FAILED
         assert events[0].message == "network failed"
@@ -178,7 +182,7 @@ def test_scan_posts_page_sync_and_finalize_records_skipped_ntfy_when_topic_is_em
         dispatch_pending_notifications_for_test(app=app, ntfy_sender=fake_sender)
 
     with SqliteApplicationContext(db_path) as app:
-        events = app.repositories.notification_events.list_by_target(target.id)
+        events = list_notification_events_by_target(app.repositories.notification_events, target.id)
         assert sent_payloads == []
         assert len(events) == 1
         assert events[0].status == NotificationStatus.SKIPPED
@@ -252,7 +256,7 @@ def test_scan_posts_page_sync_and_finalize_records_all_enabled_notification_chan
         )
 
     with SqliteApplicationContext(db_path) as app:
-        events = app.repositories.notification_events.list_by_target(target.id)
+        events = list_notification_events_by_target(app.repositories.notification_events, target.id)
         assert len(sent_payloads) == 1
         assert len(desktop_payloads) == 1
         assert len(discord_payloads) == 1

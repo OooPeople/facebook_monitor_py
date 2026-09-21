@@ -684,27 +684,6 @@ class TargetRuntimeStateRepository:
             states[state.target_id] = state
         return states
 
-    def list_desired_active(self) -> list[TargetRuntimeState]:
-        """列出期望由 scheduler 掃描的 target runtime state。"""
-
-        rows = self.connection.execute(
-            """
-            SELECT * FROM target_runtime_state
-            WHERE desired_state = ?
-            ORDER BY updated_at
-            """,
-            (TargetDesiredState.ACTIVE.value,),
-        ).fetchall()
-        return [runtime_state_from_row(row) for row in rows]
-
-    def list_all(self) -> list[TargetRuntimeState]:
-        """列出所有 target runtime state，供 stale recovery 使用。"""
-
-        rows = self.connection.execute(
-            "SELECT * FROM target_runtime_state ORDER BY updated_at"
-        ).fetchall()
-        return [runtime_state_from_row(row) for row in rows]
-
     def list_stale_running_candidates(self, *, stale_before: datetime) -> list[TargetRuntimeState]:
         """列出 stale running recovery 候選，避免全表 decode inactive corrupt rows。"""
 

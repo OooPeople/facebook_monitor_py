@@ -46,6 +46,7 @@ from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResu
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.resident_main_test_helpers import FakeAsyncPage
 from tests.worker.resident_main_test_helpers import FakeAsyncBrowserContext
 from tests.worker.resident_main_test_helpers import RecordingSchedulePlanner
@@ -554,7 +555,9 @@ def test_executor_stop_pending_cancellation_preserves_history_and_scan_request_c
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.scan_requested_at == newer_requested_at
@@ -627,7 +630,9 @@ def test_executor_stop_pending_cancellation_does_not_overwrite_new_running_owner
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
     assert state.active_worker_id == "worker-new"
@@ -749,7 +754,9 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.scan_requested_at == newer_scan_requested_at
@@ -951,7 +958,9 @@ def test_resident_scheduler_stopping_cancellation_guard_mismatch_preserves_new_o
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert transition.outcome.kind.value == "owner_changed"
     assert transition.outcome.to_scan_result().skipped is True
     assert transition.cleanup_plan is not None
@@ -1065,7 +1074,9 @@ def test_resident_scheduler_stopping_stale_guard_re_raises_and_preserves_new_own
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
     assert scan_cancelled.is_set()
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.RUNNING
@@ -1763,7 +1774,9 @@ def test_resident_comments_navigate_and_commit_through_comments_scanner(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
@@ -1879,7 +1892,9 @@ def test_resident_stale_owner_before_finalize_writes_no_visible_scan_state(
         latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
         latest_items = app.repositories.latest_scan_items.list_by_target(target.id)
         history = app.repositories.match_history.list_by_target(target.id)
-        pending_outbox = app.repositories.notification_outbox.list_pending()
+        pending_outbox = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE

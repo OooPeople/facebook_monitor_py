@@ -45,6 +45,7 @@ from facebook_monitor.worker.scan_failure_finalize import record_guarded_scan_fa
 from facebook_monitor.worker.scan_pipeline_results import ProtectiveSkipScanResult
 from facebook_monitor.worker.scan_pipeline_results import SuccessScanResult
 
+from tests.helpers.repository_reads import list_pending_notification_outbox
 from tests.worker.scan_finalize_test_helpers import _activate_target
 from tests.worker.scan_finalize_test_helpers import _create_running_target_with_guard
 from tests.worker.scan_finalize_test_helpers import _stub_outbox_dispatch
@@ -991,7 +992,9 @@ def test_scan_commit_coordinator_failure_reports_runtime_outbox_count(
             (target.id,),
         ).fetchone()[0]
         state = app.repositories.runtime_states.get(target.id)
-        entries = app.repositories.notification_outbox.list_pending()
+        entries = list_pending_notification_outbox(
+            app.repositories.notification_outbox,
+        )
 
     assert terminal_scan_run_id > 0
     assert terminal_outbox_count == 1

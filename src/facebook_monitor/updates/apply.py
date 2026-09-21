@@ -580,7 +580,8 @@ def _append_updater_log(log_path: Path | None, result: UpdaterApplyResult) -> No
             f"status={result.status} applied={str(result.applied).lower()} "
             f"message={result.message}\n"
         )
-        log_path.open("a", encoding="utf-8").write(line)
+        with log_path.open("a", encoding="utf-8") as file:
+            file.write(line)
     except OSError:
         return
 

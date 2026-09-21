@@ -99,9 +99,8 @@ def _append_restart_log(path: Path, *, status: str, message: str) -> None:
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.open("a", encoding="utf-8").write(
-            f"restart_status={status} restart_message={message}\n"
-        )
+        with path.open("a", encoding="utf-8") as file:
+            file.write(f"restart_status={status} restart_message={message}\n")
     except OSError:
         return
 

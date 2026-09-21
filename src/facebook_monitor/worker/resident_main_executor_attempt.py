@@ -33,7 +33,6 @@ from facebook_monitor.worker.attempt_cleanup import run_resident_attempt_cleanup
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcome
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
 from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalTransition
-from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
@@ -728,8 +727,7 @@ async def _finish_failure_attempt_decision(
             state.page_id,
             failure_attempt_decision.outcome.reason,
         )
-        transition = transition_from_attempt_outcome(
-            target_id=state.target_id,
+        transition = ResidentAttemptTerminalTransition(
             outcome=failure_attempt_decision.outcome,
         )
         return _with_state_cleanup(state, transition)
@@ -746,8 +744,7 @@ async def _finish_failure_attempt_decision(
         exception_class=failure_record_decision.exception_class,
         include_page_counts=failure_record_decision.include_page_counts_in_log,
     )
-    transition = transition_from_attempt_outcome(
-        target_id=state.target_id,
+    transition = ResidentAttemptTerminalTransition(
         outcome=failure_attempt_decision.outcome,
     )
     return _with_state_cleanup(state, transition)
@@ -783,10 +780,7 @@ async def _finish_scheduler_stopping_cancellation(
             else "scheduler_cancel_owner_changed"
         ),
     )
-    transition = transition_from_attempt_outcome(
-        target_id=state.target_id,
-        outcome=outcome,
-    )
+    transition = ResidentAttemptTerminalTransition(outcome=outcome)
     return _with_state_cleanup(state, transition)
 
 
@@ -847,8 +841,7 @@ def _finish_pre_admission_failure(
         reason,
         exception_class,
     )
-    transition = transition_from_attempt_outcome(
-        target_id=state.target_id,
+    transition = ResidentAttemptTerminalTransition(
         outcome=ResidentAttemptOutcome.skipped(
             target_id=state.target_id,
             kind=kind,

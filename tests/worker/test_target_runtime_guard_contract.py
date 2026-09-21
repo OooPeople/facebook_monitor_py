@@ -90,28 +90,8 @@ LEGACY_QUEUE_ADMISSION_METHODS = {"mark_target_queued"}
 ALLOWED_FORCE_RUNTIME_CALLS = {
     (
         "src/facebook_monitor/worker/resident_main_executor.py",
-        "ExecutorWorkerPool.stop",
-        "force_mark_resident_target_idle",
-    ),
-    (
-        "src/facebook_monitor/worker/resident_main_executor.py",
-        "ExecutorWorkerPool._worker_loop",
-        "force_mark_resident_target_idle",
-    ),
-    (
-        "src/facebook_monitor/worker/resident_main_executor.py",
         "ExecutorWorkerPool._write_target_retry_after_runtime_restart",
         "force_request_target_retry_after_runtime_restart",
-    ),
-    (
-        "src/facebook_monitor/worker/resident_shared.py",
-        "force_mark_resident_target_error.operation",
-        "force_mark_target_error",
-    ),
-    (
-        "src/facebook_monitor/worker/resident_shared.py",
-        "force_mark_resident_target_idle.operation",
-        "force_mark_target_idle",
     ),
     (
         "src/facebook_monitor/worker/scan_finalize.py",

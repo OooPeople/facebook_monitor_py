@@ -79,18 +79,7 @@ def transition_from_scan_commit_outcome(
     )
 
 
-def transition_from_attempt_outcome(
-    *,
-    target_id: str,
-    outcome: ResidentAttemptOutcome,
-) -> ResidentAttemptTerminalTransition:
-    """把非 scan-commit branch 的 terminal outcome 包成 transition。"""
-
-    return ResidentAttemptTerminalTransition(outcome=outcome)
-
-
 __all__ = [
     "ResidentAttemptTerminalTransition",
-    "transition_from_attempt_outcome",
     "transition_from_scan_commit_outcome",
 ]

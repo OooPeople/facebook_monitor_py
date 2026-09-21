@@ -25,7 +25,6 @@ from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failures import SCAN_TIMEOUT_REASON
 from facebook_monitor.core.scan_failures import TARGET_STOPPED_REASON
 from facebook_monitor.persistence.sqlite_retry import is_sqlite_lock_error
-from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry
 from facebook_monitor.persistence.sqlite_retry import run_sqlite_operation_with_retry_async
 from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
@@ -255,15 +254,6 @@ class ExecutorWorkerPool:
         if attempt_tasks:
             await asyncio.gather(*attempt_tasks, return_exceptions=True)
 
-    def _request_target_retry_after_runtime_restart(self, target_id: str) -> None:
-        """讓尚未開始的 queued target 在新 runtime 建立後立即補掃。"""
-
-        run_sqlite_operation_with_retry(
-            lambda: self._write_target_retry_after_runtime_restart(target_id),
-            operation_name="request_target_retry_after_runtime_restart",
-            logger=logger,
-        )
-
     async def _request_target_retry_after_runtime_restart_async(self, target_id: str) -> None:
         """async stop path 使用的 queued target retry 寫回，不阻塞 event loop。"""
 
@@ -273,7 +263,7 @@ class ExecutorWorkerPool:
         )
 
     def _write_target_retry_after_runtime_restart(self, target_id: str) -> None:
-        """寫回 queued target retry state；由 sync/async retry wrapper 呼叫。"""
+        """寫回 queued target retry state；由 async retry wrapper 呼叫。"""
 
         with SqliteApplicationContext(self.options.db_path) as app:
             if app.repositories.targets.get(target_id) is None:

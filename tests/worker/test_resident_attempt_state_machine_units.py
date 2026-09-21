@@ -25,7 +25,7 @@ from facebook_monitor.worker.attempt_cleanup import ResidentAttemptResources
 from facebook_monitor.worker.attempt_cleanup import run_resident_attempt_cleanup
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcome
 from facebook_monitor.worker.attempt_outcomes import ResidentAttemptOutcomeKind
-from facebook_monitor.worker.attempt_transitions import transition_from_attempt_outcome
+from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalTransition
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
 from facebook_monitor.worker.errors import WorkerFailure
@@ -246,11 +246,10 @@ def test_attempt_transition_maps_scan_commit_outcome_without_side_effects() -> N
     assert committed_skip_result.reused_page is False
 
 
-def test_attempt_transition_wraps_existing_terminal_outcome() -> None:
-    """非 scan-commit branch 也只包 outcome 與 cleanup plan，不做 side effect。"""
+def test_attempt_terminal_transition_wraps_existing_outcome() -> None:
+    """terminal transition 只包 outcome 與 cleanup plan，不做 side effect。"""
 
-    transition = transition_from_attempt_outcome(
-        target_id="target-1",
+    transition = ResidentAttemptTerminalTransition(
         outcome=ResidentAttemptOutcome.skipped(
             target_id="target-1",
             kind=ResidentAttemptOutcomeKind.SQLITE_LOCK_RETRY,

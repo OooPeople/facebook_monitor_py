@@ -19,12 +19,15 @@ from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
+from facebook_monitor.core.models import utc_now
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
+from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.resident_main import run_resident_main_loop
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
+from facebook_monitor.worker.resident_main_queue import QueueItem
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 
@@ -729,7 +732,22 @@ def test_runtime_restart_pending_retry_preserves_failure_streak(
         schedule_planner=TargetSchedulePlanner(),
         scan_page=as_async_scan_callable(scan_page),
     )
-    executor._request_target_retry_after_runtime_restart(target.id)
+    async def request_retry_via_async_stop() -> None:
+        enqueued = await executor.target_queue.enqueue(
+            QueueItem(
+                due_target=DueTarget(
+                    target_id=target.id,
+                    interval_seconds=60,
+                    due_at=utc_now(),
+                ),
+                enqueue_reason="manual",
+                enqueued_at=utc_now(),
+            )
+        )
+        assert enqueued
+        await executor.stop(cancel_running=True, runtime_restart=True)
+
+    asyncio.run(request_retry_via_async_stop())
 
     with SqliteApplicationContext(db_path) as app:
         updated = app.repositories.runtime_states.get(target.id)

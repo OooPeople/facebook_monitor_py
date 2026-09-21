@@ -811,7 +811,7 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     }
 
     assert len(known_large) == 8
-    assert len(watchlist) == 28
+    assert len(watchlist) == 29
     assert "scripts/admin/complexity_report*.py" in watchlist_paths
     assert "src/facebook_monitor/facebook/feed_extractor.py" not in {
         annotation.path_glob for annotation in known_large
@@ -822,6 +822,7 @@ def test_default_maintainability_annotations_keep_review_signal() -> None:
     assert "src/facebook_monitor/updates/zip_inspection.py" in watchlist_paths
     assert "src/facebook_monitor/worker/resident_failure_decisions.py" in watchlist_paths
     assert "src/facebook_monitor/worker/scan_failure_finalize.py" in watchlist_paths
+    assert "src/facebook_monitor/webapp/read_scope_invariants.py" in watchlist_paths
     assert (
         "src/facebook_monitor/persistence/repositories/notification_outbox.py"
         in watchlist_paths

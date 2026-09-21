@@ -394,6 +394,78 @@ class TargetRuntimeStateRepository:
             return None
         return self.get(state.target_id)
 
+    def mark_scheduler_cancellation_idle_if_running_owner(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        updated_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """只釋放相符 running owner，不改寫掃描結果與 scan-once 狀態。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                runtime_status = ?,
+                enqueue_reason = '',
+                active_worker_id = '',
+                active_page_id = '',
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+              AND active_worker_id = ?
+              AND last_started_at = ?
+              AND (? = '' OR active_page_id = ?)
+            """,
+            (
+                TargetRuntimeStatus.IDLE.value,
+                encode_datetime(updated_at),
+                target_id,
+                TargetRuntimeStatus.RUNNING.value,
+                worker_id,
+                encode_datetime(started_at),
+                page_id,
+                page_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
+    def mark_scheduler_cancellation_idle_if_queued(
+        self,
+        target_id: str,
+        *,
+        updated_at: datetime,
+    ) -> TargetRuntimeState | None:
+        """只釋放本輪 queued admission，不改寫其他 lifecycle 狀態。"""
+
+        cursor = self.connection.execute(
+            """
+            UPDATE target_runtime_state
+            SET
+                runtime_status = ?,
+                enqueue_reason = '',
+                active_worker_id = '',
+                active_page_id = '',
+                updated_at = ?
+            WHERE target_id = ?
+              AND runtime_status = ?
+            """,
+            (
+                TargetRuntimeStatus.IDLE.value,
+                encode_datetime(updated_at),
+                target_id,
+                TargetRuntimeStatus.QUEUED.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        return self.get(target_id)
+
     def record_heartbeat_if_running_owner(
         self,
         target_id: str,

@@ -21,10 +21,12 @@ from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
 from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 from facebook_monitor.persistence.schema_contract import RANGE_CONTRACTS
+from facebook_monitor.persistence.row_mappers import decode_stored_max_items_per_scan
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
 from facebook_monitor.webapp.read_model_invariants import inactive_runtime_invariant_row_ids
 from facebook_monitor.webapp.read_model_invariants import inactive_target_invariant_row_ids
+from facebook_monitor.webapp.read_model_invariants import inactive_config_invariant_row_ids
 
 
 _SQLITE_IN_CLAUSE_CHUNK_SIZE = 400
@@ -60,16 +62,29 @@ def validate_dashboard_read_scope(
         violations=runtime_violations,
     )
     loaded_target_ids = candidate_target_ids - skipped_runtime_ids
+    config_rows = _target_config_row_ids(connection, loaded_target_ids)
+    config_violations = _validate_selected_rows(connection, config_rows)
+    skipped_config_ids = inactive_config_invariant_row_ids(
+        connection,
+        violations=config_violations,
+    )
+    loaded_target_ids -= skipped_config_ids
+    bounded_latest_item_target_ids = loaded_target_ids - _max_items_violation_row_ids(
+        config_violations,
+        table="target_configs",
+    )
 
     selected_rows = _dashboard_related_row_ids(
         connection,
         target_ids=loaded_target_ids,
+        latest_item_target_ids=bounded_latest_item_target_ids,
         session_started_at=session_started_at,
     )
     return _unique_violations(
         (
             *target_violations,
             *runtime_violations,
+            *config_violations,
             *_validate_selected_rows(connection, selected_rows),
             *_outbox_summary_violations(connection, loaded_target_ids),
         )
@@ -84,17 +99,30 @@ def validate_target_card_read_scope(
 ) -> tuple[DatabaseInvariantViolation, ...]:
     """只驗證單張 target card 實際會讀取的 rows。"""
 
-    selected_rows = _target_identity_row_ids(connection, target_id)
-    selected_rows.update(
-        _target_card_related_row_ids(
-            connection,
-            target_id=target_id,
-            session_started_at=session_started_at,
+    identity_rows = _target_identity_row_ids(connection, target_id)
+    identity_violations = _validate_selected_rows(connection, identity_rows)
+    config_rows = _target_config_row_ids(connection, {target_id})
+    config_violations = _validate_selected_rows(connection, config_rows)
+    max_items_limit = (
+        None
+        if target_id
+        in _max_items_violation_row_ids(
+            config_violations,
+            table="target_configs",
         )
+        else _target_max_items_limit(connection, target_id)
+    )
+    related_rows = _target_card_related_row_ids(
+        connection,
+        target_id=target_id,
+        max_items_limit=max_items_limit,
+        session_started_at=session_started_at,
     )
     return _unique_violations(
         (
-            *_validate_selected_rows(connection, selected_rows),
+            *identity_violations,
+            *config_violations,
+            *_validate_selected_rows(connection, related_rows),
             *_outbox_summary_violations(connection, {target_id}),
         )
     )
@@ -162,18 +190,13 @@ def _dashboard_related_row_ids(
     connection: sqlite3.Connection,
     *,
     target_ids: set[str],
+    latest_item_target_ids: set[str],
     session_started_at: datetime | None,
 ) -> dict[str, set[str]]:
     """收集完整 dashboard 除 target/runtime 外的實際 read scope row ids。"""
 
     group_ids = _select_ids(connection, "SELECT id AS row_id FROM sidebar_groups")
     selected_rows = {
-        "target_configs": _existing_ids(
-            connection,
-            table="target_configs",
-            row_id_column="target_id",
-            values=target_ids,
-        ),
         "sidebar_groups": group_ids,
         "sidebar_target_placements": _select_ids(
             connection,
@@ -191,10 +214,13 @@ def _dashboard_related_row_ids(
             "SELECT id AS row_id FROM facebook_temporary_block_warning WHERE id = 1",
         ),
     }
-    max_items_limit = _dashboard_max_items_limit(connection, target_ids)
+    max_items_limit = _dashboard_max_items_limit(
+        connection,
+        latest_item_target_ids,
+    )
     selected_rows["latest_scan_items"] = _select_dashboard_latest_item_ids(
         connection,
-        target_ids=target_ids,
+        target_ids=latest_item_target_ids,
         limit_per_target=max_items_limit,
     )
     selected_rows["match_history"] = _select_dashboard_history_ids(
@@ -210,20 +236,23 @@ def _target_card_related_row_ids(
     connection: sqlite3.Connection,
     *,
     target_id: str,
+    max_items_limit: int | None,
     session_started_at: datetime | None,
 ) -> dict[str, set[str]]:
     """收集單張 target card 除 target/runtime 外的實際 read scope row ids。"""
 
-    max_items_limit = _target_max_items_limit(connection, target_id)
-    return {
-        "target_configs": _existing_ids(
-            connection,
-            table="target_configs",
-            row_id_column="target_id",
-            values={target_id},
-        ),
+    selected_rows = {
         "scan_runs": _select_target_scan_run_ids(connection, target_id),
-        "latest_scan_items": _select_ids(
+        "match_history": _select_hit_record_page_ids(
+            connection,
+            target_id=target_id,
+            limit=5,
+            offset=0,
+            recorded_since=session_started_at,
+        ),
+    }
+    if max_items_limit is not None:
+        selected_rows["latest_scan_items"] = _select_ids(
             connection,
             """
             SELECT target_id || ':' || item_key AS row_id
@@ -233,14 +262,37 @@ def _target_card_related_row_ids(
             LIMIT ?
             """,
             (target_id, max_items_limit),
-        ),
-        "match_history": _select_hit_record_page_ids(
+        )
+    return selected_rows
+
+
+def _target_config_row_ids(
+    connection: sqlite3.Connection,
+    target_ids: set[str],
+) -> dict[str, set[str]]:
+    """收集本次 read 會載入的 target config row ids。"""
+
+    return {
+        "target_configs": _existing_ids(
             connection,
-            target_id=target_id,
-            limit=5,
-            offset=0,
-            recorded_since=session_started_at,
-        ),
+            table="target_configs",
+            row_id_column="target_id",
+            values=target_ids,
+        )
+    }
+
+
+def _max_items_violation_row_ids(
+    violations: tuple[DatabaseInvariantViolation, ...],
+    *,
+    table: str,
+) -> set[str]:
+    """回傳已違反 max-items storage contract 的 row ids。"""
+
+    return {
+        violation.row_id
+        for violation in violations
+        if violation.table == table and violation.field == "max_items_per_scan"
     }
 
 
@@ -475,7 +527,10 @@ def _dashboard_max_items_limit(
         """,
         ordered_ids,
     ).fetchall()
-    configured = [int(row["max_items_per_scan"]) for row in rows]
+    configured = [
+        decode_stored_max_items_per_scan(row["max_items_per_scan"])
+        for row in rows
+    ]
     if len(rows) < len(target_ids):
         configured.append(PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan)
     return max([1, *configured])
@@ -489,7 +544,7 @@ def _target_max_items_limit(connection: sqlite3.Connection, target_id: str) -> i
         (target_id,),
     ).fetchone()
     value = (
-        int(row["max_items_per_scan"])
+        decode_stored_max_items_per_scan(row["max_items_per_scan"])
         if row is not None
         else PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
     )
@@ -630,6 +685,7 @@ def _validate_selected_rows(
     violations.extend(_datetime_violations(connection, selected_rows))
     violations.extend(_runtime_state_violations(connection, selected_rows))
     violations.extend(_temporary_block_warning_utc_violations(connection, selected_rows))
+    violations.extend(_temporary_block_warning_window_violations(connection, selected_rows))
     return _unique_violations(violations)
 
 
@@ -859,6 +915,48 @@ def _temporary_block_warning_utc_violations(
                             message="datetime value must use UTC offset",
                         )
                     )
+    return violations
+
+
+def _temporary_block_warning_window_violations(
+    connection: sqlite3.Connection,
+    selected_rows: dict[str, set[str]],
+) -> list[DatabaseInvariantViolation]:
+    """以 decoded UTC datetime 檢查 scope 內 warning window。"""
+
+    violations: list[DatabaseInvariantViolation] = []
+    for chunk in _selected_chunks(selected_rows, "facebook_temporary_block_warning"):
+        placeholders = ",".join("?" for _ in chunk)
+        rows = connection.execute(
+            f"""
+            SELECT id, detected_at, warning_until
+            FROM facebook_temporary_block_warning
+            WHERE id IN ({placeholders})
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            try:
+                detected_at = decode_datetime(str(row["detected_at"] or ""))
+                warning_until = decode_datetime(str(row["warning_until"] or ""))
+            except ValueError:
+                continue
+            if (
+                detected_at is None
+                or warning_until is None
+                or detected_at.utcoffset() != timedelta(0)
+                or warning_until.utcoffset() != timedelta(0)
+            ):
+                continue
+            if warning_until <= detected_at:
+                violations.append(
+                    DatabaseInvariantViolation(
+                        table="facebook_temporary_block_warning",
+                        row_id=str(row["id"]),
+                        field="warning_window",
+                        message="value is outside product range",
+                    )
+                )
     return violations
 
 

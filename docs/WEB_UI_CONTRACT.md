@@ -66,6 +66,13 @@ runtime cleanup 與資料語義仍以 `docs/ARCHITECTURE.md` 為主；使用者�
 - Dashboard invariant warning，以及單一卡片與命中紀錄的 invariant validation，
   都只代表當次畫面已載入的 read scope，不得宣稱已驗證全庫健康；完整 audit 邊界以
   `docs/ARCHITECTURE.md#web-ui-語義` 為準。
+- 全域 temporary-block warning row 無法安全解碼時，full page 與 batch partial
+  都要顯示 degraded 狀態且不回顯原始 DB 值；所有 Start 入口應回傳可行動的
+  拒絕訊息，不得因使用者送出確認值而繼續。
+- Active target 的 `max_items_per_scan` durable value 若不是 INTEGER 1..10，
+  full dashboard 使用 degraded state，單卡 partial 回 503；disabled/paused target
+  可從 dashboard 略過並在 warning 保留資料異常，單卡維持 404。Sidebar group
+  template 同樣違約時，dashboard 安全降級。
 - 前端 revision transport 預設使用 EventSource 長 SSE；無 EventSource 支援或
   SSE reconnect 逾時後才啟動 `/api/dashboard-revision` polling fallback。
 - EventSource open 後必須停止 fallback polling，任一時間最多保留一個

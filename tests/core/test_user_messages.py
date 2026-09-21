@@ -50,13 +50,17 @@ def test_facebook_page_guard_reasons_have_actionable_safe_messages() -> None:
 
     assert "Facebook 暫時限制存取" in blocked
     assert "自動重試" in blocked
+    assert "系統已停止自動重試" in blocked
     assert "private" not in blocked
     assert "無法確認 Facebook 頁面狀態" in inconclusive
+    assert "依連續失敗規則重試" in inconclusive
+    assert "若持續發生，將停止此監視項目" in inconclusive
+    assert "已停止此監視項目的自動重試" not in inconclusive
     assert "private" not in inconclusive
 
 
 def test_unsupported_fallback_message_explains_safe_alternative() -> None:
-    """fallback 拒絕應說明未開 browser/direct URL，並引導使用正式背景監視。"""
+    """歷史 scan/outbox reason 應保留安全文案，不回顯 durable raw detail。"""
 
     message = format_failure_message(
         "unsupported_in_fallback",

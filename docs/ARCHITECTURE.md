@@ -130,6 +130,9 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - 單一與 sidebar group／批次 Start 使用相同 generation-confirm policy。Server 在同一
   writer transaction 內重讀 warning；generation 相同或 warning 已過期才套用原有 Start
   command，舊 generation 不得修改 target。確認不消耗 warning，期限內下次 Start 仍提示。
+- Warning durable row 若違反 generation、UTC datetime、window 或 enum 契約，
+  dashboard 只能以不暴露原值的 degraded model 呈現；單一與批次 Start 必須
+  fail closed，即使收到 confirmation payload 也不得修改 target/runtime 或啟動 scheduler。
 - 確認後完全沿用 target 原設定、scheduler concurrency、refresh、metadata、cover 與
   posts/comments 掃描流程；不加入隱性限速、單頁限制、額外 refresh floor 或 recovery
   程序。Browser page/context cleanup 失敗沿用既有 runtime retry 與失敗處理。
@@ -150,6 +153,9 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - runtime status 只描述 executor 狀態；使用者停止語義由 `Target.paused` 與 `TargetDesiredState.STOPPED` 表示。
 - queue / running claim 的 DB conditional update 只接受 `TargetDesiredState.ACTIVE`；
   已停止 target 即使遇到舊 scheduler tick 或 scan request，也不得短暫寫成 queued。
+- 一般 scheduler shutdown 只用 queued 條件更新或現行 running owner CAS 釋放本輪
+  ownership；不得清除 failure/skip streak、last error、掃描時間或取消後新增的
+  scan-once request。Temporary-block trip 與 runtime restart 仍各走原有專用終止路徑。
 
 ## Notification 與 Secret
 
@@ -360,6 +366,10 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - 日常 Web read 的 invariant 檢查只涵蓋該次實際載入的 target、card、sidebar、
   scan/latest/preview page 與關聯資料；首頁警告只代表目前畫面讀取範圍，不代表全庫
   健康。管理腳本與 support bundle 的 database health 仍執行完整資料庫 audit。
+- `target_configs` 與 sidebar group template 的 `max_items_per_scan` durable value
+  必須是 SQLite INTEGER 1..10；mapper 不做 clamp。Active target 污染會使完整
+  dashboard 降級、單卡回報不可用；inactive/paused 污染可安全略過並保留
+  invariant warning。非法 limit 不得進入 latest-items selector/repository。
 - UI 若需要新資料，優先新增 read model / presenter；不得為了 UI 小修順手重寫 worker、notification outbox、scheduler runtime 或 Facebook DOM helper。
 - target card、chip、panel header、modal、button、icon 與 partial update 等呈現 / 互動契約看 `docs/WEB_UI_CONTRACT.md`。
 

@@ -320,6 +320,108 @@ def test_scan_request_during_running_survives_current_scan_finish(
     assert finished_state.scan_requested_at == requested_state.scan_requested_at
 
 
+def test_scheduler_cancellation_idle_transitions_preserve_scan_history_and_request(
+    tmp_path: Path,
+) -> None:
+    """普通 shutdown 只釋放 ownership，不可改寫掃描歷史或 scan-once。"""
+
+    db_path = tmp_path / "app.db"
+    previous_finished_at = utc_now()
+    previous_heartbeat_at = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="scheduler-cancellation-state",
+                canonical_url=(
+                    "https://www.facebook.com/groups/scheduler-cancellation-state"
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        requested = app.repositories.runtime_states.get(target.id)
+        assert requested is not None
+        assert requested.scan_requested_at is not None
+        seeded = replace(
+            requested,
+            runtime_status=TargetRuntimeStatus.QUEUED,
+            last_finished_at=previous_finished_at,
+            last_heartbeat_at=previous_heartbeat_at,
+            last_error="prior error",
+            last_skip_reason="prior skip",
+            enqueue_reason="manual",
+            consecutive_failure_reason="page_load_timeout",
+            consecutive_failure_count=2,
+            consecutive_scan_skip_reason=SORT_ADJUST_UNCONFIRMED_REASON,
+            consecutive_scan_skip_count=1,
+        )
+        app.repositories.runtime_states.save(seeded)
+
+        non_running_idle = (
+            app.services.targets.mark_scheduler_cancellation_idle_if_queued(target.id)
+        )
+        assert non_running_idle is not None
+        assert non_running_idle.runtime_status == TargetRuntimeStatus.IDLE
+        assert non_running_idle.scan_requested_at == requested.scan_requested_at
+        assert non_running_idle.last_finished_at == previous_finished_at
+        assert non_running_idle.last_heartbeat_at == previous_heartbeat_at
+        assert non_running_idle.last_error == "prior error"
+        assert non_running_idle.last_skip_reason == "prior skip"
+        assert non_running_idle.consecutive_failure_reason == "page_load_timeout"
+        assert non_running_idle.consecutive_failure_count == 2
+        assert (
+            non_running_idle.consecutive_scan_skip_reason
+            == SORT_ADJUST_UNCONFIRMED_REASON
+        )
+        assert non_running_idle.consecutive_scan_skip_count == 1
+        assert non_running_idle.enqueue_reason == ""
+
+        terminal = replace(
+            non_running_idle,
+            runtime_status=TargetRuntimeStatus.ERROR,
+            last_error="terminal error",
+        )
+        app.repositories.runtime_states.save(terminal)
+        rejected_terminal = (
+            app.services.targets.mark_scheduler_cancellation_idle_if_queued(target.id)
+        )
+        preserved_terminal = app.repositories.runtime_states.get(target.id)
+        assert rejected_terminal is None
+        assert preserved_terminal == terminal
+
+        started_at = utc_now()
+        running = replace(
+            terminal,
+            runtime_status=TargetRuntimeStatus.RUNNING,
+            last_error="prior error",
+            last_started_at=started_at,
+            enqueue_reason="due",
+            active_worker_id="worker-current",
+            active_page_id="page-current",
+        )
+        app.repositories.runtime_states.save(running)
+        guarded_idle = app.services.targets.guarded_mark_scheduler_cancellation_idle(
+            target.id,
+            worker_id="worker-current",
+            started_at=started_at,
+            page_id="page-current",
+        )
+
+    assert guarded_idle is not None
+    assert guarded_idle.runtime_status == TargetRuntimeStatus.IDLE
+    assert guarded_idle.scan_requested_at == requested.scan_requested_at
+    assert guarded_idle.last_finished_at == previous_finished_at
+    assert guarded_idle.last_heartbeat_at == previous_heartbeat_at
+    assert guarded_idle.last_error == "prior error"
+    assert guarded_idle.last_skip_reason == "prior skip"
+    assert guarded_idle.consecutive_failure_reason == "page_load_timeout"
+    assert guarded_idle.consecutive_failure_count == 2
+    assert guarded_idle.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert guarded_idle.consecutive_scan_skip_count == 1
+    assert guarded_idle.enqueue_reason == ""
+    assert guarded_idle.active_worker_id == ""
+    assert guarded_idle.active_page_id == ""
+
+
 def test_guarded_owner_save_preserves_scan_request_after_snapshot(
     tmp_path: Path,
 ) -> None:

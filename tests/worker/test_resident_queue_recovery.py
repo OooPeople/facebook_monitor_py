@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -342,6 +343,8 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
     """claim running 前取消時，現行語義是回 idle、無 scan run，並 re-raise。"""
 
     db_path = tmp_path / "app.db"
+    previous_finished_at = utc_now()
+    previous_heartbeat_at = utc_now()
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -350,11 +353,30 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
+        requested = app.repositories.runtime_states.get(target.id)
+        assert requested is not None
+        assert requested.scan_requested_at is not None
+        app.repositories.runtime_states.save(
+            replace(
+                requested,
+                last_finished_at=previous_finished_at,
+                last_heartbeat_at=previous_heartbeat_at,
+                consecutive_failure_reason="page_load_timeout",
+                consecutive_failure_count=2,
+                consecutive_scan_skip_reason=SORT_ADJUST_UNCONFIRMED_REASON,
+                consecutive_scan_skip_count=1,
+            )
+        )
 
     async def fake_scan_page(**_kwargs: Any) -> PostsScanSummary:
         raise AssertionError("scan should not run before target admission")
 
-    async def run_test() -> tuple[TargetQueue, RecordingSchedulePlanner, ExecutorWorkerPool]:
+    async def run_test() -> tuple[
+        TargetQueue,
+        RecordingSchedulePlanner,
+        ExecutorWorkerPool,
+        datetime,
+    ]:
         target_queue = TargetQueue()
         planner = RecordingSchedulePlanner()
         executor = ExecutorWorkerPool(
@@ -375,11 +397,17 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
                         target_id=target.id,
                         interval_seconds=60,
                         due_at=utc_now(),
+                        scan_requested=True,
+                        scan_requested_at=requested.scan_requested_at,
                     ),
                 )
             )
             == 1
         )
+        with SqliteApplicationContext(db_path) as app:
+            queued_state = app.repositories.runtime_states.get(target.id)
+        assert queued_state is not None
+        assert queued_state.scan_requested_at is None
         item = await target_queue.get()
         assert item is not None
 
@@ -396,13 +424,16 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
 
         task = asyncio.create_task(executor._run_queue_item("worker-1", item))  # noqa: SLF001
         await asyncio.wait_for(load_started.wait(), timeout=1)
+        with SqliteApplicationContext(db_path) as app:
+            newer_request = app.services.targets.request_target_scan(target.id)
+        assert newer_request.scan_requested_at is not None
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.wait_for(target_queue.join(), timeout=1)
-        return target_queue, planner, executor
+        return target_queue, planner, executor, newer_request.scan_requested_at
 
-    target_queue, planner, executor = asyncio.run(run_test())
+    target_queue, planner, executor, newer_scan_requested_at = asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
@@ -411,12 +442,132 @@ def test_resident_pre_admission_cancellation_marks_queued_idle_and_cleans_queue(
     assert state.runtime_status == TargetRuntimeStatus.IDLE
     assert state.active_worker_id == ""
     assert state.active_page_id == ""
+    assert state.scan_requested_at == newer_scan_requested_at
+    assert state.last_finished_at == previous_finished_at
+    assert state.last_heartbeat_at == previous_heartbeat_at
     assert state.last_error == ""
+    assert state.consecutive_failure_reason == "page_load_timeout"
+    assert state.consecutive_failure_count == 2
+    assert state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert state.consecutive_scan_skip_count == 1
     assert latest_scan is None
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
     assert planner.dispatched_target_ids == []
     assert executor._active_attempt_tasks == {}  # noqa: SLF001
     assert executor._active_scan_tasks == {}  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("manual_item", "request_after_enqueue"),
+    ((True, False), (False, True)),
+)
+def test_executor_stop_pending_cancellation_preserves_history_and_scan_request_contract(
+    tmp_path: Path,
+    manual_item: bool,
+    request_after_enqueue: bool,
+) -> None:
+    """Pending cancellation preserves history and only keeps newer scan requests."""
+
+    db_path = tmp_path / "app.db"
+    previous_finished_at = utc_now()
+    previous_heartbeat_at = utc_now()
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id=f"pending-cancel-{manual_item}",
+                canonical_url=(
+                    "https://www.facebook.com/groups/"
+                    f"pending-cancel-{manual_item}"
+                ),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+        requested = app.repositories.runtime_states.get(target.id)
+        assert requested is not None
+        assert requested.scan_requested_at is not None
+        if not manual_item:
+            app.services.targets.clear_target_scan_request(target.id)
+            requested = app.repositories.runtime_states.get(target.id)
+            assert requested is not None
+            assert requested.scan_requested_at is None
+        app.repositories.runtime_states.save(
+            replace(
+                requested,
+                last_finished_at=previous_finished_at,
+                last_heartbeat_at=previous_heartbeat_at,
+                consecutive_failure_reason="page_load_timeout",
+                consecutive_failure_count=2,
+                consecutive_scan_skip_reason=SORT_ADJUST_UNCONFIRMED_REASON,
+                consecutive_scan_skip_count=1,
+            )
+        )
+
+    async def unused_scan_page(**_kwargs: Any) -> PostsScanSummary:
+        raise AssertionError("pending target must not be scanned")
+
+    async def run_test() -> tuple[TargetQueue, ExecutorWorkerPool, datetime | None]:
+        target_queue = TargetQueue()
+        executor = ExecutorWorkerPool(
+            options=ResidentRuntimeOptions(
+                db_path=db_path,
+                profile_dir=tmp_path / "profile",
+                interval_seconds=60,
+            ),
+            page_pool=AsyncResidentPagePool(FakeAsyncBrowserContext()),
+            target_queue=target_queue,
+            schedule_planner=RecordingSchedulePlanner(),
+            scan_page=as_async_scan_callable(unused_scan_page),
+        )
+        assert (
+            await executor.enqueue_due_targets(
+                (
+                    DueTarget(
+                        target_id=target.id,
+                        interval_seconds=60,
+                        due_at=utc_now(),
+                        scan_requested=manual_item,
+                        scan_requested_at=(
+                            requested.scan_requested_at if manual_item else None
+                        ),
+                    ),
+                )
+            )
+            == 1
+        )
+        with SqliteApplicationContext(db_path) as app:
+            queued_state = app.repositories.runtime_states.get(target.id)
+        assert queued_state is not None
+        assert queued_state.scan_requested_at is None
+
+        newer_requested_at = None
+        if request_after_enqueue:
+            with SqliteApplicationContext(db_path) as app:
+                newer = app.services.targets.request_target_scan(target.id)
+            newer_requested_at = newer.scan_requested_at
+            assert newer_requested_at is not None
+
+        await executor.stop(cancel_running=True, runtime_restart=False)
+        return target_queue, executor, newer_requested_at
+
+    target_queue, executor, newer_requested_at = asyncio.run(run_test())
+
+    with SqliteApplicationContext(db_path) as app:
+        state = app.repositories.runtime_states.get(target.id)
+        latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+        pending_outbox = app.repositories.notification_outbox.list_pending()
+    assert state is not None
+    assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.scan_requested_at == newer_requested_at
+    assert state.last_finished_at == previous_finished_at
+    assert state.last_heartbeat_at == previous_heartbeat_at
+    assert state.consecutive_failure_reason == "page_load_timeout"
+    assert state.consecutive_failure_count == 2
+    assert state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert state.consecutive_scan_skip_count == 1
+    assert latest_scan is None
+    assert pending_outbox == []
+    assert asyncio.run(target_queue.snapshot()) == (0, 0, ())
+    assert executor._active_attempt_tasks == {}  # noqa: SLF001
 
 
 def test_executor_stop_pending_cancellation_does_not_overwrite_new_running_owner(
@@ -493,6 +644,8 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
     """running 後一般取消只 guarded 回 idle，零 visible failure write 並 re-raise。"""
 
     db_path = tmp_path / "app.db"
+    previous_finished_at = utc_now()
+    previous_heartbeat_at = utc_now()
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
@@ -501,6 +654,20 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.clear_target_scan_request(target.id)
+        seeded = app.repositories.runtime_states.get(target.id)
+        assert seeded is not None
+        app.repositories.runtime_states.save(
+            replace(
+                seeded,
+                last_finished_at=previous_finished_at,
+                last_heartbeat_at=previous_heartbeat_at,
+                consecutive_failure_reason="page_load_timeout",
+                consecutive_failure_count=2,
+                consecutive_scan_skip_reason=SORT_ADJUST_UNCONFIRMED_REASON,
+                consecutive_scan_skip_count=1,
+            )
+        )
 
     scan_started = asyncio.Event()
     scan_cancelled = asyncio.Event()
@@ -514,7 +681,13 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
             raise
         raise AssertionError("scan should be cancelled")
 
-    async def run_test() -> tuple[TargetQueue, RecordingSchedulePlanner, ExecutorWorkerPool]:
+    async def run_test() -> tuple[
+        TargetQueue,
+        RecordingSchedulePlanner,
+        ExecutorWorkerPool,
+        datetime,
+        datetime,
+    ]:
         target_queue = TargetQueue()
         planner = RecordingSchedulePlanner()
         page_pool = AsyncResidentPagePool(FakeAsyncBrowserContext())
@@ -546,14 +719,32 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
         assert item is not None
         task = asyncio.create_task(executor._run_queue_item("worker-1", item))  # noqa: SLF001
         await asyncio.wait_for(scan_started.wait(), timeout=1)
+        with SqliteApplicationContext(db_path) as app:
+            newer_request = app.services.targets.request_target_scan(target.id)
+            running_state = app.repositories.runtime_states.get(target.id)
+        assert newer_request.scan_requested_at is not None
+        assert running_state is not None
+        assert running_state.last_heartbeat_at is not None
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.wait_for(target_queue.join(), timeout=1)
         assert scan_cancelled.is_set()
-        return target_queue, planner, executor
+        return (
+            target_queue,
+            planner,
+            executor,
+            newer_request.scan_requested_at,
+            running_state.last_heartbeat_at,
+        )
 
-    target_queue, planner, executor = asyncio.run(run_test())
+    (
+        target_queue,
+        planner,
+        executor,
+        newer_scan_requested_at,
+        heartbeat_before_cancel,
+    ) = asyncio.run(run_test())
 
     with SqliteApplicationContext(db_path) as app:
         state = app.repositories.runtime_states.get(target.id)
@@ -561,8 +752,14 @@ def test_resident_scheduler_stopping_cancellation_returns_guarded_idle_without_s
         pending_outbox = app.repositories.notification_outbox.list_pending()
     assert state is not None
     assert state.runtime_status == TargetRuntimeStatus.IDLE
+    assert state.scan_requested_at == newer_scan_requested_at
+    assert state.last_finished_at == previous_finished_at
+    assert state.last_heartbeat_at == heartbeat_before_cancel
     assert state.last_error == ""
-    assert state.consecutive_failure_count == 0
+    assert state.consecutive_failure_reason == "page_load_timeout"
+    assert state.consecutive_failure_count == 2
+    assert state.consecutive_scan_skip_reason == SORT_ADJUST_UNCONFIRMED_REASON
+    assert state.consecutive_scan_skip_count == 1
     assert latest_scan is None
     assert pending_outbox == []
     assert asyncio.run(target_queue.snapshot()) == (0, 0, ())

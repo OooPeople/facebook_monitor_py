@@ -24,10 +24,30 @@ from facebook_monitor.core.models import TargetRuntimeState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.keyword_rules import split_keyword_rule_text
+from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
+from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import decode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
 from facebook_monitor.persistence.sqlite_codec import decode_runtime_status
+
+
+class StoredMaxItemsPerScanDecodeError(ValueError):
+    """表示持久層的單輪讀取上限不符合整數範圍契約。"""
+
+
+def decode_stored_max_items_per_scan(value: object) -> int:
+    """嚴格解碼 SQLite 儲存值；污染資料不得在讀取時被 clamp。"""
+
+    if (
+        type(value) is not int
+        or value < MIN_TARGET_POSTS
+        or value > MAX_TARGET_POSTS
+    ):
+        raise StoredMaxItemsPerScanDecodeError(
+            "stored max_items_per_scan violates integer range contract"
+        )
+    return value
 
 
 def target_from_row(row: sqlite3.Row) -> TargetDescriptor:
@@ -74,7 +94,9 @@ def target_config_from_row(row: sqlite3.Row, *, id_column: str) -> TargetConfig:
         max_refresh_sec=row["max_refresh_sec"],
         jitter_enabled=bool(row["jitter_enabled"]),
         fixed_refresh_sec=row["fixed_refresh_sec"],
-        max_items_per_scan=row["max_items_per_scan"],
+        max_items_per_scan=decode_stored_max_items_per_scan(
+            row["max_items_per_scan"]
+        ),
         auto_load_more=bool(row["auto_load_more"]),
         auto_adjust_sort=bool(row["auto_adjust_sort"]),
         enable_desktop_notification=bool(row["enable_desktop_notification"]),

@@ -472,11 +472,16 @@ def test_resident_inconclusive_page_guard_retries_twice_then_stops(
             if attempt < 3:
                 assert state.runtime_status == TargetRuntimeStatus.IDLE
                 assert latest_scan.metadata["runtime_action"] == "will_retry"
+                assert "依連續失敗規則重試" in latest_scan.error_message
+                assert "已停止此監視項目的自動重試" not in latest_scan.error_message
                 assert pending_outbox == []
             else:
                 assert state.runtime_status == TargetRuntimeStatus.ERROR
                 assert latest_scan.metadata["runtime_action"] == "error"
+                assert "已連續 3 次失敗" in latest_scan.error_message
+                assert "已停止此監視項目" in latest_scan.error_message
                 assert len(pending_outbox) == 1
+                assert "系統已停止此監視項目" in pending_outbox[0].message
 
     asyncio.run(run_test())
 

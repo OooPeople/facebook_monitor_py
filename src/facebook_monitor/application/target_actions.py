@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,12 @@ from facebook_monitor.core.facebook_temporary_block import (
     TemporaryBlockWarningSnapshot,
 )
 from facebook_monitor.core.models import utc_now
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    TemporaryBlockWarningDecodeError,
+)
+
+
+_TemporaryBlockWarningReader = Callable[[], TemporaryBlockWarningSnapshot | None]
 
 
 @dataclass(frozen=True)
@@ -47,8 +54,8 @@ def restart_target_monitoring_action(
             connection.commit()
         connection.execute("BEGIN IMMEDIATE")
         observed_at = now or utc_now()
-        policy_outcome = _temporary_block_start_policy(
-            app_context.services.facebook_temporary_block_warning.get(),
+        policy_outcome = _read_temporary_block_start_policy(
+            app_context.services.facebook_temporary_block_warning.get,
             confirmed=temporary_block_warning_confirmed,
             submitted_generation=warning_generation,
             observed_at=observed_at,
@@ -162,8 +169,8 @@ def restart_sidebar_group_monitoring_action(
         target_ids = app_context.repositories.sidebar_layout.list_target_ids_for_group(group_id)
         if target_ids:
             observed_at = now or utc_now()
-            policy_outcome = _temporary_block_start_policy(
-                app_context.services.facebook_temporary_block_warning.get(),
+            policy_outcome = _read_temporary_block_start_policy(
+                app_context.services.facebook_temporary_block_warning.get,
                 confirmed=temporary_block_warning_confirmed,
                 submitted_generation=warning_generation,
                 observed_at=observed_at,
@@ -179,6 +186,33 @@ def restart_sidebar_group_monitoring_action(
         feedback="sidebar_group_started",
         start_scheduler=count > 0,
         updated_count=count,
+    )
+
+
+def _read_temporary_block_start_policy(
+    warning_reader: _TemporaryBlockWarningReader,
+    *,
+    confirmed: bool,
+    submitted_generation: int,
+    observed_at: datetime,
+) -> TargetActionOutcome | None:
+    """讀取 warning；durable row 異常時以固定訊息拒絕 Start。"""
+
+    try:
+        warning = warning_reader()
+    except TemporaryBlockWarningDecodeError:
+        return TargetActionOutcome(
+            ok=False,
+            message=(
+                "Facebook 暫時限制警告資料異常，已拒絕開始；"
+                "請執行資料檢查或下載支援包。"
+            ),
+        )
+    return _temporary_block_start_policy(
+        warning,
+        confirmed=confirmed,
+        submitted_generation=submitted_generation,
+        observed_at=observed_at,
     )
 
 

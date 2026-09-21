@@ -111,6 +111,7 @@ SAFE_REASON_CODE_VALUES = {
     "target_stopped",
     "unknown",
     "unknown_failure_owner_changed",
+    # 現行 runtime 無 emitter；歷史 scan/outbox metadata 仍需安全列舉。
     "unsupported_in_fallback",
     "visible_window_completed",
     "worker_failure_owner_changed",

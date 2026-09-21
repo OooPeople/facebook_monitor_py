@@ -439,6 +439,84 @@ def test_temporary_block_warning_requires_current_target_confirmation(
     assert confirmed_group.json()["updated_count"] == 1
 
 
+def test_corrupt_temporary_block_warning_fails_closed_for_target_and_group_start(
+    tmp_path: Path,
+) -> None:
+    """Warning durable row 異常時，確認 payload 也不得啟動 target 或 scheduler。"""
+
+    db_path = tmp_path / "app.db"
+    raw_generation = "start-raw-generation"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="corrupt-warning-start",
+                canonical_url="https://www.facebook.com/groups/corrupt-warning-start",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("corrupt warning start")
+        app_context.services.sidebar_layout.save_placements([(group.id, [target.id])])
+        app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=datetime.now(UTC),
+        )
+        app_context.services.targets.pause_target_monitoring(target.id)
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE facebook_temporary_block_warning
+            SET generation = ?
+            WHERE id = 1
+            """,
+            (raw_generation,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    scheduler = FakeSchedulerManager()
+    client = TestClient(
+        create_app(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            scheduler_manager=scheduler,
+        )
+    )
+
+    target_response = client.post(
+        f"/targets/{target.id}/start",
+        data={
+            "temporary_block_warning_confirmed": "1",
+            "warning_generation": "1",
+        },
+        follow_redirects=False,
+    )
+    group_response = client.post(
+        f"/api/sidebar/groups/{group.id}/start",
+        json={
+            "temporary_block_warning_confirmed": True,
+            "warning_generation": 1,
+        },
+    )
+
+    assert target_response.status_code == 303
+    assert "暫時限制警告資料異常" in unquote(target_response.headers["location"])
+    assert raw_generation not in unquote(target_response.headers["location"])
+    assert group_response.status_code == 400
+    assert raw_generation not in group_response.text
+    assert scheduler.started_count == 0
+    assert scheduler.woken_count == 0
+    with SqliteApplicationContext(db_path) as app_context:
+        unchanged = app_context.repositories.targets.get(target.id)
+        runtime = app_context.repositories.runtime_states.get(target.id)
+    assert unchanged is not None and unchanged.paused
+    assert runtime is not None and runtime.desired_state.value == "stopped"
+    assert runtime.scan_requested_at is None
+
+
 def test_expired_temporary_block_warning_uses_normal_start_flow(tmp_path: Path) -> None:
     """已過期 warning 不可繼續攔截 Start，也不需要 confirmation payload。"""
 

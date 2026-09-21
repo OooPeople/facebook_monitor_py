@@ -59,6 +59,7 @@ _FAILURE_REASON_LABELS = {
     TARGET_MISSING_REASON: "找不到監視項目",
     TARGET_INVALID_REASON: "監視項目設定無效",
     TARGET_KIND_UNSUPPORTED_REASON: "監視項目類型不支援",
+    # 保留舊 scan/outbox row 的安全呈現；現行 runtime 無 emitter。
     UNSUPPORTED_IN_FALLBACK_REASON: "備援模式不支援留言監視",
     TARGET_ARGUMENT_CONFLICT_REASON: "監視項目參數衝突",
     UNKNOWN_REASON: "未分類錯誤",
@@ -74,7 +75,7 @@ _FAILURE_REASON_DETAILS = {
     ),
     FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON: (
         "頁面出現疑似限制訊息，但目前結構不足以可靠判定。"
-        "系統已停止此監視項目的自動重試，請稍後確認或更新程式。"
+        "系統會重開頁面並依連續失敗規則重試；若持續發生，將停止此監視項目。"
     ),
     LOGIN_REQUIRED_REASON: "Facebook 要求重新登入，請到設定頁開啟登入視窗完成登入。",
     CHECKPOINT_REQUIRED_REASON: "Facebook 要求完成身分或安全性驗證，請到設定頁開啟登入視窗處理。",
@@ -92,6 +93,7 @@ _FAILURE_REASON_DETAILS = {
     TARGET_MISSING_REASON: "掃描前找不到這個監視項目，可能已被刪除。",
     TARGET_INVALID_REASON: "監視項目設定不完整或與目前頁面不一致，請重新確認設定。",
     TARGET_KIND_UNSUPPORTED_REASON: "目前背景掃描不支援這個監視項目類型。",
+    # 舊 durable reason 可能仍存在 pending outbox，不得退回 raw detail。
     UNSUPPORTED_IN_FALLBACK_REASON: (
         "留言監視需要安全的站內導航流程，目前 one-shot / sync 備援模式不支援。"
         "系統已在開啟瀏覽器前停止，不會直接載入貼文網址；請改用正式背景監視。"

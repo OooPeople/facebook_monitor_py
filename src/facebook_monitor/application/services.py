@@ -524,6 +524,31 @@ class TargetApplicationService:
             page_id=page_id,
         )
 
+    def mark_scheduler_cancellation_idle_if_queued(
+        self,
+        target_id: str,
+    ) -> TargetRuntimeState | None:
+        """普通 shutdown 只釋放 queued admission並保留掃描歷史。"""
+
+        return self.runtime_service.mark_scheduler_cancellation_idle_if_queued(target_id)
+
+    def guarded_mark_scheduler_cancellation_idle(
+        self,
+        target_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+        page_id: str = "",
+    ) -> TargetRuntimeState | None:
+        """普通 shutdown 只釋放相符 running owner並保留掃描歷史。"""
+
+        return self.runtime_service.guarded_mark_scheduler_cancellation_idle(
+            target_id,
+            worker_id=worker_id,
+            started_at=started_at,
+            page_id=page_id,
+        )
+
     def decide_scan_skip(
         self,
         target_id: str,

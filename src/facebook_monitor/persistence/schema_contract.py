@@ -25,6 +25,8 @@ from facebook_monitor.core.models import TargetMetadataStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.models import WorkerMode
 from facebook_monitor.core.refresh_policy import MIN_REFRESH_SECONDS
+from facebook_monitor.core.scan_limits import MAX_TARGET_POSTS
+from facebook_monitor.core.scan_limits import MIN_TARGET_POSTS
 
 
 _TEMPORARY_BLOCK_WARNING_SOURCE_VALUES = frozenset(
@@ -279,13 +281,21 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         "target_configs",
         "target_id",
         "max_items_per_scan",
-        "max_items_per_scan <= 0",
+        (
+            "typeof(max_items_per_scan) != 'integer' "
+            "OR max_items_per_scan < ? OR max_items_per_scan > ?"
+        ),
+        (MIN_TARGET_POSTS, MAX_TARGET_POSTS),
     ),
     SchemaRangeContract(
         "sidebar_group_config_templates",
         "sidebar_group_id",
         "max_items_per_scan",
-        "max_items_per_scan <= 0",
+        (
+            "typeof(max_items_per_scan) != 'integer' "
+            "OR max_items_per_scan < ? OR max_items_per_scan > ?"
+        ),
+        (MIN_TARGET_POSTS, MAX_TARGET_POSTS),
     ),
     SchemaRangeContract("scan_runs", "id", "item_count", "item_count < 0 OR matched_count < 0"),
     SchemaRangeContract(
@@ -349,13 +359,7 @@ RANGE_CONTRACTS: tuple[SchemaRangeContract, ...] = (
         "facebook_temporary_block_warning",
         "id",
         "generation",
-        "generation < 1",
-    ),
-    SchemaRangeContract(
-        "facebook_temporary_block_warning",
-        "id",
-        "warning_window",
-        "warning_until <= detected_at",
+        "typeof(generation) != 'integer' OR generation < 1",
     ),
 )
 

@@ -19,6 +19,9 @@ from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
 from facebook_monitor.persistence.current_schema import create_current_schema
 from facebook_monitor.persistence.migrations import migrate_39_to_40
 from facebook_monitor.persistence.migrations import migrate_44_to_45
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    TemporaryBlockWarningDecodeError,
+)
 from tests.persistence.sqlite_test_helpers import table_sql
 
 
@@ -61,6 +64,54 @@ def test_repository_records_singleton_generation_and_fixed_warning_window(
     assert second.warning_until == _NOW + timedelta(hours=12, minutes=5)
     assert row_count == 1
     assert revision_after >= revision_before + 2
+
+
+@pytest.mark.parametrize(
+    ("field", "corrupt_value", "expected_field"),
+    [
+        ("generation", "raw-generation", "generation"),
+        ("generation", 0, "generation"),
+        ("detected_at", "raw-detected-at", "detected_at"),
+        ("detected_at", "2026-08-01T03:04:05+08:00", "detected_at"),
+        ("updated_at", "raw-updated-at", "updated_at"),
+        ("source_kind", "raw-source", "source_kind"),
+        ("operation_kind", "raw-operation", "operation_kind"),
+        ("action_kind", "raw-action", "action_kind"),
+        ("warning_until", _NOW.isoformat(), "warning_window"),
+    ],
+)
+def test_repository_rejects_corrupt_warning_row_without_echoing_raw_value(
+    tmp_path: Path,
+    field: str,
+    corrupt_value: object,
+    expected_field: str,
+) -> None:
+    """Warning decoder 應回傳安全欄位錯誤，不洩漏 durable row 原值。"""
+
+    db_path = tmp_path / "app.db"
+    finding = TemporaryBlockFinding(
+        source_kind=FacebookWorkSourceKind.SCAN,
+        operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+        action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+    )
+    with SqliteApplicationContext(db_path) as app:
+        app.services.facebook_temporary_block_warning.record(
+            finding,
+            detected_at=_NOW,
+        )
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE facebook_temporary_block_warning SET {field} = ? WHERE id = 1",
+            (corrupt_value,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        with pytest.raises(TemporaryBlockWarningDecodeError) as error:
+            app.services.facebook_temporary_block_warning.get()
+
+    assert error.value.field == expected_field
+    assert str(corrupt_value) not in str(error.value)
 
 
 def test_v46_warning_schema_rejects_probe_source(tmp_path: Path) -> None:

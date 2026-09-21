@@ -57,6 +57,7 @@ IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
         TARGET_INVALID_REASON,
         TARGET_KIND_UNSUPPORTED_REASON,
         TARGET_MISSING_REASON,
+        # 無現行 emitter；舊 scan/outbox row 仍需可重現的 terminal policy。
         UNSUPPORTED_IN_FALLBACK_REASON,
     }
 )

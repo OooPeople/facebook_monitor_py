@@ -8,7 +8,11 @@ from typing import TypeVar
 
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    TemporaryBlockWarningDecodeError,
+)
 from facebook_monitor.persistence.row_mappers import target_from_row
+from facebook_monitor.persistence.row_mappers import StoredMaxItemsPerScanDecodeError
 from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
 
@@ -94,6 +98,19 @@ def is_invariant_backed_mapper_error(
 ) -> bool:
     """判斷 mapper 錯誤是否可由已知 invariant violation 安全降級承接。"""
 
+    if isinstance(exc, TemporaryBlockWarningDecodeError):
+        return "facebook_temporary_block_warning" in tables and any(
+            violation.table == "facebook_temporary_block_warning"
+            and violation.field == exc.field
+            for violation in violations
+        )
+    if isinstance(exc, StoredMaxItemsPerScanDecodeError):
+        candidate_tables = set(tables)
+        return any(
+            violation.table in candidate_tables
+            and violation.field == "max_items_per_scan"
+            for violation in violations
+        )
     message = str(exc)
     datetime_violations = _datetime_violations_for_tables(violations, tables=tables)
     if datetime_violations and _matches_datetime_mapper_error(
@@ -120,7 +137,26 @@ def inactive_invariant_target_ids(
     ) | inactive_runtime_invariant_row_ids(
         connection,
         violations=violations,
+    ) | inactive_config_invariant_row_ids(
+        connection,
+        violations=violations,
     )
+
+
+def inactive_config_invariant_row_ids(
+    connection: sqlite3.Connection,
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> set[str]:
+    """回傳 max-items 設定污染且不在 active hot path 的 target ids。"""
+
+    candidate_ids = {
+        violation.row_id
+        for violation in violations
+        if violation.table == "target_configs"
+        and violation.field == "max_items_per_scan"
+    }
+    return _inactive_target_ids(connection, candidate_ids)
 
 
 def inactive_target_invariant_row_ids(

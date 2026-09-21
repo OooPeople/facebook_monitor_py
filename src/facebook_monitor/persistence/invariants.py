@@ -46,6 +46,7 @@ def validate_database_invariants(
     violations.extend(_datetime_violations(connection))
     violations.extend(_runtime_state_violations(connection))
     violations.extend(_temporary_block_warning_utc_datetime_violations(connection))
+    violations.extend(_temporary_block_warning_window_violations(connection))
     violations.extend(_duplicate_target_scope_violations(connection))
     return tuple(violations)
 
@@ -255,4 +256,41 @@ def _temporary_block_warning_utc_datetime_violations(
                         message="datetime value must use UTC offset",
                     )
                 )
+    return violations
+
+
+def _temporary_block_warning_window_violations(
+    connection: sqlite3.Connection,
+) -> list[DatabaseInvariantViolation]:
+    """以 decoded UTC datetime 比較 warning window，不依 SQLite TEXT 排序。"""
+
+    rows = connection.execute(
+        """
+        SELECT id, detected_at, warning_until
+        FROM facebook_temporary_block_warning
+        """
+    ).fetchall()
+    violations: list[DatabaseInvariantViolation] = []
+    for row in rows:
+        try:
+            detected_at = decode_datetime(str(row["detected_at"] or ""))
+            warning_until = decode_datetime(str(row["warning_until"] or ""))
+        except ValueError:
+            continue
+        if (
+            detected_at is None
+            or warning_until is None
+            or detected_at.utcoffset() != timedelta(0)
+            or warning_until.utcoffset() != timedelta(0)
+        ):
+            continue
+        if warning_until <= detected_at:
+            violations.append(
+                DatabaseInvariantViolation(
+                    table="facebook_temporary_block_warning",
+                    row_id=str(row["id"]),
+                    field="warning_window",
+                    message="value is outside product range",
+                )
+            )
     return violations

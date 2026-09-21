@@ -270,7 +270,7 @@ def test_inconclusive_page_guard_reason_change_restarts_streak_at_one() -> None:
 
 
 def test_unsupported_fallback_is_immediate_terminal_without_restart() -> None:
-    """不支援的 fallback 能力應立即停止，不能把安全拒絕當成可重試錯誤。"""
+    """歷史 persisted reason 應穩定還原 terminal policy，不暗示現行 emitter。"""
 
     decision = decide_scan_failure("unsupported_in_fallback", source="worker_failure")
 

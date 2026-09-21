@@ -55,6 +55,9 @@ from facebook_monitor.worker.resident_shared import ResidentTarget
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
 from facebook_monitor.worker.resident_shared import load_resident_target
 from facebook_monitor.worker.resident_shared import mark_resident_target_idle_if_not_running
+from facebook_monitor.worker.resident_shared import (
+    mark_resident_scheduler_cancellation_idle_if_queued,
+)
 from facebook_monitor.worker.resident_failure_decisions import (
     decide_resident_attempt_exception,
 )
@@ -796,7 +799,7 @@ def _guarded_mark_scheduler_cancellation_idle(
     """以既有 running owner guard 完成普通 shutdown 的 idle transition。"""
 
     with SqliteApplicationContext(db_path) as app:
-        return app.services.targets.guarded_mark_target_idle(
+        return app.services.targets.guarded_mark_scheduler_cancellation_idle(
             target_id,
             worker_id=commit_guard.worker_id,
             started_at=commit_guard.started_at,
@@ -827,7 +830,16 @@ def _finish_pre_admission_failure(
 ) -> ResidentAttemptTerminalTransition:
     """claim running 前失敗時，不走 scan finalize 的 unguarded fallback。"""
 
-    mark_resident_target_idle_if_not_running(pool.options.db_path, state.target_id)
+    if (
+        kind == ResidentAttemptOutcomeKind.CANCELLED
+        and reason == "scheduler_cancel_before_running"
+    ):
+        mark_resident_scheduler_cancellation_idle_if_queued(
+            pool.options.db_path,
+            state.target_id,
+        )
+    else:
+        mark_resident_target_idle_if_not_running(pool.options.db_path, state.target_id)
     logger.warning(
         "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s exception_class=%s",
         state.target_id,

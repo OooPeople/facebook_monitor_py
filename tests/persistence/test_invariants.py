@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.core.facebook_temporary_block import (
@@ -12,7 +14,10 @@ from facebook_monitor.core.facebook_temporary_block import (
 )
 from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
 from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
+from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
 from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.persistence.row_mappers import StoredMaxItemsPerScanDecodeError
 from facebook_monitor.persistence.schema_contract import BOOLEAN_CONTRACTS
 from facebook_monitor.persistence.schema_contract import DATETIME_CONTRACTS
 from facebook_monitor.persistence.schema_contract import ENUM_CONTRACTS
@@ -105,7 +110,6 @@ EXPECTED_RANGE_CONTRACT_KEYS = {
     ("notification_dedupe", "failure_count"),
     ("target_runtime_state", "scan_guard_count"),
     ("facebook_temporary_block_warning", "generation"),
-    ("facebook_temporary_block_warning", "warning_window"),
 }
 
 EXPECTED_DATETIME_CONTRACT_KEYS = {
@@ -156,6 +160,184 @@ def test_database_invariants_pass_for_fresh_application_rows(tmp_path: Path) -> 
         violations = validate_database_invariants(app.repositories.targets.connection)
 
     assert violations == ()
+
+
+@pytest.mark.parametrize(
+    "table,id_column",
+    (
+        ("target_configs", "target_id"),
+        ("sidebar_group_config_templates", "sidebar_group_id"),
+    ),
+)
+@pytest.mark.parametrize("corrupt_value", (-1, 0, "not-an-integer", 1.5, 11))
+def test_max_items_storage_contract_rejects_corrupt_values(
+    tmp_path: Path,
+    table: str,
+    id_column: str,
+    corrupt_value: object,
+) -> None:
+    """兩種 config storage 都只接受 SQLite integer 1..10，mapper 不得 clamp。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="max-items-corrupt",
+                canonical_url="https://www.facebook.com/groups/max-items-corrupt",
+            )
+        )
+        group = app.services.sidebar_layout.create_group("max items corrupt")
+        row_id = target.id if table == "target_configs" else group.id
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE {table} SET max_items_per_scan = ? WHERE {id_column} = ?",
+            (corrupt_value, row_id),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        violations = validate_database_invariants(connection)
+        max_items_violations = [
+            violation
+            for violation in violations
+            if violation.table == table
+            and violation.row_id == row_id
+            and violation.field == "max_items_per_scan"
+        ]
+        with pytest.raises(
+            StoredMaxItemsPerScanDecodeError,
+            match="stored max_items_per_scan violates integer range contract",
+        ):
+            if table == "target_configs":
+                app.repositories.configs.get_for_target_id(row_id)
+            else:
+                app.repositories.sidebar_layout.get_template(row_id)
+
+    assert len(max_items_violations) == 1
+
+
+@pytest.mark.parametrize(
+    "table,id_column",
+    (
+        ("target_configs", "target_id"),
+        ("sidebar_group_config_templates", "sidebar_group_id"),
+    ),
+)
+@pytest.mark.parametrize("valid_value", (1, 10))
+def test_max_items_storage_contract_accepts_integer_bounds(
+    tmp_path: Path,
+    table: str,
+    id_column: str,
+    valid_value: int,
+) -> None:
+    """兩種 config storage 的 1 與 10 邊界須通過 invariant 與 repository mapper。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="max-items-valid",
+                canonical_url="https://www.facebook.com/groups/max-items-valid",
+            )
+        )
+        group = app.services.sidebar_layout.create_group("max items valid")
+        row_id = target.id if table == "target_configs" else group.id
+        connection = app.repositories.targets.connection
+        connection.execute(
+            f"UPDATE {table} SET max_items_per_scan = ? WHERE {id_column} = ?",
+            (valid_value, row_id),
+        )
+
+        violations = validate_database_invariants(connection)
+        if table == "target_configs":
+            decoded_config = app.repositories.configs.get_for_target_id(row_id)
+            assert decoded_config is not None
+            assert decoded_config.max_items_per_scan == valid_value
+        else:
+            decoded_template = app.repositories.sidebar_layout.get_template(row_id)
+            assert decoded_template is not None
+            assert decoded_template.max_items_per_scan == valid_value
+
+    assert not any(
+        violation.table == table
+        and violation.row_id == row_id
+        and violation.field == "max_items_per_scan"
+        for violation in violations
+    )
+@pytest.mark.parametrize("corrupt_generation", ["raw-generation", 1.5, 0])
+def test_database_invariants_report_warning_generation_storage_contract(
+    tmp_path: Path,
+    corrupt_generation: object,
+) -> None:
+    """Warning generation 必須是 SQLite INTEGER storage class 的正整數。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        app.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+            )
+        )
+        connection = app.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE facebook_temporary_block_warning SET generation = ? WHERE id = 1",
+            (corrupt_generation,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+        violations = validate_database_invariants(connection)
+
+    assert any(
+        violation.table == "facebook_temporary_block_warning"
+        and violation.field == "generation"
+        for violation in violations
+    )
+
+
+@pytest.mark.parametrize(
+    ("detected_at", "warning_until"),
+    [
+        ("2026-08-01T03:04:05+00:00", "2026-08-01T03:04:05Z"),
+        ("2026-08-01T03:04:05.1+00:00", "2026-08-01T03:04:05Z"),
+    ],
+)
+def test_database_invariants_compare_warning_window_as_decoded_utc_datetimes(
+    tmp_path: Path,
+    detected_at: str,
+    warning_until: str,
+) -> None:
+    """等值或反序的合法 UTC ISO 表示不得被 SQLite lexical order 漏掉。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        app.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+            )
+        )
+        connection = app.repositories.targets.connection
+        connection.execute(
+            """
+            UPDATE facebook_temporary_block_warning
+            SET detected_at = ?, warning_until = ?
+            WHERE id = 1
+            """,
+            (detected_at, warning_until),
+        )
+
+        violations = validate_database_invariants(connection)
+
+    warning_fields = {
+        violation.field
+        for violation in violations
+        if violation.table == "facebook_temporary_block_warning"
+    }
+    assert warning_fields == {"warning_window"}
 
 
 def test_database_invariants_report_enum_boolean_range_and_runtime_errors(

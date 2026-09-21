@@ -226,3 +226,22 @@ def mark_resident_target_idle_if_not_running(db_path: Path, target_id: str) -> N
         operation_name="mark_resident_target_idle_if_not_running",
         logger=logger,
     )
+
+
+def mark_resident_scheduler_cancellation_idle_if_queued(
+    db_path: Path,
+    target_id: str,
+) -> None:
+    """普通 shutdown 只釋放 queued admission，不改寫其他 lifecycle 狀態。"""
+
+    def operation() -> None:
+        with SqliteApplicationContext(db_path) as app:
+            if app.repositories.targets.get(target_id) is None:
+                return
+            app.services.targets.mark_scheduler_cancellation_idle_if_queued(target_id)
+
+    run_sqlite_operation_with_retry(
+        operation,
+        operation_name="mark_resident_scheduler_cancellation_idle_if_queued",
+        logger=logger,
+    )

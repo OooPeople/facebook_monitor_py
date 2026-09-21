@@ -253,6 +253,18 @@
       "split_trigger": "新增獨立 dashboard read-model family"
     },
     {
+      "path_glob": "src/facebook_monitor/webapp/read_scope_invariants.py",
+      "category": "dashboard_scoped_invariant_validation",
+      "reason": "Dashboard 讀取範圍的 invariant selector 與 validator 集中邊界；本模組只驗證本次畫面實際載入的 rows，不取代全庫 audit。",
+      "must_not_add": [
+        "database writes",
+        "dashboard presentation formatting",
+        "scheduler or worker behavior",
+        "full-database audit ownership"
+      ],
+      "split_trigger": "新增獨立 read scope family、第二套 selector graph，或單一 validator family 持續擴張"
+    },
+    {
       "path_glob": "src/facebook_monitor/facebook/feed_extractor.py",
       "category": "facebook_feed_extraction_entrypoint",
       "reason": "Facebook feed DOM extraction orchestration 入口；已不再是 known_large，但仍需保護 extraction 與 DB/notification/runtime 邊界。",

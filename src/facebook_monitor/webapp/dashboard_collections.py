@@ -22,6 +22,7 @@ from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.invariants import DatabaseInvariantViolation
 from facebook_monitor.webapp.read_model_invariants import inactive_runtime_invariant_row_ids
+from facebook_monitor.webapp.read_model_invariants import inactive_config_invariant_row_ids
 from facebook_monitor.webapp.read_model_invariants import inactive_target_invariant_row_ids
 from facebook_monitor.webapp.read_model_invariants import is_invariant_backed_mapper_error
 from facebook_monitor.webapp.read_model_invariants import list_targets_excluding_ids
@@ -87,6 +88,11 @@ def read_dashboard_collections(
         targets=layout.targets,
         violations=violations,
     )
+    targets = _skip_inactive_config_invariant_targets(
+        app_context,
+        targets=targets,
+        violations=violations,
+    )
     target_ids = [target.id for target in targets]
     row_data = read_dashboard_row_data(
         app_context,
@@ -150,7 +156,11 @@ def read_dashboard_row_data(
 ) -> DashboardRowReadCollections:
     """批次讀取每張 target card 需要的 target-scoped 資料。"""
 
-    configs_by_target = read_configs_by_target(app_context, targets)
+    configs_by_target = read_configs_by_target(
+        app_context,
+        targets,
+        violations=violations,
+    )
     max_items_limit = max(
         (config.max_items_per_scan for config in configs_by_target.values()),
         default=1,
@@ -244,19 +254,28 @@ def read_dashboard_targets(
 def read_configs_by_target(
     app_context: ApplicationContext,
     targets: list[TargetDescriptor],
+    *,
+    violations: tuple[DatabaseInvariantViolation, ...],
 ) -> dict[str, TargetConfig]:
     """批次讀取 target-scoped config。"""
 
-    target_configs = app_context.repositories.configs.list_for_targets(
-        [target.id for target in targets]
+    def operation() -> dict[str, TargetConfig]:
+        target_configs = app_context.repositories.configs.list_for_targets(
+            [target.id for target in targets]
+        )
+        configs: dict[str, TargetConfig] = {}
+        for target in targets:
+            config = target_configs.get(target.id)
+            if config is None:
+                config = app_context.services.targets.get_config_for_target(target)
+            configs[target.id] = config
+        return configs
+
+    return read_mapper_value(
+        operation,
+        tables=("target_configs",),
+        violations=violations,
     )
-    configs: dict[str, TargetConfig] = {}
-    for target in targets:
-        config = target_configs.get(target.id)
-        if config is None:
-            config = app_context.services.targets.get_config_for_target(target)
-        configs[target.id] = config
-    return configs
 
 
 def _skip_inactive_runtime_invariant_targets(
@@ -269,6 +288,23 @@ def _skip_inactive_runtime_invariant_targets(
 
     skipped_ids = inactive_runtime_invariant_row_ids(
         app_context.repositories.runtime_states.connection,
+        violations=violations,
+    )
+    if not skipped_ids:
+        return targets
+    return [target for target in targets if target.id not in skipped_ids]
+
+
+def _skip_inactive_config_invariant_targets(
+    app_context: ApplicationContext,
+    *,
+    targets: list[TargetDescriptor],
+    violations: tuple[DatabaseInvariantViolation, ...],
+) -> list[TargetDescriptor]:
+    """略過 inactive/paused 且 max-items 設定已污染的 target。"""
+
+    skipped_ids = inactive_config_invariant_row_ids(
+        app_context.repositories.configs.connection,
         violations=violations,
     )
     if not skipped_ids:

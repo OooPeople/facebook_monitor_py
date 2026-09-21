@@ -19,6 +19,7 @@ from facebook_monitor.core.sidebar_models import SidebarGroupConfigTemplate
 from facebook_monitor.core.sidebar_models import SidebarTargetPlacement
 from facebook_monitor.persistence.secret_storage import PlaintextSecretCodec
 from facebook_monitor.persistence.secret_storage import SecretCodec
+from facebook_monitor.persistence.row_mappers import decode_stored_max_items_per_scan
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import decode_include_keyword_groups
 from facebook_monitor.persistence.sqlite_codec import decode_keywords
@@ -363,7 +364,9 @@ def _template_from_row(row: sqlite3.Row) -> SidebarGroupConfigTemplate:
         max_refresh_sec=int(row["max_refresh_sec"]),
         jitter_enabled=bool(row["jitter_enabled"]),
         fixed_refresh_sec=row["fixed_refresh_sec"],
-        max_items_per_scan=int(row["max_items_per_scan"]),
+        max_items_per_scan=decode_stored_max_items_per_scan(
+            row["max_items_per_scan"]
+        ),
         auto_load_more=bool(row["auto_load_more"]),
         auto_adjust_sort=bool(row["auto_adjust_sort"]),
         enable_desktop_notification=bool(row["enable_desktop_notification"]),

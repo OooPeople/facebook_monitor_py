@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,6 +16,11 @@ from facebook_monitor.application.context import SqliteApplicationContext
 from facebook_monitor.application.target_requests import TargetConfigPatch
 from facebook_monitor.application.target_requests import UpsertGroupPostsTargetRequest
 from facebook_monitor.application.scan_recording_service import RecordScanRequest
+from facebook_monitor.core.defaults import PYTHON_TARGET_CONFIG_DEFAULTS
+from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
+from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
+from facebook_monitor.core.facebook_temporary_block import FacebookWorkSourceKind
+from facebook_monitor.core.facebook_temporary_block import TemporaryBlockFinding
 from facebook_monitor.core.models import ItemKind
 from facebook_monitor.core.models import LatestScanItem
 from facebook_monitor.core.models import MatchHistoryEntry
@@ -22,6 +29,12 @@ from facebook_monitor.core.models import NotificationOutboxEntry
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.persistence.invariants import validate_database_invariants
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    FacebookTemporaryBlockWarningRepository,
+)
+from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
+    TemporaryBlockWarningDecodeError,
+)
 from facebook_monitor.persistence.repositories.latest_scan_items import LatestScanItemRepository
 from facebook_monitor.persistence.repositories.targets import TargetRepository
 from facebook_monitor.persistence.repositories.app_settings import ProfileSessionState
@@ -141,6 +154,178 @@ def test_database_invariant_warning_degrades_mapper_breaking_rows_without_ids(
     assert target.id not in warning["message"]
     assert target.group_id not in warning["message"]
     assert payload["cards"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "corrupt_value"),
+    [
+        ("generation", "dashboard-raw-generation"),
+        ("source_kind", "dashboard-raw-source"),
+        ("operation_kind", "dashboard-raw-operation"),
+        ("action_kind", "dashboard-raw-action"),
+        ("detected_at", "dashboard-raw-datetime"),
+        ("warning_until", "2026-08-02T03:04:05+08:00"),
+    ],
+)
+def test_corrupt_temporary_block_warning_degrades_all_dashboard_reads(
+    tmp_path: Path,
+    field: str,
+    corrupt_value: object,
+) -> None:
+    """已由 invariant 定位的 warning 壞 row 應安全降級 full/partial reads。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="warning-row-corrupt",
+                canonical_url="https://www.facebook.com/groups/warning-row-corrupt",
+            )
+        )
+        app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+                target_id=target.id,
+            ),
+            detected_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE facebook_temporary_block_warning SET {field} = ? WHERE id = 1",
+            (corrupt_value,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+    sidebar_response = client.get("/api/sidebar")
+
+    assert index_response.status_code == 200
+    assert "資料暫時無法載入" in index_response.text
+    assert str(corrupt_value) not in index_response.text
+    assert cards_response.status_code == 200
+    payload = cards_response.json()
+    assert payload["dashboard_degraded"] is True
+    assert payload["database_invariant_warning"]["tables"] == [
+        "facebook_temporary_block_warning"
+    ]
+    assert payload["facebook_temporary_block_warning"]["active"] is False
+    assert payload["cards"] == []
+    assert str(corrupt_value) not in cards_response.text
+    assert sidebar_response.status_code == 200
+    assert sidebar_response.json()["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("detected_at", "warning_until"),
+    [
+        ("2026-08-01T03:04:05+00:00", "2026-08-01T03:04:05Z"),
+        ("2026-08-01T03:04:05.1+00:00", "2026-08-01T03:04:05Z"),
+    ],
+)
+def test_corrupt_warning_window_degrades_full_and_partial_dashboard_reads(
+    tmp_path: Path,
+    detected_at: str,
+    warning_until: str,
+) -> None:
+    """合法 UTC ISO 的等值或反序 window 也必須以語意比較後降級。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="warning-window-corrupt",
+                canonical_url="https://www.facebook.com/groups/warning-window-corrupt",
+            )
+        )
+        app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+            ),
+            detected_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE facebook_temporary_block_warning
+            SET detected_at = ?, warning_until = ?
+            WHERE id = 1
+            """,
+            (detected_at, warning_until),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+    sidebar_response = client.get("/api/sidebar")
+
+    assert index_response.status_code == 200
+    assert "資料暫時無法載入" in index_response.text
+    assert cards_response.status_code == 200
+    payload = cards_response.json()
+    assert payload["dashboard_degraded"] is True
+    assert payload["database_invariant_warning"]["tables"] == [
+        "facebook_temporary_block_warning"
+    ]
+    assert payload["facebook_temporary_block_warning"]["active"] is False
+    assert payload["cards"] == []
+    assert sidebar_response.status_code == 200
+    assert sidebar_response.json()["items"] == []
+
+
+def test_warning_decode_error_requires_matching_invariant_field(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Warning typed error 不得借用同表其他欄位的 invariant 靜默降級。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        app_context.services.facebook_temporary_block_warning.record(
+            TemporaryBlockFinding(
+                source_kind=FacebookWorkSourceKind.SCAN,
+                operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
+                action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
+            ),
+            detected_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        connection = app_context.repositories.targets.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE facebook_temporary_block_warning
+            SET generation = ?
+            WHERE id = 1
+            """,
+            ("mismatched-generation",),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    def raise_mismatched_decode_error(
+        self: FacebookTemporaryBlockWarningRepository,
+    ) -> None:
+        raise TemporaryBlockWarningDecodeError("source_kind")
+
+    monkeypatch.setattr(
+        FacebookTemporaryBlockWarningRepository,
+        "get",
+        raise_mismatched_decode_error,
+    )
+
+    with pytest.raises(TemporaryBlockWarningDecodeError) as error:
+        get_dashboard_view(db_path)
+
+    assert error.value.field == "source_kind"
 
 
 def test_database_invariant_warning_skips_inactive_corrupt_target_row(
@@ -507,25 +692,193 @@ def test_target_card_scope_ignores_other_target_corruption(tmp_path: Path) -> No
     assert response.json()["target_id"] == current.id
 
 
-def test_target_card_scope_matches_negative_latest_item_limit(tmp_path: Path) -> None:
-    """污染的負 LIMIT 會讓 repository 讀全部 rows，validator 必須驗同一批。"""
+@pytest.mark.parametrize("corrupt_value", (-1, 0, "not-an-integer", 1.5, 11))
+def test_active_corrupt_max_items_degrades_without_latest_item_query(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    corrupt_value: object,
+) -> None:
+    """Active max-items 壞資料須降級/503，且不得流入 latest-items repository。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
         target = app_context.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
-                group_id="negative-card-limit",
-                canonical_url="https://www.facebook.com/groups/negative-card-limit",
-                group_name="negative card limit",
+                group_id=f"active-corrupt-limit-{corrupt_value}",
+                canonical_url=(
+                    "https://www.facebook.com/groups/"
+                    f"active-corrupt-limit-{corrupt_value}"
+                ),
+                group_name="active corrupt max items",
             )
         )
-        connection = app_context.repositories.latest_scan_items.connection
+        app_context.services.targets.restart_target_monitoring(target.id)
+        connection = app_context.repositories.configs.connection
         connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
-            "UPDATE target_configs SET max_items_per_scan = -1 WHERE target_id = ?",
-            (target.id,),
+            "UPDATE target_configs SET max_items_per_scan = ? WHERE target_id = ?",
+            (corrupt_value, target.id),
         )
         connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    def fail_latest_items_query(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("invalid max_items_per_scan reached latest-items repository")
+
+    monkeypatch.setattr(
+        LatestScanItemRepository,
+        "list_by_targets",
+        fail_latest_items_query,
+    )
+    monkeypatch.setattr(
+        LatestScanItemRepository,
+        "list_by_target",
+        fail_latest_items_query,
+    )
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+
+    index_response = client.get("/")
+    cards_response = client.get("/api/dashboard-cards")
+    card_response = client.get(f"/api/targets/{target.id}/card")
+
+    assert index_response.status_code == 200
+    assert "資料暫時無法載入" in index_response.text
+    assert "目前沒有 target" not in index_response.text
+    assert cards_response.status_code == 200
+    cards_payload = cards_response.json()
+    assert cards_payload["dashboard_degraded"] is True
+    assert cards_payload["cards"] == []
+    assert cards_payload["database_invariant_warning"]["tables"] == ["target_configs"]
+    assert card_response.status_code == 503
+
+
+@pytest.mark.parametrize("enabled,paused", ((False, False), (True, True)))
+def test_inactive_corrupt_max_items_is_skipped_with_warning(
+    tmp_path: Path,
+    enabled: bool,
+    paused: bool,
+) -> None:
+    """Inactive/paused 壞 config 不拖垮首頁，單卡維持 404。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        valid = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id=f"valid-neighbor-{enabled}-{paused}",
+                canonical_url=(
+                    "https://www.facebook.com/groups/"
+                    f"valid-neighbor-{enabled}-{paused}"
+                ),
+                group_name="valid neighbor",
+            )
+        )
+        corrupt = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id=f"inactive-corrupt-{enabled}-{paused}",
+                canonical_url=(
+                    "https://www.facebook.com/groups/"
+                    f"inactive-corrupt-{enabled}-{paused}"
+                ),
+                group_name="inactive corrupt max items",
+            )
+        )
+        connection = app_context.repositories.configs.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE target_configs SET max_items_per_scan = 11 WHERE target_id = ?",
+            (corrupt.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+        connection.execute(
+            "UPDATE targets SET enabled = ?, paused = ? WHERE id = ?",
+            (int(enabled), int(paused), corrupt.id),
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    cards_response = client.get("/api/dashboard-cards")
+    card_response = client.get(f"/api/targets/{corrupt.id}/card")
+
+    assert cards_response.status_code == 200
+    cards_payload = cards_response.json()
+    assert cards_payload["dashboard_degraded"] is False
+    assert [card["target_id"] for card in cards_payload["cards"]] == [valid.id]
+    assert cards_payload["database_invariant_warning"]["tables"] == ["target_configs"]
+    assert card_response.status_code == 404
+
+
+def test_corrupt_sidebar_template_max_items_degrades_dashboard(tmp_path: Path) -> None:
+    """Sidebar template max-items 壞資料須安全降級，不影響單卡 scope。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="sidebar-template-corrupt",
+                canonical_url="https://www.facebook.com/groups/sidebar-template-corrupt",
+                group_name="sidebar template corrupt",
+            )
+        )
+        group = app_context.services.sidebar_layout.create_group("corrupt template")
+        app_context.services.sidebar_layout.save_placements([(group.id, [target.id])])
+        connection = app_context.repositories.sidebar_layout.connection
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            """
+            UPDATE sidebar_group_config_templates
+            SET max_items_per_scan = 'not-an-integer'
+            WHERE sidebar_group_id = ?
+            """,
+            (group.id,),
+        )
+        connection.execute("PRAGMA ignore_check_constraints = OFF")
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    cards_response = client.get("/api/dashboard-cards")
+    card_response = client.get(f"/api/targets/{target.id}/card")
+
+    assert cards_response.status_code == 200
+    cards_payload = cards_response.json()
+    assert cards_payload["dashboard_degraded"] is True
+    assert cards_payload["cards"] == []
+    assert cards_payload["database_invariant_warning"]["tables"] == [
+        "sidebar_group_config_templates"
+    ]
+    assert card_response.status_code == 200
+
+
+@pytest.mark.parametrize("configured_limit", (None, 1, 3, 10))
+def test_valid_or_missing_max_items_keeps_validator_repository_scope_parity(
+    tmp_path: Path,
+    configured_limit: int | None,
+) -> None:
+    """合法與缺 config 的 validator/repository 都只讀同一個 bounded prefix。"""
+
+    expected_limit = (
+        configured_limit
+        if configured_limit is not None
+        else PYTHON_TARGET_CONFIG_DEFAULTS.max_items_per_scan
+    )
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id=f"valid-limit-{configured_limit}",
+                canonical_url=(
+                    "https://www.facebook.com/groups/"
+                    f"valid-limit-{configured_limit}"
+                ),
+                group_name="valid max items parity",
+                config=(
+                    TargetConfigPatch(max_items_per_scan=configured_limit)
+                    if configured_limit is not None
+                    else TargetConfigPatch()
+                ),
+            )
+        )
+        if configured_limit is None:
+            app_context.repositories.configs.connection.execute(
+                "DELETE FROM target_configs WHERE target_id = ?",
+                (target.id,),
+            )
         app_context.repositories.latest_scan_items.replace_for_target(
             target.id,
             [
@@ -533,68 +886,29 @@ def test_target_card_scope_matches_negative_latest_item_limit(tmp_path: Path) ->
                     target_id=target.id,
                     scan_run_id=1,
                     item_kind=ItemKind.POST,
-                    item_key=f"negative-limit-{index}",
+                    item_key=f"valid-limit-item-{index}",
                     item_index=index,
-                    text=f"item {index}",
+                    text=f"valid limit item {index}",
                 )
-                for index in range(2)
+                for index in range(expected_limit + 1)
             ],
         )
-        connection.execute(
-            "UPDATE latest_scan_items SET scanned_at = ? WHERE item_key = ?",
-            ("not-a-datetime", "negative-limit-1"),
+        app_context.repositories.latest_scan_items.connection.execute(
+            "UPDATE latest_scan_items SET scanned_at = ? WHERE item_index = ?",
+            ("outside-bounded-prefix", expected_limit),
         )
 
-    response = TestClient(
-        create_app(db_path=db_path, profile_dir=tmp_path / "profile")
-    ).get(f"/api/targets/{target.id}/card")
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    cards_response = client.get("/api/dashboard-cards")
+    card_response = client.get(f"/api/targets/{target.id}/card")
 
-    assert response.status_code == 503
-
-
-def test_target_card_scope_matches_zero_latest_item_limit(tmp_path: Path) -> None:
-    """LIMIT 0 不載入 latest row，validator 不得反向多驗並造成 503。"""
-
-    db_path = tmp_path / "app.db"
-    with SqliteApplicationContext(db_path) as app_context:
-        target = app_context.services.targets.upsert_group_posts_target(
-            UpsertGroupPostsTargetRequest(
-                group_id="zero-card-limit",
-                canonical_url="https://www.facebook.com/groups/zero-card-limit",
-                group_name="zero card limit",
-            )
-        )
-        connection = app_context.repositories.latest_scan_items.connection
-        connection.execute("PRAGMA ignore_check_constraints = ON")
-        connection.execute(
-            "UPDATE target_configs SET max_items_per_scan = 0 WHERE target_id = ?",
-            (target.id,),
-        )
-        connection.execute("PRAGMA ignore_check_constraints = OFF")
-        app_context.repositories.latest_scan_items.replace_for_target(
-            target.id,
-            [
-                LatestScanItem(
-                    target_id=target.id,
-                    scan_run_id=1,
-                    item_kind=ItemKind.POST,
-                    item_key="zero-limit-corrupt",
-                    item_index=0,
-                    text="not loaded",
-                )
-            ],
-        )
-        connection.execute(
-            "UPDATE latest_scan_items SET scanned_at = ? WHERE target_id = ?",
-            ("not-a-datetime", target.id),
-        )
-
-    response = TestClient(
-        create_app(db_path=db_path, profile_dir=tmp_path / "profile")
-    ).get(f"/api/targets/{target.id}/card")
-
-    assert response.status_code == 200
-    assert "zero-limit-corrupt" not in response.text
+    assert cards_response.status_code == 200
+    assert cards_response.json()["dashboard_degraded"] is False
+    assert card_response.status_code == 200
+    preview_html = card_response.json()["latest_scan_preview_html"]
+    for index in range(expected_limit):
+        assert f"valid limit item {index}" in preview_html
+    assert f"valid limit item {expected_limit}" not in preview_html
 
 
 def test_web_reads_do_not_call_full_database_invariant_audit(

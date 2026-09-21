@@ -122,7 +122,11 @@ def get_target_card(
             )
             if target is None:
                 return None
-            config = read_configs_by_target(app_context, [target])[target.id]
+            config = read_configs_by_target(
+                app_context,
+                [target],
+                violations=violations,
+            )[target.id]
             runtime_state = read_mapper_value(
                 lambda: app_context.repositories.runtime_states.get(target.id),
                 tables=("target_runtime_state",),
@@ -187,11 +191,16 @@ def _list_target_rows(
             connection,
             session_started_at=session_started_at,
         )
-        warning_snapshot = app_context.services.facebook_temporary_block_warning.get()
         database_invariant_warning = build_database_invariant_warning(
             database_invariant_violations
         )
+        warning_snapshot: TemporaryBlockWarningSnapshot | None = None
         try:
+            warning_snapshot = read_mapper_value(
+                app_context.services.facebook_temporary_block_warning.get,
+                tables=("facebook_temporary_block_warning",),
+                violations=database_invariant_violations,
+            )
             collections = read_dashboard_collections(
                 app_context,
                 violations=database_invariant_violations,

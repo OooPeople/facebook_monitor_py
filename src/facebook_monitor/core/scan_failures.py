@@ -22,6 +22,7 @@ SCHEDULER_STOPPING_REASON = "scheduler_stopping"
 TARGET_STOPPED_REASON = "target_stopped"
 TARGET_MISSING_REASON = "target_missing"
 TARGET_KIND_UNSUPPORTED_REASON = "target_kind_unsupported"
+# 現行 runtime 無 emitter；保留供歷史 scan/outbox durable row 相容讀取。
 UNSUPPORTED_IN_FALLBACK_REASON = "unsupported_in_fallback"
 TARGET_INVALID_REASON = "target_invalid"
 TARGET_ARGUMENT_CONFLICT_REASON = "target_argument_conflict"

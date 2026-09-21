@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import timedelta
+from enum import StrEnum
 import sqlite3
+from typing import TypeVar
 
 from facebook_monitor.core.facebook_temporary_block import FacebookActionKind
 from facebook_monitor.core.facebook_temporary_block import FacebookProductOperationKind
@@ -13,6 +16,16 @@ from facebook_monitor.core.facebook_temporary_block import (
 )
 from facebook_monitor.persistence.sqlite_codec import decode_datetime
 from facebook_monitor.persistence.sqlite_codec import encode_datetime
+
+_EnumValue = TypeVar("_EnumValue", bound=StrEnum)
+
+
+class TemporaryBlockWarningDecodeError(ValueError):
+    """Warning singleton row 違反 durable storage contract。"""
+
+    def __init__(self, field: str) -> None:
+        self.field = field
+        super().__init__("temporary block warning row is invalid")
 
 
 class FacebookTemporaryBlockWarningRepository:
@@ -75,20 +88,74 @@ class FacebookTemporaryBlockWarningRepository:
 def _snapshot(row: sqlite3.Row) -> TemporaryBlockWarningSnapshot:
     """將 SQLite row 轉成 typed warning snapshot。"""
 
-    detected_at = decode_datetime(str(row["detected_at"]))
-    warning_until = decode_datetime(str(row["warning_until"]))
-    updated_at = decode_datetime(str(row["updated_at"]))
-    if detected_at is None or warning_until is None or updated_at is None:
-        raise ValueError("temporary block warning timestamps are required")
+    generation = _decode_generation(row["generation"])
+    detected_at = _decode_required_utc_datetime(row["detected_at"], "detected_at")
+    warning_until = _decode_required_utc_datetime(row["warning_until"], "warning_until")
+    updated_at = _decode_required_utc_datetime(row["updated_at"], "updated_at")
+    if warning_until <= detected_at:
+        raise TemporaryBlockWarningDecodeError("warning_window")
     return TemporaryBlockWarningSnapshot(
-        generation=int(row["generation"]),
+        generation=generation,
         detected_at=detected_at,
         warning_until=warning_until,
-        source_kind=FacebookWorkSourceKind(str(row["source_kind"])),
-        operation_kind=FacebookProductOperationKind(str(row["operation_kind"])),
-        action_kind=FacebookActionKind(str(row["action_kind"])),
+        source_kind=_decode_enum(
+            row["source_kind"],
+            enum_type=FacebookWorkSourceKind,
+            field="source_kind",
+        ),
+        operation_kind=_decode_enum(
+            row["operation_kind"],
+            enum_type=FacebookProductOperationKind,
+            field="operation_kind",
+        ),
+        action_kind=_decode_enum(
+            row["action_kind"],
+            enum_type=FacebookActionKind,
+            field="action_kind",
+        ),
         updated_at=updated_at,
     )
 
 
-__all__ = ["FacebookTemporaryBlockWarningRepository"]
+def _decode_generation(raw_value: object) -> int:
+    """Generation 必須維持 SQLite INTEGER storage class 與正整數範圍。"""
+
+    if type(raw_value) is not int or raw_value < 1:
+        raise TemporaryBlockWarningDecodeError("generation")
+    return raw_value
+
+
+def _decode_required_utc_datetime(raw_value: object, field: str) -> datetime:
+    """解碼 required UTC datetime，錯誤不得洩漏原始 DB 值。"""
+
+    if not isinstance(raw_value, str) or not raw_value:
+        raise TemporaryBlockWarningDecodeError(field)
+    try:
+        value = decode_datetime(raw_value)
+    except ValueError:
+        raise TemporaryBlockWarningDecodeError(field) from None
+    if value is None or value.utcoffset() != timedelta(0):
+        raise TemporaryBlockWarningDecodeError(field)
+    return value
+
+
+def _decode_enum(
+    raw_value: object,
+    *,
+    enum_type: type[_EnumValue],
+    field: str,
+) -> _EnumValue:
+    """解碼 warning enum，錯誤只帶安全欄位名稱。"""
+
+    if not isinstance(raw_value, str):
+        raise TemporaryBlockWarningDecodeError(field)
+    try:
+        return enum_type(raw_value)
+    except ValueError:
+        raise TemporaryBlockWarningDecodeError(field) from None
+
+
+__all__ = [
+    "FacebookTemporaryBlockWarningRepository",
+    "TemporaryBlockWarningDecodeError",
+]

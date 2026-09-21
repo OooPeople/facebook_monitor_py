@@ -22,6 +22,7 @@ from facebook_monitor.persistence.migrations import migrate_44_to_45
 from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
     TemporaryBlockWarningDecodeError,
 )
+from facebook_monitor.webapp.dashboard_revision_query import get_dashboard_revision
 from tests.persistence.sqlite_test_helpers import table_sql
 
 
@@ -39,10 +40,11 @@ def test_repository_records_singleton_generation_and_fixed_warning_window(
         operation_kind=FacebookProductOperationKind.POSTS_ACCESS,
         action_kind=FacebookActionKind.GROUP_FEED_DOCUMENT,
     )
+    with SqliteApplicationContext(db_path):
+        pass
+    revision_before = int(get_dashboard_revision(db_path).revision)
+
     with SqliteApplicationContext(db_path) as app:
-        revision_before = int(
-            app.repositories.dashboard_revision.get_dashboard_revision().revision
-        )
         first = app.services.facebook_temporary_block_warning.record(
             finding,
             detected_at=_NOW,
@@ -54,9 +56,7 @@ def test_repository_records_singleton_generation_and_fixed_warning_window(
         row_count = app.repositories.targets.connection.execute(
             "SELECT COUNT(1) AS count FROM facebook_temporary_block_warning"
         ).fetchone()["count"]
-        revision_after = int(
-            app.repositories.dashboard_revision.get_dashboard_revision().revision
-        )
+    revision_after = int(get_dashboard_revision(db_path).revision)
 
     assert first.generation == 1
     assert first.warning_until == _NOW + timedelta(hours=12)

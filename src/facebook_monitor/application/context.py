@@ -23,7 +23,6 @@ from facebook_monitor.application.target_cover_image_refresh_service import (
 )
 from facebook_monitor.persistence.maintenance import RuntimeDataMaintenanceRepository
 from facebook_monitor.persistence.repositories.app_settings import AppSettingsRepository
-from facebook_monitor.persistence.repositories.dashboard_revision import DashboardRevisionRepository
 from facebook_monitor.persistence.repositories.dedupe_state import DedupeStateRepository
 from facebook_monitor.persistence.repositories.facebook_temporary_block_warning import (
     FacebookTemporaryBlockWarningRepository,
@@ -82,7 +81,6 @@ class RepositoryBundle:
     app_settings: AppSettingsRepository
     sidebar_layout: SidebarLayoutRepository
     maintenance: RuntimeDataMaintenanceRepository
-    dashboard_revision: DashboardRevisionRepository
     facebook_temporary_block_warning: FacebookTemporaryBlockWarningRepository
 
 
@@ -155,7 +153,6 @@ def build_repositories(
             secret_codec=secret_codec,
         ),
         maintenance=RuntimeDataMaintenanceRepository(connection),
-        dashboard_revision=DashboardRevisionRepository(connection),
         facebook_temporary_block_warning=FacebookTemporaryBlockWarningRepository(
             connection
         ),

@@ -438,10 +438,10 @@ def test_cover_image_load_failure_request_uses_url_scoped_throttle(
     assert stale.status == "ignored_stale_url"
 
 
-def test_legacy_target_cover_image_refresh_facade_delegates_to_service(
+def test_target_cover_image_refresh_service_queues_current_url(
     tmp_path: Path,
 ) -> None:
-    """舊 target facade cover refresh API 仍委派到正式 service。"""
+    """正式 focused service 會排入與目前圖片 URL 相符的 refresh。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
@@ -453,7 +453,7 @@ def test_legacy_target_cover_image_refresh_facade_delegates_to_service(
             )
         )
 
-        result = app.services.targets.request_target_cover_image_refresh(
+        result = app.services.target_cover_image_refresh.request_refresh_for_current_url(
             target.id,
             reported_url="https://scontent.xx.fbcdn.net/old.jpg",
             min_interval_seconds=21600,

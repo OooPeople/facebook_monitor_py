@@ -23,8 +23,6 @@ from facebook_monitor.application.target_runtime_service import QueueAdmissionRe
 from facebook_monitor.application.target_runtime_service import ScanSkipDecision
 from facebook_monitor.application.target_runtime_service import StaleRunningRecovery
 from facebook_monitor.application.target_runtime_service import TargetRuntimeService
-from facebook_monitor.core.models import TargetCoverImageRefreshState
-from facebook_monitor.core.models import TargetCoverImageRefreshResult
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
 from facebook_monitor.core.models import TargetRuntimeState
@@ -105,11 +103,6 @@ class TargetApplicationService:
             runtime=self.runtime_service,
         )
 
-    def normalize_target_names(self, target: TargetDescriptor) -> TargetDescriptor:
-        """清理已保存 target 名稱並寫回，避免通知數前綴散到各輸出面。"""
-
-        return self.registry_service.normalize_target_names(target)
-
     def delete_target(self, target_id: str) -> None:
         """刪除單一 target；target-scoped config 由 SQLite FK 一併清除。"""
 
@@ -142,106 +135,6 @@ class TargetApplicationService:
         return self.cover_image_refresh_service.refresh_target_cover_image_url(
             target_id,
             group_cover_image_url,
-        )
-
-    def request_target_cover_image_refresh(
-        self,
-        target_id: str,
-        *,
-        reported_url: str,
-        min_interval_seconds: int,
-    ) -> CoverImageRefreshRequestResult:
-        """依 UI 壞圖 hint 排程 image-only cover refresh。"""
-
-        return self.cover_image_refresh_service.request_refresh_for_current_url(
-            target_id,
-            reported_url=reported_url,
-            min_interval_seconds=min_interval_seconds,
-        )
-
-    def list_pending_cover_image_refreshes(
-        self,
-        *,
-        limit: int,
-        exclude_target_ids: tuple[str, ...] = (),
-    ) -> list[TargetCoverImageRefreshState]:
-        """列出等待 resident worker 消化的 image-only cover refresh jobs。"""
-
-        return self.cover_image_refresh_service.list_pending(
-            limit=limit,
-            exclude_target_ids=exclude_target_ids,
-        )
-
-    def mark_target_cover_image_refresh_attempted(
-        self,
-        target_id: str,
-        *,
-        reported_url: str | None = None,
-        requested_at: datetime | None = None,
-    ) -> bool:
-        """記錄 target cover image refresh 已開始嘗試。"""
-
-        return self.cover_image_refresh_service.mark_attempted(
-            target_id,
-            reported_url=reported_url,
-            requested_at=requested_at,
-        )
-
-    def mark_target_cover_image_refresh_succeeded(
-        self,
-        target_id: str,
-        *,
-        resolved_url: str,
-        changed: bool,
-        result: TargetCoverImageRefreshResult | None = None,
-        reported_url: str | None = None,
-        requested_at: datetime | None = None,
-    ) -> bool:
-        """標記 target cover image refresh 成功。"""
-
-        return self.cover_image_refresh_service.mark_succeeded(
-            target_id,
-            resolved_url=resolved_url,
-            changed=changed,
-            result=result,
-            reported_url=reported_url,
-            requested_at=requested_at,
-        )
-
-    def mark_target_cover_image_refresh_stale_skipped(
-        self,
-        target_id: str,
-        *,
-        current_url: str,
-        reported_url: str | None = None,
-        requested_at: datetime | None = None,
-    ) -> bool:
-        """現行圖片 URL 已非 UI 上報 URL 時，清除過期 cover refresh job。"""
-
-        return self.cover_image_refresh_service.mark_stale_skipped(
-            target_id,
-            current_url=current_url,
-            reported_url=reported_url,
-            requested_at=requested_at,
-        )
-
-    def mark_target_cover_image_refresh_failed(
-        self,
-        target_id: str,
-        error: str,
-        *,
-        result: TargetCoverImageRefreshResult = TargetCoverImageRefreshResult.FAILED,
-        reported_url: str | None = None,
-        requested_at: datetime | None = None,
-    ) -> bool:
-        """標記 target cover image refresh 失敗。"""
-
-        return self.cover_image_refresh_service.mark_failed(
-            target_id,
-            error,
-            result=result,
-            reported_url=reported_url,
-            requested_at=requested_at,
         )
 
     def mark_target_metadata_refresh_pending(self, target_id: str) -> TargetDescriptor:
@@ -283,15 +176,6 @@ class TargetApplicationService:
         """讀取單一 target 的 config。"""
 
         return self.config_service.get_config_for_target(target)
-
-    def save_config_for_target(
-        self,
-        target: TargetDescriptor,
-        config: TargetConfig,
-    ) -> TargetConfig:
-        """保存單一 target 的 config。"""
-
-        return self.config_service.save_config_for_target(target, config)
 
     def update_target_config(
         self,
@@ -357,21 +241,6 @@ class TargetApplicationService:
             page_id=page_id,
         )
 
-    def mark_target_page_reloaded(
-        self,
-        target_id: str,
-        *,
-        page_id: str = "",
-        reloaded_at: datetime | None = None,
-    ) -> TargetRuntimeState:
-        """記錄 resident page 已完成 reload/goto，供 UI 診斷 page ownership。"""
-
-        return self.runtime_service.mark_target_page_reloaded(
-            target_id,
-            page_id=page_id,
-            reloaded_at=reloaded_at,
-        )
-
     def force_mark_target_page_reloaded(
         self,
         target_id: str,
@@ -404,21 +273,6 @@ class TargetApplicationService:
             started_at=started_at,
             page_id=page_id,
             reloaded_at=reloaded_at,
-        )
-
-    def record_target_heartbeat(
-        self,
-        target_id: str,
-        *,
-        worker_id: str = "",
-        page_id: str = "",
-    ) -> TargetRuntimeState:
-        """刷新 running target heartbeat，供長掃描與 stale recovery 區分。"""
-
-        return self.runtime_service.record_target_heartbeat(
-            target_id,
-            worker_id=worker_id,
-            page_id=page_id,
         )
 
     def guarded_record_target_heartbeat(
@@ -600,15 +454,6 @@ class TargetApplicationService:
             started_at=started_at,
             page_id=page_id,
         )
-
-    def mark_target_retriable_failure(
-        self,
-        target_id: str,
-        decision: ScanFailureDecision,
-    ) -> TargetRuntimeState:
-        """記錄可重試失敗並回 idle，保留 failure streak。"""
-
-        return self.runtime_service.mark_target_retriable_failure(target_id, decision)
 
     def force_mark_target_retriable_failure(
         self,

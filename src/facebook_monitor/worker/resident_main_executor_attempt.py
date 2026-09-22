@@ -297,6 +297,23 @@ async def _prepare_attempt_page(
         state.target_id,
         state.page_id,
     )
+    if reloaded_at is None:
+        await pool._run_db_operation_with_retry(
+            "guarded_release_target_for_page_reload_owner_change",
+            lambda: _guarded_release_running_owner_idle(
+                pool.options.db_path,
+                state.target_id,
+                commit_guard,
+            ),
+        )
+        logger.info(
+            "resident_target_skipped target_id=%s worker_id=%s page_id=%s reason=%s",
+            state.target_id,
+            worker_id,
+            state.page_id,
+            "page_reload_owner_changed",
+        )
+        return None
 
     def mark_reloaded_operation() -> TargetRuntimeState | None:
         with SqliteApplicationContext(pool.options.db_path) as app:
@@ -790,6 +807,16 @@ def _guarded_mark_scheduler_cancellation_idle(
     commit_guard: ScanCommitGuard,
 ) -> TargetRuntimeState | None:
     """以既有 running owner guard 完成普通 shutdown 的 idle transition。"""
+
+    return _guarded_release_running_owner_idle(db_path, target_id, commit_guard)
+
+
+def _guarded_release_running_owner_idle(
+    db_path: Path,
+    target_id: str,
+    commit_guard: ScanCommitGuard,
+) -> TargetRuntimeState | None:
+    """中性釋放相符 running owner，不建立 cancellation 或 scan outcome。"""
 
     with SqliteApplicationContext(db_path) as app:
         return app.services.targets.guarded_mark_scheduler_cancellation_idle(

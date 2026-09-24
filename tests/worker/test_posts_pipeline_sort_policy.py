@@ -100,6 +100,7 @@ class AsyncTemporaryBlockPostsPage:
             "headingTexts": ["你暫時遭到封鎖"],
             "detailTexts": ["你似乎過度使用了這項功能"],
             "articleCount": 0,
+            "feedCandidateCount": 0,
         }
 
     async def wait_for_timeout(self, milliseconds: int) -> None:

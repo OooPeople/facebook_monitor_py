@@ -62,6 +62,7 @@ class ScanFailureMetadata:
     runtime_action: str = ""
     retry_streak: int = 0
     retry_limit: int = 0
+    retry_delay_seconds: int = 0
     auto_restart: bool = False
     recovery_action: str = ""
     raw_failure_detail: str = ""
@@ -91,6 +92,8 @@ class ScanFailureMetadata:
         if self.retry_limit > 0:
             metadata["retry_streak"] = max(self.retry_streak, 0)
             metadata["retry_limit"] = self.retry_limit
+        if self.retry_delay_seconds > 0:
+            metadata["retry_delay_seconds"] = self.retry_delay_seconds
         raw_failure_detail = self.raw_failure_detail.strip()
         if raw_failure_detail:
             metadata["raw_failure_detail"] = raw_failure_detail
@@ -153,6 +156,7 @@ def record_scan_failure(
     runtime_action: str = "",
     retry_streak: int = 0,
     retry_limit: int = 0,
+    retry_delay_seconds: int = 0,
     auto_restart: bool = False,
     recovery_action: str = "",
     force_record: bool = False,
@@ -194,6 +198,7 @@ def record_scan_failure(
                 runtime_action=runtime_action,
                 retry_streak=retry_streak,
                 retry_limit=retry_limit,
+                retry_delay_seconds=retry_delay_seconds,
                 auto_restart=auto_restart,
                 recovery_action=recovery_action,
                 raw_failure_detail=message,
@@ -267,6 +272,7 @@ def record_guarded_scan_failure_result(
         runtime_action=decision.runtime_action,
         retry_streak=decision.retry_streak,
         retry_limit=decision.retry_limit,
+        retry_delay_seconds=decision.retry_delay_seconds,
         auto_restart=decision.auto_restart,
         recovery_action=decision.recovery_action,
         force_record=decision.counts_toward_streak or decision.terminal,
@@ -582,6 +588,7 @@ def record_active_targets_runtime_failure_notifications(
             runtime_action=decision.runtime_action,
             retry_streak=decision.retry_streak,
             retry_limit=decision.retry_limit,
+            retry_delay_seconds=decision.retry_delay_seconds,
             auto_restart=decision.auto_restart,
             recovery_action=decision.recovery_action,
             force_record=decision.counts_toward_streak or decision.terminal,

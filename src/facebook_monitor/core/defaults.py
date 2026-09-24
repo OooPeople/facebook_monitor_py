@@ -59,6 +59,7 @@ class SchedulerRuntimeDefaults:
     sort_adjust_unconfirmed_skip_limit: int = 3
     sort_adjust_unconfirmed_failure_limit: int = 3
     recoverable_failure_limit: int = 3
+    content_unavailable_retry_delay_seconds: int = 30
 
 
 @dataclass(frozen=True)

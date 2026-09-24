@@ -176,8 +176,8 @@ def test_target_stopped_keeps_target_idle_without_streak() -> None:
     assert decision.retry_streak == 0
 
 
-def test_login_required_errors_immediately() -> None:
-    """登入/session 類錯誤需要使用者介入，不能延後到第三次才通知。"""
+def test_user_action_failures_error_immediately() -> None:
+    """需要使用者介入的錯誤不能延後到第三次才通知。"""
 
     terminal_reasons = (
         "login_required",
@@ -189,7 +189,6 @@ def test_login_required_errors_immediately() -> None:
         "target_invalid",
         "target_kind_unsupported",
         "target_argument_conflict",
-        "content_unavailable",
     )
 
     for reason in terminal_reasons:
@@ -201,6 +200,36 @@ def test_login_required_errors_immediately() -> None:
         assert decision.runtime_action == "error"
         assert decision.counts_toward_streak is False
         assert decision.notification_failure_count == 1
+
+
+def test_content_unavailable_requires_three_fresh_page_confirmations() -> None:
+    """內容不可見需丟棄 page 重試兩次，第三次才停止 target。"""
+
+    decisions = []
+    previous_count = 0
+    for _attempt in range(3):
+        decision = decide_scan_failure(
+            "content_unavailable",
+            source="worker_failure",
+            previous_failure_reason="content_unavailable",
+            previous_failure_count=previous_count,
+        )
+        decisions.append(decision)
+        previous_count = decision.retry_streak
+
+    assert [decision.runtime_action for decision in decisions] == [
+        "will_retry",
+        "will_retry",
+        "error",
+    ]
+    assert [decision.retry_streak for decision in decisions] == [1, 2, 3]
+    assert [decision.retryable for decision in decisions] == [True, True, False]
+    assert all(decision.counts_toward_streak for decision in decisions)
+    assert all(decision.retry_limit == 3 for decision in decisions)
+    assert all(decision.discard_page for decision in decisions)
+    assert all(decision.recovery_action == "target_page_restart" for decision in decisions)
+    assert [decision.retry_delay_seconds for decision in decisions] == [30, 30, 0]
+    assert all(decision.auto_restart is False for decision in decisions)
 
 
 def test_confirmed_facebook_block_is_immediate_terminal_and_discards_page() -> None:

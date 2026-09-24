@@ -1239,7 +1239,7 @@ def test_index_does_not_render_queue_position_runtime_note(tmp_path: Path) -> No
 def test_dashboard_card_payload_labels_content_unavailable_failure(
     tmp_path: Path,
 ) -> None:
-    """dashboard card partial payload 會保留連結失效警示，避免刷新後退回泛用錯誤。"""
+    """dashboard card 以持續無法查看呈現 terminal，不臆測連結永久失效。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -1262,6 +1262,8 @@ def test_dashboard_card_payload_labels_content_unavailable_failure(
                     "worker": "resident_main",
                     "target_kind": "posts",
                     "retryable": False,
+                    "retry_streak": 3,
+                    "retry_limit": 3,
                 },
             )
         )
@@ -1277,24 +1279,68 @@ def test_dashboard_card_payload_labels_content_unavailable_failure(
     assert response.status_code == 200
     card_payload = response.json()["cards"][0]
     assert card_payload["has_latest_failed_scan"] is True
-    assert card_payload["latest_error_indicator_label"] == "連結已失效"
+    assert card_payload["latest_error_indicator_label"] == "內容無法查看"
     assert card_payload["latest_error_indicator_kind"] == "content-unavailable"
     assert card_payload["status_label"] == "錯誤"
     assert (
         card_payload["runtime_error"]
-        == "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+        == "內容持續無法查看：Facebook 在連續三次頁面確認中都顯示目前無法查看此內容，監視已停止。"
     )
     assert card_payload["next_refresh_label"] == "下次刷新：未排程"
-    assert "Facebook 顯示目前無法查看此內容" in card_payload["latest_error_indicator_title"]
-    assert "status=failed · reason=連結已失效" in card_payload["latest_scan_diagnostics_summary"]
-    assert "failure_reason=連結已失效" in card_payload["latest_scan_diagnostics_text"]
-    assert "連結已失效" in card_payload["card_summary_html"]
+    assert "Facebook 連續三次顯示目前無法查看此內容" in card_payload["latest_error_indicator_title"]
+    assert "status=failed · reason=Facebook 內容無法查看" in card_payload["latest_scan_diagnostics_summary"]
+    assert "failure_reason=Facebook 內容無法查看" in card_payload["latest_scan_diagnostics_text"]
+    assert "內容無法查看" in card_payload["card_summary_html"]
+
+
+def test_dashboard_card_payload_keeps_legacy_unavailable_record_neutral(
+    tmp_path: Path,
+) -> None:
+    """舊版一次即停止的紀錄仍可辨識，但不得誤稱已確認三次。"""
+
+    db_path = tmp_path / "app.db"
+    legacy_error = "連結已失效：Facebook 顯示目前無法查看此內容。"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="legacy-content-unavailable",
+                canonical_url="https://www.facebook.com/groups/legacy-content-unavailable",
+                group_name="舊紀錄測試社團",
+            )
+        )
+        app_context.services.scans.record_scan(
+            RecordScanRequest(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                error_message=legacy_error,
+                metadata={"worker": "resident_main", "retryable": False},
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        app_context.services.targets.mark_target_error(target.id, legacy_error)
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    card_payload = response.json()["cards"][0]
+    assert card_payload["latest_error_indicator_label"] == "內容無法查看"
+    assert card_payload["latest_error_indicator_kind"] == "content-unavailable"
+    assert (
+        card_payload["runtime_error"]
+        == "內容無法查看：Facebook 顯示目前無法查看此內容，監視已停止。"
+    )
+    assert (
+        card_payload["latest_error_indicator_title"]
+        == "Facebook 顯示目前無法查看此內容，監視已停止。"
+    )
+    assert "連續三次" not in card_payload["runtime_error"]
 
 
 def test_dashboard_card_payload_does_not_keep_content_unavailable_after_success(
     tmp_path: Path,
 ) -> None:
-    """連結失效後若已有更新成功掃描，不應繼續顯示目前連結已失效。"""
+    """內容無法查看後若已有成功掃描，不應繼續顯示目前仍不可見。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app_context:
@@ -1344,9 +1390,10 @@ def test_dashboard_card_payload_does_not_keep_content_unavailable_after_success(
     assert card_payload["has_latest_failed_scan"] is True
     assert card_payload["latest_error_indicator_label"] == "最近有錯誤"
     assert card_payload["latest_error_indicator_kind"] == "error"
-    assert "曾偵測到連結失效" in card_payload["card_summary_html"]
+    assert "曾偵測到 Facebook 內容無法查看" in card_payload["card_summary_html"]
     assert (
-        "status=failed · reason=連結已失效" not in card_payload["latest_scan_diagnostics_summary"]
+        "status=failed · reason=Facebook 內容無法查看"
+        not in card_payload["latest_scan_diagnostics_summary"]
     )
 
 
@@ -1448,6 +1495,56 @@ def test_dashboard_card_payload_shows_retrying_page_load_timeout(
     assert "retry_streak=1" in card_payload["latest_scan_diagnostics_text"]
     assert "Page.evaluate" not in card_payload["latest_error_indicator_title"]
     assert "Execution context was destroyed" not in card_payload["latest_scan_diagnostics_text"]
+
+
+def test_dashboard_card_payload_shows_retrying_content_unavailable(
+    tmp_path: Path,
+) -> None:
+    """內容不可見未達確認上限時顯示將重試，不先宣告連結失效。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app_context:
+        target = app_context.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="retrying-content-unavailable",
+                canonical_url=(
+                    "https://www.facebook.com/groups/retrying-content-unavailable"
+                ),
+                group_name="測試社團",
+            )
+        )
+        app_context.services.targets.restart_target_monitoring(target.id)
+        app_context.services.scans.record_scan(
+            RecordScanRequest(
+                target_id=target.id,
+                status=ScanStatus.FAILED,
+                error_message=(
+                    "content_unavailable: Facebook 顯示目前無法查看此內容。"
+                ),
+                metadata={
+                    "reason": "content_unavailable",
+                    "worker": "resident_main",
+                    "target_kind": "posts",
+                    "retryable": True,
+                    "runtime_action": "will_retry",
+                    "retry_streak": 1,
+                    "retry_limit": 3,
+                    "retry_delay_seconds": 30,
+                },
+            )
+        )
+
+    client = TestClient(create_app(db_path=db_path, profile_dir=tmp_path / "profile"))
+    response = client.get("/api/dashboard-cards")
+
+    assert response.status_code == 200
+    card_payload = response.json()["cards"][0]
+    assert card_payload["runtime_error"] == ""
+    assert card_payload["latest_error_indicator_label"] == "將重試"
+    assert card_payload["latest_error_indicator_kind"] == "retrying"
+    assert "1/3" in card_payload["latest_error_indicator_title"]
+    assert "等待 30 秒" in card_payload["latest_error_indicator_title"]
+    assert "內容無法查看" not in card_payload["latest_error_indicator_title"]
 
 
 def test_dashboard_view_model_includes_sidebar_preview_and_settings_summary(

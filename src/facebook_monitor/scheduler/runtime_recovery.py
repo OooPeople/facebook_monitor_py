@@ -172,6 +172,7 @@ def _record_stale_running_failure(
         runtime_action=recovery.decision.runtime_action,
         retry_streak=recovery.decision.retry_streak,
         retry_limit=recovery.decision.retry_limit,
+        retry_delay_seconds=recovery.decision.retry_delay_seconds,
         auto_restart=recovery.decision.auto_restart,
         recovery_action=recovery.decision.recovery_action,
         force_record=recovery.decision.counts_toward_streak,

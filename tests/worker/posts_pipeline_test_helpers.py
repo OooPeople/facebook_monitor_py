@@ -150,6 +150,10 @@ class MissingSortControlFakePage(FakePage):
 class ContentUnavailablePostsPage(FakePage):
     """模擬 Facebook 內容不可見頁。"""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.guard_observation_count = 0
+
     def locator(self, selector: str) -> FakeLocator:
         """回傳內容不可見頁文字。"""
 
@@ -160,8 +164,16 @@ class ContentUnavailablePostsPage(FakePage):
         )
 
     def evaluate(self, script: str, *args: Any) -> Any:
-        """內容不可見時不應進入排序或 extractor。"""
+        """只允許 page guard 結構 probe，排序與 extractor 必須 short-circuit。"""
 
+        if "headingTexts" in script and "articleCount" in script:
+            self.guard_observation_count += 1
+            return {
+                "headingTexts": ["目前無法查看此內容"],
+                "detailTexts": ["擁有者變更了分享對象，或是刪除了內容。"],
+                "articleCount": 0,
+                "feedCandidateCount": 0,
+            }
         raise AssertionError("content-unavailable scan should stop before sort")
 
 
@@ -188,6 +200,7 @@ class TemporaryBlockPostsPage(FakePage):
                 "headingTexts": ["你暫時遭到封鎖"],
                 "detailTexts": ["你似乎過度使用了這項功能"],
                 "articleCount": 0,
+                "feedCandidateCount": 0,
             }
         raise AssertionError("temporary-block scan should stop before sort")
 

@@ -191,7 +191,7 @@ def test_index_renders_scan_diagnostics_without_legacy_debug_json(
 
 
 def test_index_renders_content_unavailable_alert(tmp_path: Path) -> None:
-    """Facebook 內容不可見時，卡片與收合摘要顯示連結已失效。"""
+    """Facebook 持續無法查看時，卡片與收合摘要使用中性 terminal 文案。"""
 
     db_path = tmp_path / "app.db"
     target = seed_dashboard_index_target(db_path)
@@ -209,6 +209,8 @@ def test_index_renders_content_unavailable_alert(tmp_path: Path) -> None:
                     "worker": "resident_main",
                     "target_kind": "posts",
                     "retryable": False,
+                    "retry_streak": 3,
+                    "retry_limit": 3,
                 },
             )
         )
@@ -228,23 +230,23 @@ def test_index_renders_content_unavailable_alert(tmp_path: Path) -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "連結已失效" in response.text
-    assert "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。" in response.text
+    assert "內容無法查看" in response.text
+    assert "內容持續無法查看：Facebook 在連續三次頁面確認中都顯示目前無法查看此內容，監視已停止。" in response.text
     assert re.search(
         r'<div[^>]*class="runtime-error"[^>]*data-runtime-error[^>]*>\s*'
-        r"連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。</div>",
+        r"內容持續無法查看：Facebook 在連續三次頁面確認中都顯示目前無法查看此內容，監視已停止。</div>",
         response.text,
     )
     assert (
         '<div class="runtime-error" data-runtime-error >'
         "content_unavailable: Facebook content is unavailable"
     ) not in response.text
-    assert 'data-sidebar-status-detail="連結已失效"' in response.text
+    assert 'data-sidebar-status-detail="內容無法查看"' in response.text
     assert 'data-latest-error-kind="content-unavailable"' in response.text
     assert "下次刷新：未排程" in response.text
-    assert "Facebook 顯示目前無法查看此內容" in response.text
-    assert "status=failed · reason=連結已失效" in response.text
-    assert "failure_reason=連結已失效" in response.text
+    assert "Facebook 連續三次顯示目前無法查看此內容" in response.text
+    assert "status=failed · reason=Facebook 內容無法查看" in response.text
+    assert "failure_reason=Facebook 內容無法查看" in response.text
 
 
 def test_index_keeps_internal_scheduler_and_old_debug_ui_hidden(

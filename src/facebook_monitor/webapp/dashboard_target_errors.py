@@ -40,7 +40,10 @@ class TargetErrorPresenter:
 
         if self.runtime_state.runtime_status != TargetRuntimeStatus.ERROR:
             return ""
-        return format_runtime_error_message(self.runtime_state.last_error)
+        return format_runtime_error_message(
+            self.runtime_state.last_error,
+            self.latest_failed_scan_run,
+        )
 
     @property
     def runtime_skip_reason(self) -> str:
@@ -111,10 +114,12 @@ class TargetErrorPresenter:
 
     @property
     def content_unavailable_current(self) -> bool:
-        """回傳連結失效是否仍代表目前狀態。"""
+        """回傳內容不可見是否仍代表目前狀態。"""
 
         failed_scan = self.latest_failed_scan_run
         if not is_content_unavailable_scan(failed_scan):
+            return False
+        if is_retrying_failure_scan(failed_scan):
             return False
         if (
             self.runtime_state.runtime_status == TargetRuntimeStatus.ERROR

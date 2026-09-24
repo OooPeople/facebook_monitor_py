@@ -30,7 +30,11 @@ _PAGE_GUARD_KEYS: Final = frozenset(
     }
 )
 _PAGE_GUARD_CLASSIFICATIONS: Final = frozenset(
-    {"facebook_temporary_block", "facebook_page_guard_inconclusive"}
+    {
+        "content_unavailable",
+        "facebook_temporary_block",
+        "facebook_page_guard_inconclusive",
+    }
 )
 _PAGE_GUARD_URL_KINDS: Final = frozenset(
     {

@@ -892,7 +892,8 @@ def _log_failure_decision(
         logger.warning(
             "resident_target_finished target_id=%s worker_id=%s page_id=%s "
             "result=%s reason=%s runtime_action=%s recovery_action=%s "
-            "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s",
+            "retryable=%s retry_streak=%s retry_limit=%s retry_delay_seconds=%s "
+            "discard_page=%s",
             state.target_id,
             worker_id,
             state.page_id,
@@ -903,13 +904,15 @@ def _log_failure_decision(
             decision.retryable,
             decision.retry_streak,
             decision.retry_limit,
+            decision.retry_delay_seconds,
             decision.discard_page,
         )
         return
     logger.warning(
         "resident_target_finished target_id=%s worker_id=%s page_id=%s "
         "result=%s reason=%s runtime_action=%s recovery_action=%s "
-        "retryable=%s retry_streak=%s retry_limit=%s discard_page=%s "
+        "retryable=%s retry_streak=%s retry_limit=%s retry_delay_seconds=%s "
+        "discard_page=%s "
         "opened_page=%s reused_page=%s exception_class=%s",
         state.target_id,
         worker_id,
@@ -921,6 +924,7 @@ def _log_failure_decision(
         decision.retryable,
         decision.retry_streak,
         decision.retry_limit,
+        decision.retry_delay_seconds,
         decision.discard_page,
         state.opened,
         _attempt_reused_page(state),

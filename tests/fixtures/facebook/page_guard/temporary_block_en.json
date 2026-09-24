@@ -5,12 +5,14 @@
     {
       "headingTexts": ["You’re Temporarily Blocked"],
       "detailTexts": ["It looks like you were misusing this feature by going too fast."],
-      "articleCount": 0
+      "articleCount": 0,
+      "feedCandidateCount": 0
     },
     {
       "headingTexts": ["You're Temporarily Blocked"],
       "detailTexts": ["It looks like you were misusing this feature by going too fast."],
-      "articleCount": 0
+      "articleCount": 0,
+      "feedCandidateCount": 0
     }
   ]
 }

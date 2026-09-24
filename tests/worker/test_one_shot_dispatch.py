@@ -25,7 +25,7 @@ from facebook_monitor.worker.one_shot_dispatch import run_one_shot_scan
 from facebook_monitor.worker.one_shot_dispatch import select_one_shot_target
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
-from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
+from facebook_monitor.worker.facebook_page_guard import FacebookPageGuardDiagnostics
 from tests.worker.scan_finalize_test_helpers import record_protective_skip_for_test
 
 
@@ -523,9 +523,11 @@ def test_one_shot_record_failure_preserves_typed_diagnostics(tmp_path: Path) -> 
         facebook_host=True,
         matched_heading=True,
         matched_detail=True,
-        article_count=0,
+        heading_inside_feed=False,
+        detail_inside_feed=False,
+        heading_detail_local=True,
+        visible_feed_candidate_count=0,
         stable_observation_count=2,
-        body_text_length=48,
         url_kind="group_feed",
     )
     with SqliteApplicationContext(db_path) as app:

@@ -27,7 +27,7 @@ from facebook_monitor.worker.resident_main_executor import ExecutorWorkerPool
 from facebook_monitor.worker.resident_main_page_pool import AsyncResidentPagePool
 from facebook_monitor.worker.resident_main_queue import TargetQueue
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
+from facebook_monitor.worker.facebook_page_guard import FacebookPageGuardDiagnostics
 from facebook_monitor.worker.scan_commit_guard import scan_commit_guard_from_runtime_state
 
 from tests.helpers.repository_reads import list_pending_notification_outbox
@@ -44,9 +44,11 @@ def _block_diagnostics() -> FacebookPageGuardDiagnostics:
         facebook_host=True,
         matched_heading=True,
         matched_detail=True,
-        article_count=0,
+        heading_inside_feed=False,
+        detail_inside_feed=False,
+        heading_detail_local=True,
+        visible_feed_candidate_count=0,
         stable_observation_count=2,
-        body_text_length=64,
         url_kind="group_feed",
     )
 

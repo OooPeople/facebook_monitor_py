@@ -21,7 +21,7 @@ from facebook_monitor.facebook.group_metadata_validation import (
 )
 from facebook_monitor.worker.resident_maintenance_errors import is_scheduler_runtime_refresh_failure
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
+from facebook_monitor.worker.facebook_page_guard import ensure_async_page_scannable
 
 
 logger = logging.getLogger(__name__)

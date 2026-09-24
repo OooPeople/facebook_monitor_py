@@ -11,12 +11,23 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 
+from facebook_monitor.core.redaction import redact_sensitive_text
+
 
 APP_LOG_FILE_NAME = "app.log"
 ERROR_LOG_FILE_NAME = "error.log"
 LOG_MAX_BYTES = 1_000_000
 LOG_BACKUP_COUNT = 3
 MANAGED_HANDLER_FLAG = "_facebook_monitor_managed_handler"
+
+
+class _SensitiveDataRedactingFormatter(logging.Formatter):
+    """在 handler 寫出前遮罩完整格式化訊息中的敏感資料。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """遮罩 message args 與 traceback 完成展開後的最終文字。"""
+
+        return redact_sensitive_text(super().format(record))
 
 
 def configure_app_logging(
@@ -32,7 +43,7 @@ def configure_app_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     _remove_managed_handlers(root_logger)
-    formatter = logging.Formatter(
+    formatter = _SensitiveDataRedactingFormatter(
         "%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )

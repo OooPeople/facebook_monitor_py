@@ -15,15 +15,15 @@ from facebook_monitor.worker.failure_diagnostics import (
 )
 from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import classify_facebook_session_failure
-from facebook_monitor.worker.scan_orchestration import (
+from facebook_monitor.worker.facebook_page_guard import classify_facebook_session_failure
+from facebook_monitor.worker.facebook_page_guard import (
     classify_facebook_content_unavailable_evidence,
 )
-from facebook_monitor.worker.scan_orchestration import classify_facebook_temporary_block
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
-from facebook_monitor.worker.scan_orchestration import ensure_facebook_login_present
-from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
-from facebook_monitor.worker.scan_orchestration import FacebookPageGuardEvidence
+from facebook_monitor.worker.facebook_page_guard import classify_facebook_temporary_block
+from facebook_monitor.worker.facebook_page_guard import ensure_async_page_scannable
+from facebook_monitor.worker.facebook_page_guard import ensure_facebook_login_present
+from facebook_monitor.worker.facebook_page_guard import ensure_sync_page_scannable
+from facebook_monitor.worker.facebook_page_guard import FacebookPageGuardEvidence
 
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "facebook" / "page_guard"
@@ -58,9 +58,12 @@ class _SyncFixturePage:
         assert selector == "body"
         return _SyncBodyLocator(self.body_text)
 
-    def evaluate(self, script: str) -> object:
-        assert "headingTexts" in script
-        assert "feedCandidateCount" in script
+    def evaluate(self, script: str, args: object) -> object:
+        assert "matchedHeadingText" in script
+        assert "visibleFeedCandidateCount" in script
+        assert isinstance(args, dict)
+        assert args.get("titleMarkers")
+        assert args.get("detailMarkers")
         value = self.observations[min(self.evaluate_count, len(self.observations) - 1)]
         self.evaluate_count += 1
         return value
@@ -93,9 +96,12 @@ class _AsyncFixturePage:
         assert selector == "body"
         return _AsyncBodyLocator(self.body_text)
 
-    async def evaluate(self, script: str) -> object:
-        assert "headingTexts" in script
-        assert "feedCandidateCount" in script
+    async def evaluate(self, script: str, args: object) -> object:
+        assert "matchedHeadingText" in script
+        assert "visibleFeedCandidateCount" in script
+        assert isinstance(args, dict)
+        assert args.get("titleMarkers")
+        assert args.get("detailMarkers")
         value = self.observations[min(self.evaluate_count, len(self.observations) - 1)]
         self.evaluate_count += 1
         return value
@@ -154,31 +160,33 @@ def test_ensure_facebook_login_present_raises_worker_failure_reason() -> None:
 
 
 @pytest.mark.parametrize(
-    ("article_count", "heading_text", "expected_reason"),
+    ("heading_inside_feed", "visible_count", "heading_text", "expected_reason"),
     [
-        (None, "目前無法查看此內容", "facebook_page_guard_inconclusive"),
-        (0, "", "facebook_page_guard_inconclusive"),
-        (3, "目前無法查看此內容", None),
-        (0, "目前無法查看此內容", "content_unavailable"),
+        (None, 0, "目前無法查看此內容", "facebook_page_guard_inconclusive"),
+        (False, 0, "", "facebook_page_guard_inconclusive"),
+        (True, 3, "目前無法查看此內容", None),
+        (False, 3, "目前無法查看此內容", None),
+        (False, 0, "目前無法查看此內容", "content_unavailable"),
     ],
 )
 def test_content_unavailable_classifier_requires_full_page_structure(
-    article_count: int | None,
+    heading_inside_feed: bool | None,
+    visible_count: int,
     heading_text: str,
     expected_reason: str | None,
 ) -> None:
-    """正常 feed 不得因局部訊息誤判；零 article 與獨立 heading 才能確認。"""
+    """正常 feed 不得因局部訊息誤判；獨立 heading 且無 feed 才能確認。"""
 
     finding = classify_facebook_content_unavailable_evidence(
         FacebookPageGuardEvidence(
-            body_text=(
-                "目前無法查看此內容 擁有者變更了分享對象，或是刪除了內容。"
-            ),
+            body_text=("目前無法查看此內容 擁有者變更了分享對象，或是刪除了內容。"),
             heading_text=heading_text,
             detail_text="擁有者變更了分享對象，或是刪除了內容。",
             current_url="https://www.facebook.com/groups/1/",
-            article_count=article_count,
-            feed_candidate_count=0,
+            heading_inside_feed=heading_inside_feed,
+            detail_inside_feed=False,
+            heading_detail_local=True,
+            visible_feed_candidate_count=visible_count,
             stable_observation_count=1,
         )
     )
@@ -226,7 +234,8 @@ def test_page_guard_confirms_content_unavailable_with_one_structure_probe() -> N
     payload = serialize_worker_failure_diagnostics(diagnostics).payload
     page_guard = cast(dict[str, object], payload["page_guard"])
     assert page_guard["classification"] == "content_unavailable"
-    assert page_guard["article_count"] == 0
+    assert page_guard["heading_inside_feed"] is False
+    assert page_guard["visible_feed_candidate_count"] == 0
     assert page_guard["stable_observation_count"] == 1
 
 
@@ -250,19 +259,17 @@ def test_temporary_block_precedence_ignores_content_unavailable_marker_order() -
     """混合 DOM 必須保留 temporary block 的 pause-all 分類優先權。"""
 
     observation = {
-        "headingTexts": ["目前無法查看此內容", "你暫時遭到封鎖"],
-        "detailTexts": [
-            "擁有者變更了分享對象，或是刪除了內容。",
-            "你似乎過度使用了這項功能，因此暫時無法使用。",
-        ],
-        "articleCount": 0,
-        "feedCandidateCount": 0,
+        "matchedHeadingText": "你暫時遭到封鎖",
+        "matchedDetailText": "你似乎過度使用了這項功能，因此暫時無法使用。",
+        "headingInsideFeed": False,
+        "detailInsideFeed": False,
+        "headingDetailLocal": True,
+        "visibleFeedCandidateCount": 0,
     }
     page = _SyncFixturePage(
         {
             "body_text": (
-                "目前無法查看此內容 擁有者變更了分享對象 "
-                "你暫時遭到封鎖 你似乎過度使用了這項功能"
+                "目前無法查看此內容 擁有者變更了分享對象 你暫時遭到封鎖 你似乎過度使用了這項功能"
             ),
             "current_url": "https://www.facebook.com/groups/111/",
             "observations": [observation, observation],
@@ -285,8 +292,10 @@ def test_temporary_block_classifier_requires_high_confidence_structure() -> None
             heading_text="你暫時遭到封鎖",
             detail_text="你似乎過度使用了這項功能",
             current_url="https://www.facebook.com/groups/1/permalink/2/",
-            article_count=0,
-            feed_candidate_count=0,
+            heading_inside_feed=False,
+            detail_inside_feed=False,
+            heading_detail_local=True,
+            visible_feed_candidate_count=0,
             stable_observation_count=2,
         )
     )
@@ -314,21 +323,30 @@ def test_failure_diagnostics_validator_rejects_raw_or_unknown_fields() -> None:
 
 
 @pytest.mark.parametrize(
-    ("article_count", "feed_candidate_count", "stable_count", "expected_reason"),
+    (
+        "heading_inside_feed",
+        "detail_inside_feed",
+        "local_relation",
+        "visible_count",
+        "stable_count",
+        "expected_reason",
+    ),
     [
-        (None, 0, 0, "facebook_page_guard_inconclusive"),
-        (0, 0, 1, "facebook_page_guard_inconclusive"),
-        (3, 0, 1, None),
-        (0, 2, 2, None),
+        (None, None, None, 0, 0, "facebook_page_guard_inconclusive"),
+        (False, False, True, 0, 1, "facebook_page_guard_inconclusive"),
+        (True, True, True, 3, 2, None),
+        (False, False, False, 2, 2, None),
     ],
 )
 def test_temporary_block_classifier_handles_inconclusive_and_normal_feed(
-    article_count: int | None,
-    feed_candidate_count: int,
+    heading_inside_feed: bool | None,
+    detail_inside_feed: bool | None,
+    local_relation: bool | None,
+    visible_count: int,
     stable_count: int,
     expected_reason: str | None,
 ) -> None:
-    """結構不足時 fail closed，但正常 article/feed candidate 不得誤判。"""
+    """結構不足時 fail closed，但 feed 內 marker 或非局部訊息不得誤判。"""
 
     finding = classify_facebook_temporary_block(
         FacebookPageGuardEvidence(
@@ -336,8 +354,10 @@ def test_temporary_block_classifier_handles_inconclusive_and_normal_feed(
             heading_text="你暫時遭到封鎖",
             detail_text="你似乎過度使用了這項功能",
             current_url="https://www.facebook.com/groups/1/",
-            article_count=article_count,
-            feed_candidate_count=feed_candidate_count,
+            heading_inside_feed=heading_inside_feed,
+            detail_inside_feed=detail_inside_feed,
+            heading_detail_local=local_relation,
+            visible_feed_candidate_count=visible_count,
             stable_observation_count=stable_count,
         )
     )
@@ -354,8 +374,10 @@ def test_temporary_block_classifier_rejects_lookalike_host() -> None:
             heading_text="You're Temporarily Blocked",
             detail_text="misusing this feature by going too fast",
             current_url="https://evilfacebook.com/groups/1/posts/2",
-            article_count=0,
-            feed_candidate_count=0,
+            heading_inside_feed=False,
+            detail_inside_feed=False,
+            heading_detail_local=True,
+            visible_feed_candidate_count=0,
             stable_observation_count=2,
         )
     )

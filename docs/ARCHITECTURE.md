@@ -55,6 +55,9 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
 - app-level single-instance lock 與 DB/profile resource locks 避免同一 runtime、DB 或 automation profile 被多個 process 同時使用。
 - Web UI 預設只綁 loopback；mutating routes 由 CSRF token 保護。同一個 runtime dir 會沿用本機 CSRF token，避免瀏覽器舊分頁在程式重啟後第一次送出表單時被誤擋。
 - runtime logs 與 startup diagnostics 只記啟動語義與環境資訊，不記 cookies、tokens 或 session dump。
+  App/error/console 的 managed logging handlers 會在 traceback 與 message args 完成格式化後，
+  再統一遮罩已知 webhook、authorization/cookie、credential query 與本機使用者路徑，
+  避免第三方 client logger 繞過呼叫端的安全化處理。
 
 ## 模組邊界
 
@@ -143,13 +146,16 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   確認 temporary block，則先提交 incident 並維持 scheduler 停止，不能吞成一般 deferred
   metadata refresh。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
-- `content_unavailable` 必須先以整頁結構確認：正常 feed 仍有 `article` / `role=article`
-  或正式 extractor 支援的 feed/permalink candidate 時，不得因內嵌或局部內容出現
-  「目前無法查看此內容」而判定 target 失效。
+- `content_unavailable` 必須先以 marker context 確認：heading 位於實際 feed item 內，
+  或頁面仍有正式 extractor 支援的可見 feed/permalink candidate 時，不得因內嵌或局部
+  內容出現「目前無法查看此內容」而判定 target 失效。Temporary block 需 heading/detail
+  位於 feed 外、彼此有局部 DOM 關係且連續兩次結構觀察穩定；符合這組高可信證據時，
+  背景仍保留可見 feed 不會否決整頁封鎖判斷。
   內容不可見頁需丟棄目前 page，間隔 30 秒後用新 page 重新確認；總共連續三次
   仍無法查看才停止單一 target。temporary block 保留獨立的雙次穩定結構觀察，
   不得與 content unavailable 共用 marker precedence；內容不可見結構不足則沿用
-  `facebook_page_guard_inconclusive` 的安全重試語義。
+  `facebook_page_guard_inconclusive` 的安全重試語義。Page guard diagnostics v2 只保存
+  bounded context boolean/count，不保存 DOM 文字或 URL；讀取端仍接受既有 v1 紀錄。
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、
   keyword classification、match history、notification dedupe/outbox、
   latest scan snapshot 與 scan run commit。

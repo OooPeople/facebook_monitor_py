@@ -87,54 +87,39 @@ class TargetSchedulePlanner:
                     target_id=target.id,
                     latest_finished_at=latest_finished_at,
                 )
-                if runtime_state.scan_requested_at is not None:
-                    selected.append(
-                        DueTarget(
-                            target_id=target.id,
-                            interval_seconds=interval_seconds,
-                            due_at=current_time,
-                            scan_requested=True,
-                            scan_requested_at=runtime_state.scan_requested_at,
-                        )
-                    )
+                manual_due_target = self._manual_request_due_target(
+                    target_id=target.id,
+                    interval_seconds=interval_seconds,
+                    current_time=current_time,
+                    scan_requested_at=runtime_state.scan_requested_at,
+                )
+                if manual_due_target is not None:
+                    selected.append(manual_due_target)
                     continue
 
-                delayed_retry_due_at = self._delayed_failure_retry_due_at(
+                delayed_retry_applicable, delayed_due_target = self._delayed_retry_due_target(
+                    target_id=target.id,
+                    interval_seconds=interval_seconds,
+                    current_time=current_time,
                     failure_reason=runtime_state.consecutive_failure_reason,
                     failure_count=runtime_state.consecutive_failure_count,
                     latest_finished_at=latest_finished_at,
+                    initialized_due_times=initialized_due_times,
                 )
-                if delayed_retry_due_at is not None:
-                    if self._next_due_at_by_target.get(target.id) != delayed_retry_due_at:
-                        self._next_due_at_by_target[target.id] = delayed_retry_due_at
-                        initialized_due_times.append((target.id, delayed_retry_due_at))
-                    if current_time >= delayed_retry_due_at:
-                        selected.append(
-                            DueTarget(
-                                target_id=target.id,
-                                interval_seconds=interval_seconds,
-                                due_at=delayed_retry_due_at,
-                            )
-                        )
+                if delayed_retry_applicable:
+                    if delayed_due_target is not None:
+                        selected.append(delayed_due_target)
                     continue
 
-                due_at = self._next_due_at_by_target.get(target.id)
-                if due_at is None:
-                    due_at = self._initial_due_at(
-                        latest_finished_at=latest_finished_at,
-                        interval_seconds=interval_seconds,
-                        now=current_time,
-                    )
-                    self._next_due_at_by_target[target.id] = due_at
-                    initialized_due_times.append((target.id, due_at))
-                if current_time >= due_at:
-                    selected.append(
-                        DueTarget(
-                            target_id=target.id,
-                            interval_seconds=interval_seconds,
-                            due_at=due_at,
-                        )
-                    )
+                regular_due_target = self._regular_due_target(
+                    target_id=target.id,
+                    interval_seconds=interval_seconds,
+                    current_time=current_time,
+                    latest_finished_at=latest_finished_at,
+                    initialized_due_times=initialized_due_times,
+                )
+                if regular_due_target is not None:
+                    selected.append(regular_due_target)
 
         for target_id, due_at in initialized_due_times:
             self._publish_display_next_due_at(target_id, due_at)
@@ -145,13 +130,125 @@ class TargetSchedulePlanner:
         bounded_count = max(int(max_count), 1)
         return sorted_targets[:bounded_count]
 
+    @staticmethod
+    def _manual_request_due_target(
+        *,
+        target_id: str,
+        interval_seconds: float,
+        current_time: datetime,
+        scan_requested_at: datetime | None,
+    ) -> DueTarget | None:
+        """建立優先於自動 cadence 的手動掃描項目。"""
+
+        if scan_requested_at is None:
+            return None
+        return DueTarget(
+            target_id=target_id,
+            interval_seconds=interval_seconds,
+            due_at=current_time,
+            scan_requested=True,
+            scan_requested_at=scan_requested_at,
+        )
+
+    def _delayed_retry_due_target(
+        self,
+        *,
+        target_id: str,
+        interval_seconds: float,
+        current_time: datetime,
+        failure_reason: str,
+        failure_count: int,
+        latest_finished_at: datetime | None,
+        initialized_due_times: list[tuple[str, datetime]],
+    ) -> tuple[bool, DueTarget | None]:
+        """解析 delayed retry；bool 表示此分支已接管自動排程。"""
+
+        due_at = self._delayed_retry_due_at(
+            failure_reason=failure_reason,
+            failure_count=failure_count,
+            latest_finished_at=latest_finished_at,
+        )
+        if due_at is None:
+            return False, None
+        self._remember_due_at(
+            target_id,
+            due_at,
+            initialized_due_times=initialized_due_times,
+        )
+        return True, self._scheduled_due_target(
+            target_id=target_id,
+            interval_seconds=interval_seconds,
+            due_at=due_at,
+            current_time=current_time,
+        )
+
+    @staticmethod
+    def _scheduled_due_target(
+        *,
+        target_id: str,
+        interval_seconds: float,
+        due_at: datetime,
+        current_time: datetime,
+    ) -> DueTarget | None:
+        """到期時建立自動排程項目，尚未到期則不提交。"""
+
+        if current_time < due_at:
+            return None
+        return DueTarget(
+            target_id=target_id,
+            interval_seconds=interval_seconds,
+            due_at=due_at,
+        )
+
+    def _regular_due_target(
+        self,
+        *,
+        target_id: str,
+        interval_seconds: float,
+        current_time: datetime,
+        latest_finished_at: datetime | None,
+        initialized_due_times: list[tuple[str, datetime]],
+    ) -> DueTarget | None:
+        """解析一般 cadence，初始化 cache 後回傳已到期項目。"""
+
+        due_at = self._next_due_at_by_target.get(target_id)
+        if due_at is None:
+            due_at = self._initial_due_at(
+                latest_finished_at=latest_finished_at,
+                interval_seconds=interval_seconds,
+                now=current_time,
+            )
+        self._remember_due_at(
+            target_id,
+            due_at,
+            initialized_due_times=initialized_due_times,
+        )
+        return self._scheduled_due_target(
+            target_id=target_id,
+            interval_seconds=interval_seconds,
+            due_at=due_at,
+            current_time=current_time,
+        )
+
+    def _remember_due_at(
+        self,
+        target_id: str,
+        due_at: datetime,
+        *,
+        initialized_due_times: list[tuple[str, datetime]],
+    ) -> None:
+        """記住排程時間，並登記稍後才可發布的 UI 變更。"""
+
+        if self._next_due_at_by_target.get(target_id) == due_at:
+            return
+        self._next_due_at_by_target[target_id] = due_at
+        initialized_due_times.append((target_id, due_at))
+
     def mark_dispatched(self, due_target: DueTarget, *, now: datetime | None = None) -> None:
         """target 成功取得 scan lock 後，依 start-to-start cadence 推進 next_due_at。"""
 
         current_time = now or datetime.now(timezone.utc)
-        next_due_at = current_time + timedelta(
-            seconds=max(due_target.interval_seconds, 1)
-        )
+        next_due_at = current_time + timedelta(seconds=max(due_target.interval_seconds, 1))
         self._next_due_at_by_target[due_target.target_id] = next_due_at
         self._publish_display_next_due_at(due_target.target_id, next_due_at)
 
@@ -189,7 +286,7 @@ class TargetSchedulePlanner:
         return latest_finished_at + timedelta(seconds=max(interval_seconds, 1))
 
     @staticmethod
-    def _delayed_failure_retry_due_at(
+    def _delayed_retry_due_at(
         *,
         failure_reason: str,
         failure_count: int,

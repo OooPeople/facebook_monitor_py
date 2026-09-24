@@ -25,7 +25,7 @@ from facebook_monitor.automation.profile_lease import ProfileLeaseError
 from facebook_monitor.automation.profile_lease import acquire_profile_lease
 from facebook_monitor.core.defaults import PYTHON_PROFILE_LOGIN_DEFAULTS
 from facebook_monitor.facebook.browser_capture import get_start_page
-from facebook_monitor.worker.scan_orchestration import classify_facebook_session_failure
+from facebook_monitor.worker.facebook_page_guard import classify_facebook_session_failure
 
 
 FACEBOOK_HOME_URL = "https://www.facebook.com/"

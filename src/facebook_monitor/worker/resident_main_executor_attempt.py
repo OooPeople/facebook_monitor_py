@@ -39,6 +39,7 @@ from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomati
 from facebook_monitor.worker.facebook_automation_runtime import (
     FacebookAutomationRuntimeTripped,
 )
+from facebook_monitor.worker.facebook_page_guard import FACEBOOK_PAGE_GUARD_EVIDENCE_CODE
 from facebook_monitor.worker.resident_main_executor_types import AsyncReusablePageLike
 from facebook_monitor.worker.resident_main_executor_types import (
     AsyncCommitReadyScanCallable,
@@ -533,7 +534,7 @@ async def _try_record_facebook_access_incident(
                 operation_kind=state.facebook_operation_kind,
                 action_kind=state.facebook_action_kind,
                 target_id=state.target_id,
-                evidence_code="facebook_page_guard_v1",
+                evidence_code=FACEBOOK_PAGE_GUARD_EVIDENCE_CODE,
             ),
             scan_commit_guard=commit_guard,
             diagnostics=exc.diagnostics,

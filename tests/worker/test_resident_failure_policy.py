@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from datetime import timedelta
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.scan_failures import FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
+from facebook_monitor.scheduler.planner import DueTarget
 from facebook_monitor.scheduler.planner import TargetSchedulePlanner
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.posts_pipeline import PostsScanSummary
@@ -34,6 +37,46 @@ from tests.worker.resident_main_test_helpers import build_success_scan_result_fo
 from tests.worker.resident_main_cycle_harness import (
     run_resident_main_cycle_harness as run_resident_main_cycle,
 )
+
+
+class ControlledClockPlanner(TargetSchedulePlanner):
+    """讓整合測試以明確時間驅動正式 planner，不實際等待重試間隔。"""
+
+    def __init__(self, current_time: datetime) -> None:
+        super().__init__()
+        self.current_time = current_time
+        self.dispatched_due_targets: list[DueTarget] = []
+
+    def list_due_targets(
+        self,
+        db_path: Path,
+        *,
+        default_interval_seconds: float,
+        max_count: int | None = None,
+        now: datetime | None = None,
+    ) -> tuple[DueTarget, ...]:
+        """固定以測試時鐘列出 due targets。"""
+
+        return super().list_due_targets(
+            db_path,
+            default_interval_seconds=default_interval_seconds,
+            max_count=max_count,
+            now=self.current_time if now is None else now,
+        )
+
+    def mark_dispatched(
+        self,
+        due_target: DueTarget,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """記錄正式 executor dispatch，並以測試時鐘推進一般 cadence。"""
+
+        self.dispatched_due_targets.append(due_target)
+        super().mark_dispatched(
+            due_target,
+            now=self.current_time if now is None else now,
+        )
 
 
 def test_resident_main_scan_timeout_retries_until_third_failure(tmp_path: Path) -> None:
@@ -428,9 +471,7 @@ def test_resident_inconclusive_page_guard_retries_twice_then_stops(
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="inconclusive-three-strikes",
-                canonical_url=(
-                    "https://www.facebook.com/groups/inconclusive-three-strikes"
-                ),
+                canonical_url=("https://www.facebook.com/groups/inconclusive-three-strikes"),
                 config=TargetConfigPatch(enable_desktop_notification=True),
             )
         )
@@ -493,22 +534,23 @@ def test_resident_inconclusive_page_guard_retries_twice_then_stops(
 def test_resident_content_unavailable_reopens_page_before_terminal_error(
     tmp_path: Path,
 ) -> None:
-    """模擬三次已到期 attempt；每次用新 page，第三次才停止並送通知。"""
+    """自動到期後等待兩次30秒並重開page，第三次才停止target。"""
 
     db_path = tmp_path / "app.db"
     with SqliteApplicationContext(db_path) as app:
         target = app.services.targets.upsert_group_posts_target(
             UpsertGroupPostsTargetRequest(
                 group_id="content-unavailable-three-strikes",
-                canonical_url=(
-                    "https://www.facebook.com/groups/content-unavailable-three-strikes"
-                ),
-                config=TargetConfigPatch(enable_desktop_notification=True),
+                canonical_url=("https://www.facebook.com/groups/content-unavailable-three-strikes"),
             )
         )
         app.services.targets.restart_target_monitoring(target.id)
+        app.services.targets.clear_target_scan_request(target.id)
 
-    async def unavailable_scan(**_kwargs: Any) -> object:
+    seen_page_ids: list[int] = []
+
+    async def unavailable_scan(**kwargs: Any) -> object:
+        seen_page_ids.append(id(kwargs["page"]))
         raise WorkerFailure(
             CONTENT_UNAVAILABLE_REASON,
             "Facebook 顯示目前無法查看此內容。",
@@ -517,30 +559,33 @@ def test_resident_content_unavailable_reopens_page_before_terminal_error(
     async def run_test() -> None:
         context = FakeAsyncBrowserContext()
         page_pool = AsyncResidentPagePool(context)
+        planner = ControlledClockPlanner(datetime.now().astimezone())
+        options = ResidentRuntimeOptions(
+            db_path=db_path,
+            profile_dir=tmp_path / "profile",
+            interval_seconds=60,
+        )
         for attempt in range(1, 4):
-            with SqliteApplicationContext(db_path) as app:
-                app.services.targets.request_target_scan(target.id)
             summary = await run_resident_main_cycle(
-                options=ResidentRuntimeOptions(
-                    db_path=db_path,
-                    profile_dir=tmp_path / "profile",
-                    interval_seconds=0,
-                ),
+                options=options,
                 page_pool=page_pool,
                 scan_page=as_async_scan_callable(unavailable_scan),
-                schedule_planner=TargetSchedulePlanner(),
+                schedule_planner=planner,
                 cycle_index=attempt,
             )
+            assert summary.selected_count == 1
             assert summary.failure_count == 1
             assert await page_pool.size() == 0
             assert len(context.pages) == attempt
-            assert context.pages[-1].closed is True
+            assert all(page.closed for page in context.pages)
+            assert len(seen_page_ids) == attempt
+            assert len(set(seen_page_ids)) == attempt
+            assert len(planner.dispatched_due_targets) == attempt
+            assert planner.dispatched_due_targets[-1].target_id == target.id
+            assert planner.dispatched_due_targets[-1].scan_requested is False
             with SqliteApplicationContext(db_path) as app:
                 state = app.repositories.runtime_states.get(target.id)
                 latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
-                pending_outbox = list_pending_notification_outbox(
-                    app.repositories.notification_outbox,
-                )
             assert state is not None
             assert latest_scan is not None
             assert state.consecutive_failure_count == attempt
@@ -552,12 +597,28 @@ def test_resident_content_unavailable_reopens_page_before_terminal_error(
                 assert state.runtime_status == TargetRuntimeStatus.IDLE
                 assert latest_scan.metadata["runtime_action"] == "will_retry"
                 assert latest_scan.metadata["retry_delay_seconds"] == 30
-                assert pending_outbox == []
+                retry_due_at = latest_scan.finished_at + timedelta(seconds=30)
+                planner.current_time = retry_due_at - timedelta(seconds=1)
+                assert (
+                    planner.list_due_targets(
+                        db_path,
+                        default_interval_seconds=options.interval_seconds,
+                    )
+                    == ()
+                )
+                planner.current_time = retry_due_at
             else:
                 assert state.runtime_status == TargetRuntimeStatus.ERROR
                 assert latest_scan.metadata["runtime_action"] == "error"
                 assert "retry_delay_seconds" not in latest_scan.metadata
-                assert len(pending_outbox) == 1
+                planner.current_time = latest_scan.finished_at + timedelta(days=1)
+                assert (
+                    planner.list_due_targets(
+                        db_path,
+                        default_interval_seconds=options.interval_seconds,
+                    )
+                    == ()
+                )
 
     asyncio.run(run_test())
 

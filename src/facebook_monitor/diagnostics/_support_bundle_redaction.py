@@ -353,10 +353,14 @@ KNOWN_METADATA_KEYS = {
     "detector",
     "detectorversion",
     "facebookhost",
+    "detailinsidefeed",
+    "headingdetaillocal",
+    "headinginsidefeed",
     "matcheddetail",
     "matchedheading",
     "stableobservationcount",
     "urlkind",
+    "visiblefeedcandidatecount",
 }
 RUNTIME_DIAGNOSTIC_PATH_LABELS = {
     "data dir",
@@ -436,6 +440,7 @@ SAFE_METADATA_NUMERIC_KEYS = {
     "scrolly",
     "scrollwaitms",
     "stableobservationcount",
+    "visiblefeedcandidatecount",
     "stagnantwindows",
     "targetcount",
     "uniqueitemcount",

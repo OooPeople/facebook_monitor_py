@@ -3,10 +3,12 @@
   "current_url": "https://www.facebook.com/groups/111/",
   "observations": [
     {
-      "headingTexts": ["社團討論"],
-      "detailTexts": ["你暫時遭到封鎖，我似乎過度使用了這項功能。"],
-      "articleCount": 3,
-      "feedCandidateCount": 3
+      "matchedHeadingText": "",
+      "matchedDetailText": "你暫時遭到封鎖，我似乎過度使用了這項功能。",
+      "headingInsideFeed": null,
+      "detailInsideFeed": true,
+      "headingDetailLocal": null,
+      "visibleFeedCandidateCount": 3
     }
   ]
 }

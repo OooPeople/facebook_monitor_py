@@ -3,10 +3,12 @@
   "current_url": "https://www.facebook.com/groups/111/",
   "observations": [
     {
-      "headingTexts": ["目前無法查看此內容"],
-      "detailTexts": ["擁有者可能變更了分享對象或刪除了內容。"],
-      "articleCount": 0,
-      "feedCandidateCount": 2
+      "matchedHeadingText": "目前無法查看此內容",
+      "matchedDetailText": "擁有者可能變更了分享對象或刪除了內容。",
+      "headingInsideFeed": true,
+      "detailInsideFeed": true,
+      "headingDetailLocal": true,
+      "visibleFeedCandidateCount": 2
     }
   ]
 }

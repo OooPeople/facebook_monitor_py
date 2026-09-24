@@ -15,7 +15,7 @@ from typing import Mapping
 
 
 _MAX_SERIALIZED_BYTES: Final = 2048
-_PAGE_GUARD_KEYS: Final = frozenset(
+_PAGE_GUARD_V1_KEYS: Final = frozenset(
     {
         "detector",
         "detector_version",
@@ -26,6 +26,22 @@ _PAGE_GUARD_KEYS: Final = frozenset(
         "article_count",
         "stable_observation_count",
         "body_text_length",
+        "url_kind",
+    }
+)
+_PAGE_GUARD_V2_KEYS: Final = frozenset(
+    {
+        "detector",
+        "detector_version",
+        "classification",
+        "facebook_host",
+        "matched_heading",
+        "matched_detail",
+        "heading_inside_feed",
+        "detail_inside_feed",
+        "heading_detail_local",
+        "visible_feed_candidate_count",
+        "stable_observation_count",
         "url_kind",
     }
 )
@@ -46,6 +62,8 @@ _PAGE_GUARD_URL_KINDS: Final = frozenset(
         "unknown",
     }
 )
+
+
 class WorkerFailureDiagnostics(ABC):
     """可附加到 WorkerFailure 的封閉 diagnostics DTO base。"""
 
@@ -109,10 +127,22 @@ def _validate_page_guard_payload(
     if not isinstance(value, Mapping) or set(value) != {"page_guard"}:
         return None
     page_guard = value.get("page_guard")
-    if not isinstance(page_guard, Mapping) or set(page_guard) != _PAGE_GUARD_KEYS:
+    if not isinstance(page_guard, Mapping):
+        return None
+    detector_version = page_guard.get("detector_version")
+    if detector_version == 1:
+        return _validate_page_guard_v1(page_guard)
+    if detector_version == 2:
+        return _validate_page_guard_v2(page_guard)
+    return None
+
+
+def _validate_page_guard_v1(page_guard: Mapping[object, object]) -> dict[str, object] | None:
+    """驗證並保留既有 detector v1 diagnostics。"""
+
+    if set(page_guard) != _PAGE_GUARD_V1_KEYS:
         return None
     detector = page_guard.get("detector")
-    detector_version = page_guard.get("detector_version")
     classification = page_guard.get("classification")
     facebook_host = page_guard.get("facebook_host")
     matched_heading = page_guard.get("matched_heading")
@@ -123,7 +153,7 @@ def _validate_page_guard_payload(
     url_kind = page_guard.get("url_kind")
     if detector != "facebook_scan_page_guard":
         return None
-    if not _is_bounded_int(detector_version, minimum=1, maximum=1000):
+    if page_guard.get("detector_version") != 1:
         return None
     if classification not in _PAGE_GUARD_CLASSIFICATIONS:
         return None
@@ -144,7 +174,7 @@ def _validate_page_guard_payload(
     return {
         "page_guard": {
             "detector": detector,
-            "detector_version": detector_version,
+            "detector_version": 1,
             "classification": classification,
             "facebook_host": facebook_host,
             "matched_heading": matched_heading,
@@ -152,6 +182,63 @@ def _validate_page_guard_payload(
             "article_count": article_count,
             "stable_observation_count": stable_count,
             "body_text_length": body_text_length,
+            "url_kind": url_kind,
+        }
+    }
+
+
+def _validate_page_guard_v2(page_guard: Mapping[object, object]) -> dict[str, object] | None:
+    """驗證 marker-context detector v2 diagnostics。"""
+
+    if set(page_guard) != _PAGE_GUARD_V2_KEYS:
+        return None
+    detector = page_guard.get("detector")
+    classification = page_guard.get("classification")
+    facebook_host = page_guard.get("facebook_host")
+    matched_heading = page_guard.get("matched_heading")
+    matched_detail = page_guard.get("matched_detail")
+    heading_inside_feed = page_guard.get("heading_inside_feed")
+    detail_inside_feed = page_guard.get("detail_inside_feed")
+    heading_detail_local = page_guard.get("heading_detail_local")
+    visible_count = page_guard.get("visible_feed_candidate_count")
+    stable_count = page_guard.get("stable_observation_count")
+    url_kind = page_guard.get("url_kind")
+    if detector != "facebook_scan_page_guard":
+        return None
+    if page_guard.get("detector_version") != 2:
+        return None
+    if classification not in _PAGE_GUARD_CLASSIFICATIONS:
+        return None
+    if not all(isinstance(item, bool) for item in (facebook_host, matched_heading, matched_detail)):
+        return None
+    if not all(
+        item is None or isinstance(item, bool)
+        for item in (heading_inside_feed, detail_inside_feed, heading_detail_local)
+    ):
+        return None
+    if visible_count is not None and not _is_bounded_int(
+        visible_count,
+        minimum=0,
+        maximum=100_000,
+    ):
+        return None
+    if not _is_bounded_int(stable_count, minimum=0, maximum=10):
+        return None
+    if url_kind not in _PAGE_GUARD_URL_KINDS:
+        return None
+    return {
+        "page_guard": {
+            "detector": detector,
+            "detector_version": 2,
+            "classification": classification,
+            "facebook_host": facebook_host,
+            "matched_heading": matched_heading,
+            "matched_detail": matched_detail,
+            "heading_inside_feed": heading_inside_feed,
+            "detail_inside_feed": detail_inside_feed,
+            "heading_detail_local": heading_detail_local,
+            "visible_feed_candidate_count": visible_count,
+            "stable_observation_count": stable_count,
             "url_kind": url_kind,
         }
     }

@@ -53,6 +53,7 @@ from facebook_monitor.worker.facebook_automation_runtime import (
     FacebookTemporaryBlockIncidentRecorded,
 )
 from facebook_monitor.worker.facebook_automation_runtime import record_temporary_block_sync
+from facebook_monitor.worker.facebook_page_guard import FACEBOOK_PAGE_GUARD_EVIDENCE_CODE
 
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ async def _resolve_group_metadata_if_needed(
                     source_kind=FacebookWorkSourceKind.SYNC_RESOLVER,
                     operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
                     action_kind=FacebookActionKind.GROUP_DOCUMENT,
-                    evidence_code="facebook_page_guard_v1",
+                    evidence_code=FACEBOOK_PAGE_GUARD_EVIDENCE_CODE,
                 ),
                 diagnostics=exc.diagnostics,
             )

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 import facebook_monitor.runtime.startup_diagnostics as startup_diagnostics
 from facebook_monitor.core.defaults import PYTHON_SCHEDULER_RUNTIME_DEFAULTS
 from facebook_monitor.runtime.logging_setup import configure_app_logging
@@ -54,6 +56,52 @@ def test_configure_app_logging_keeps_info_out_of_default_console(
     assert "hidden info" in (logs_dir / "app.log").read_text(encoding="utf-8")
 
 
+def test_configure_app_logging_redacts_real_httpx_discord_request(tmp_path) -> None:
+    """httpx INFO request log 不得把 Discord webhook token 寫進 app.log。"""
+
+    logs_dir = tmp_path / "logs"
+    webhook_token = "private-discord-token"
+    webhook_url = "https://discord.com/api/webhooks/123456789012345678/" + webhook_token
+    try:
+        app_log_path = configure_app_logging(logs_dir, console=False)
+        with httpx.Client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(204))
+        ) as client:
+            response = client.post(webhook_url)
+    finally:
+        reset_app_logging()
+
+    assert response.status_code == 204
+    text = app_log_path.read_text(encoding="utf-8")
+    assert webhook_token not in text
+    assert "HTTP Request: POST" in text
+    assert "123456789012345678/[已隱藏]" in text
+    assert '"HTTP/1.1 204 No Content"' in text
+
+
+def test_configure_app_logging_redacts_webhook_from_exception_traceback(tmp_path) -> None:
+    """格式化後的 exception traceback 也不得把 webhook token 寫入 logs。"""
+
+    logs_dir = tmp_path / "logs"
+    webhook_token = "exception-private-token"
+    webhook_url = f"https://discord.com/api/webhooks/123456/{webhook_token}"
+    try:
+        configure_app_logging(logs_dir, console=False)
+        try:
+            raise RuntimeError(f"request failed for {webhook_url}")
+        except RuntimeError:
+            logging.getLogger("facebook_monitor.test").exception("notification transport failed")
+    finally:
+        reset_app_logging()
+
+    for log_name in ("app.log", "error.log"):
+        text = (logs_dir / log_name).read_text(encoding="utf-8")
+        assert webhook_token not in text
+        assert "notification transport failed" in text
+        assert "RuntimeError: request failed" in text
+        assert "123456/[已隱藏]" in text
+
+
 def test_startup_diagnostics_append_startup_log(tmp_path) -> None:
     """Startup diagnostics 會追加寫入 logs/startup.log。"""
 
@@ -84,8 +132,7 @@ def test_startup_diagnostics_append_startup_log(tmp_path) -> None:
     assert "Browser mode: playwright_chromium" in text
     assert "Scheduler tick seconds: 2" in text
     assert (
-        "Scheduler max concurrent scans: "
-        f"{PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans}"
+        f"Scheduler max concurrent scans: {PYTHON_SCHEDULER_RUNTIME_DEFAULTS.max_concurrent_scans}"
     ) in text
     assert "Reset targets on startup: true" in text
     assert "Resume active targets on startup: false" in text

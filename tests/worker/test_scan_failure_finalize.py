@@ -39,7 +39,7 @@ from facebook_monitor.worker.scan_failure_finalize import (
     record_guarded_scan_failure_decision,
 )
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
+from facebook_monitor.worker.facebook_page_guard import FacebookPageGuardDiagnostics
 
 from tests.helpers.repository_reads import latest_notification_event_by_target
 from tests.helpers.repository_reads import list_pending_notification_outbox
@@ -102,9 +102,11 @@ def test_record_guarded_scan_failure_persists_only_typed_page_guard_diagnostics(
         facebook_host=True,
         matched_heading=True,
         matched_detail=True,
-        article_count=0,
+        heading_inside_feed=False,
+        detail_inside_feed=False,
+        heading_detail_local=True,
+        visible_feed_candidate_count=0,
         stable_observation_count=2,
-        body_text_length=48,
         url_kind="group_post",
     )
     with SqliteApplicationContext(db_path) as app:

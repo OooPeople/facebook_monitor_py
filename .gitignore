@@ -19,6 +19,7 @@
 
 # Python
 __pycache__/
+.DS_Store
 .codex/
 .pytest_tmp*/
 .pytest_run*/

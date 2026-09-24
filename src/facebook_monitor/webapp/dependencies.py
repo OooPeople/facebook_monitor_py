@@ -41,7 +41,7 @@ from facebook_monitor.webapp.dashboard_revision_notifier import DashboardRevisio
 from facebook_monitor.worker.facebook_automation_runtime import (
     FacebookTemporaryBlockIncidentRecorded,
 )
-from facebook_monitor.worker.scan_orchestration import ensure_sync_page_scannable
+from facebook_monitor.worker.facebook_page_guard import ensure_sync_page_scannable
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()

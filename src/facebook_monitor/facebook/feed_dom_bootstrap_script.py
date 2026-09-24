@@ -3,23 +3,19 @@
 職責：保存 `POST_LIKE_ITEMS_SCRIPT` 的單一責任 JavaScript 片段。
 """
 
-FEED_DOM_BOOTSTRAP_SCRIPT = '''async (maxItems) => {
-            const feedRoots = [
-                '[role="feed"]',
-                'div[data-pagelet*="GroupsFeed"]',
-                'div[data-pagelet*="FeedUnit"]',
-                '[role="main"]',
-            ];
-            const postContainerCandidates = [
-                'a[href*="/groups/"][href*="/posts/"], a[href*="/groups/"][href*="/post/"], a[href*="/permalink/"], a[href*="multi_permalinks="], a[href*="story_fbid="], a[href*="set=gm."]',
-                '[role="feed"] [role="article"]',
-                '[role="feed"] > div',
-                'div[data-pagelet*="FeedUnit"]',
-                'div[data-pagelet*="GroupsFeed"] [role="article"]',
-                '[aria-posinset]',
-            ];
-            const postPermalinkAnchors =
-                'a[href*="/groups/"][href*="/posts/"], a[href*="/groups/"][href*="/post/"], a[href*="/permalink/"], a[href*="multi_permalinks="], a[href*="story_fbid="], a[href*="set=gm."]';
+from facebook_monitor.facebook.feed_dom_selectors import FEED_ROOT_SELECTORS_SCRIPT
+from facebook_monitor.facebook.feed_dom_selectors import (
+    POST_CONTAINER_CANDIDATE_SELECTORS_SCRIPT,
+)
+from facebook_monitor.facebook.feed_dom_selectors import POST_PERMALINK_ANCHOR_SELECTOR
+
+FEED_DOM_BOOTSTRAP_SCRIPT = (
+    "async (maxItems) => {\n"
+    f"            const feedRoots = {FEED_ROOT_SELECTORS_SCRIPT};\n"
+    "            const postContainerCandidates = "
+    f"{POST_CONTAINER_CANDIDATE_SELECTORS_SCRIPT};\n"
+    f"            const postPermalinkAnchors = {POST_PERMALINK_ANCHOR_SELECTOR!r};\n"
+    """
             const commentPermalinkAnchors = 'a[href*="comment_id="], a[href*="reply_comment_id="]';
             const postStoryMessage =
                 'div[data-ad-comet-preview="message"], div[data-ad-preview="message"], [data-ad-rendering-role="story_message"]';
@@ -47,6 +43,7 @@ FEED_DOM_BOOTSTRAP_SCRIPT = '''async (maxItems) => {
                 /\\bsnproSet[a-z0-9]+\\b/gi,
                 /\\bsotoeSrdpn[a-z0-9]+\\b/gi,
             ];
-'''
+"""
+)
 
 __all__ = ["FEED_DOM_BOOTSTRAP_SCRIPT"]

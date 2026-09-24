@@ -35,7 +35,8 @@ from facebook_monitor.worker.resident_maintenance_errors import (
     is_scheduler_runtime_refresh_failure,
 )
 from facebook_monitor.worker.resident_shared import ResidentRuntimeOptions
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
+from facebook_monitor.worker.facebook_page_guard import FACEBOOK_PAGE_GUARD_EVIDENCE_CODE
+from facebook_monitor.worker.facebook_page_guard import ensure_async_page_scannable
 from facebook_monitor.worker.errors import WorkerFailure
 from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomationRuntime
 from facebook_monitor.worker.facebook_automation_runtime import (
@@ -98,7 +99,7 @@ async def refresh_requested_target_metadata(
                         operation_kind=FacebookProductOperationKind.GROUP_METADATA_ACCESS,
                         action_kind=FacebookActionKind.GROUP_DOCUMENT,
                         target_id=target_id,
-                        evidence_code="facebook_page_guard_v1",
+                        evidence_code=FACEBOOK_PAGE_GUARD_EVIDENCE_CODE,
                     ),
                     diagnostics=exc.diagnostics,
                 )

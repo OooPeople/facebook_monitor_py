@@ -3,16 +3,20 @@
   "current_url": "https://www.facebook.com/groups/111/posts/222/",
   "observations": [
     {
-      "headingTexts": ["You’re Temporarily Blocked"],
-      "detailTexts": ["It looks like you were misusing this feature by going too fast."],
-      "articleCount": 0,
-      "feedCandidateCount": 0
+      "matchedHeadingText": "You’re Temporarily Blocked",
+      "matchedDetailText": "It looks like you were misusing this feature by going too fast.",
+      "headingInsideFeed": false,
+      "detailInsideFeed": false,
+      "headingDetailLocal": true,
+      "visibleFeedCandidateCount": 0
     },
     {
-      "headingTexts": ["You're Temporarily Blocked"],
-      "detailTexts": ["It looks like you were misusing this feature by going too fast."],
-      "articleCount": 0,
-      "feedCandidateCount": 0
+      "matchedHeadingText": "You're Temporarily Blocked",
+      "matchedDetailText": "It looks like you were misusing this feature by going too fast.",
+      "headingInsideFeed": false,
+      "detailInsideFeed": false,
+      "headingDetailLocal": true,
+      "visibleFeedCandidateCount": 0
     }
   ]
 }

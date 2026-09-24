@@ -24,8 +24,8 @@ from facebook_monitor.facebook.extracted_item import ExtractedItem
 from facebook_monitor.facebook.sort_results import SortAdjustResult
 from facebook_monitor.facebook.sort_runtime import ensure_preferred_comment_sort_async
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import ensure_async_page_scannable
-from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
+from facebook_monitor.worker.facebook_page_guard import AsyncScannablePageLike
+from facebook_monitor.worker.facebook_page_guard import ensure_async_page_scannable
 from facebook_monitor.worker.scan_orchestration import resolve_effective_scan_scroll_rounds
 from facebook_monitor.worker.scan_metadata import CommentScanMetadata
 from facebook_monitor.worker.scan_metadata import CommentScanRoundMetadata

@@ -627,14 +627,16 @@ def test_support_bundle_keeps_safe_page_guard_diagnostics_without_raw_page_data(
                     "failure_diagnostics": {
                         "page_guard": {
                             "detector": "facebook_scan_page_guard",
-                            "detector_version": 1,
+                            "detector_version": 2,
                             "classification": "facebook_temporary_block",
                             "facebook_host": True,
                             "matched_heading": True,
                             "matched_detail": True,
-                            "article_count": 0,
+                            "heading_inside_feed": False,
+                            "detail_inside_feed": False,
+                            "heading_detail_local": True,
+                            "visible_feed_candidate_count": 2,
                             "stable_observation_count": 2,
-                            "body_text_length": 48,
                             "url_kind": "group_post",
                             "url": "https://www.facebook.com/groups/private/posts/999",
                             "text": "private block page body",
@@ -656,9 +658,12 @@ def test_support_bundle_keeps_safe_page_guard_diagnostics_without_raw_page_data(
     page_guard = payload["runs"][0]["metadata"]["failure_diagnostics"]["page_guard"]
     assert payload["failure_reason_counts"] == {"facebook_temporary_block": 1}
     assert page_guard["detector"] == "facebook_scan_page_guard"
-    assert page_guard["detector_version"] == 1
+    assert page_guard["detector_version"] == 2
     assert page_guard["stable_observation_count"] == 2
-    assert page_guard["body_text_length"] == 48
+    assert page_guard["heading_inside_feed"] is False
+    assert page_guard["detail_inside_feed"] is False
+    assert page_guard["heading_detail_local"] is True
+    assert page_guard["visible_feed_candidate_count"] == 2
     assert page_guard["url_kind"] == "group_post"
     assert "private" not in combined
     assert "facebook.com" not in combined

@@ -25,6 +25,7 @@ from facebook_monitor.worker.facebook_automation_runtime import FacebookAutomati
 from facebook_monitor.worker.facebook_automation_runtime import (
     FacebookAutomationRuntimeTripped,
 )
+from facebook_monitor.worker.facebook_page_guard import FACEBOOK_PAGE_GUARD_EVIDENCE_CODE
 
 
 async def refresh_pending_target_cover_images(
@@ -71,7 +72,7 @@ async def refresh_pending_target_cover_images(
                         operation_kind=FacebookProductOperationKind.COVER_METADATA_ACCESS,
                         action_kind=FacebookActionKind.GROUP_DOCUMENT,
                         target_id=state.target_id,
-                        evidence_code="facebook_page_guard_v1",
+                        evidence_code=FACEBOOK_PAGE_GUARD_EVIDENCE_CODE,
                     ),
                     diagnostics=exc.diagnostics,
                 )

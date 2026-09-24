@@ -124,14 +124,16 @@ def test_sanitize_metadata_preserves_only_safe_page_guard_diagnostics() -> None:
             "failure_diagnostics": {
                 "page_guard": {
                     "detector": "facebook_scan_page_guard",
-                    "detector_version": 1,
+                    "detector_version": 2,
                     "classification": "facebook_temporary_block",
                     "facebook_host": True,
                     "matched_heading": True,
                     "matched_detail": True,
-                    "article_count": 0,
+                    "heading_inside_feed": False,
+                    "detail_inside_feed": False,
+                    "heading_detail_local": True,
+                    "visible_feed_candidate_count": 2,
                     "stable_observation_count": 2,
-                    "body_text_length": 48,
                     "url_kind": "group_post",
                     "url": "https://www.facebook.com/groups/private/posts/999",
                     "text": "private page body",
@@ -144,8 +146,9 @@ def test_sanitize_metadata_preserves_only_safe_page_guard_diagnostics() -> None:
     assert payload["reason"] == "facebook_temporary_block"
     assert "facebook_scan_page_guard" in combined
     assert "group_post" in combined
-    assert '"detector_version": 1' in combined
-    assert '"body_text_length": 48' in combined
+    assert '"detector_version": 2' in combined
+    assert '"heading_inside_feed": false' in combined
+    assert '"visible_feed_candidate_count": 2' in combined
     assert "private" not in combined
     assert "facebook.com" not in combined
 

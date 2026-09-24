@@ -303,6 +303,50 @@ def test_failed_scan_diagnostics_shows_safe_page_guard_evidence() -> None:
     assert "https://" not in text
 
 
+def test_failed_scan_diagnostics_shows_v2_marker_context() -> None:
+    """v2 diagnostics 應顯示 bounded marker context，不顯示 DOM 文字或 URL。"""
+
+    scan = ScanRun(
+        target_id="target-1",
+        status=ScanStatus.FAILED,
+        started_at=_STARTED_AT,
+        finished_at=_FINISHED_AT,
+        error_message="Facebook temporary access block detected.",
+        metadata={
+            "reason": "facebook_temporary_block",
+            "failure_diagnostics": {
+                "page_guard": {
+                    "detector": "facebook_scan_page_guard",
+                    "detector_version": 2,
+                    "classification": "facebook_temporary_block",
+                    "facebook_host": True,
+                    "matched_heading": True,
+                    "matched_detail": True,
+                    "heading_inside_feed": False,
+                    "detail_inside_feed": False,
+                    "heading_detail_local": True,
+                    "visible_feed_candidate_count": 2,
+                    "stable_observation_count": 2,
+                    "url_kind": "group_post",
+                }
+            },
+        },
+    )
+
+    text = build_scan_diagnostics_text(
+        target=_target(),
+        config=_config(),
+        runtime_state=_runtime_state(),
+        latest_scan_run=scan,
+    )
+
+    assert "  heading_inside_feed=False" in text
+    assert "  detail_inside_feed=False" in text
+    assert "  heading_detail_local=True" in text
+    assert "  visible_feed_candidate_count=2" in text
+    assert "https://" not in text
+
+
 def test_append_sort_block_shows_menu_candidate_texts_when_present() -> None:
     """sort block 有候選文字時才顯示，方便複製給 review。"""
 

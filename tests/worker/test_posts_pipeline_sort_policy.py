@@ -94,13 +94,15 @@ class AsyncTemporaryBlockPostsPage:
     async def evaluate(self, script: str, *args: object) -> object:
         """只允許 bounded page guard probe，不得進入排序或抽取。"""
 
-        assert "articleCount" in script
+        assert "matchedHeadingText" in script
         self.guard_observations += 1
         return {
-            "headingTexts": ["你暫時遭到封鎖"],
-            "detailTexts": ["你似乎過度使用了這項功能"],
-            "articleCount": 0,
-            "feedCandidateCount": 0,
+            "matchedHeadingText": "你暫時遭到封鎖",
+            "matchedDetailText": "你似乎過度使用了這項功能",
+            "headingInsideFeed": False,
+            "detailInsideFeed": False,
+            "headingDetailLocal": True,
+            "visibleFeedCandidateCount": 0,
         }
 
     async def wait_for_timeout(self, milliseconds: int) -> None:

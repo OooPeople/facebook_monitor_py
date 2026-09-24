@@ -8,7 +8,7 @@ from typing import Protocol
 from facebook_monitor.application.context import ApplicationContext
 from facebook_monitor.core.models import TargetConfig
 from facebook_monitor.core.models import TargetDescriptor
-from facebook_monitor.worker.scan_orchestration import AsyncScannablePageLike
+from facebook_monitor.worker.facebook_page_guard import AsyncScannablePageLike
 from facebook_monitor.worker.scan_pipeline_results import FormalAsyncScanResult
 
 

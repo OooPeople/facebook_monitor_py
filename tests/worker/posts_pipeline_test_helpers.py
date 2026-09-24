@@ -166,13 +166,15 @@ class ContentUnavailablePostsPage(FakePage):
     def evaluate(self, script: str, *args: Any) -> Any:
         """只允許 page guard 結構 probe，排序與 extractor 必須 short-circuit。"""
 
-        if "headingTexts" in script and "articleCount" in script:
+        if "matchedHeadingText" in script and "visibleFeedCandidateCount" in script:
             self.guard_observation_count += 1
             return {
-                "headingTexts": ["目前無法查看此內容"],
-                "detailTexts": ["擁有者變更了分享對象，或是刪除了內容。"],
-                "articleCount": 0,
-                "feedCandidateCount": 0,
+                "matchedHeadingText": "目前無法查看此內容",
+                "matchedDetailText": "擁有者變更了分享對象，或是刪除了內容。",
+                "headingInsideFeed": False,
+                "detailInsideFeed": False,
+                "headingDetailLocal": True,
+                "visibleFeedCandidateCount": 0,
             }
         raise AssertionError("content-unavailable scan should stop before sort")
 
@@ -194,13 +196,15 @@ class TemporaryBlockPostsPage(FakePage):
     def evaluate(self, script: str, *args: Any) -> Any:
         """只允許 page guard 結構 probe，排序與 extractor 必須 short-circuit。"""
 
-        if "headingTexts" in script and "articleCount" in script:
+        if "matchedHeadingText" in script and "visibleFeedCandidateCount" in script:
             self.guard_observation_count += 1
             return {
-                "headingTexts": ["你暫時遭到封鎖"],
-                "detailTexts": ["你似乎過度使用了這項功能"],
-                "articleCount": 0,
-                "feedCandidateCount": 0,
+                "matchedHeadingText": "你暫時遭到封鎖",
+                "matchedDetailText": "你似乎過度使用了這項功能",
+                "headingInsideFeed": False,
+                "detailInsideFeed": False,
+                "headingDetailLocal": True,
+                "visibleFeedCandidateCount": 0,
             }
         raise AssertionError("temporary-block scan should stop before sort")
 

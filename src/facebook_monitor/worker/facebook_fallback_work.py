@@ -34,6 +34,7 @@ from facebook_monitor.worker.facebook_automation_runtime import (
     FacebookTemporaryBlockIncidentRecorded,
 )
 from facebook_monitor.worker.facebook_automation_runtime import record_temporary_block_sync
+from facebook_monitor.worker.facebook_page_guard import FACEBOOK_PAGE_GUARD_EVIDENCE_CODE
 from facebook_monitor.worker.failure_diagnostics import WorkerFailureDiagnostics
 from facebook_monitor.worker.scan_commit_guard import ScanCommitGuard
 
@@ -91,7 +92,7 @@ class FacebookFallbackWork:
                 operation_kind=operation_kind,
                 action_kind=action_kind,
                 target_id=target_id,
-                evidence_code="facebook_page_guard_v1",
+                evidence_code=FACEBOOK_PAGE_GUARD_EVIDENCE_CODE,
             ),
             scan_commit_guard=commit_guard,
             diagnostics=diagnostics,

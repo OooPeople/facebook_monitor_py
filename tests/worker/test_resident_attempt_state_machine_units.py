@@ -29,7 +29,7 @@ from facebook_monitor.worker.attempt_transitions import ResidentAttemptTerminalT
 from facebook_monitor.worker.attempt_transitions import transition_from_scan_commit_outcome
 from facebook_monitor.worker import resident_main_executor_attempt as attempt_module
 from facebook_monitor.worker.errors import WorkerFailure
-from facebook_monitor.worker.scan_orchestration import FacebookPageGuardDiagnostics
+from facebook_monitor.worker.facebook_page_guard import FacebookPageGuardDiagnostics
 from facebook_monitor.worker.resident_failure_decisions import (
     decide_resident_attempt_exception,
 )
@@ -604,9 +604,11 @@ def test_async_resident_failure_decision_preserves_typed_diagnostics() -> None:
         facebook_host=True,
         matched_heading=True,
         matched_detail=True,
-        article_count=0,
+        heading_inside_feed=False,
+        detail_inside_feed=False,
+        heading_detail_local=True,
+        visible_feed_candidate_count=0,
         stable_observation_count=2,
-        body_text_length=48,
         url_kind="group_post",
     )
     decision = failure_record_decision_for_worker_failure(

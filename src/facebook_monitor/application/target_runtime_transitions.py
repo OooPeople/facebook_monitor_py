@@ -108,6 +108,11 @@ def retriable_failure_state(
         last_skip_reason=(
             f"{decision.recovery_action}: retry "
             f"{decision.retry_streak}/{decision.retry_limit}"
+            + (
+                f" after {decision.retry_delay_seconds}s"
+                if decision.retry_delay_seconds > 0
+                else ""
+            )
             if decision.recovery_action
             else ""
         ),

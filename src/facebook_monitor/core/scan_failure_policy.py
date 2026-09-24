@@ -47,7 +47,6 @@ SCHEDULER_CANCEL_IDLE_FAILURE_REASONS = frozenset({SCHEDULER_STOPPING_REASON})
 IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
     {
         CHECKPOINT_REQUIRED_REASON,
-        CONTENT_UNAVAILABLE_REASON,
         FACEBOOK_TEMPORARY_BLOCK_REASON,
         LOGIN_REQUIRED_REASON,
         PROFILE_LOCKED_REASON,
@@ -63,11 +62,13 @@ IMMEDIATE_TERMINAL_FAILURE_REASONS = frozenset(
 )
 DISCARD_PAGE_FAILURE_REASONS = frozenset(
     {
+        CONTENT_UNAVAILABLE_REASON,
         FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON,
         FACEBOOK_TEMPORARY_BLOCK_REASON,
     }
 )
 STREAK_RETRY_FAILURE_LIMITS = {
+    CONTENT_UNAVAILABLE_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.recoverable_failure_limit),
     PAGE_LOAD_TIMEOUT_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.page_load_timeout_failure_limit),
     STALE_RUNNING_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.stale_running_failure_limit),
     SCHEDULER_RUNTIME_REASON: (PYTHON_SCHEDULER_RUNTIME_DEFAULTS.scheduler_runtime_failure_limit),
@@ -75,9 +76,15 @@ STREAK_RETRY_FAILURE_LIMITS = {
         PYTHON_SCHEDULER_RUNTIME_DEFAULTS.sort_adjust_unconfirmed_failure_limit
     ),
 }
+STREAK_RETRY_DELAY_SECONDS = {
+    CONTENT_UNAVAILABLE_REASON: (
+        PYTHON_SCHEDULER_RUNTIME_DEFAULTS.content_unavailable_retry_delay_seconds
+    ),
+}
 TARGET_PAGE_RESTART_ACTION = "target_page_restart"
 SCHEDULER_RUNTIME_RESTART_ACTION = "scheduler_runtime_restart"
 AUTO_RESTART_FAILURE_ACTIONS = {
+    CONTENT_UNAVAILABLE_REASON: TARGET_PAGE_RESTART_ACTION,
     PAGE_LOAD_TIMEOUT_REASON: TARGET_PAGE_RESTART_ACTION,
     STALE_RUNNING_REASON: TARGET_PAGE_RESTART_ACTION,
     SCHEDULER_RUNTIME_REASON: SCHEDULER_RUNTIME_RESTART_ACTION,
@@ -102,6 +109,7 @@ class ScanFailureDecision:
     counts_toward_streak: bool = False
     retry_streak: int = 0
     retry_limit: int = 0
+    retry_delay_seconds: int = 0
     auto_restart: bool = False
     recovery_action: str = ""
 
@@ -165,6 +173,9 @@ def decide_scan_failure(
         previous_failure_count=previous_failure_count,
     )
     will_retry = retry_streak < retry_limit
+    retry_delay_seconds = (
+        failure_retry_delay_seconds(normalized_reason) if will_retry else 0
+    )
     recovery_action = AUTO_RESTART_FAILURE_ACTIONS.get(
         normalized_reason,
         DEFAULT_AUTO_RESTART_ACTION,
@@ -178,7 +189,8 @@ def decide_scan_failure(
         counts_toward_streak=True,
         retry_streak=retry_streak,
         retry_limit=retry_limit,
-        auto_restart=will_retry,
+        retry_delay_seconds=retry_delay_seconds,
+        auto_restart=will_retry and retry_delay_seconds <= 0,
         recovery_action=recovery_action,
     )
 
@@ -208,6 +220,13 @@ def normalize_scan_failure_reason(reason: str) -> str:
     """將 scan failure reason 正規化成可持久化的 canonical 值。"""
 
     return str(reason or UNKNOWN_REASON).strip() or UNKNOWN_REASON
+
+
+def failure_retry_delay_seconds(reason: str) -> int:
+    """回傳指定失敗原因在下次補掃前需要等待的秒數。"""
+
+    normalized_reason = normalize_scan_failure_reason(reason)
+    return max(int(STREAK_RETRY_DELAY_SECONDS.get(normalized_reason, 0)), 0)
 
 
 def _next_retry_streak(

@@ -144,6 +144,35 @@ def test_temporary_block_guard_error_survives_page_close_failure(
     assert exc_info.value.reason == "facebook_temporary_block"
 
 
+def test_metadata_guard_content_unavailable_does_not_promise_scan_retry() -> None:
+    """Metadata resolver 不得顯示只屬於 resident scan 的 30 秒補掃承諾。"""
+
+    page = _FakeMetadataPage(
+        final_url=CANONICAL_URL,
+        title="Test Group | Facebook",
+        body_text="目前無法查看此內容",
+        cover_url="",
+    )
+
+    async def unavailable_guard(_page: Any) -> None:
+        raise WorkerFailure("content_unavailable", "unavailable")
+
+    with pytest.raises(GroupMetadataError) as exc_info:
+        asyncio.run(
+            resolve_group_metadata_with_context(
+                _FakeMetadataContext(page),
+                canonical_url=CANONICAL_URL,
+                wait_ms=0,
+                page_guard=unavailable_guard,
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "30 秒" not in message
+    assert "重新確認" not in message
+    assert "內容已刪除或權限已變更" in message
+
+
 def test_sync_temporary_block_survives_context_close_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -15,6 +15,7 @@ from facebook_monitor.application.target_requests import UpsertGroupPostsTargetR
 from facebook_monitor.core.models import ScanStatus
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.scan_failure_policy import SCHEDULER_RUNTIME_RESTART_ACTION
+from facebook_monitor.core.scan_failures import CONTENT_UNAVAILABLE_REASON
 from facebook_monitor.core.scan_failures import FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
 from facebook_monitor.core.scan_failures import SCHEDULER_RUNTIME_REASON
 from facebook_monitor.core.scan_failures import SORT_ADJUST_UNCONFIRMED_REASON
@@ -485,6 +486,78 @@ def test_resident_inconclusive_page_guard_retries_twice_then_stops(
                 assert "已停止此監視項目" in latest_scan.error_message
                 assert len(pending_outbox) == 1
                 assert "系統已停止此監視項目" in pending_outbox[0].message
+
+    asyncio.run(run_test())
+
+
+def test_resident_content_unavailable_reopens_page_before_terminal_error(
+    tmp_path: Path,
+) -> None:
+    """模擬三次已到期 attempt；每次用新 page，第三次才停止並送通知。"""
+
+    db_path = tmp_path / "app.db"
+    with SqliteApplicationContext(db_path) as app:
+        target = app.services.targets.upsert_group_posts_target(
+            UpsertGroupPostsTargetRequest(
+                group_id="content-unavailable-three-strikes",
+                canonical_url=(
+                    "https://www.facebook.com/groups/content-unavailable-three-strikes"
+                ),
+                config=TargetConfigPatch(enable_desktop_notification=True),
+            )
+        )
+        app.services.targets.restart_target_monitoring(target.id)
+
+    async def unavailable_scan(**_kwargs: Any) -> object:
+        raise WorkerFailure(
+            CONTENT_UNAVAILABLE_REASON,
+            "Facebook 顯示目前無法查看此內容。",
+        )
+
+    async def run_test() -> None:
+        context = FakeAsyncBrowserContext()
+        page_pool = AsyncResidentPagePool(context)
+        for attempt in range(1, 4):
+            with SqliteApplicationContext(db_path) as app:
+                app.services.targets.request_target_scan(target.id)
+            summary = await run_resident_main_cycle(
+                options=ResidentRuntimeOptions(
+                    db_path=db_path,
+                    profile_dir=tmp_path / "profile",
+                    interval_seconds=0,
+                ),
+                page_pool=page_pool,
+                scan_page=as_async_scan_callable(unavailable_scan),
+                schedule_planner=TargetSchedulePlanner(),
+                cycle_index=attempt,
+            )
+            assert summary.failure_count == 1
+            assert await page_pool.size() == 0
+            assert len(context.pages) == attempt
+            assert context.pages[-1].closed is True
+            with SqliteApplicationContext(db_path) as app:
+                state = app.repositories.runtime_states.get(target.id)
+                latest_scan = app.repositories.scan_runs.latest_by_target(target.id)
+                pending_outbox = list_pending_notification_outbox(
+                    app.repositories.notification_outbox,
+                )
+            assert state is not None
+            assert latest_scan is not None
+            assert state.consecutive_failure_count == attempt
+            assert latest_scan.metadata["retry_streak"] == attempt
+            assert latest_scan.metadata["retry_limit"] == 3
+            assert state.scan_requested_at is None
+            assert "auto_restart" not in latest_scan.metadata
+            if attempt < 3:
+                assert state.runtime_status == TargetRuntimeStatus.IDLE
+                assert latest_scan.metadata["runtime_action"] == "will_retry"
+                assert latest_scan.metadata["retry_delay_seconds"] == 30
+                assert pending_outbox == []
+            else:
+                assert state.runtime_status == TargetRuntimeStatus.ERROR
+                assert latest_scan.metadata["runtime_action"] == "error"
+                assert "retry_delay_seconds" not in latest_scan.metadata
+                assert len(pending_outbox) == 1
 
     asyncio.run(run_test())
 

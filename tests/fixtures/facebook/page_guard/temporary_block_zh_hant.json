@@ -5,12 +5,14 @@
     {
       "headingTexts": ["你暫時遭到封鎖"],
       "detailTexts": ["你似乎過度使用了這項功能，因此暫時無法使用。"],
-      "articleCount": 0
+      "articleCount": 0,
+      "feedCandidateCount": 0
     },
     {
       "headingTexts": ["你暫時遭到封鎖"],
       "detailTexts": ["你似乎過度使用了這項功能，因此暫時無法使用。"],
-      "articleCount": 0
+      "articleCount": 0,
+      "feedCandidateCount": 0
     }
   ]
 }

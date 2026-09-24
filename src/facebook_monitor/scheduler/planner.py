@@ -18,6 +18,7 @@ from facebook_monitor.core.models import TargetDesiredState
 from facebook_monitor.core.models import TargetKind
 from facebook_monitor.core.models import TargetRuntimeStatus
 from facebook_monitor.core.refresh_policy import resolve_refresh_interval_seconds
+from facebook_monitor.core.scan_failure_policy import failure_retry_delay_seconds
 
 
 RESIDENT_SCANNABLE_TARGET_KINDS = frozenset({TargetKind.POSTS, TargetKind.COMMENTS})
@@ -98,6 +99,25 @@ class TargetSchedulePlanner:
                     )
                     continue
 
+                delayed_retry_due_at = self._delayed_failure_retry_due_at(
+                    failure_reason=runtime_state.consecutive_failure_reason,
+                    failure_count=runtime_state.consecutive_failure_count,
+                    latest_finished_at=latest_finished_at,
+                )
+                if delayed_retry_due_at is not None:
+                    if self._next_due_at_by_target.get(target.id) != delayed_retry_due_at:
+                        self._next_due_at_by_target[target.id] = delayed_retry_due_at
+                        initialized_due_times.append((target.id, delayed_retry_due_at))
+                    if current_time >= delayed_retry_due_at:
+                        selected.append(
+                            DueTarget(
+                                target_id=target.id,
+                                interval_seconds=interval_seconds,
+                                due_at=delayed_retry_due_at,
+                            )
+                        )
+                    continue
+
                 due_at = self._next_due_at_by_target.get(target.id)
                 if due_at is None:
                     due_at = self._initial_due_at(
@@ -167,3 +187,19 @@ class TargetSchedulePlanner:
         if latest_finished_at is None:
             return now
         return latest_finished_at + timedelta(seconds=max(interval_seconds, 1))
+
+    @staticmethod
+    def _delayed_failure_retry_due_at(
+        *,
+        failure_reason: str,
+        failure_count: int,
+        latest_finished_at: datetime | None,
+    ) -> datetime | None:
+        """依持久化 failure streak 計算延遲補掃時間。"""
+
+        if failure_count <= 0 or latest_finished_at is None:
+            return None
+        delay_seconds = failure_retry_delay_seconds(failure_reason)
+        if delay_seconds <= 0:
+            return None
+        return latest_finished_at + timedelta(seconds=delay_seconds)

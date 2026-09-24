@@ -119,6 +119,7 @@ SAFE_REASON_CODE_VALUES = {
 }
 SAFE_METADATA_STRING_VALUES = {
     "classification": {
+        "content_unavailable",
         "facebook_page_guard_inconclusive",
         "facebook_temporary_block",
     },
@@ -308,6 +309,7 @@ KNOWN_METADATA_KEYS = {
     "rawtext",
     "reason",
     "recoveryaction",
+    "retrydelayseconds",
     "requestedscrollrounds",
     "roundcount",
     "roundindex",
@@ -420,6 +422,7 @@ SAFE_METADATA_NUMERIC_KEYS = {
     "parsedcount",
     "rawitemcount",
     "requestedscrollrounds",
+    "retrydelayseconds",
     "roundcount",
     "roundindex",
     "scannedcount",

@@ -143,6 +143,13 @@ Web UI 呈現與互動一致性看 `docs/WEB_UI_CONTRACT.md`；
   確認 temporary block，則先提交 incident 並維持 scheduler 停止，不能吞成一般 deferred
   metadata refresh。
 - posts 與 comments pipeline 各自處理 page preparation、sort、load-more、extract 與 diagnostics，最後進 shared finalize。
+- `content_unavailable` 必須先以整頁結構確認：正常 feed 仍有 `article` / `role=article`
+  或正式 extractor 支援的 feed/permalink candidate 時，不得因內嵌或局部內容出現
+  「目前無法查看此內容」而判定 target 失效。
+  內容不可見頁需丟棄目前 page，間隔 30 秒後用新 page 重新確認；總共連續三次
+  仍無法查看才停止單一 target。temporary block 保留獨立的雙次穩定結構觀察，
+  不得與 content unavailable 共用 marker precedence；內容不可見結構不足則沿用
+  `facebook_page_guard_inconclusive` 的安全重試語義。
 - shared finalize 集中處理 logical item aliases、legacy `seen_items` mirror、
   keyword classification、match history、notification dedupe/outbox、
   latest scan snapshot 與 scan run commit。

@@ -308,6 +308,9 @@ table counts / invariant 檢查結果。
 - login / checkpoint failure：Web UI 會顯示需要重新登入；關閉並重新啟動 `facebook-monitor` 後會先開登入視窗。也可用 `facebook-monitor-login` 手動完成 Facebook 驗證。
 - Facebook temporary-block warning：12 小時是風險警告期限。若要繼續，可在單一或
   批次「開始」時確認風險；再次命中會重新停止全部當下 active targets。
+- Facebook 顯示「目前無法查看此內容」：系統會先排除正常 feed 內的局部訊息，
+  並在每次失敗後關閉舊 page，間隔 30 秒以新 page 重新確認；總共連續三次
+  仍無法查看時才停止該 target。
 - Facebook 狀態無法讀寫：保留 data directory，下載 redacted support bundle 後再排查。
 - empty extractor：確認 Facebook 是否變更 layout，或內容是否被 login/checkpoint 擋住。
 - notification failure：查看安全化後的 notification result 與 channel config；Discord webhook 格式錯誤時，系統不會送出 HTTP request。

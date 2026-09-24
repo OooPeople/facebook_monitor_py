@@ -37,6 +37,25 @@ _TEMPORARY_BLOCK_DETAIL_MARKERS = (
     "temporarily blocked from using it",
     "we limit how often you can post, comment or do other things",
 )
+_CONTENT_UNAVAILABLE_TITLE_MARKERS = (
+    "目前無法查看此內容",
+    "目前无法查看此内容",
+    "this content isn't available",
+    "this content is not available",
+    "content isn't available right now",
+    "content is not available right now",
+)
+_CONTENT_UNAVAILABLE_DETAIL_MARKERS = (
+    "刪除了內容",
+    "删除了内容",
+    "變更了分享對象",
+    "变更了分享对象",
+    "僅與一小群用戶分享",
+    "仅与一小群用户分享",
+    "shared it with a small group",
+    "changed who can see it",
+    "deleted",
+)
 _FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT = r"""
 () => {
   const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -59,10 +78,37 @@ _FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT = r"""
     details.push(text);
     if (details.length >= 80) break;
   }
+  // 與正式 feed extractor 的 postContainerCandidates 保持相同正常內容邊界。
+  const feedCandidateSelector = [
+    'a[href*="/groups/"][href*="/posts/"]',
+    'a[href*="/groups/"][href*="/post/"]',
+    'a[href*="/permalink/"]',
+    'a[href*="multi_permalinks="]',
+    'a[href*="story_fbid="]',
+    'a[href*="set=gm."]',
+    '[role="feed"] [role="article"]',
+    '[role="feed"] > div',
+    'div[data-pagelet*="FeedUnit"]',
+    'div[data-pagelet*="GroupsFeed"] [role="article"]',
+    '[aria-posinset]',
+  ].join(', ');
+  const feedRootSelector = [
+    '[role="feed"]',
+    'div[data-pagelet*="GroupsFeed"]',
+    'div[data-pagelet*="FeedUnit"]',
+    '[role="main"]',
+  ].join(', ');
+  const feedCandidates = new Set();
+  for (const root of document.querySelectorAll(feedRootSelector)) {
+    for (const candidate of root.querySelectorAll(feedCandidateSelector)) {
+      feedCandidates.add(candidate);
+    }
+  }
   return {
     headingTexts: headings,
     detailTexts: details,
-    articleCount: document.querySelectorAll('article').length,
+    articleCount: document.querySelectorAll('article, [role="article"]').length,
+    feedCandidateCount: feedCandidates.size,
   };
 }
 """
@@ -77,6 +123,7 @@ class FacebookPageGuardEvidence:
     detail_text: str = ""
     current_url: str = ""
     article_count: int | None = None
+    feed_candidate_count: int | None = None
     stable_observation_count: int = 0
 
 
@@ -128,15 +175,17 @@ class _PageStructureObservation:
     heading_text: str = ""
     detail_text: str = ""
     article_count: int | None = None
+    feed_candidate_count: int | None = None
 
     @property
-    def signature(self) -> tuple[bool, bool, int | None]:
+    def signature(self) -> tuple[bool, bool, int | None, int | None]:
         """回傳不含文字的穩定性比較值。"""
 
         return (
-            _contains_marker(self.heading_text, _TEMPORARY_BLOCK_TITLE_MARKERS),
-            _contains_marker(self.detail_text, _TEMPORARY_BLOCK_DETAIL_MARKERS),
+            bool(self.heading_text),
+            bool(self.detail_text),
             self.article_count,
+            self.feed_candidate_count,
         )
 
 
@@ -192,6 +241,8 @@ def classify_facebook_temporary_block(
         return None
     if evidence.article_count is not None and evidence.article_count > 0:
         return None
+    if evidence.feed_candidate_count is not None and evidence.feed_candidate_count > 0:
+        return None
     matched_heading = _contains_marker(
         evidence.heading_text,
         _TEMPORARY_BLOCK_TITLE_MARKERS,
@@ -202,12 +253,56 @@ def classify_facebook_temporary_block(
     )
     high_confidence = (
         evidence.article_count == 0
+        and evidence.feed_candidate_count == 0
         and evidence.stable_observation_count >= 2
         and matched_heading
         and matched_detail
     )
     reason = (
         FACEBOOK_TEMPORARY_BLOCK_REASON
+        if high_confidence
+        else FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
+    )
+    return FacebookPageGuardFinding(
+        reason=reason,
+        diagnostics=_build_page_guard_diagnostics(
+            evidence=evidence,
+            classification=reason,
+            matched_heading=matched_heading,
+            matched_detail=matched_detail,
+        ),
+    )
+
+
+def classify_facebook_content_unavailable_evidence(
+    evidence: FacebookPageGuardEvidence,
+) -> FacebookPageGuardFinding | None:
+    """以整頁結構證據分類內容不可見，避免 feed 內局部訊息造成誤判。"""
+
+    normalized_body = _normalize_page_text(evidence.body_text)
+    if not _is_facebook_url(evidence.current_url):
+        return None
+    if not _contains_marker(normalized_body, _CONTENT_UNAVAILABLE_TITLE_MARKERS):
+        return None
+    if evidence.article_count is not None and evidence.article_count > 0:
+        return None
+    if evidence.feed_candidate_count is not None and evidence.feed_candidate_count > 0:
+        return None
+    matched_heading = _contains_marker(
+        evidence.heading_text,
+        _CONTENT_UNAVAILABLE_TITLE_MARKERS,
+    )
+    matched_detail = _contains_marker(
+        evidence.detail_text,
+        _CONTENT_UNAVAILABLE_DETAIL_MARKERS,
+    )
+    high_confidence = (
+        evidence.article_count == 0
+        and evidence.feed_candidate_count == 0
+        and matched_heading
+    )
+    reason = (
+        CONTENT_UNAVAILABLE_REASON
         if high_confidence
         else FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON
     )
@@ -240,9 +335,7 @@ def classify_facebook_scan_page_failure(
         return block_finding
     if _looks_like_login_page(normalized_text, normalized_url):
         return FacebookPageGuardFinding(LOGIN_REQUIRED_REASON)
-    if _looks_like_facebook_content_unavailable(normalized_text, normalized_url):
-        return FacebookPageGuardFinding(CONTENT_UNAVAILABLE_REASON)
-    return None
+    return classify_facebook_content_unavailable_evidence(evidence)
 
 
 def classify_facebook_session_failure(
@@ -270,43 +363,6 @@ def ensure_facebook_login_present(body_text: str, current_url: str = "") -> None
         raise WorkerFailure(reason, "Facebook login is required.")
 
 
-def classify_facebook_content_unavailable(
-    body_text: str,
-    current_url: str = "",
-) -> str | None:
-    """判斷 Facebook 是否顯示內容不可見頁。"""
-
-    normalized_text = " ".join(str(body_text or "").lower().split())
-    normalized_url = str(current_url or "").lower()
-    if _looks_like_facebook_content_unavailable(normalized_text, normalized_url):
-        return CONTENT_UNAVAILABLE_REASON
-    return None
-
-
-def ensure_facebook_content_available(body_text: str, current_url: str = "") -> None:
-    """檢查 Facebook target 內容是否仍可見。"""
-
-    reason = classify_facebook_content_unavailable(body_text, current_url)
-    if reason:
-        raise WorkerFailure(
-            reason,
-            "Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。",
-        )
-
-
-def ensure_facebook_scan_page_available(body_text: str, current_url: str = "") -> None:
-    """一次檢查 Facebook 掃描頁的登入狀態與內容可見性。"""
-
-    finding = classify_facebook_scan_page_failure(
-        FacebookPageGuardEvidence(
-            body_text=body_text,
-            current_url=current_url,
-        )
-    )
-    if finding is not None:
-        _raise_page_guard_failure(finding)
-
-
 def ensure_sync_page_logged_in(page: SyncScannablePageLike) -> None:
     """sync Playwright page 登入 guard。"""
 
@@ -332,11 +388,24 @@ def assess_sync_facebook_page(
     body_text = page.locator("body").inner_text(timeout=10000)
     current_url = str(getattr(page, "url", "") or "")
     evidence = FacebookPageGuardEvidence(body_text=body_text, current_url=current_url)
-    if _looks_like_temporary_block_body(_normalize_page_text(body_text)):
+    normalized_body = _normalize_page_text(body_text)
+    if _looks_like_temporary_block_body(normalized_body):
         evidence = _collect_sync_page_guard_evidence(
             page=page,
             body_text=body_text,
             current_url=current_url,
+            title_markers=_TEMPORARY_BLOCK_TITLE_MARKERS,
+            detail_markers=_TEMPORARY_BLOCK_DETAIL_MARKERS,
+            observe_stability=True,
+        )
+    elif _contains_marker(normalized_body, _CONTENT_UNAVAILABLE_TITLE_MARKERS):
+        evidence = _collect_sync_page_guard_evidence(
+            page=page,
+            body_text=body_text,
+            current_url=current_url,
+            title_markers=_CONTENT_UNAVAILABLE_TITLE_MARKERS,
+            detail_markers=_CONTENT_UNAVAILABLE_DETAIL_MARKERS,
+            observe_stability=False,
         )
     return classify_facebook_scan_page_failure(evidence)
 
@@ -364,11 +433,24 @@ async def assess_async_facebook_page(
     body_text = await page.locator("body").inner_text(timeout=10000)
     current_url = str(getattr(page, "url", "") or "")
     evidence = FacebookPageGuardEvidence(body_text=body_text, current_url=current_url)
-    if _looks_like_temporary_block_body(_normalize_page_text(body_text)):
+    normalized_body = _normalize_page_text(body_text)
+    if _looks_like_temporary_block_body(normalized_body):
         evidence = await _collect_async_page_guard_evidence(
             page=page,
             body_text=body_text,
             current_url=current_url,
+            title_markers=_TEMPORARY_BLOCK_TITLE_MARKERS,
+            detail_markers=_TEMPORARY_BLOCK_DETAIL_MARKERS,
+            observe_stability=True,
+        )
+    elif _contains_marker(normalized_body, _CONTENT_UNAVAILABLE_TITLE_MARKERS):
+        evidence = await _collect_async_page_guard_evidence(
+            page=page,
+            body_text=body_text,
+            current_url=current_url,
+            title_markers=_CONTENT_UNAVAILABLE_TITLE_MARKERS,
+            detail_markers=_CONTENT_UNAVAILABLE_DETAIL_MARKERS,
+            observe_stability=False,
         )
     return classify_facebook_scan_page_failure(evidence)
 
@@ -378,15 +460,22 @@ def _collect_sync_page_guard_evidence(
     page: SyncScannablePageLike,
     body_text: str,
     current_url: str,
+    title_markers: tuple[str, ...],
+    detail_markers: tuple[str, ...],
+    observe_stability: bool,
 ) -> FacebookPageGuardEvidence:
-    """收集兩次 sync bounded structure observation。"""
+    """收集 sync bounded structure observation；高風險 guard 可要求二次穩定。"""
 
     dynamic_page: Any = page
     try:
         first = _normalize_structure_observation(
-            dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT)
+            dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT),
+            title_markers=title_markers,
+            detail_markers=detail_markers,
         )
-        if first.article_count is not None and first.article_count > 0:
+        if not observe_stability or (
+            first.article_count is not None and first.article_count > 0
+        ):
             return _evidence_from_observation(
                 body_text=body_text,
                 current_url=current_url,
@@ -395,7 +484,9 @@ def _collect_sync_page_guard_evidence(
             )
         dynamic_page.wait_for_timeout(FACEBOOK_PAGE_GUARD_STABLE_WAIT_MS)
         second = _normalize_structure_observation(
-            dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT)
+            dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT),
+            title_markers=title_markers,
+            detail_markers=detail_markers,
         )
     except Exception:
         return FacebookPageGuardEvidence(body_text=body_text, current_url=current_url)
@@ -412,15 +503,22 @@ async def _collect_async_page_guard_evidence(
     page: AsyncScannablePageLike,
     body_text: str,
     current_url: str,
+    title_markers: tuple[str, ...],
+    detail_markers: tuple[str, ...],
+    observe_stability: bool,
 ) -> FacebookPageGuardEvidence:
-    """收集兩次 async bounded structure observation。"""
+    """收集 async bounded structure observation；高風險 guard 可要求二次穩定。"""
 
     dynamic_page: Any = page
     try:
         first = _normalize_structure_observation(
-            await dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT)
+            await dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT),
+            title_markers=title_markers,
+            detail_markers=detail_markers,
         )
-        if first.article_count is not None and first.article_count > 0:
+        if not observe_stability or (
+            first.article_count is not None and first.article_count > 0
+        ):
             return _evidence_from_observation(
                 body_text=body_text,
                 current_url=current_url,
@@ -429,7 +527,9 @@ async def _collect_async_page_guard_evidence(
             )
         await dynamic_page.wait_for_timeout(FACEBOOK_PAGE_GUARD_STABLE_WAIT_MS)
         second = _normalize_structure_observation(
-            await dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT)
+            await dynamic_page.evaluate(_FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT),
+            title_markers=title_markers,
+            detail_markers=detail_markers,
         )
     except Exception:
         return FacebookPageGuardEvidence(body_text=body_text, current_url=current_url)
@@ -441,7 +541,12 @@ async def _collect_async_page_guard_evidence(
     )
 
 
-def _normalize_structure_observation(raw: object) -> _PageStructureObservation:
+def _normalize_structure_observation(
+    raw: object,
+    *,
+    title_markers: tuple[str, ...],
+    detail_markers: tuple[str, ...],
+) -> _PageStructureObservation:
     """把 JS payload 轉成 bounded Python observation。"""
 
     if not isinstance(raw, Mapping):
@@ -456,10 +561,19 @@ def _normalize_structure_observation(raw: object) -> _PageStructureObservation:
         and article_count_raw >= 0
         else None
     )
+    feed_candidate_count_raw = raw.get("feedCandidateCount")
+    feed_candidate_count = (
+        feed_candidate_count_raw
+        if isinstance(feed_candidate_count_raw, int)
+        and not isinstance(feed_candidate_count_raw, bool)
+        and feed_candidate_count_raw >= 0
+        else None
+    )
     return _PageStructureObservation(
-        heading_text=_first_matching_text(headings, _TEMPORARY_BLOCK_TITLE_MARKERS),
-        detail_text=_first_matching_text(details, _TEMPORARY_BLOCK_DETAIL_MARKERS),
+        heading_text=_first_matching_text(headings, title_markers),
+        detail_text=_first_matching_text(details, detail_markers),
         article_count=article_count,
+        feed_candidate_count=feed_candidate_count,
     )
 
 
@@ -492,6 +606,7 @@ def _evidence_from_observation(
         detail_text=observation.detail_text,
         current_url=current_url,
         article_count=observation.article_count,
+        feed_candidate_count=observation.feed_candidate_count,
         stable_observation_count=stable_count,
     )
 
@@ -626,38 +741,6 @@ def _looks_like_session_invalid(normalized_text: str, normalized_url: str) -> bo
         "工作階段已過期",
     )
     return any(marker in normalized_text for marker in session_markers)
-
-
-def _looks_like_facebook_content_unavailable(
-    normalized_text: str,
-    normalized_url: str,
-) -> bool:
-    """判斷 Facebook 內容是否已刪除、改權限或不可見。"""
-
-    unavailable_titles = (
-        "目前無法查看此內容",
-        "目前无法查看此内容",
-        "this content isn't available",
-        "this content is not available",
-        "content isn't available right now",
-        "content is not available right now",
-    )
-    if not any(title in normalized_text for title in unavailable_titles):
-        return False
-    detail_markers = (
-        "刪除了內容",
-        "删除了内容",
-        "變更了分享對象",
-        "变更了分享对象",
-        "僅與一小群用戶分享",
-        "仅与一小群用户分享",
-        "shared it with a small group",
-        "changed who can see it",
-        "deleted",
-    )
-    if any(marker in normalized_text for marker in detail_markers):
-        return True
-    return "facebook.com" in normalized_url
 
 
 def resolve_effective_scan_scroll_rounds(

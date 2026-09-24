@@ -40,7 +40,7 @@ _ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 _FAILURE_REASON_LABELS = {
-    CONTENT_UNAVAILABLE_REASON: "連結已失效",
+    CONTENT_UNAVAILABLE_REASON: "Facebook 內容無法查看",
     FACEBOOK_TEMPORARY_BLOCK_REASON: "Facebook 暫時限制存取",
     FACEBOOK_PAGE_GUARD_INCONCLUSIVE_REASON: "無法確認 Facebook 頁面狀態",
     LOGIN_REQUIRED_REASON: "需要重新登入",
@@ -68,7 +68,10 @@ _FAILURE_REASON_LABELS = {
 }
 
 _FAILURE_REASON_DETAILS = {
-    CONTENT_UNAVAILABLE_REASON: "Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。",
+    CONTENT_UNAVAILABLE_REASON: (
+        "Facebook 顯示目前無法查看此內容；可能是短暫頁面狀態、"
+        "內容已刪除或權限已變更。"
+    ),
     FACEBOOK_TEMPORARY_BLOCK_REASON: (
         "Facebook 顯示目前的操作暫時受到限制。系統已停止自動重試；"
         "請勿立即重試，也不需要因此重新登入。"

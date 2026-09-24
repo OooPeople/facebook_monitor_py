@@ -252,6 +252,7 @@ def test_scan_posts_page_sync_and_finalize_raises_content_unavailable_before_sor
             )
 
     assert exc_info.value.reason == "content_unavailable"
+    assert page.guard_observation_count == 1
     assert not page.sort_adjusted
 
 

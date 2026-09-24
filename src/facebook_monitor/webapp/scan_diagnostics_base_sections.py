@@ -136,6 +136,9 @@ def append_scan_result_lines(
         f"retry_limit={metadata.get('retry_limit', '(none)')}"
         if scan_failed
         else "",
+        f"retry_delay_seconds={metadata.get('retry_delay_seconds', '(none)')}"
+        if scan_failed
+        else "",
         f"finished_at={format_datetime_for_ui(scan.finished_at)}",
         f"item_count={scan.item_count}",
         f"matched_count={scan.matched_count}",

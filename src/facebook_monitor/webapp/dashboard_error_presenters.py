@@ -9,13 +9,20 @@ from facebook_monitor.core.user_messages import split_coded_message
 from facebook_monitor.webapp.time_presenters import format_datetime_for_ui
 
 
-CONTENT_UNAVAILABLE_LABEL = "連結已失效"
-CONTENT_UNAVAILABLE_TITLE = "Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+CONTENT_UNAVAILABLE_LABEL = "內容無法查看"
+LEGACY_CONTENT_UNAVAILABLE_LABEL = "連結已失效"
+CONTENT_UNAVAILABLE_TITLE = "Facebook 顯示目前無法查看此內容，監視已停止。"
+CONTENT_UNAVAILABLE_CONFIRMED_TITLE = (
+    "Facebook 連續三次顯示目前無法查看此內容，監視已停止。"
+)
 CONTENT_UNAVAILABLE_ERROR_MESSAGE = (
-    "連結已失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+    "內容無法查看：Facebook 顯示目前無法查看此內容，監視已停止。"
+)
+CONTENT_UNAVAILABLE_CONFIRMED_ERROR_MESSAGE = (
+    "內容持續無法查看：Facebook 在連續三次頁面確認中都顯示目前無法查看此內容，監視已停止。"
 )
 CONTENT_UNAVAILABLE_HISTORY_MESSAGE = (
-    "曾偵測到連結失效：Facebook 顯示目前無法查看此內容，可能已刪除或權限變更。"
+    "曾偵測到 Facebook 內容無法查看；後續掃描已恢復。"
 )
 
 
@@ -29,6 +36,7 @@ def is_content_unavailable_scan(scan: ScanRun | None) -> bool:
         metadata.get("reason") == CONTENT_UNAVAILABLE_REASON
         or scan.error_message.startswith(f"{CONTENT_UNAVAILABLE_REASON}:")
         or scan.error_message.startswith(f"{CONTENT_UNAVAILABLE_LABEL}：")
+        or scan.error_message.startswith(f"{LEGACY_CONTENT_UNAVAILABLE_LABEL}：")
     )
 
 
@@ -37,7 +45,7 @@ def is_content_unavailable_runtime_error(value: str) -> bool:
 
     code, _detail = split_coded_message(value)
     return code == CONTENT_UNAVAILABLE_REASON or value.startswith(
-        f"{CONTENT_UNAVAILABLE_LABEL}："
+        (f"{CONTENT_UNAVAILABLE_LABEL}：", f"{LEGACY_CONTENT_UNAVAILABLE_LABEL}：")
     )
 
 
@@ -50,16 +58,35 @@ def is_retrying_failure_scan(scan: ScanRun | None) -> bool:
     return bool(metadata.get("retryable")) and metadata.get("runtime_action") == "will_retry"
 
 
+def is_confirmed_content_unavailable_scan(scan: ScanRun | None) -> bool:
+    """判斷 failed scan 是否帶有新制三次確認完成的明確證據。"""
+
+    if scan is None or not is_content_unavailable_scan(scan):
+        return False
+    metadata = scan.metadata or {}
+    retry_streak = metadata.get("retry_streak")
+    retry_limit = metadata.get("retry_limit")
+    return retry_streak == 3 and retry_limit == 3
+
+
 def format_retrying_failure_title(scan: ScanRun) -> str:
     """格式化可重試 failed scan 的 hover 說明。"""
 
     metadata = scan.metadata or {}
     retry_streak = metadata.get("retry_streak")
     retry_limit = metadata.get("retry_limit")
+    retry_delay_seconds = metadata.get("retry_delay_seconds")
     if retry_streak and retry_limit:
         prefix = f"本輪掃描失敗，將於下輪重試（{retry_streak}/{retry_limit}）"
     else:
         prefix = "本輪掃描失敗，將於下輪重試"
+    if is_content_unavailable_scan(scan):
+        retry_text = (
+            f"本次失敗後會等待 {retry_delay_seconds} 秒，再以新頁面重新確認。"
+            if isinstance(retry_delay_seconds, int) and retry_delay_seconds > 0
+            else "系統稍後會以新頁面重新確認。"
+        )
+        return f"{prefix}：Facebook 暫時顯示無法查看此內容，{retry_text}"
     detail = format_failure_message_text(scan.error_message)
     return f"{prefix}：{detail}" if detail else prefix
 
@@ -104,14 +131,18 @@ def format_latest_error_indicator_title(
         else content_unavailable_current
     )
     if current:
+        if is_confirmed_content_unavailable_scan(scan):
+            return CONTENT_UNAVAILABLE_CONFIRMED_TITLE
         return CONTENT_UNAVAILABLE_TITLE
     return format_failure_message_text(scan.error_message)
 
 
-def format_runtime_error_message(value: str) -> str:
+def format_runtime_error_message(value: str, scan: ScanRun | None = None) -> str:
     """把 runtime error 轉成使用者可讀訊息。"""
 
     if is_content_unavailable_runtime_error(value):
+        if is_confirmed_content_unavailable_scan(scan):
+            return CONTENT_UNAVAILABLE_CONFIRMED_ERROR_MESSAGE
         return CONTENT_UNAVAILABLE_ERROR_MESSAGE
     return format_failure_message_text(value)
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import os
 from typing import Any
+from typing import NoReturn
 
 import pytest
 from playwright.sync_api import Error as PlaywrightError
@@ -22,6 +24,18 @@ _CONTENT_TITLE_MARKERS = ("目前無法查看此內容",)
 _CONTENT_DETAIL_MARKERS = ("變更了分享對象", "刪除了內容")
 _BLOCK_TITLE_MARKERS = ("你暫時遭到封鎖",)
 _BLOCK_DETAIL_MARKERS = ("你似乎過度使用了這項功能",)
+
+
+def _skip_or_fail_chromium_launch(exc: PlaywrightError) -> NoReturn:
+    """CI 必須啟動 Chromium；本機缺 browser 時保留可行動提示。"""
+
+    if os.environ.get("CI"):
+        pytest.fail(f"Chromium launch is required in CI: {exc}", pytrace=False)
+    pytest.skip(
+        "Chromium browser is unavailable; run "
+        "`uv run python -m playwright install chromium`. "
+        f"Launch error: {exc}"
+    )
 
 
 class _FacebookUrlPage:
@@ -55,11 +69,29 @@ def chromium_page() -> Iterator[Page]:
         try:
             browser = playwright.chromium.launch(headless=True, timeout=10_000)
         except PlaywrightError as exc:
-            pytest.skip(f"chromium browser is not installed: {exc}")
+            _skip_or_fail_chromium_launch(exc)
         try:
             yield browser.new_page()
         finally:
             browser.close()
+
+
+def test_chromium_launch_failure_fails_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI 的 Chromium launch failure 必須讓 safety contract 紅燈。"""
+
+    monkeypatch.setenv("CI", "true")
+
+    with pytest.raises(pytest.fail.Exception, match="Chromium launch is required in CI"):
+        _skip_or_fail_chromium_launch(PlaywrightError("launch failed"))
+
+
+def test_chromium_launch_failure_skips_outside_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本機未安裝 Chromium 時可 skip，並提示正式安裝指令。"""
+
+    monkeypatch.delenv("CI", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match="playwright install chromium"):
+        _skip_or_fail_chromium_launch(PlaywrightError("launch failed"))
 
 
 @pytest.mark.parametrize(
@@ -133,6 +165,50 @@ def chromium_page() -> Iterator[Page]:
         pytest.param(
             """
             <main role="main">
+              <div class="common-layout-wrapper">
+                <div role="feed">
+                  <div><a href="/groups/111/posts/222">背景仍可見的貼文</a></div>
+                </div>
+                <section>
+                  <h2>你暫時遭到封鎖</h2>
+                  <p>你似乎過度使用了這項功能，因此暫時無法使用。</p>
+                </section>
+              </div>
+            </main>
+            """,
+            _BLOCK_TITLE_MARKERS,
+            _BLOCK_DETAIL_MARKERS,
+            False,
+            True,
+            True,
+            "facebook_temporary_block",
+            id="temporary-block-generic-wrapper-with-visible-feed",
+        ),
+        pytest.param(
+            """
+            <main role="main">
+              <div class="common-layout-wrapper">
+                <div role="feed" hidden>
+                  <div><a href="/groups/111/posts/222">隱藏的舊貼文</a></div>
+                </div>
+                <section>
+                  <h2>你暫時遭到封鎖</h2>
+                  <p>你似乎過度使用了這項功能，因此暫時無法使用。</p>
+                </section>
+              </div>
+            </main>
+            """,
+            _BLOCK_TITLE_MARKERS,
+            _BLOCK_DETAIL_MARKERS,
+            False,
+            False,
+            True,
+            "facebook_temporary_block",
+            id="temporary-block-generic-wrapper-with-hidden-retained-feed",
+        ),
+        pytest.param(
+            """
+            <main role="main">
               <div role="feed">
                 <div>
                   <a href="/groups/111/posts/222">使用者求助貼文</a>
@@ -167,6 +243,27 @@ def chromium_page() -> Iterator[Page]:
             True,
             None,
             id="temporary-block-quoted-in-permalink-only-container",
+        ),
+        pytest.param(
+            """
+            <main role="main">
+              <section>
+                <div><a href="/groups/111/posts/222">使用者求助貼文</a></div>
+                <div role="feed"><div>貼文下方的留言 feed</div></div>
+                <div>
+                  <h2>你暫時遭到封鎖</h2>
+                  <p>使用者表示：你似乎過度使用了這項功能。</p>
+                </div>
+              </section>
+            </main>
+            """,
+            _BLOCK_TITLE_MARKERS,
+            _BLOCK_DETAIL_MARKERS,
+            True,
+            True,
+            True,
+            None,
+            id="temporary-block-quoted-with-nested-feed-outside-permalink",
         ),
         pytest.param(
             f"""

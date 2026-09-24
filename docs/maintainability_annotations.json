@@ -89,6 +89,18 @@
   ],
   "watchlist": [
     {
+      "path_glob": "src/facebook_monitor/worker/facebook_page_guard*.py",
+      "category": "facebook_page_guard_family",
+      "reason": "Facebook 頁面 guard 是 safety-critical evidence、classification 與 runtime adapter 邊界；維持純分類、browser evidence 收集與 failure adapter 的單向依賴。",
+      "must_not_add": [
+        "retry or scheduler policy",
+        "database writes or incident persistence",
+        "notification behavior",
+        "browser-side DOM script implementation"
+      ],
+      "split_trigger": "新增 failure family、持久化責任，或 sync/async adapter 出現真正行為分歧"
+    },
+    {
       "path_glob": "scripts/admin/complexity_report*.py",
       "category": "maintainability_report_tool",
       "reason": "Complexity report-only 治理工具 family；已拆分 metric collection、annotation matching、ranking、renderer 與 CLI，新增治理 family 前應維持模組邊界。",

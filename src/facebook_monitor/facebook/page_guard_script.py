@@ -61,6 +61,7 @@ FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT = (
     + ";\n  const feedCandidateSelectors = "
     + POST_CONTAINER_CANDIDATE_SELECTORS_SCRIPT
     + """;
+  const feedRootSelector = feedRoots.join(', ');
   const feedCandidateSelector = feedCandidateSelectors.join(', ');
   const postPermalinkSelector = """
     + repr(POST_PERMALINK_ANCHOR_SELECTOR)
@@ -72,6 +73,15 @@ FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT = (
       feedCandidates.add(candidate);
     }
   }
+  const localTextWithinLimitCache = new Map();
+  const localTextWithinLimit = (element) => {
+    if (localTextWithinLimitCache.has(element)) {
+      return localTextWithinLimitCache.get(element);
+    }
+    const withinLimit = String(element?.innerText || '').slice(0, 2401).length <= 2400;
+    localTextWithinLimitCache.set(element, withinLimit);
+    return withinLimit;
+  };
   const insideFeedItem = (element) => {
     if (!element) return null;
     if (element.closest([
@@ -90,19 +100,19 @@ FACEBOOK_PAGE_GUARD_STRUCTURE_SCRIPT = (
         '[role="alertdialog"]',
         '[role="alert"]',
       ].join(', '))) return false;
-      if (current.querySelector(postPermalinkSelector)) return true;
+      const descendantFeedRoots = Array.from(current.querySelectorAll(feedRootSelector));
+      if (localTextWithinLimit(current)) {
+        const hasPermalinkOutsideDescendantFeed = Array.from(
+          current.querySelectorAll(postPermalinkSelector),
+        ).some((anchor) => (
+          !descendantFeedRoots.some((root) => root.contains(anchor))
+        ));
+        if (hasPermalinkOutsideDescendantFeed) return true;
+      }
+      if (descendantFeedRoots.length > 0) return false;
       current = current.parentElement;
     }
     return false;
-  };
-  const localTextWithinLimitCache = new Map();
-  const localTextWithinLimit = (element) => {
-    if (localTextWithinLimitCache.has(element)) {
-      return localTextWithinLimitCache.get(element);
-    }
-    const withinLimit = String(element?.innerText || '').slice(0, 2401).length <= 2400;
-    localTextWithinLimitCache.set(element, withinLimit);
-    return withinLimit;
   };
   const localRelation = (heading, detail) => {
     if (!heading || !detail) return null;
